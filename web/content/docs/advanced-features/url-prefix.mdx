@@ -1,0 +1,43 @@
+---
+title: URL Prefix
+description: "Run MiraMedia under a subpath like example.com/media."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+By default MiraMedia expects to run at the root of a domain
+(e.g. `media.example.com`). To serve it under a subpath
+(e.g. `example.com/media`), the Docker image must be **rebuilt** with a build
+argument — Next.js bakes the base path in at build time.
+
+```text title="Build the image"
+docker build \
+  --build-arg BASE_PATH=/media \
+  --build-arg VERSION=my-custom-version \
+  -t miramedia:my-custom-version \
+  -f Dockerfile .
+```
+
+Then set `BASE_PATH` at runtime so it matches the build arg:
+
+```yaml title="docker-compose.yaml (excerpt)"
+services:
+  miramedia:
+    image: miramedia:my-custom-version
+    ports:
+      - "8000:8000"
+    environment:
+      BASE_PATH: /media
+```
+
+<Callout type="info">
+
+Include the prefix in `misc.frontend_url` too (e.g.
+`https://example.com/media`). See
+[Paths & Naming](../configuration/paths-and-naming).
+
+</Callout>
+
+Finally, configure your reverse proxy to **pass the path through unchanged** —
+do not strip `/media` from `/media/web/`. The container healthcheck also runs
+at `${BASE_PATH}/api/v1/health`.

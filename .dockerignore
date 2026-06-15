@@ -1,0 +1,74 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+.github
+
+# Editor / IDE
+.vscode
+.idea
+.cursor
+*.swp
+*.swo
+.DS_Store
+
+# Agent / docs / dev metadata
+.agents
+.ai
+.claude
+.aider*
+ONBOARDING.md
+CLAUDE.md
+AGENTS.md
+CONTRIBUTING.md
+CODE_OF_CONDUCT.md
+README.md
+LICENSE
+images/
+
+# Python virtualenv + caches
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.ty_cache
+.coverage
+htmlcov
+*.egg-info
+
+# Node / frontend artifacts (frontend stage installs from package.json fresh)
+web/node_modules
+web/.next
+web/out
+web/.turbo
+web/dist
+web/build
+
+# Build outputs / packaging
+dist
+build
+*.tar
+*.tar.gz
+*.zip
+
+# Runtime data (must never be inside build context)
+data
+res
+postgres
+logs
+*.log
+config
+
+# Local docker compose state
+docker-compose.override.yaml
+.env
+.env.local
+
+# OS junk
+Thumbs.db

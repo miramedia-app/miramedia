@@ -1,0 +1,29 @@
+---
+title: Streaming
+description: "Play movies and episodes in the browser, with subtitles."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Any imported movie or episode can be played directly in the browser from its
+detail page. No transcoding step or pre-conversion is involved — the original
+file is streamed.
+
+- **Seeking works** via HTTP range requests against the original file, so you
+  can jump anywhere instantly without waiting for a conversion.
+- **Subtitles** are served alongside the video. `.srt` is converted to WebVTT
+  on the fly (the format browsers need); other formats are served as-is.
+  Available languages depend on what's been fetched — see
+  [Subtitles](/docs/configuration/subtitles).
+- A `download` option serves the raw file.
+
+<Callout type="info">
+
+Streaming requires an authenticated user. File paths are validated against
+the configured library roots, so only media inside your libraries can be
+streamed.
+
+</Callout>
+
+Playback ultimately depends on your browser supporting the container/codec.
+For incompatible files, download and play locally.

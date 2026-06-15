@@ -1,0 +1,89 @@
+---
+title: Metadata
+description: "The [metadata] section: native TVmaze/Cinemeta providers (no API key), plus optional TMDB and TVDB."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Metadata (titles, posters, episode lists, trending) comes from providers
+configured in `[metadata]`. The **native provider works out of the box with
+no API key** — there is no metadata relay to set up.
+
+<Callout type="warn">
+
+Older docs referenced a "MetadataRelay" and `tmdb_relay_url`/`tvdb_relay_url`.
+Those no longer exist. Metadata now uses TVmaze + Cinemeta natively, with
+TMDB/TVDB as optional direct integrations.
+
+</Callout>
+
+## Shared settings (`[metadata]`)
+
+- `desired_languages` — ISO 639-1 codes. Default `["en"]`.
+- `check_interval_hours` — how often metadata is refreshed. Default `24`. A
+  weekly bulk refresh also runs and triggers continuous download.
+
+## Native (`[metadata.native]`)
+
+Two sub-providers, both enabled by default:
+
+- `[metadata.native.tvmaze]` `enabled` — TV shows. Extracts the IMDb id from
+  TVmaze; shows without an IMDb id are skipped (the native indexer matches by
+  IMDb id).
+- `[metadata.native.cinemeta]` `enabled` — movies and trending lists.
+
+<Callout type="info">
+
+A legacy combined `[metadata.native] enabled = true` is still accepted and
+migrated to both sub-flags automatically.
+
+</Callout>
+
+## TMDB (`[metadata.tmdb]`)
+
+Optional. Get a free API key at
+[themoviedb.org](https://www.themoviedb.org/settings/api).
+
+- `enabled` — default `false`.
+- `api_key`
+- `primary_languages` — ISO 639-1 list; if a title's original language is in
+  this list, metadata is fetched in that language.
+- `default_language` — fallback language parameter. Default `en`.
+
+## TVDB (`[metadata.tvdb]`)
+
+Optional. Get an API key at
+[thetvdb.com](https://thetvdb.com/api-information).
+
+- `enabled` — default `false`.
+- `api_key`
+
+## IDs and folder naming
+
+Shows/movies store an `external_id` plus the provider that supplied it. The
+native provider uses IMDb ids (`tt…`); TMDB/TVDB store their numeric ids.
+Folder naming standardizes on the IMDb tag (`[imdb-tt…]`) when known, with a
+provider-id fallback. The original provider is preserved internally
+regardless of folder format. See [Paths & Naming](paths-and-naming).
+
+## Example
+
+```toml title="config.toml"
+[metadata]
+desired_languages = ["en"]
+check_interval_hours = 24
+
+[metadata.native]
+[metadata.native.tvmaze]
+enabled = true
+[metadata.native.cinemeta]
+enabled = true
+
+[metadata.tmdb]
+enabled = false
+api_key = ""
+
+[metadata.tvdb]
+enabled = false
+api_key = ""
+```

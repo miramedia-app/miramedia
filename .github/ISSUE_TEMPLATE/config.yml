@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Documentation
+    url: https://miramedia-app.github.io/miramedia/docs/
+    about: Setup, configuration, and usage guides — check here first.
+  - name: Troubleshooting
+    url: https://miramedia-app.github.io/miramedia/docs/troubleshooting/
+    about: Common problems and fixes before opening an issue.

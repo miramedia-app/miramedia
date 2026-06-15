@@ -1,0 +1,442 @@
+---
+title: Developer Guide
+description: This section is for those who want to contribute to MiraMedia or understand its internals.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Source Code directory structure﻿
+
+- `miramedia/`: Backend FastAPI application
+- `web/`: Frontend Next.js application (React 19, Tailwind v4, shadcn/ui, static export SPA)
+- `web/content/docs/`: This documentation (Fumadocs MDX)
+- `alembic/`: Database migrations
+
+## Special Dev Configuration﻿
+
+### Environment Variables﻿
+
+MiraMedia uses various environment variables for configuration. In the Docker development setup (`docker-compose.dev.yaml`), most of these are automatically configured for you.
+
+#### Backend Variables﻿
+
+- `BASE_PATH`\
+  Base path for the app (for subdirectory deployments).
+- `PUBLIC_VERSION`\
+  Version string displayed in `/api/v1/health`.
+- `FRONTEND_FILES_DIR`\
+  Directory for built frontend files (e.g. `/app/web/build` in Docker).
+- `MIRAMEDIA_MISC__DEVELOPMENT`\
+  When set to `TRUE`, enables FastAPI hot-reloading in Docker.
+
+#### Frontend Variables﻿
+
+- `NEXT_PUBLIC_API_URL` (or legacy `PUBLIC_API_URL`)\
+  API URL for backend communication.
+- `PUBLIC_VERSION`\
+  Version string displayed in the frontend UI (mapped to `NEXT_PUBLIC_VERSION` at build time).
+- `BASE_PATH`\
+  Base path for frontend routing (matches backend `BASE_PATH`); applied via Next.js `basePath`.
+
+#### Docker Development Variables﻿
+
+- `MIRAMEDIA_DISABLE_FRONTEND_MOUNT`\
+  When `TRUE`, the backend does not serve the built frontend (set this when a
+  reverse proxy or a separate dev server serves the SPA instead).
+
+<Callout type="info">
+
+In `docker-compose.dev.yaml` the `web` service runs the Next dev server on
+port 5555 for live editing; the `api` service still serves its own baked build
+on 8001. This variable is **not** set there — set it yourself only if you want
+the backend to stop serving the SPA entirely.
+
+</Callout>
+
+#### Configuration Files﻿
+
+- Backend: `res/config/config.toml` (created from `config.dev.toml`)
+- Frontend: `web/.env` (created from `.env.example`)
+
+## Contributing﻿
+
+- Consider opening an issue to discuss changes before starting work
+
+## Setting up the Development Environment﻿
+
+I use IntellijIdea with the Pycharm and Webstorm plugins to develop this, but this guide should also work with VSCode. Normally I'd recommend Intellij, but unfortunately only Intellij Ultimate has support for FastAPI and some other features.
+
+### Recommended VSCode Plugins﻿
+
+- Python
+- ESLint
+- Tailwind CSS IntelliSense
+
+### Recommended Intellij/Pycharm Plugins﻿
+
+- Python
+- Pydantic
+- Ruff
+- VirtualKit
+
+### Recommended Development Workflow﻿
+
+The recommended way to develop MiraMedia is using the fully Dockerized setup with `docker-compose.dev.yaml`. This ensures you're working in the same environment as production and makes it easy for new contributors to get started without installing Python, Node.js, or other dependencies locally.
+
+The development environment includes:
+
+- Backend (FastAPI) with automatic hot-reloading for Python code changes
+- Frontend (Next.js 16) with Turbopack Fast Refresh for instant updates
+- Database (PostgreSQL) pre-configured and ready to use
+
+#### What supports hot reloading and what does not﻿
+
+- Python code changes (.py files), Frontend code changes (.tsx, .ts, .css) and configuration changes (config.toml) reload automatically.
+- Changing the backend dependencies (pyproject.toml) requires rebuilding: `docker compose -f docker-compose.dev.yaml build miramedia`
+- Changing the frontend dependencies (package.json) requires restarting the web container: `docker compose -f docker-compose.dev.yaml restart web`
+- Database migrations: Automatically run on backend container startup
+
+This approach eliminates the need for container restarts during normal development and provides the best developer experience with instant feedback for code changes.
+
+#### How the Frontend Connects to the Backend﻿
+
+The Next.js frontend talks directly to the backend over CORS:
+
+- Frontend (Next dev server) runs on: `http://localhost:5555` (mapped from container port 5173)
+- Backend runs on: `http://localhost:8001` (mapped from container port 8000)
+- `NEXT_PUBLIC_API_URL` is left **empty** in `docker-compose.dev.yaml`, so the SPA uses relative `/api/*` URLs that the Next dev rewrite (`next.config.ts`) proxies to `api:8000` internally. Relative URLs are required so a browser on a LAN IP (not just `localhost`) reaches the right backend. Cookie-based auth uses `credentials: 'include'`; the backend whitelists the frontend origin via `MIRAMEDIA_MISC__CORS_URLS`.
+
+### Setting up the full development environment with Docker (Recommended)﻿
+
+### Prepare config files
+
+Create config directory (only needed on first run) and copy example config files:
+
+```bash
+mkdir -p res/config # Only needed on first run
+cp config.dev.toml res/config/config.toml
+cp web/.env.example web/.env
+```
+
+### Start all services
+
+Recommended: Use make commands for easy development
+
+```bash
+# Recommended: Use make commands for easy development
+make up
+```
+
+Alternative: Use docker compose directly (if make is not available)
+
+```bash
+docker compose -f docker-compose.dev.yaml up
+```
+
+### Access the application
+
+- Frontend (with HMR): http://localhost:5555
+- Backend API: http://localhost:8001
+- Database: localhost:5433
+
+The bootstrap admin credentials are printed in the logs accessible with `make logs`.
+
+Now you can edit code and see changes instantly:
+
+- Edit Python files → Backend auto-reloads
+- Edit React/TypeScript files → Next.js Fast Refresh updates in browser
+- Edit config.toml → Changes apply immediately
+
+<Callout type="info">
+
+Run `make help` to see all available development commands including `make down`, `make logs`, `make app` (shell into backend), and more.
+
+</Callout>
+
+## Setting up the backend development environment (Local)
+
+### Clone & prerequisites
+
+1. Clone the repository
+2. cd into repo root
+3. Install `uv`: https://docs.astral.sh/uv/getting-started/installation/
+4. Verify installation:
+
+```bash
+uv --version
+```
+
+### Install Python with uv
+
+```bash
+uv python install 3.13
+```
+
+### Create virtual environment
+
+```bash
+uv venv --python 3.13
+```
+
+### Install dependencies
+
+```bash
+uv sync
+```
+
+### Run database migrations
+
+```bash
+uv run alembic upgrade head
+```
+
+### Run the backend (development mode)
+
+```bash
+uv run fastapi run miramedia/main.py --reload --port 8001
+```
+
+### Formatting & linting
+
+- Format code:
+
+```bash
+ruff format .
+```
+
+- Lint code:
+
+```bash
+ruff check .
+```
+
+## Setting up the frontend development environment (Local, Optional)
+
+### Clone & change dir
+
+1. Clone the repository
+2. cd into repo root
+3. cd into `web` directory
+
+### Install Node.js (example using nvm-windows)
+
+I used nvm-windows:
+
+```powershell
+nvm install 24.1.0
+nvm use 24.1.0
+```
+
+If using PowerShell you may need:
+
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+```
+
+### Create .env for frontend
+
+```bash
+cp .env.example .env
+```
+
+Update `NEXT_PUBLIC_API_URL` if your backend is not at `http://localhost:8001`
+
+### Install dependencies and run dev server
+
+```bash
+pnpm install
+pnpm dev
+```
+
+### Format & lint
+
+- Format:
+
+```bash
+pnpm format
+```
+
+- Lint:
+
+```bash
+pnpm lint
+```
+
+<Callout type="info">
+
+If running the frontend locally, add the dev server's origin (e.g.
+`http://localhost:3000`) to `cors_urls` in your backend config file.
+
+</Callout>
+
+## Troubleshooting﻿
+
+### Common Docker Development Issues﻿
+
+<details>
+
+<summary>Port already in use errors</summary>
+
+- Check if host ports 5555, 8001, or 5433 are already in use:
+  - macOS/Linux: `lsof -i :5555`
+  - Windows: `netstat -ano | findstr :5555`
+- Stop conflicting services or change ports in `docker-compose.dev.yaml`
+
+</details>
+
+<details>
+
+<summary>Container not showing code changes</summary>
+
+- Verify volume mounts are correct in `docker-compose.dev.yaml`
+- For backend: Ensure `./miramedia:/app/miramedia` is mounted
+- For frontend: Ensure `./web:/app` is mounted
+- On Windows: Check that file watching is enabled in Docker Desktop settings
+
+</details>
+
+<details>
+
+<summary>Frontend changes not updating</summary>
+
+- Check that the frontend container is running: `make ps` or `docker compose -f docker-compose.dev.yaml ps`
+- Verify Next.js Fast Refresh is working (should see HMR updates in the browser console)
+- Try restarting the frontend container:
+
+```bash
+docker compose -f docker-compose.dev.yaml restart web
+```
+
+</details>
+
+<details>
+
+<summary>Backend changes not reloading</summary>
+
+- Verify `MIRAMEDIA_MISC__DEVELOPMENT=TRUE` is set in `docker-compose.dev.yaml`
+- Check backend logs:
+
+```bash
+make logs ARGS="--follow miramedia"
+# or
+docker compose -f docker-compose.dev.yaml logs -f miramedia
+```
+
+- If dependencies changed, rebuild:
+
+```bash
+docker compose -f docker-compose.dev.yaml build miramedia
+```
+
+</details>
+
+<details>
+
+<summary>Database migration issues</summary>
+
+- Migrations run automatically on container startup
+- To run manually:
+
+```bash
+make app
+uv run alembic upgrade head
+```
+
+- To create new migration:
+
+```bash
+make app
+uv run alembic revision --autogenerate -m "description"
+```
+
+</details>
+
+<details>
+
+<summary>Viewing logs</summary>
+
+- All services: `make logs`
+- Follow logs in real-time: `make logs ARGS="--follow"`
+- Specific service: `make logs ARGS="miramedia --follow"`
+
+</details>
+
+<details>
+
+<summary>Interactive debugging (shell into containers)</summary>
+
+- Shell into backend:
+
+```bash
+make app
+# or
+docker compose -f docker-compose.dev.yaml exec -it miramedia bash
+```
+
+- Shell into frontend:
+
+```bash
+make frontend
+# or
+docker compose -f docker-compose.dev.yaml exec -it web sh
+```
+
+- Once inside, you can run commands like `uv run alembic upgrade head`, `pnpm install`, etc.
+
+</details>
+
+<details>
+
+<summary>Volume permission issues (Linux)</summary>
+
+- Docker containers may create files as root, causing permission issues, which can make the login page fail to show up.
+
+Solution:
+
+```bash
+sudo chown -R $USER:$USER res/
+```
+
+- Alternatively: Run containers with your user ID or use Docker's `user:` directive (may fail in some setups).
+
+</details>
+
+<details>
+
+<summary>Complete reset</summary>
+
+If all else fails, you can completely reset your development environment:
+
+```bash
+make down
+docker compose -f docker-compose.dev.yaml down -v  # Remove volumes
+docker compose -f docker-compose.dev.yaml build --no-cache  # Rebuild without cache
+make up
+```
+
+</details>
+
+## Tech Stack﻿
+
+### Backend﻿
+
+- Python
+- FastAPI
+- SQLAlchemy
+- Pydantic and Pydantic-Settings
+- Alembic
+
+### Frontend﻿
+
+- TypeScript
+- Next.js 16 (App Router, static export SPA)
+- React 19
+- Tailwind CSS v4
+- shadcn/ui (radix-nova preset)
+- TanStack Query + TanStack Table
+- react-hook-form + zod
+- openapi-typescript + openapi-fetch
+
+### CI/CD﻿
+
+- GitHub Actions

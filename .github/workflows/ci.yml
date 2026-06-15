@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      # libtorrent ships cp313 wheels only; keep CI off newer interpreters
+      # until the wheel gap closes.
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format check
+        run: uv run ruff format --check .
+      - name: Tests
+        run: uv run pytest
+        env:
+          MIRAMEDIA_LOG_FILE: /dev/null
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        # version intentionally omitted: pnpm/action-setup reads the
+        # "packageManager" field from web/package.json (pnpm@10.30.3)
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Generate types (fumadocs source + next typegen)
+        run: pnpm exec fumadocs-mdx && pnpm exec next typegen
+      - name: Typecheck
+        run: pnpm exec tsgo --noEmit

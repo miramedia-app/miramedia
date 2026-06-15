@@ -1,0 +1,46 @@
+---
+title: Requesting Media
+description: "How regular users request titles and how admins approve them."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Requests let non-admin users ask for media without library control. The
+feature must be enabled — see [Requests](/docs/configuration/requests).
+
+## Submitting a request (any user)
+
+1. Search for the title under **Shows**/**Movies** → Add page, or open its
+   detail page.
+2. Click **Request**. (Regular users see **Request** where admins see
+   **Add**/**Download**.)
+3. In the "Request Show"/"Request Movie" dialog set a **Preferred Quality**
+   (Default / 4K / 1080p / 720p / SD) and an optional **Note**, then
+   **Submit Request**.
+
+Superusers' own requests are auto-approved. Regular users' requests are
+auto-approved only if the admin enabled `auto_approve_users`; otherwise they
+wait for review.
+
+## Reviewing requests (superuser)
+
+Sidebar → **Requests**. A list with Title, Type, Quality, Requested by,
+Created, Note, and Status; filter by Type/Status/Quality and sort by
+date/title.
+
+- On a **pending** row: green check **Approve**, red X **Reject**, `⋮` →
+  **Delete**.
+- Bulk bar: **Approve**, **Reject**, **Delete**.
+
+Approved requests are picked up by the background fulfillment job
+(`requests.fulfill_interval_hours`, default every 2 h), which adds the media
+and downloads it via the normal [search & scoring](/docs/features/search-and-scoring)
+path. The request flips to downloaded once a file exists.
+
+## Seerr (Overseerr / Jellyseerr)
+
+If your admin enabled the [Seerr integration](/docs/configuration/requests),
+requests sync **both ways**: titles requested in Overseerr/Jellyseerr appear
+here and are fulfilled by the native indexer, and requests made here are
+pushed back to Seerr (and marked available there once downloaded). You can
+use either UI — they stay in sync.

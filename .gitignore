@@ -1,0 +1,128 @@
+# ---- OS ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# ---- Editors / IDEs ----
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.history/
+*.code-workspace
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Test / coverage / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.cache/
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ---- Node / Next.js (web/, web-next/) ----
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+.yarn-integrity
+.next/
+out/
+.turbo/
+.vercel/
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ---- Frontend builds elsewhere ----
+web/.next/
+web/out/
+web/node_modules/
+web/tsconfig.tsbuildinfo
+
+# ---- Logs / runtime ----
+*.log
+/logs/
+
+# ---- Secrets / local config ----
+.env
+.env.*
+!.env.example
+/config.toml
+cookie.txt
+cookies.txt
+*.pem
+*.key
+secrets/
+.secrets/
+
+# ---- Runtime data / media ----
+data/
+postgres/
+pgdata/
+res/
+images/
+
+# ---- Docker ----
+docker-compose.override.yaml
+docker-compose.override.yml
+
+# ---- Tooling scratch / AI agents ----
+.ai/
+.agents/
+.claude/
+.aider*
+skills-lock.json
+plans/
+
+# ---- Misc ----
+*.bak
+*.tmp
+*.orig
+*.rej
+.tmp/
+tmp/

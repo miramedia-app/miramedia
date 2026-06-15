@@ -1,0 +1,89 @@
+---
+title: Environment Variables
+description: "Operational environment variables — paths, port, frontend serving, and the config override mechanism."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+These are operational variables set in `docker-compose.yaml` (or your process
+environment), separate from `config.toml`. For overriding `config.toml`
+_values_ via env vars, see
+[Configuration → Secrets](../configuration#secrets-and-environment-variables).
+
+## Config location
+
+- `MIRAMEDIA_CONFIG_FILE` — full path to the TOML file. Highest precedence.
+- `MIRAMEDIA_CONFIG_DIR` — directory containing `config.toml`. Default
+  `/app/config`. (The startup script also accepts a bare `CONFIG_DIR` and
+  re-exports it.)
+
+## Server
+
+- `PORT` — port the backend listens on. Default `8000`. Docker image only.
+- `BASE_PATH` — path prefix the app is served under (e.g. `/media`). Must
+  match the build arg and the reverse proxy — see [URL Prefix](url-prefix).
+
+## Frontend serving
+
+In production the backend serves the static frontend itself.
+
+- `FRONTEND_FILES_DIR` — directory of built frontend files. Default
+  `/app/web/build`.
+- `MIRAMEDIA_DISABLE_FRONTEND_MOUNT` — when `TRUE`, the backend does not serve
+  the frontend (set when a reverse proxy serves the SPA instead).
+- `FRONTEND_FOLLOW_SYMLINKS` — when `true`, symlinks are followed when serving
+  frontend files. Default `false`.
+
+## Logging
+
+- `MIRAMEDIA_LOG_FILE` — JSON log file path. Default
+  `/app/config/miramedia.log`. Point at `/dev/null` to disable file logging
+  (your container manager still captures stdout).
+- `MIRAMEDIA_LOG_LEVEL` — `DEBUG` / `INFO` / `WARNING` / `ERROR`. Default
+  `INFO`.
+
+See [Logging](../configuration/logging).
+
+## Performance & concurrency
+
+All optional; defaults live in code. The full annotated list is in
+`.env.example`. Defaults are tuned for a single-host install — lower them on a
+small NAS, raise them on bigger hardware.
+
+| Variable                                                               | Default          | Purpose                                                |
+| ---------------------------------------------------------------------- | ---------------- | ------------------------------------------------------ |
+| `MIRAMEDIA_DB_POOL_SIZE` / `MIRAMEDIA_DB_MAX_OVERFLOW`                 | `20` / `20`      | Request-path DB connection pool.                       |
+| `MIRAMEDIA_DB_BG_POOL_SIZE` / `MIRAMEDIA_DB_BG_MAX_OVERFLOW`           | `10` / `10`      | Background-task DB connection pool.                    |
+| `MIRAMEDIA_DB_POOL_RECYCLE`                                            | `240`            | Recycle pooled connections after N seconds (stay below the server's `idle_in_transaction_session_timeout`). |
+| `MIRAMEDIA_THREADPOOL_SIZE`                                            | `200`            | AnyIO threadpool ceiling for blocking routes.          |
+| `MIRAMEDIA_INTERACTIVE_TASK_LIMIT` / `MIRAMEDIA_BACKGROUND_TASK_LIMIT` | `8` / `2`        | TaskIQ two-lane concurrency. Legacy `MIRAMEDIA_RECEIVER_MAX_TASKS` sets the combined cap (auto-split 80/20). |
+| `MIRAMEDIA_WEB_WORKERS`                                                | `1`              | Uvicorn worker processes (keep `1` on a NAS).          |
+| `MIRAMEDIA_SCHEDULER_DISABLED`                                         | `false`          | Set `true` on API workers running a sidecar scheduler. |
+| `MIRAMEDIA_EVENT_BRIDGE_DISABLED`                                      | `false`          | Disable the Postgres LISTEN/NOTIFY SSE bridge (leave unset for multi-worker). |
+| `MIRAMEDIA_TORRENT_RPC_CONCURRENCY`                                    | `10`             | Concurrent torrent-client status calls.                |
+| `MIRAMEDIA_DISK_SCAN_CONCURRENCY` / `_CACHE_TTL`                       | `8` / `30`       | Concurrent library disk-scan stats and their cache TTL (s). |
+| `MIRAMEDIA_SHA1_CONCURRENCY`                                           | `4`              | Integrity-audit hashing concurrency.                   |
+| `MIRAMEDIA_MEDIAINFO_CONCURRENCY`                                      | `2`              | Concurrent libmediainfo calls.                         |
+| `MIRAMEDIA_INDEXER_FANOUT_LIMIT` / `_FANOUT_TIMEOUT`                   | `8` / `300`      | Concurrent indexer queries and the fan-out timeout (s). |
+| `MIRAMEDIA_INDEXER_CIRCUIT_FAILURES` / `_CIRCUIT_COOLDOWN_SECONDS`     | `3` / `300`      | Indexer circuit-breaker trip threshold and cooldown.   |
+| `MIRAMEDIA_CHROMIUM_CONCURRENCY`                                       | `1`              | Concurrent Cloudflare-bypass Chromium ops.             |
+| `MIRAMEDIA_BYPASS_MAX_FETCHES`                                         | `25`             | Cookie-cached fetches before a Cloudflare re-solve.    |
+| `MIRAMEDIA_BYPASS_BREAKER_THRESHOLD` / `_BREAKER_COOLDOWN`             | `3` / `600`      | Cloudflare-bypass circuit-breaker trip threshold and cooldown (s). |
+| `MIRAMEDIA_METADATA_CACHE_TTL_SECONDS` / `_MAXSIZE`                    | `86400` / `1024` | Metadata-provider response cache.                      |
+| `MIRAMEDIA_AUTH_CACHE_TTL_SECONDS` / `_MAXSIZE`                        | `30` / `2048`    | Token → user lookup cache.                             |
+| `MIRAMEDIA_LIBRARY_WATCHER` / `_INTERVAL`                              | `false` / `120`  | Periodic library-state refresh loop and its interval (s, min 30). |
+| `MIRAMEDIA_LOG_POOL_SIZE` / `MIRAMEDIA_LOG_QUEUE_MAX`                  | `5` / `20000`    | DB log-handler write pool and bounded queue size.      |
+| `MIRAMEDIA_VITALS_RATE_LIMIT_PER_MIN`                                  | `60`             | Per-client rate limit on the Web Vitals ingest endpoint. |
+| `MIRAMEDIA_HLS_CACHE`                                                  | `/app/images/hls`| Directory for transcoded HLS stream bundles.           |
+
+<Callout type="warn">
+
+Config-value overrides use the `MIRAMEDIA_` prefix with `__` nesting
+(e.g. `MIRAMEDIA_AUTH__TOKEN_SECRET`). Some operational variables also take
+the prefix (`MIRAMEDIA_CONFIG_DIR`, `MIRAMEDIA_CONFIG_FILE`,
+`MIRAMEDIA_LOG_FILE`, `MIRAMEDIA_LOG_LEVEL`,
+`MIRAMEDIA_DISABLE_FRONTEND_MOUNT`, and all the tunables above); a few are
+bare (`PORT`, `BASE_PATH`, `FRONTEND_FILES_DIR`, `FRONTEND_FOLLOW_SYMLINKS`).
+The prefix is **not** uniform — match the exact names listed here.
+
+</Callout>

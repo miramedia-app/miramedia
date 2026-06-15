@@ -1,0 +1,21 @@
+{
+  "title": "Configuration",
+  "pages": [
+    "index",
+    "paths-and-naming",
+    "database",
+    "authentication",
+    "download-clients",
+    "indexers",
+    "scoring",
+    "metadata",
+    "subtitles",
+    "requests",
+    "notifications",
+    "libraries",
+    "imports",
+    "updates",
+    "logging",
+    "cloudflare"
+  ]
+}

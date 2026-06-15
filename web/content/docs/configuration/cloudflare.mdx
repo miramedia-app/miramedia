@@ -1,0 +1,197 @@
+---
+title: Cloudflare Bypass
+description: "The [cloudflare] section: in-process bypass for Cloudflare-protected indexers and subtitle providers."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Some indexer sites and subtitle providers sit behind Cloudflare. The bypass is
+**off by default** (`enabled = false`) — turn it on only if you actually need a
+CF-protected site. When enabled, MiraMedia can solve these challenges
+**in-process** — no external service required. It uses a real Chrome/Chromium
+(run headful via Xvfb) to earn a `cf_clearance` cookie, caches it per domain,
+and replays requests with a matching browser TLS fingerprint. The cached cookie
+plus `curl_cffi` replay is the primary fetch path; the browser is only used to
+mint a fresh cookie when there isn't a valid one.
+
+If the in-process solver keeps getting caught (see [Picking a
+solver](#solver-backends) below), you can switch to a different **solver
+backend** without changing anything else — they all feed the same cookie cache
+and replay machinery.
+
+<Callout type="warn">
+
+**Why the default gets blocked on a NAS.** A Synology/QNAP has no GPU, so
+Chromium renders WebGL with software (`Google SwiftShader`) — a renderer string
+that exists on **zero real consumer devices**. Since mid-2026 Cloudflare
+Turnstile fingerprints the GPU over WebGL, so a GPU-less host is flagged as a
+non-device almost everywhere, regardless of IP. The fix is a browser with a
+**real GPU** — that's what the `remote` and sidecar backends give you.
+
+</Callout>
+
+<Callout type="warn">
+
+**The default image is slim — no Chromium.** To keep the image small, the
+default `:latest` tag ships **without** Chromium. The `native` solver therefore
+needs one of:
+
+- the **`-cf` image variant** (`ghcr.io/miramedia-app/miramedia:latest-cf`),
+  which bundles Chromium + Xvfb + fonts, **or**
+- an explicit `browser_path` to a Chrome/Chromium already on the host, **or**
+- an **external solver** (`remote`/`byparr`/`flaresolverr`/`browser_run`/
+  `firecrawl`) — none of which need a local Chromium, so they run fine on slim.
+
+Enable `native` on the slim image and you'll get a single log warning
+(`no Chromium found in this image`) and CF fetches will fail until you switch.
+
+</Callout>
+
+## How it activates
+
+The bypass is gated by the `enabled` master switch (default `false`). When on,
+it kicks in automatically only when a request hits a Cloudflare challenge and
+the site is flagged `cloudflare_protected`. For native indexer sites, the
+connectivity test in **System → Indexers** auto-detects this flag and saves
+it. When `enabled = false` (the default) the bypass is never invoked — no
+chromium warmup, no auto-activation, no resources consumed; CF-protected sites
+simply fail to fetch.
+
+Solves are serialized per domain (one browser at a time). Other in-flight
+requests for the same domain wait for and reuse the cached session.
+
+## Solver backends
+
+Set `solver` in `[cloudflare]` to pick how a fresh `cf_clearance` is earned.
+All backends share the same per-domain cookie cache and `curl_cffi` replay; only
+the solve step differs.
+
+| `solver`       | What it is                                                   | Hosting                                    | Cost                                                     |
+| -------------- | ------------------------------------------------------------ | ------------------------------------------ | -------------------------------------------------------- |
+| `native`       | In-process nodriver on this host (default)                   | local                                      | free — but a GPU-less NAS is flagged (see callout above) |
+| `remote`       | **Same solve loop, attached to a real-GPU Chrome elsewhere** | your desktop / spare mini-PC / docker host | free — best fix                                          |
+| `byparr`       | Camoufox sidecar; highest OSS Turnstile success in 2026      | sidecar container                          | free, self-hosted                                        |
+| `flaresolverr` | Classic undetected-chromedriver sidecar                      | sidecar container                          | free, self-hosted                                        |
+| `browser_run`  | Cloudflare Browser Rendering (hosted real Chrome)            | Cloudflare                                 | free tier: 10 min/day, 3 concurrent                      |
+| `firecrawl`    | Firecrawl scrape API                                         | Firecrawl                                  | free tier: 500 lifetime credits                          |
+
+`proxy` (optional) routes the `curl_cffi` replay through a residential/mobile
+proxy and is handed to the `byparr`/`flaresolverr` sidecars for their own
+egress. Format: `scheme://[user:pass@]host:port`.
+
+### `remote` — connect to a real-GPU browser
+
+On a machine with a real GPU (your desktop, a spare mini-PC, or the docker
+host), launch Chrome with remote debugging — **not** headless, **not**
+`--disable-gpu`:
+
+```bash
+chrome --remote-debugging-port=9222 --user-data-dir=/tmp/cf
+```
+
+Then point MiraMedia at it. From a container, `host.docker.internal` reaches the
+host; a LAN box is just its IP:
+
+```toml title="config.toml"
+[cloudflare]
+solver = "remote"
+
+[cloudflare.remote]
+endpoint = "http://host.docker.internal:9222"   # or http://192.168.1.50:9222
+```
+
+The full native solve loop (Turnstile keyboard/mouse flow, cookie harvest,
+caching) runs unchanged — it just drives the remote Chrome, which has a real
+WebGL fingerprint.
+
+### `byparr` / `flaresolverr` — sidecar
+
+Run the sidecar (a commented Byparr service ships in `docker-compose.yaml`) and
+point at it. Run it on a real-GPU host for a real fingerprint.
+
+```toml title="config.toml"
+[cloudflare]
+solver = "byparr"
+
+[cloudflare.byparr]
+url = "http://byparr:8191"
+```
+
+### `browser_run` / `firecrawl` — hosted free tier
+
+```toml title="config.toml"
+[cloudflare]
+solver = "browser_run"
+
+[cloudflare.browser_run]
+account_id = "..."          # Cloudflare account id
+api_token = "..."           # token with the Browser Rendering permission
+```
+
+```toml title="config.toml"
+[cloudflare]
+solver = "firecrawl"
+
+[cloudflare.firecrawl]
+api_key = "..."
+base_url = "https://api.firecrawl.dev"   # override only for a self-hosted Firecrawl
+```
+
+## Settings (`[cloudflare]`)
+
+- `enabled` — master switch. Default `false`. `false` disables the bypass
+  entirely (no chromium, no resources); set `true` to allow CF solving.
+- `solver` — solver backend (see [above](#solver-backends)). Default `native`.
+- `proxy` — optional residential/mobile proxy for replay + sidecar egress.
+  Default empty (direct).
+- `browser_path` — path to Chrome/Chromium. Empty = auto-detect. The default
+  slim image bundles **no** Chromium — use the `-cf` image variant, set this to
+  an existing binary, or pick an external solver (see the callout above).
+- `cookie_ttl_seconds` — how long a harvested session is cached. Default
+  `1800` (30 min).
+- `impersonate_profile` — the browser TLS fingerprint used for replay
+  requests. Must match a `curl_cffi` profile (e.g. `chrome120`, `chrome131`).
+  Default `chrome131`.
+- `warmup_on_startup` — pre-launch chromium at boot so the first search
+  doesn't pay the cold-start tax. Default `true`. Disable on memory-constrained
+  hosts (idle chromium costs ~150 MB). Ignored by the external solvers
+  (`byparr`, `flaresolverr`, `browser_run`, `firecrawl`) — they spawn no local
+  chromium.
+
+### Timeouts (seconds)
+
+These apply to the `native` and `remote` backends (the ones that drive a
+chromium under our control); external solvers do their own timing. A protected
+request runs four phases in order: start browser → load page → wait for
+challenge JS → solve & recheck. The whole-operation budget is their **sum**
+(~580s with the defaults). Bump these on slow NAS hardware.
+
+- `browser_launch_timeout_seconds` — wait for chromium cold-start. Default `240`.
+- `page_load_timeout_seconds` — single page navigation. Default `150`.
+- `challenge_wait_seconds` — wait for the challenge JS (Turnstile) to render.
+  Default `10`.
+- `solve_timeout_seconds` — solve + `cf_clearance` cookie wait. Default `180`.
+
+```toml title="config.toml"
+[cloudflare]
+enabled = false
+solver = "native"
+proxy = ""
+browser_path = ""
+cookie_ttl_seconds = 1800
+impersonate_profile = "chrome131"
+warmup_on_startup = true
+browser_launch_timeout_seconds = 240
+page_load_timeout_seconds = 150
+challenge_wait_seconds = 10
+solve_timeout_seconds = 180
+```
+
+<Callout type="info">
+
+The **`-cf`** image variant (`...:latest-cf`) bundles Chromium and the Xvfb
+display server, so the `native` solver works with no extra setup. The default
+slim image does not — use `-cf`, an external solver, or a custom image with
+Chromium + Xvfb present.
+
+</Callout>

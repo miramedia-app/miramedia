@@ -1,0 +1,119 @@
+---
+title: Indexers
+description: "The [indexers] section: the built-in native indexer, Prowlarr, Jackett, and custom Torznab."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Indexers are where MiraMedia finds release candidates. It can query its
+**built-in native indexer**, Prowlarr, and Jackett — all at once — and merges
+the results. One failing provider never breaks a search.
+
+Scoring (which candidate wins) is a separate topic: see [Scoring](scoring).
+
+## Shared settings (`[indexers]`)
+
+- `timeout_seconds` — HTTP timeout shared by all providers. Default `60`.
+  Raise it if slow sites return "no results" with read-timeout log lines.
+- `minimum_seeders` / `maximum_seeders` — hard seeder gates (`0` = no gate).
+- `min_size_mb` / `max_size_mb` — hard size gates in MB (`0` = no limit on
+  that side). Results outside the range are dropped before scoring.
+- `preferred_languages` / `rejected_languages` — language scoring (see
+  [Scoring](scoring)).
+- `recency_bonus` / `recency_decay_days` — boost recent releases (see
+  [Scoring](scoring)).
+
+## Native indexer (`[indexers.native]`)
+
+Queries torrent sites directly — no Prowlarr/Jackett required. Enabled in the
+shipped `config.example.toml`. Ships with seven preloaded sites:
+
+| Site | Type | Default URL | Media | Cloudflare | Enabled by default |
+| --- | --- | --- | --- | --- | --- |
+| YTS | JSON API | `yts.bz` (mirror `yts.am`) | Movies | No | Yes |
+| EZTV | JSON API | `eztvx.to` | TV only | No | Yes |
+| The Pirate Bay | JSON API (ApiBay) | `apibay.org` | TV + Movies | No | Yes |
+| 1337x | HTML scraper | `1337x.to` | TV + Movies | Yes | **No** |
+| TorrentGalaxy | HTML scraper | `torrentgalaxy.one` | TV + Movies | No | Yes |
+| LimeTorrents | HTML scraper | `www.limetorrents.lol` | TV + Movies | No | Yes |
+| Nyaa | HTML scraper | `nyaa.si` | TV + Movies | No | Yes |
+
+1337x is the only Cloudflare-protected preloaded site, and it ships **disabled
+by default** because the bypass needs a browser (see
+[Cloudflare Bypass](cloudflare)). Enable it from **System → Indexers** once
+your Cloudflare solver is configured.
+
+- `enabled`
+- `max_concurrent_searches` — parallel site queries. Default `5`.
+- `disabled_sites` — list of preloaded site keys to turn off, e.g.
+  `["nyaa", "limetorrents"]`. The keys are `yts`, `eztv`, `thepiratebay`,
+  `1337x`, `torrentgalaxy`, `limetorrents`, `nyaa`.
+- `custom_torznab_sites` — additional Torznab endpoints (see below).
+
+Preloaded sites live in the database and are also manageable from the UI at
+**System → Indexers** (superuser): enable/disable, edit URLs/mirrors, set
+priority, and run a live connectivity test that streams progress in real time.
+Preloaded sites can't be deleted, only disabled — custom sites you add can be
+deleted freely.
+
+### Custom Torznab sites
+
+For private trackers or any Torznab-compatible endpoint. Add them in the UI,
+or in config:
+
+```toml
+[[indexers.native.custom_torznab_sites]]
+name = "MyPrivateTracker"
+url = "https://tracker.example.com/torznab"
+api_key = "your-api-key"
+supports_tv = true
+supports_movies = true
+cloudflare_protected = false
+# categories_tv = "5000"     # Torznab TV category id
+# categories_movies = "2000" # Torznab movie category id
+```
+
+## Prowlarr (`[indexers.prowlarr]`)
+
+- `enabled` — default `false`.
+- `url` — base URL of your Prowlarr instance.
+- `api_key` — Prowlarr → Settings → General.
+
+## Jackett (`[indexers.jackett]`)
+
+- `enabled` — default `false`.
+- `url` — base URL of your Jackett instance (Jackett's default port is
+  `9117`).
+- `api_key` — from the Jackett dashboard.
+- `indexers` — list of Jackett indexer names to query, or `["all"]`.
+
+## Example
+
+```toml title="config.toml"
+[indexers]
+timeout_seconds = 60
+minimum_seeders = 1
+
+[indexers.native]
+enabled = true
+max_concurrent_searches = 5
+disabled_sites = []
+
+[indexers.prowlarr]
+enabled = false
+url = "http://prowlarr:9696"
+api_key = "your_prowlarr_api_key"
+
+[indexers.jackett]
+enabled = false
+url = "http://jackett:9117"
+api_key = "your_jackett_api_key"
+indexers = ["all"]
+```
+
+<Callout type="info">
+
+No search results? Increase `timeout_seconds`, check **System → Logs**, and
+test individual native sites from **System → Indexers**.
+
+</Callout>

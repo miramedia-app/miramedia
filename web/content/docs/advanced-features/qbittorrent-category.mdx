@@ -1,0 +1,37 @@
+---
+title: qBittorrent Category
+description: "Use a qBittorrent category save path with MiraMedia — and make imports still work."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+qBittorrent can save a category's torrents into a dedicated subdirectory.
+MiraMedia applies a category (default `MiraMedia`) to everything it
+adds.
+
+- `torrents.qbittorrent.category_name` — category name. Default
+  `MiraMedia`.
+- `torrents.qbittorrent.category_save_path` — save path qBittorrent uses for
+  that category, **as seen from qBittorrent's container**. Empty = qBittorrent
+  default.
+
+<Callout type="info">
+
+qBittorrent writes to `category_save_path`, so it must be a valid, writable
+path inside the qBittorrent container.
+
+</Callout>
+
+<Callout type="warn">
+
+For imports to work, the same directory must also be inside
+`misc.torrent_directory` from **MiraMedia's** side. The two containers
+must see the same files on the same filesystem (so hard-linking works).
+Example: qBittorrent saves to `/downloads/miramedia`, both containers
+mount the host folder so MiraMedia sees it under
+`/data/torrents/miramedia`, and `misc.torrent_directory = "/data/torrents"`.
+
+</Callout>
+
+See [Download Clients](../configuration/download-clients) and
+[Paths & Naming](../configuration/paths-and-naming).

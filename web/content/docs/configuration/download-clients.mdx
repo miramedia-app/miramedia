@@ -1,0 +1,124 @@
+---
+title: Download Clients
+description: "The [torrents] section: the built-in native client plus qBittorrent, Transmission, and SABnzbd."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Download clients are configured in `[torrents]`. MiraMedia ships with a
+**native libtorrent client** so you don't need an external client at all.
+qBittorrent, Transmission, and SABnzbd are also supported.
+
+<Callout type="warn">
+
+Enable at most one BitTorrent client and at most one Usenet client at a time.
+
+</Callout>
+
+## Native client (`[torrents.native]`)
+
+A built-in libtorrent client. DHT and local peer discovery are enabled and
+resume data is persisted, so downloads survive restarts.
+
+- `enabled` — enabled in the shipped `config.example.toml`.
+- `listen_port_start` — the BitTorrent listen port. Must match the port
+  published by Docker (the bundled compose publishes `6891` TCP+UDP).
+- `max_download_rate` / `max_upload_rate` — KB/s, `0` = unlimited.
+
+It downloads into `misc.incomplete_torrent_path` (if set) and moves finished
+data to the completed path. See [Paths & Naming](paths-and-naming).
+
+<Callout type="info">
+
+If you change `listen_port_start`, update the published port in
+`docker-compose.yaml` to match (and vice versa), or peers can't reach you.
+
+</Callout>
+
+## qBittorrent (`[torrents.qbittorrent]`)
+
+- `enabled` — default `false`.
+- `host` — include the protocol, e.g. `http://qbittorrent`.
+- `port` — Web UI/API port. Default `8080`.
+- `username` / `password` — Web UI credentials.
+- `category_name` — category MiraMedia applies to its torrents. Default
+  `MiraMedia`.
+- `category_save_path` — save path for that category, as seen **from
+  qBittorrent's container**. If you set this, the same directory must be
+  inside `misc.torrent_directory` from MiraMedia's side. See
+  [qBittorrent Category](../advanced-features/qbittorrent-category).
+
+## Transmission (`[torrents.transmission]`)
+
+- `enabled` — default `false`.
+- `host` — hostname/IP, no protocol.
+- `port` — RPC port. Default `9091`.
+- `path` — RPC path. Usually `/transmission/rpc`.
+- `https_enabled` — default `true`.
+- `username` / `password` — RPC credentials.
+
+## SABnzbd (`[torrents.sabnzbd]`)
+
+Usenet downloader. Results from Usenet bypass seeder gates and are ranked by
+age rather than seeders.
+
+- `enabled` — default `false`.
+- `host` — include `http(s)://`.
+- `port` — API port. Default `8080`.
+- `api_key` — from SABnzbd → General → API Key.
+- `base_path` — API base path, usually `/api`.
+
+## Example
+
+```toml title="config.toml"
+[torrents]
+
+[torrents.native]
+enabled = true
+listen_port_start = 6891
+max_download_rate = 0
+max_upload_rate = 0
+
+[torrents.qbittorrent]
+enabled = false
+host = "http://qbittorrent"
+port = 8080
+username = "admin"
+password = "your_secure_password"
+category_name = "MiraMedia"
+category_save_path = ""
+
+[torrents.transmission]
+enabled = false
+host = "transmission"
+port = 9091
+path = "/transmission/rpc"
+https_enabled = true
+username = "admin"
+password = "your_secure_password"
+
+[torrents.sabnzbd]
+enabled = false
+host = "http://sabnzbd"
+port = 8080
+api_key = "your_sabnzbd_api_key"
+base_path = "/api"
+```
+
+## Shared storage
+
+External clients must download to a path MiraMedia can also see, on the
+**same filesystem** as the media library, so imports can hard-link.
+
+```yaml title="docker-compose.yaml (excerpt)"
+services:
+  miramedia:
+    image: ghcr.io/miramedia-app/miramedia:latest
+    volumes:
+      - ./data:/data
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    volumes:
+      - ./data/torrents:/downloads
+```

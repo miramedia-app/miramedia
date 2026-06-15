@@ -1,0 +1,375 @@
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from collections import defaultdict, deque
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Literal
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel, Field
+
+from miramedia.auth.users import SuperuserDep, current_superuser
+from miramedia.config import MiraMediaConfig
+from miramedia.movies.cleanup import cleanup_stale_movie_preferences
+from miramedia.settings.dependencies import settings_repository_dep
+from miramedia.settings.integration_tests import HANDLERS as TEST_HANDLERS
+from miramedia.settings.integration_tests import IntegrationTestResult
+from miramedia.settings.schemas import SystemSettingsRead, SystemSettingsUpdate
+from miramedia.settings.service import (
+    _config_to_dict,
+    _singleton_swap_lock,
+    apply_overrides_to_config,
+    deep_merge,
+    diff_against_defaults,
+    get_effective_config,
+    get_settings_schema,
+    get_toml_defaults,
+    revert_field_to_toml_default,
+    strip_none,
+)
+from miramedia.shows.cleanup import cleanup_stale_show_preferences
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(
+    prefix="/system",
+    tags=["system"],
+    dependencies=[Depends(current_superuser)],
+)
+
+
+_TEST_RATE_LIMIT_WINDOW_SECONDS = 60
+_TEST_RATE_LIMIT_MAX_REQUESTS = 5
+_test_call_log: dict[str, deque[float]] = defaultdict(deque)
+_test_call_log_lock = threading.Lock()
+
+
+async def _cleanup_stale_media_preferences(db: AsyncSession) -> None:
+    """Null out per-show / per-movie quality/codec overrides that no longer
+    reference an enabled option after a settings change. Called after every
+    settings mutation; cheap when no rows have overrides.
+    """
+    try:
+        config = MiraMediaConfig()
+        await cleanup_stale_show_preferences(db, config)
+        await cleanup_stale_movie_preferences(db, config)
+    except Exception:
+        log.exception(
+            "Failed to clean up stale media preferences after settings change"
+        )
+
+
+def _rate_limit_test(user_key: str) -> None:
+    """In-memory sliding-window rate limit for the integration test endpoints.
+
+    Caps each superuser at ``_TEST_RATE_LIMIT_MAX_REQUESTS`` calls per
+    ``_TEST_RATE_LIMIT_WINDOW_SECONDS`` seconds. Raises HTTP 429 when exceeded.
+    """
+    now = time.monotonic()
+    with _test_call_log_lock:
+        bucket = _test_call_log[user_key]
+        cutoff = now - _TEST_RATE_LIMIT_WINDOW_SECONDS
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= _TEST_RATE_LIMIT_MAX_REQUESTS:
+            retry_in = int(_TEST_RATE_LIMIT_WINDOW_SECONDS - (now - bucket[0]))
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Too many test requests. Try again in {max(1, retry_in)}s.",
+                headers={"Retry-After": str(max(1, retry_in))},
+            )
+        bucket.append(now)
+
+
+_ALLOWED_SECTIONS = {
+    "misc",
+    "auth",
+    "notifications",
+    "torrents",
+    "indexers",
+    "metadata",
+    "requests",
+    "subtitles",
+    "updates",
+    "cloudflare",
+    "imports",
+}
+
+
+class SettingsSchemaEntry(BaseModel):
+    """One leaf field in the flat settings search index."""
+
+    path: list[str]
+    section: str
+    key: str
+    label: str
+    description: str
+    type: str
+
+
+@router.get("/settings/schema")
+def get_settings_schema_endpoint() -> list[SettingsSchemaEntry]:
+    """Flat searchable index of every settings leaf field (label, description, type, path)."""
+    return [SettingsSchemaEntry(**entry) for entry in get_settings_schema()]
+
+
+@router.get("/settings")
+async def get_system_settings(
+    repo: settings_repository_dep,
+) -> SystemSettingsRead:
+    """Get the effective system configuration (TOML defaults + DB overrides)."""
+    overrides = await repo.get_overrides()
+    effective = get_effective_config(overrides)
+    return SystemSettingsRead(
+        **effective, overrides=overrides, defaults=get_toml_defaults()
+    )
+
+
+@router.put("/settings")
+async def update_system_settings(
+    data: SystemSettingsUpdate,
+    repo: settings_repository_dep,
+) -> SystemSettingsRead:
+    """Update system settings. Only provided fields are saved as overrides.
+
+    Overrides are merged with existing overrides (not replaced) and applied
+    to the in-memory config singleton so changes take effect immediately.
+    Interval-driven scheduler tasks are also re-synced on save.
+    """
+    new_overrides = strip_none(data.model_dump(mode="json"))
+
+    # Diff against TOML defaults so only real changes are stored as overrides
+    # Use json_mode so enum/Path serialization matches the incoming data
+    config = MiraMediaConfig()
+    sections = [
+        "misc",
+        "auth",
+        "notifications",
+        "torrents",
+        "indexers",
+        "metadata",
+        "requests",
+        "subtitles",
+        "updates",
+        "cloudflare",
+        "imports",
+    ]
+    toml_defaults = {
+        s: _config_to_dict(getattr(config, s), json_mode=True) for s in sections
+    }
+    new_overrides = diff_against_defaults(new_overrides, toml_defaults)
+
+    existing_overrides = await repo.get_overrides()
+    merged_overrides = deep_merge(existing_overrides, new_overrides)
+    await repo.save_overrides(merged_overrides)
+
+    # Apply overrides to the in-memory config singleton immediately
+    apply_overrides_to_config(MiraMediaConfig(), merged_overrides)
+
+    # Clear per-show/movie overrides that reference now-disabled options
+    await _cleanup_stale_media_preferences(repo.db)
+
+    # Re-sync interval-driven taskiq schedules so cron changes take effect now
+    try:
+        from miramedia.scheduler import refresh_dynamic_schedules
+
+        await refresh_dynamic_schedules()
+    except Exception:
+        log.exception("Failed to refresh dynamic schedules after settings update")
+
+    effective = get_effective_config(merged_overrides)
+    return SystemSettingsRead(**effective, overrides=merged_overrides)
+
+
+@router.delete("/settings", status_code=204)
+async def reset_system_settings(
+    repo: settings_repository_dep,
+) -> None:
+    """Reset all system settings to TOML defaults (removes all DB overrides)."""
+    await repo.reset_overrides()
+
+    # Reset singleton fields back to TOML defaults section-by-section
+    with _singleton_swap_lock:
+        saved_instance = MiraMediaConfig._instance
+        saved_initialized = MiraMediaConfig._initialized
+        MiraMediaConfig._instance = None
+        MiraMediaConfig._initialized = False
+        try:
+            fresh = MiraMediaConfig()
+        finally:
+            MiraMediaConfig._instance = saved_instance
+            MiraMediaConfig._initialized = saved_initialized
+    if saved_instance is not None:
+        for section in _ALLOWED_SECTIONS:
+            try:
+                setattr(saved_instance, section, getattr(fresh, section))
+            except Exception:
+                log.exception("Failed to reset section %s on singleton", section)
+
+    await _cleanup_stale_media_preferences(repo.db)
+
+    try:
+        from miramedia.scheduler import refresh_dynamic_schedules
+
+        await refresh_dynamic_schedules()
+    except Exception:
+        log.exception("Failed to refresh dynamic schedules after settings reset")
+
+
+class SettingsExport(BaseModel):
+    """Stable snapshot format for backup/restore of settings overrides.
+
+    ``schema_version`` lets us evolve the file format without breaking older clients.
+    """
+
+    schema_version: int = 1
+    exported_at: datetime
+    overrides: dict
+
+
+class SettingsImportRequest(BaseModel):
+    overrides: dict
+    mode: Literal["replace", "merge"] = "merge"
+
+
+@router.get("/settings/export")
+async def export_settings(repo: settings_repository_dep) -> SettingsExport:
+    """Download every DB override as JSON for backup or transfer."""
+    return SettingsExport(
+        exported_at=datetime.now(UTC),
+        overrides=await repo.get_overrides(),
+    )
+
+
+@router.post("/settings/import")
+async def import_settings(
+    body: SettingsImportRequest,
+    repo: settings_repository_dep,
+) -> SystemSettingsRead:
+    """Restore overrides from a previously exported snapshot.
+
+    ``mode='replace'`` overwrites the entire override blob; ``'merge'`` deep-merges into
+    the existing overrides (incoming values win on conflicts). Section names are validated
+    against the known set so a malformed file can't poison the singleton.
+    """
+    incoming = body.overrides or {}
+    for key in incoming:
+        if key not in _ALLOWED_SECTIONS:
+            raise HTTPException(
+                status_code=400, detail=f"Unknown section in import: {key}"
+            )
+
+    if body.mode == "replace":
+        merged = incoming
+    else:
+        existing = await repo.get_overrides()
+        merged = deep_merge(existing, incoming)
+
+    await repo.save_overrides(merged)
+
+    # Reload TOML defaults onto the singleton then re-apply, mirroring the reset flow,
+    # so removed-via-replace fields revert and added-via-merge fields take effect now.
+    with _singleton_swap_lock:
+        saved_instance = MiraMediaConfig._instance
+        saved_initialized = MiraMediaConfig._initialized
+        MiraMediaConfig._instance = None
+        MiraMediaConfig._initialized = False
+        try:
+            fresh = MiraMediaConfig()
+        finally:
+            MiraMediaConfig._instance = saved_instance
+            MiraMediaConfig._initialized = saved_initialized
+    if saved_instance is not None:
+        for section in _ALLOWED_SECTIONS:
+            try:
+                setattr(saved_instance, section, getattr(fresh, section))
+            except Exception:
+                log.exception("Failed to reset section %s on singleton", section)
+    apply_overrides_to_config(MiraMediaConfig(), merged)
+
+    await _cleanup_stale_media_preferences(repo.db)
+
+    try:
+        from miramedia.scheduler import refresh_dynamic_schedules
+
+        await refresh_dynamic_schedules()
+    except Exception:
+        log.exception("Failed to refresh dynamic schedules after settings import")
+
+    effective = get_effective_config(merged)
+    return SystemSettingsRead(**effective, overrides=merged)
+
+
+class ClearOverridePathRequest(BaseModel):
+    path: list[str] = Field(min_length=1)
+
+
+@router.post("/settings/override/clear")
+async def clear_override_path(
+    body: ClearOverridePathRequest,
+    repo: settings_repository_dep,
+) -> SystemSettingsRead:
+    """Remove a single override at a dotted path; revert that field to its TOML default in-memory."""
+    if body.path[0] not in _ALLOWED_SECTIONS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid section: {body.path[0]}",
+        )
+    updated_overrides = await repo.clear_override_path(body.path)
+    revert_field_to_toml_default(body.path)
+    apply_overrides_to_config(MiraMediaConfig(), updated_overrides)
+
+    await _cleanup_stale_media_preferences(repo.db)
+
+    try:
+        from miramedia.scheduler import refresh_dynamic_schedules
+
+        await refresh_dynamic_schedules()
+    except Exception:
+        log.exception("Failed to refresh dynamic schedules after override clear")
+
+    effective = get_effective_config(updated_overrides)
+    return SystemSettingsRead(**effective, overrides=updated_overrides)
+
+
+class IntegrationTestRequest(BaseModel):
+    """Live config snippet for the integration being tested.
+
+    The shape varies per integration — pass the same field names the settings UI binds to,
+    e.g. ``{"host": "localhost", "port": 8080, "username": "admin", "password": "..."}``
+    for qBittorrent. Tests do not persist anything.
+    """
+
+    config: dict = Field(default_factory=dict)
+
+
+@router.post("/settings/integrations/{integration}/test")
+def test_integration(
+    integration: str,
+    body: IntegrationTestRequest,
+    user: SuperuserDep,
+) -> IntegrationTestResult:
+    """Run a connection/auth test for the named integration without persisting changes.
+
+    Rate-limited per superuser to avoid abuse against third-party APIs.
+    """
+    handler = TEST_HANDLERS.get(integration)
+    if handler is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown integration: {integration}. "
+            f"Known: {', '.join(sorted(TEST_HANDLERS))}",
+        )
+    _rate_limit_test(str(user.id))
+    try:
+        return handler(body.config)
+    except Exception:
+        log.exception("Integration test handler crashed for %s", integration)
+        return IntegrationTestResult(
+            ok=False, message="Handler crashed; see server logs for details"
+        )

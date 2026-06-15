@@ -1,0 +1,94 @@
+---
+title: Quick Start
+description: "Zero to a running MiraMedia in about five minutes with Docker Compose."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+This is the fastest path to a working instance. It uses the bundled native
+indexer and native torrent client, so you don't need Prowlarr, Jackett, or
+qBittorrent to get going. For the full breakdown of every option, see
+[Configuration](/docs/configuration).
+
+## Prerequisites
+
+- Docker and Docker Compose installed.
+- A directory with enough disk space for media and downloads.
+
+## 1. Get the compose file and example config
+
+```bash
+mkdir miramedia && cd miramedia
+wget -O docker-compose.yaml https://github.com/miramedia-app/miramedia/releases/latest/download/docker-compose.yaml
+mkdir config
+wget -O ./config/config.toml https://github.com/miramedia-app/miramedia/releases/latest/download/config.example.toml
+```
+
+The shipped `config.example.toml` already enables the native indexer, native
+torrent client, native metadata (TVmaze/Cinemeta), and native subtitles, so a
+default install works without any external service.
+
+## 2. Set the essentials
+
+Edit `config/config.toml` and change at least these:
+
+```toml
+[misc]
+frontend_url = "http://localhost:8000"   # the URL you'll actually open
+cors_urls    = ["http://localhost:8000"] # no trailing slash
+
+[auth]
+token_secret = "PASTE_OUTPUT_OF_openssl_rand_hex_32"
+```
+
+Generate a token secret:
+
+```bash
+openssl rand -hex 32
+```
+
+<Callout type="warn">
+
+If `token_secret` is left at the placeholder (or unset), every restart
+invalidates all sessions. Set a stable random value.
+
+</Callout>
+
+## 3. Start it
+
+```bash
+docker compose up -d
+```
+
+On first boot the container runs database migrations, then creates a bootstrap
+admin because the user table is empty. The generated email and password are
+printed in the logs:
+
+```bash
+docker compose logs -f miramedia
+```
+
+## 4. Log in
+
+Open `http://localhost:8000`, log in with the bootstrap credentials from the
+logs, and **change the password immediately** (top-right account menu →
+Account Settings). Manage additional users and superusers from
+**System → Users**.
+
+## 5. Add your first show or movie
+
+1. Use the search bar to find a title (metadata comes from TVmaze/Cinemeta by
+   default).
+2. Add it to your library.
+3. MiraMedia searches indexers, scores the results, sends the best one to
+   the download client, and imports it when it finishes.
+
+## Next steps
+
+- [Imports](/docs/user-guide/importing-media) — bring in a library you already have,
+  or recover failed downloads.
+- [Download clients](/docs/configuration/download-clients) — switch to
+  qBittorrent/Transmission/SABnzbd if you prefer.
+- [Indexers](/docs/configuration/indexers) and
+  [Scoring](/docs/configuration/scoring) — tune what gets picked.
+- [How It Works](/docs/features) — understand the pipelines.

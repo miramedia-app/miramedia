@@ -1,0 +1,467 @@
+# MiraMedia Example Configuration File
+# This file contains all available configuration options for MiraMedia
+# Documentation: https://miramedia-app.github.io/miramedia/
+#
+# This is an example configuration file that gets copied to your config folder
+# on first boot. You should modify the values below to match your setup.
+
+[misc]
+# it's very likely that you need to change this for MiraMedia to work
+frontend_url = "http://localhost:8000" # note the lack of a trailing slash
+cors_urls = ["http://localhost:8000"] # note the lack of a trailing slash
+
+image_directory = "/app/images"
+show_directory = "/data/shows"
+movie_directory = "/data/movies"
+torrent_directory = "/data/torrents" # this is where MiraMedia will search for completed downloads
+incomplete_torrent_path = "/data/torrents/incomplete"  # native client downloads land here, then move to completed on finish (empty = no split)
+completed_torrent_path = ""             # where finished downloads live; empty = same as torrent_directory
+
+# you probably don't need to change this
+development = false
+
+cleanup_after_import = true        # remove torrent from client after successful import
+
+# Continuous download: keep searching for upgrades/missing items after the
+# first grab. Global default; per-show / per-movie nullable override in the UI.
+continuous_download = true
+# Auto-download Season 0 specials. Off by default — when off, specials show as
+# "skipped" and are excluded from the auto-download sweep.
+download_specials = false
+auto_download_interval_hours = 1   # how often the continuous-download sweep runs
+
+# Background import sweep interval (minutes). Catches stragglers; manual import is unchanged.
+import_sweep_interval_minutes = 5
+# Drop cached indexer search rows after this many days (nightly purge).
+indexer_query_result_retention_days = 7
+# Database-backed activity log retention (nightly purge, days).
+log_retention_days = 30
+
+# Opt-in file integrity audit. When on, every imported file gets a stored SHA1
+# and a periodic re-hash logs WARNINGs on mismatch. Off by default — hashing
+# every import roughly doubles the import-time disk read cost.
+integrity_check_enabled = false
+integrity_check_interval_hours = 168   # weekly
+
+# Imports page: top-candidate confidence at/above which "Pick" is the primary
+# action. Below it, Pick is still available but rendered as a secondary action.
+auto_pick_confidence_threshold = 0.8
+
+# Prometheus metrics scrape endpoint (/api/v1/metrics).
+# Default: deny — only superusers may scrape. Set to true if your Prometheus
+# scraper has no credentials and the endpoint is firewalled from end-users.
+# metrics_public = false
+
+# Single-worker deployment: size pools for one API process + Postgres.
+# Rule of thumb: pool_size + max_overflow <= postgres max_connections minus headroom for taskiq.
+
+# Custom Media Libraries
+# These paths should match your volume mounts in docker-compose.yaml
+# Example: if you mount "./movies:/media/movies" then use path = "/media/movies/subdirectory"
+[[misc.show_libraries]]
+name = "Live Action"
+path = "/data/shows/live-action"  # Change this to match your actual TV shows location
+
+[[misc.movie_libraries]]
+name = "Documentary"
+path = "/data/movies/documentary"  # Change this to match your actual movies location
+
+# Naming templates
+# Available placeholders:
+# folders: {title}, {year}, {provider_tag}, {imdb_id}, {provider}, {provider_id}
+# episode files: {show_title}, {season_number}, {season_number_00}, {episode_number}, {episode_number_00}, {quality}, {variant}, {suffix}
+# movie files: {movie_title}, {title}, {year}, {quality}, {variant}, {suffix}
+[misc.naming]
+movie_folder_format = "{title} ({year}) {provider_tag}"
+show_folder_format = "{title} ({year}) {provider_tag}"
+season_folder_format = "Season {season_number}"
+movie_file_format = "{title} ({year}){suffix}"
+episode_file_format = "{show_title} S{season_number:02d}E{episode_number:02d}{suffix}"
+
+[database]
+host = "db"
+port = 5432
+user = "miramedia"
+password = "miramedia"
+dbname = "miramedia"
+
+[auth]
+email_password_resets = false # if true, you also need to set up SMTP (notifications.smtp_config)
+
+token_secret = "CHANGE_ME_GENERATE_RANDOM_STRING" # generate a random string with "openssl rand -hex 32", e.g. here https://www.cryptool.org/en/cto/openssl/
+session_lifetime = 86400  # this is how long you will be logged in after logging in, in seconds
+# cookie_secure = true  # default: auto — true when frontend_url is https
+
+# Superuser status is managed from the dashboard (System → Users).
+# A bootstrap admin is created automatically when the user table is empty.
+
+# OpenID Connect settings
+[auth.openid_connect]
+enabled = false
+client_id = ""
+client_secret = ""
+configuration_endpoint = "https://openid.example.com/.well-known/openid-configuration"
+name = "OpenID"
+
+[notifications]
+# SMTP settings for email notifications and email password resets
+[notifications.smtp_config]
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_user = "admin"
+smtp_password = "admin"
+from_email = "miramedia@example.com"
+use_tls = true
+
+# Email notification settings
+[notifications.email_notifications]
+enabled = false
+emails = ["admin@example.com", "admin2@example.com"]  # List of email addresses to send notifications to
+
+# Gotify notification settings
+[notifications.gotify]
+enabled = false
+api_key = ""
+url = "https://gotify.example.com"
+
+# Ntfy notification settings
+[notifications.ntfy]
+enabled = false
+url = "https://ntfy.sh/your-topic"
+
+# Pushover notification settings
+[notifications.pushover]
+enabled = false
+api_key = ""
+user = ""
+
+# Media Requests - allows users to request movies/shows for download.
+# Requests are enabled if any backend below is enabled (native OR seerr).
+[requests]
+auto_approve_users = false        # when true, regular user requests skip approval (superusers always auto-approve)
+fulfill_interval_hours = 2        # how often to check approved requests for auto-download
+
+# Native requests (built-in fulfillment via configured indexers + torrent clients)
+[requests.native]
+enabled = true
+
+# Seerr integration (bidirectional sync with Overseerr/Jellyseerr).
+# When enabled, Seerr requests are mirrored locally and fulfilled by the
+# native indexer; status/availability is pushed back to Seerr. Runs
+# alongside the native backend (both can be active).
+[requests.seerr]
+enabled = false
+url = ""        # e.g. http://overseerr:5055
+api_key = ""    # Seerr -> Settings -> General -> API Key
+
+[torrents]
+# qBittorrent settings
+[torrents.qbittorrent]
+enabled = false
+host = "http://localhost"
+port = 8080
+username = "admin"
+password = "admin"
+category_name = "MiraMedia"
+category_save_path = ""  # e.g. "/data/torrents/miramedia", must match torrent_directory from qBittorrent's perspective
+
+# Transmission settings
+[torrents.transmission]
+enabled = false
+username = "admin"
+password = "admin"
+https_enabled = true
+host = "localhost"
+port = 9091
+path = "/transmission/rpc" # RPC request path target, usually "/transmission/rpc"
+
+# SABnzbd settings
+[torrents.sabnzbd]
+enabled = false
+host = "http://localhost"
+port = 8080
+api_key = ""
+base_path = "/api"
+
+# Native torrent client (lightweight alternative to qBittorrent/Transmission)
+# Save path is misc.torrent_directory (and optionally misc.incomplete_torrent_path
+# for an in-progress folder that is moved to torrent_directory on finish).
+[torrents.native]
+enabled = true
+listen_port_start = 6881             # BitTorrent listen port
+max_download_rate = 0                # KB/s, 0 = unlimited
+max_upload_rate = 0                  # KB/s, 0 = unlimited
+
+[indexers]
+timeout_seconds = 60  # Shared HTTP timeout for all indexer providers
+
+# Prowlarr settings (external)
+[indexers.prowlarr]
+enabled = false
+url = "http://localhost:9696"
+api_key = ""
+
+# Jackett settings (external)
+[indexers.jackett]
+enabled = false
+url = "http://localhost:9117"
+api_key = ""
+indexers = ["1337x", "torrentleech"]  # List of indexer names to use
+
+# Native indexer — replaces Prowlarr/Jackett with direct site queries
+# Ships with preloaded popular sites: YTS, EZTV, The Pirate Bay, 1337x,
+# TorrentGalaxy, LimeTorrents, Nyaa
+[indexers.native]
+enabled = true
+max_concurrent_searches = 5
+disabled_sites = []  # e.g. ["nyaa", "limetorrents"] to disable specific preloaded sites
+
+# Additional custom Torznab sites (for private trackers etc.)
+# [[indexers.native.custom_torznab_sites]]
+# name = "MyPrivateTracker"
+# url = "https://tracker.example.com/torznab"
+# api_key = "your-api-key"
+# supports_tv = true
+# supports_movies = true
+# cloudflare_protected = false
+
+# Quality options — list order controls dropdown display + tie-break when
+# a title matches multiple options. `score_modifier` controls result ranking
+# (added to score when the option matches). Disabling an option rejects
+# torrents whose title only matches that quality AND removes it from the
+# per-show / per-movie override dropdown. At least one must be enabled.
+# Size gate (in MB) hard-filters before scoring; 0 = no limit on that side.
+# min_size_mb = 0
+# max_size_mb = 0
+
+# Pre-retail junk (cam / telesync / telecine / screener / workprint) is dropped
+# by a default Title Rule "Reject cam/workprint" (-10000) applied via a default
+# Rule Set "Reject low-quality sources" (ALL_TV + ALL_MOVIES). Edit or remove it
+# on the Scores settings page, or override [[indexers.title_scoring_rules]] /
+# [[indexers.scoring_rule_sets]] here. Bare "cam"/"ts" are intentionally
+# omitted (the film *Cam*, ".ts" containers).
+
+[[indexers.quality_options]]
+name = "4K (UHD)"
+keywords = ["2160p", "4k", "uhd"]
+score_modifier = 400
+enabled = true
+
+[[indexers.quality_options]]
+name = "1080p (Full HD)"
+keywords = ["1080p", "1080i"]
+score_modifier = 300
+enabled = true
+
+[[indexers.quality_options]]
+name = "720p (HD)"
+keywords = ["720p"]
+score_modifier = 200
+enabled = true
+
+[[indexers.quality_options]]
+name = "SD"
+keywords = ["480p", "576p", "sdtv", "dvdrip"]
+score_modifier = 100
+enabled = true
+
+# Codec options — same semantics as quality_options. At least one enabled.
+[[indexers.codec_options]]
+name = "H.265 (HEVC)"
+keywords = ["h265", "hevc", "x265", "h.265", "x.265"]
+score_modifier = 300
+enabled = true
+
+[[indexers.codec_options]]
+name = "H.264 (AVC)"
+keywords = ["h264", "avc", "x264", "h.264", "x.264"]
+score_modifier = 200
+enabled = true
+
+[[indexers.codec_options]]
+name = "AV1"
+keywords = ["av1"]
+score_modifier = 100
+enabled = true
+
+# Title-based scoring rules
+[[indexers.title_scoring_rules]]
+name = "avoid_cam"
+keywords = ["cam", "camrip", "bdscr", "ddc", "dvdscreener","dvdscr", "hdcam", "hdtc", "hdts", "scr", "screener","telesync", "ts", "webscreener", "tc", "telecine", "tvrip"]
+score_modifier = -10000
+enabled = true
+
+# Indexer flag-based scoring rules
+[[indexers.indexer_flag_scoring_rules]]
+name = "prefer_freeleech"
+flags = ["freeleech", "freeleech75"]
+score_modifier = 100
+enabled = true
+
+[[indexers.indexer_flag_scoring_rules]]
+name = "reject_nuked"
+flags = ["nuked"]
+score_modifier = -10000
+enabled = true
+
+# Scoring rulesets
+[[indexers.scoring_rule_sets]]
+name = "default"
+libraries = ["ALL_TV", "ALL_MOVIES"]
+rule_names = ["avoid_cam", "reject_nuked", "prefer_freeleech"]
+
+# Subtitles — automatic subtitle downloading.
+# Subtitles are enabled if any backend below is enabled (native OR bazarr).
+[subtitles]
+desired_languages = ["en"]  # ISO 639-1 language codes
+
+# Native subtitle search (subliminal) — works out of the box, no account needed
+[subtitles.native]
+enabled = true
+scan_interval_hours = 6
+
+# Free providers (no account needed)
+[subtitles.native.gestdown]
+enabled = true
+
+[subtitles.native.tvsubtitles]
+enabled = true
+
+[subtitles.native.yifysubtitles]
+enabled = true
+
+[subtitles.native.subsource]
+enabled = false
+
+# Keyless catalog providers (vendored scrapers, no account needed): broad,
+# multi-language web sources. subf2m = Subscene successor.
+[subtitles.native.subtitlecat]
+enabled = true
+
+[subtitles.native.subf2m]
+enabled = true
+
+[subtitles.native.isubtitles]
+enabled = true
+
+[subtitles.native.my_subs]
+enabled = true
+
+# Extracts subtitle tracks embedded in the video file (via ffmpeg). Offline.
+[subtitles.native.embeddedsubtitles]
+enabled = true
+
+# Bazarr integration (external) — alternative to native search
+[subtitles.bazarr]
+enabled = false
+url = ""
+api_key = ""
+
+# Metadata Providers
+# Native provider (TVmaze + Cinemeta) works out of the box with no API key
+# TMDB and TVDB require free API keys from their respective websites
+# Updates — checks GitHub for new MiraMedia releases and (optionally)
+# applies them in-place via the local Docker socket.
+[updates]
+enabled = true
+repo = "miramedia-app/miramedia"     # GitHub owner/repo for releases API
+check_interval_hours = 24
+include_prereleases = false             # only stable releases
+cache_ttl_seconds = 3600
+request_timeout_seconds = 10            # GitHub releases API HTTP timeout
+notify_on_new_version = false           # send via configured notification providers
+
+# In-app apply: pulls new image and restarts the container via the Docker
+# socket. Requires `/var/run/docker.sock` mounted into this container (rw) and
+# a restart policy on the compose service. Container name must match the
+# ``container_name`` field in your compose file.
+allow_in_app_apply = true
+docker_socket_path = "/var/run/docker.sock"
+container_name = "miramedia"
+image_repository = "ghcr.io/miramedia-app/miramedia"
+image_tag = "latest"
+
+[metadata]
+# On provider/DNS failures, stamp the row and skip retries for this long.
+failure_backoff_hours = 6
+
+[metadata.native]
+enabled = true
+
+[metadata.tmdb]
+enabled = false
+api_key = ""  # Get a free API key at https://www.themoviedb.org/settings/api
+# primary_languages = []  # ISO 639-1 codes, e.g. ["no"] for Norwegian
+# default_language = "en"
+
+[metadata.tvdb]
+enabled = false
+api_key = ""  # Get an API key at https://thetvdb.com/api-information
+
+# Cloudflare bypass — shared by indexers, subtitle providers, and any future module.
+# When enabled, activates automatically on Cloudflare challenge responses.
+# Uses nodriver (in-process Chrome via Xvfb) to earn cf_clearance cookies, then
+# replays them via curl_cffi with a matching browser TLS fingerprint.
+[cloudflare]
+enabled = false                # master switch; false = never invoked, no chromium, no resources
+# NOTE: solver = "native" needs a local Chromium, which is NOT in the default
+# (slim) image. Pull the "-cf" image variant (e.g. miramedia:latest-cf), set
+# browser_path to an existing Chrome/Chromium, or use an external solver below
+# (byparr/flaresolverr/remote/browser_run/firecrawl — none need local chromium).
+# Solver backend that earns cf_clearance. All feed the same cookie cache +
+# curl_cffi replay; only the "how do we get a fresh clearance" step differs.
+#   native       — in-process nodriver on THIS host (default). A GPU-less NAS
+#                  reports "Google SwiftShader" WebGL — a renderer string on
+#                  zero real devices — so Cloudflare flags it everywhere.
+#   remote       — same solve loop, but attach to a real-GPU Chrome elsewhere
+#                  (your desktop / a spare mini-PC / the docker host). Real GPU
+#                  ⇒ real WebGL ⇒ looks like a real device. Best free fix.
+#   byparr       — Camoufox sidecar; highest OSS Turnstile success in 2026.
+#   flaresolverr — classic undetected-chromedriver sidecar.
+#   browser_run  — Cloudflare Browser Rendering (hosted real Chrome; free tier
+#                  10 min/day, 3 concurrent).
+#   firecrawl    — Firecrawl scrape API (free tier: 500 lifetime credits).
+solver = "native"
+# Optional residential/mobile proxy: applied to curl_cffi replay AND handed to
+# byparr/flaresolverr for their own egress. scheme://[user:pass@]host:port.
+proxy = ""
+browser_path = ""              # auto-detect Chrome/Chromium if empty (native only)
+cookie_ttl_seconds = 1800      # cache lifetime for harvested CF sessions (30 min default)
+impersonate_profile = "chrome131"  # curl_cffi impersonation profile for replay requests
+warmup_on_startup = true       # pre-launch chromium at boot (off saves ~150 MB when idle; ignored by external solvers)
+# Operation timeouts (seconds). Bump on slow NAS hardware. (native/remote)
+browser_launch_timeout_seconds = 240   # wait for chromium cold-start DevTools (warmup + first launch); weak NAS boot storm can take ~2min
+page_load_timeout_seconds = 150        # single page navigation (tab open/attach + challenge page load); weak NAS tab-create can stall
+challenge_wait_seconds = 10            # wait for CF challenge JS (Turnstile) to render before solving
+solve_timeout_seconds = 180            # wait for challenge to be solved + cf_clearance cookie to appear
+# Whole-request budget = browser_launch + page_load + challenge_wait + solve (e.g. 400s).
+
+# Per-backend settings — only the table named by `solver` is read.
+[cloudflare.remote]
+# On the real-GPU box, launch (NOT headless, NOT --disable-gpu):
+#   chrome --remote-debugging-port=9222 --user-data-dir=/tmp/cf
+# then point here. From a container: http://host.docker.internal:9222
+endpoint = ""
+
+[cloudflare.byparr]
+url = "http://byparr:8191"
+
+[cloudflare.flaresolverr]
+url = "http://flaresolverr:8191"
+
+[cloudflare.browser_run]
+account_id = ""                # Cloudflare account id
+api_token = ""                 # API token with the Browser Rendering permission
+
+[cloudflare.firecrawl]
+api_key = ""
+base_url = "https://api.firecrawl.dev"
+
+[imports]
+# Library-scan / imports inbox behaviour.
+provider_search_on_scan = true      # query metadata providers for scanned dirs with no strong existing match
+provider_search_max_results = 5     # cap provider hits surfaced per directory
+auto_import_on_scan = false         # auto-create + import the best match without human review
+auto_import_min_confidence = 0.9    # only auto-import when the top candidate's confidence >= this
+auto_scan_enabled = false           # run a periodic background library scan
+auto_scan_interval_hours = 6        # how often the periodic scan runs

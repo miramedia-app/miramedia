@@ -1,0 +1,140 @@
+---
+title: Docker Compose
+description: "Run MiraMedia with Docker Compose — the recommended deployment."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Prerequisites
+
+- Docker and Docker Compose installed.
+- If you plan to use OAuth 2.0 / OpenID Connect, an account and client
+  credentials from an OIDC provider (Authentik, Pocket ID, Keycloak, etc.).
+
+<Callout type="info">
+
+The default `:latest` image is slim and ships a libtorrent client but **no**
+Chromium. The in-process Cloudflare `native` solver needs Chromium + Xvfb, which
+are bundled only in the **`-cf`** variant (`...:latest-cf`) — pull that tag if
+you enable `[cloudflare]` with `solver = "native"` (budget ~2 GB RAM for the
+`api` container; the compose file sets this limit). On low-RAM NAS hardware,
+follow the [Synology guide](synology) for tuned concurrency, or keep the bypass
+off with `enabled = false` under `[cloudflare]` in `config.toml`. External
+solvers (`byparr`/`flaresolverr`/`remote`/`browser_run`/`firecrawl`) need no
+local Chromium and run on the slim image.
+
+</Callout>
+
+## Architecture
+
+The default `docker-compose.yaml` defines two services:
+
+| Service | Container            | Image                                    | Purpose                                   |
+| ------- | -------------------- | ---------------------------------------- | ----------------------------------------- |
+| `api`   | `miramedia`          | `ghcr.io/miramedia-app/miramedia:latest` | API + web UI + scheduler (single process) |
+| `db`    | `miramedia-postgres` | `postgres:17-alpine`                     | PostgreSQL database                       |
+
+The `api` service serves both the REST API and the static frontend on
+host port `8000` — front it with your own reverse proxy (nginx, Caddy,
+DSM, Traefik, …) if you want HTTPS on a custom hostname. Port `6881`
+(TCP and UDP) is published for the built-in native torrent client.
+Database migrations and the background scheduler run inside the `api`
+container automatically — there is no separate worker by default. For
+multi-worker deployments you can move the scheduler into a dedicated sidecar
+(see the commented `miramedia-scheduler` block in `docker-compose.yaml` and
+the `MIRAMEDIA_WEB_WORKERS` / `MIRAMEDIA_SCHEDULER_DISABLED` notes); single-host
+NAS installs should stay on the in-process default.
+
+## Setup
+
+#### Get the compose file
+
+```bash
+wget -O docker-compose.yaml https://github.com/miramedia-app/miramedia/releases/latest/download/docker-compose.yaml
+```
+
+#### Prepare the config directory
+
+```bash
+mkdir config
+wget -O ./config/config.toml https://github.com/miramedia-app/miramedia/releases/latest/download/config.example.toml
+```
+
+If you skip this step, the container copies `config.example.toml` to
+`/app/config/config.toml` on first boot and warns you to change
+`token_secret`.
+
+#### Edit the configuration
+
+At minimum set `misc.frontend_url`, `misc.cors_urls`, and a stable
+`auth.token_secret`. See [Configuration](../configuration) for everything
+else.
+
+#### Start the stack
+
+```bash
+docker compose up -d
+```
+
+On first run MiraMedia:
+
+- runs Alembic migrations,
+- creates a bootstrap admin user **because the user table is empty** — the
+  generated credentials are printed in the container logs. Log in and change
+  the password immediately.
+
+<Callout type="info">
+
+Superusers are managed from the dashboard at **System → Users** — there is no
+longer a required `admin_emails` setting. The legacy `auth.admin_emails`
+option still promotes matching accounts on startup but is deprecated; prefer
+the UI.
+
+</Callout>
+
+## Volumes and paths
+
+The compose file bind-mounts:
+
+- `./config/` → `/app/config/` — holds `config.toml`.
+- `./data/` → `/data/` — media + downloads (`show_directory`,
+  `movie_directory`, `torrent_directory` under `[misc]`). Pre-create
+  `./data/{shows,movies,torrents}` on the host so imports can hard-link across
+  them under one mount.
+- `./images/` → `/app/images/` — poster / metadata image cache, kept out of
+  the media tree.
+- `/var/run/docker.sock` → `/var/run/docker.sock` — read-write, **required for
+  in-app updates** (`updates.allow_in_app_apply`). Comment it out to disable
+  one-click updates.
+
+Hard-linking only works within a single filesystem. Keep your downloads and
+your media library on the **same volume/mount** or imports fall back to slow
+copies (and may fail on space). See
+[Troubleshooting](../troubleshooting#hard-linking).
+
+## Docker images
+
+Images are published to GitHub Container Registry:
+
+- `ghcr.io/miramedia-app/miramedia`
+
+### Tags
+
+- `latest` — latest stable release.
+- `master` — latest commit on the main branch (may be unstable).
+- `X.Y.Z`, `X.Y`, `X` — version pins (e.g. `1.12.0`, `1.12`, `1`).
+- `pr-<number>` — build for a specific pull request.
+
+<Callout type="info">
+
+A `401`/`403` from GHCR is almost always a misconfigured Docker client, not
+an image-permissions issue. Run `docker logout ghcr.io && docker pull
+ghcr.io/miramedia-app/miramedia:latest`, or see
+[GitHub Container Registry troubleshooting](https://stackoverflow.com/questions/74656167/unable-to-pull-image-from-github-container-registry-ghcr).
+
+</Callout>
+
+## Updating
+
+MiraMedia checks GitHub for new releases and can apply them in place. See
+[Updates](../configuration/updates).

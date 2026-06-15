@@ -1,0 +1,50 @@
+---
+title: Overview
+description: "A task-oriented tour of the dashboard — what you click to get things done."
+---
+
+This section is the day-to-day user guide: how to navigate, add media, get
+it downloaded, recover broken imports, play files, and (for admins) run the
+system. For _why_ things work the way they do, see
+[How It Works](/docs/features); for settings, see
+[Configuration](/docs/configuration).
+
+## Logging in
+
+Open the URL you configured as `frontend_url`. Sign in on the **Login** card
+with email + password, or with an OIDC provider button if configured. The
+first-ever account is the bootstrap admin printed in the container log — log
+in and change the password under **My Account**.
+
+## The dashboard layout
+
+A left **sidebar** holds navigation; the top of each page shows a breadcrumb
+and a sidebar toggle.
+
+| Sidebar item                              | Who sees it                    | Purpose                                    |
+| ----------------------------------------- | ------------------------------ | ------------------------------------------ |
+| **Dashboard**                             | everyone                       | Stats, trending, import alerts             |
+| **Shows**                                 | everyone                       | Your TV library                            |
+| **Movies**                                | everyone                       | Your movie library                         |
+| **Requests**                              | everyone (if requests enabled) | Submit / review requests                   |
+| **Torrents**                              | superuser                      | All active downloads + manual add          |
+| **Imports**                               | superuser                      | Fix failed/unmatched imports, library scan |
+| **System ▸ Users/Indexers/Settings/Logs** | superuser                      | Administration                             |
+
+The **bell** icon (top of sidebar, if notifications are enabled) opens
+notifications. The **account avatar** at the bottom opens a menu: My Account,
+Documentation, Support, light/dark theme toggle, Log Out.
+
+## What a new install looks like
+
+With nothing added yet: the Shows/Movies lists say "No TV shows added yet.",
+the Dashboard shows trending carousels (and zeroed stat cards for admins),
+and Torrents/Imports are empty with a hint. Start by
+[adding a show or movie](adding-shows-and-movies).
+
+## Regular user vs. superuser
+
+Adding media directly, downloading, and all system pages are
+**superuser-only**. Regular users browse, play, and (if enabled)
+**Request** media for an admin to approve. See
+[Requesting media](requesting-media).

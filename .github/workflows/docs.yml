@@ -1,0 +1,76 @@
+name: Docs
+
+# Publishes the Next.js static export (fumadocs site at /docs) to GitHub Pages
+# at https://miramedia-app.github.io/miramedia/. The site is served under the
+# `/miramedia` base path, so the build is run with BASE_PATH set accordingly.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Allow one concurrent deployment; cancel in-progress runs for the same ref.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    env:
+      # Project Pages site lives under /<repo>; assets and links must be prefixed.
+      BASE_PATH: /miramedia
+      NODE_ENV: production
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      - name: Generate types (fumadocs source + next typegen)
+        run: pnpm exec fumadocs-mdx && pnpm exec next typegen
+      - name: Build static export
+        run: pnpm build
+      - name: Land root on the docs
+        # The app's `/` redirects to `/dashboard` (needs the backend). On Pages
+        # there is no backend, so point the site root at the docs instead.
+        run: |
+          cat > out/index.html <<'HTML'
+          <!doctype html>
+          <meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=./docs/">
+          <link rel="canonical" href="./docs/">
+          <title>MiraMedia Docs</title>
+          <a href="./docs/">MiraMedia documentation</a>
+          HTML
+          touch out/.nojekyll
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

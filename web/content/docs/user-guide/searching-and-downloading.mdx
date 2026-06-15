@@ -1,0 +1,77 @@
+---
+title: Searching & Downloading
+description: "The download dialog, the Torrents page, and adding a torrent manually."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## The download dialog
+
+Opened by **Search** on a detail page or the magnifier icon on a
+season/episode. Title reflects scope: "Download a Season", "Download a
+Movie", "Download Selected Episodes", etc.
+
+- The header shows what you're searching for.
+- **Quality** and **Codec** chip filters — multi-select toggles built from
+  the configured [quality / codec options](/docs/configuration/scoring). Off
+  = no filter on that axis.
+- **Custom search query** checkbox — when ticked, reveals a free-text input
+  that replaces the automatic query (useful when the auto query misses).
+- TV only: a **Season number** input when not in custom-query mode.
+- **Search** and **Clear filters** buttons.
+- Results table columns: **Title, Quality, Size, Seeders, Score, Indexer,
+  Season** (TV only), and an **Action** column with a **Download** button.
+  Usenet results show `N/A` seeders. Higher **Score** = better per your
+  [scoring rules](/docs/configuration/scoring).
+- Empty: initial state shows "Set any filters above, then run a search.";
+  after a search returns nothing, "No torrents found."
+
+<Callout type="warn">
+
+If a download fails with `409 — A file already exists at that quality + variant`,
+the search dialog can't override it. Use **Add Torrent** (below) to set a
+**Variant tag** and keep multiple versions side by side.
+
+</Callout>
+
+## Add a torrent manually (superuser)
+
+Sidebar → **Torrents** → **Add Torrent**. Three steps:
+
+1. **Input** — paste a `magnet:?xt=urn:btih:…` link **or** upload a
+   `.torrent` file, then **Parse Torrent**.
+2. **Review & Download** — MiraMedia shows parsed Title / Quality /
+   Seasons / Episodes and a list of candidate media with confidence scores.
+   Pick the right match, then set:
+   - **Quality** — `unknown (auto)` (detected from the title) or force
+     `2160p (UHD)` / `1080p (Full HD)` / `720p (HD)` / `480p (SD)`.
+   - **Variant tag** — free text (e.g. `director-cut`, `remux`, `imax`) to
+     keep multiple versions at the same quality side by side.
+   - **Library** — which [library](/docs/configuration/libraries) the file
+     goes under (only shown when libraries exist).
+
+   A live preview shows the destination directory. **Download Torrent**.
+
+3. **Add-new** (via **+ Search for new show/movie** on step 2) — pick a
+   provider (native / TMDB / TVDB), search, and click **Add & select** on a
+   result row to create the show/movie and return to step 2 with it
+   pre-selected.
+
+## The Torrents page (superuser)
+
+A filterable list of every torrent. Columns: **Title** (linked media name +
+torrent title beneath), **Type**, **S / E**, **Quality**, **Progress**,
+**Status**. Default group is by **Status**; group-by options are **Status /
+Media type / Quality**. Search and facet filters (Type / Status / Quality).
+
+Row actions are conditional:
+
+- **Pause** — only when status is _Downloading_.
+- **Resume** — only when _Paused_.
+- **Retry** — for anything except _Finished_.
+- `⋮` → **View Media** (when linked) / **Delete**. The delete dialog removes
+  the download client's working copy (hard-linked library files are preserved)
+  and offers an **Add to deny-list** checkbox to block the release's info-hash
+  from being re-queued.
+
+Bulk: **Pause / Resume / Delete**.

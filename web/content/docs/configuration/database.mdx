@@ -1,0 +1,37 @@
+---
+title: Database
+description: "PostgreSQL connection settings in the [database] section."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+MiraMedia uses PostgreSQL. Connection settings live in `[database]`.
+
+| Key        | Default     | Notes                         |
+| ---------- | ----------- | ----------------------------- |
+| `host`     | `localhost` | The bundled compose uses `db` |
+| `port`     | `5432`      |                               |
+| `user`     | `miramedia` |                               |
+| `password` | `miramedia` | Change this                   |
+| `dbname`   | `miramedia` |                               |
+
+```toml title="config.toml"
+[database]
+host = "db"
+port = 5432
+user = "miramedia"
+password = "your_secure_password"
+dbname = "miramedia"
+```
+
+<Callout type="info">
+
+In Docker Compose, the service/container name is also its hostname, so `db`
+(as in the bundled compose file) resolves to the Postgres container. If you
+change the password here, change it for the `db` service's
+`POSTGRES_PASSWORD` too.
+
+</Callout>
+
+Database migrations run automatically on container startup — there is no
+manual migration step for the Docker deployment.

@@ -1,0 +1,17 @@
+---
+title: API Reference
+description: "Interactive Scalar API reference, generated live from the running backend."
+---
+
+{/*
+This file exists only so the sidebar nav has an "API Reference" entry.
+The /docs/api-reference URL is a RESERVED route: the catch-all docs page
+(src/app/(docs)/docs/[[...slug]]/page.tsx) calls notFound() for this slug
+and a dedicated full-bleed route (src/app/(docs)/docs/api-reference/page.tsx)
+renders an embedded Scalar reference instead. This MDX body is never shown —
+do not put real content here; edit the Scalar route/component instead.
+*/}
+
+The API reference is an interactive [Scalar](https://scalar.com) UI built live
+from the backend's OpenAPI schema (`/openapi.json`), so it always matches the
+exact version and configuration you're running.

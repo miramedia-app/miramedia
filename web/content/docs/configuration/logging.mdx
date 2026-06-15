@@ -1,0 +1,75 @@
+---
+title: Logging
+description: "Console and file logging via environment variables, plus the database-backed log viewer."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+MiraMedia logs to stdout, to a JSON log file, and to the database (so logs
+are browsable in the UI).
+
+## Console & file (environment variables)
+
+These are environment variables, **not** `config.toml` keys:
+
+- `MIRAMEDIA_LOG_FILE` — path to the JSON log file. Default
+  `/app/config/miramedia.log`. The directory must exist and be writable. The
+  file is rotated automatically (10 MB per file, 5 backups kept).
+- `MIRAMEDIA_LOG_LEVEL` — `DEBUG`, `INFO`, `WARNING`, or `ERROR`. Default
+  `INFO`. Sets the root level for the console, file, and database handlers.
+
+```bash
+docker compose logs -f miramedia   # stream the console log
+```
+
+The console handler uses a human-readable line format; the file handler writes
+structured JSON (with an ISO-8601 timestamp and correlation ID per line).
+
+### Development mode raises verbosity
+
+Setting `development = true` (under `[misc]` in `config.toml`, or via the
+General settings tab) lowers the root log level to `DEBUG` end-to-end, so
+`miramedia.*` debug output reaches the console, file, and database. A few noisy
+third-party loggers (`websockets`, `httpcore`, `urllib3`, `requests`, `taskiq`,
+the download-client libraries) are capped at `WARNING` so dev mode doesn't drown
+the useful records in protocol byte-traces. `MIRAMEDIA_LOG_LEVEL=DEBUG` still
+wins on its own; development mode only ever lowers the level, never raises it.
+
+## Database log viewer
+
+`miramedia.*` log records are also written to the database by a background
+handler and shown at **System → Logs** (superuser). The handler captures `INFO`
+and above in production, or `DEBUG` and above when development mode is on. It
+runs on its own thread with a bounded in-memory queue (default 20,000 entries)
+and batches inserts (up to 1,000 records per tick) so application threads are
+never blocked. On a sustained log storm the queue is best-effort: overflowing
+records are dropped and the drop count is surfaced as a single `WARNING`.
+
+The viewer supports pagination and filtering by level, module, search text, and
+time range, plus:
+
+- **Export** — downloads the current (filtered) result set as newline-delimited
+  JSON.
+- **Clear all** — deletes every stored log entry (with a confirm prompt).
+- **Follow** — auto-refreshes every 3 seconds to tail new records.
+- **Group by** level or module.
+
+- Retention is `misc.log_retention_days` (default `30`); older rows are pruned
+  daily at 03:00 by a scheduled cleanup task. See
+  [Paths & Naming](paths-and-naming).
+
+### API
+
+- `GET /api/v1/system/logs` — paginated, filterable by `level`, `module`,
+  `search`, `start`, `end` (`limit` 1–200, default 50; `offset` ≥ 0). Superuser.
+- `GET /api/v1/system/logs/export` — streams the filtered rows as
+  newline-delimited JSON (capped at 100k rows; narrow the filters for more).
+- `DELETE /api/v1/system/logs` — clears all stored logs.
+
+<Callout type="info">
+
+For most troubleshooting, **System → Logs** is the quickest place to look —
+no shell access required. Drop `MIRAMEDIA_LOG_LEVEL=DEBUG` when you need
+the verbose detail.
+
+</Callout>

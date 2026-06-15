@@ -1,0 +1,63 @@
+---
+title: Libraries
+description: "Organize media into multiple named folders and scope scoring rules per library."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Custom libraries let you split media across named folders — e.g. "Live
+Action" vs "Anime" shows, or "4K" vs "Standard" movies — and then scope
+[scoring rule sets](scoring) per library.
+
+## Configuration
+
+Libraries are arrays of tables under `[misc]`. Each entry needs a `name` and a
+`path`.
+
+```toml title="config.toml"
+[[misc.movie_libraries]]
+name = "Action"
+path = "/data/movies/action"
+
+[[misc.movie_libraries]]
+name = "Documentary"
+path = "/data/movies/documentary"
+
+[[misc.show_libraries]]
+name = "Live Action"
+path = "/data/shows/live-action"
+
+[[misc.show_libraries]]
+name = "Anime"
+path = "/data/shows/anime"
+```
+
+<Callout type="warn">
+
+The keys are `[[misc.show_libraries]]` and `[[misc.movie_libraries]]`. An
+older docs example used `tv_libraries` — that is **not** a valid key.
+
+</Callout>
+
+<Callout type="info">
+
+Paths can be anywhere — you are not limited to `/data/shows` or
+`/data/movies`. In Docker the path must be inside a mounted volume. Multiple
+libraries may even point at the same directory if you only want them for
+scoring scope.
+
+</Callout>
+
+## What libraries affect
+
+- **Scoring scope** — a [rule set](scoring) lists the libraries it applies to.
+  Sentinels `ALL_TV` and `ALL_MOVIES` target every TV / movie library.
+- **Download/import target** — when adding a torrent you can choose which
+  library the media goes into.
+- **Library scan** — the [importer](../user-guide/importing-media) walks every
+  configured library root.
+- **Streaming path validation** — only files under a configured root can be
+  streamed.
+
+A show/movie's `library` field records which root it lives under; changing it
+moves where new downloads land.

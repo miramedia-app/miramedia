@@ -1,0 +1,133 @@
+---
+title: Admin Tasks
+description: "The System section: settings, users, indexers, logs. Superuser only."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The **System** group in the sidebar is superuser-only. Non-admins see
+"Admin access required."
+
+## System → Settings
+
+The settings page has a **left vertical tab sidebar** with eleven sections:
+**General, Updates, Metadata, Torrents, Indexers, Scores, Subtitles, Imports,
+Requests, Notifications, Authentication**. A search box filters fields across
+all tabs.
+
+### Editing flow
+
+- Each overridden field gets an **`overridden`** badge (hover for the default
+  value) and a small reset icon that resets just that field.
+- Dirty tabs are marked with a coloured dot next to the tab label.
+- Toolbar: **Save Settings (N)** (N = count of dirty sections), an "N unsaved
+  section(s)" badge, **Reset All**, **Export**, **Import**.
+- **Import** asks via a confirm dialog: **OK** = replace all overrides with
+  the file, **Cancel** = merge. Toast confirms `Settings imported (replace)`
+  or `(merge)`.
+- Footer line: **"Changes apply immediately, no restart required."** Overrides
+  are the live source of truth; `config.toml` provides the file defaults.
+
+### Tab contents (what's worth knowing per tab)
+
+- **General** — 5 cards: General Settings (Frontend URL, CORS, Log Retention,
+  Dev Mode), **Cloudflare Bypass** (Browser Path, Cookie TTL, Impersonation
+  Profile), **Storage Paths** (image / torrent / movie / show dirs),
+  **Libraries** (named Show/Movie roots, reorderable), **Naming** (folder /
+  file format templates with full placeholder reference).
+- **Updates** — Status card (current vs latest version, last-checked, repo,
+  release-notes link, **Check now**, **Apply update** with confirm "Pull the
+  latest image and restart the container? The app will be briefly
+  unavailable."), an Update-settings card (enabled, GitHub repo, check
+  interval, cache TTL, include pre-releases, notify on new version), and an
+  **In-App Apply (Docker)** card (allow in-app apply, image repository, image
+  tag, container name).
+- **Metadata** — Desired Languages combobox, Check Interval, **Native** card
+  with TVmaze + Cinemeta toggles, TMDB (Default Language + Primary
+  Languages), TVDB. Each external provider has a **Test** button.
+- **Torrents** — Completed Downloads / Incomplete Downloads path inputs (with
+  base-prefix chips), **Cleanup after import**, **Continuous download**,
+  **Auto-download interval (hours)**, plus Native Torrents and
+  qBittorrent / Transmission / SABnzbd integration cards (each with **Test**).
+- **Indexers** — Native indexer + Prowlarr + Jackett config (each with
+  **Test**); site CRUD lives on its own page (see below).
+- **Scores** — Minimum/Maximum Seeders, **Preferred / Rejected Languages**,
+  Min / Max Size (MB), Recency Bonus + Decay days; reorderable **Quality
+  Rules** and **Codec Rules** (per-option enable toggle, ≥1 must stay on);
+  **Title Rules**, **Flag Rules**; **Score Rulesets** scoped via custom
+  library names or sentinels `ALL_TV` / `ALL_MOVIES`. A live
+  **`<ScoringPreview>`** at the bottom runs a synthetic title through every
+  rule and shows the breakdown.
+- **Subtitles** — three provider categories: **Free** (Gestdown, TVSubtitles,
+  YIFY Subtitles, OpenSubtitles legacy, BSPlayer), **Account-Based**
+  (OpenSubtitles.com [Recommended], Addic7ed, SubDL, Subsource),
+  **Language-Specific** (NapiProjekt, Subtis, Subtitulamos), plus a Bazarr
+  Integration card with **Test**.
+- **Imports** — Automatic Library Scan (enable + interval hours), Automatic
+  Import on Scan (enable + minimum confidence 0–1 slider), Provider Matching
+  (toggle + max results + auto-pick confidence threshold).
+- **Requests** — Auto-approve user requests, Fulfill Interval, **Native
+  Requests** toggle, **Seerr Integration** (URL + API key + Test).
+- **Notifications** — **Subject Prefix**, **Native Notifications** (in-app
+  bell + read-retention days), Email, Gotify, ntfy, Pushover. Each external
+  provider has a **Test** button.
+- **Authentication** — Session Lifetime (seconds), Email Password Resets,
+  **OpenID Connect** card (enabled, Provider Name, Client ID, Client Secret,
+  Configuration Endpoint, Test).
+
+<Callout type="info">
+
+`config.toml` still works for file-based defaults and env-var overrides — the
+Settings page just makes everything editable from the UI. See
+[Configuration](/docs/configuration) for the underlying schema.
+
+</Callout>
+
+## System → Users
+
+Default landing for the **System** group. Columns: **Email** (with a "You"
+badge on your own row), **Role**, **Last login**, **Verified**, **Status**
+(Active / Inactive). Facets: Role (Admin / Regular), Status, Verified.
+Group-by: Role / Status / Verified.
+
+- **Invite User** — email + "Grant admin privileges" switch. Creates a
+  verified user with a random password and emails them a reset link.
+- **Add User** — email, password, **Active** / **Verified** / **Admin**
+  switches; submit button **Create User**.
+- Per row: **Send password reset** (key icon), **Edit** (True/False radios
+  for Verified/Active/Admin, email, optional new password — "Keep empty to
+  not change the password"; **Save** is a red destructive button), `⋮` →
+  **Delete**.
+- Bulk: **Activate** / **Deactivate**.
+- Your own row has no action buttons and can't be selected — prevents
+  self-lockout.
+
+## System → Indexers
+
+Manages indexer **sites** (preloaded **System** + **Custom** Torznab).
+Columns: **Name** (Cloudflare-protected sites show a shield icon), **URL**
+(link icon opens the mirror manager), **Type** (System / Custom),
+**Priority** (numeric, default 100), **Supports** (Shows / Movies badges),
+**Health** (Healthy / Failed pill with last-test timestamp tooltip),
+**Status** (enabled / disabled).
+
+Actions: Add / edit a site, **Test** connectivity, toggle enabled, set
+priority, manage mirror URLs. Preloaded sites can be disabled or edited but
+not deleted. See [Indexers](/docs/configuration/indexers) and
+[Cloudflare Bypass](/docs/configuration/cloudflare).
+
+## System → Logs
+
+Paginated activity-log viewer over the database-backed `miramedia.*` log,
+written by a background handler — the fastest place to diagnose issues without
+shell access. Filter by **level**, **module**, **search text**, and **date
+range**, and optionally **group by** level or module.
+
+- **Follow** — toggles a 3-second auto-refresh to tail new records live.
+- **Export** — downloads the current filtered view as newline-delimited JSON.
+- **Clear all** — deletes every stored entry (confirm dialog).
+- Captures `INFO`+ in production, or `DEBUG`+ when development mode is on. Rows
+  older than `misc.log_retention_days` (default 30) are pruned daily at 03:00.
+
+See [Logging](/docs/configuration/logging) and
+[Troubleshooting](/docs/troubleshooting).

@@ -1,0 +1,136 @@
+---
+title: Scoring
+description: "How release candidates are filtered, scored, and selected — quality, codec, title, flag, language, and recency rules."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+After indexers return candidates, MiraMedia filters and scores them, then
+picks the highest scorer. This is the equivalent of Sonarr/Radarr Quality,
+Custom, and Release profiles — but as transparent additive scoring.
+
+## The pipeline
+
+For each candidate, in order:
+
+1. **Seeder gate** — drop below `minimum_seeders` / above `maximum_seeders`
+   (Usenet bypasses this).
+2. **Size gate** — drop outside `[min_size_mb, max_size_mb]`.
+3. **Title relevance** — every word of the media title must appear in the
+   release title, or it's dropped.
+4. **Scoring rule sets** — apply title/flag rules from each rule set whose
+   libraries match this media. If a matching rule set drives the score to
+   ≤ 0, the candidate is dropped.
+5. **Quality + codec** — the title must match an enabled quality option **and**
+   an enabled codec option, or it's dropped. The matched option's
+   `score_modifier` is added.
+6. **Language + recency** — rejected language ⇒ −10000, preferred language ⇒
+   +100, plus a recency bonus that decays with age.
+7. Anything still scoring `< 0` is dropped; the rest sort by quality, then
+   score, then seeders/age, then smaller size.
+
+<Callout type="info">
+
+Keywords and flags are matched case-insensitively, on word boundaries.
+
+</Callout>
+
+## Quality options (`[[indexers.quality_options]]`)
+
+Define the quality tiers MiraMedia recognizes. List order is the dropdown
+order and the tie-break priority. At least one must be enabled.
+
+| Field            | Meaning                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------- |
+| `name`           | Display name                                                                                                |
+| `keywords`       | Title keywords that match this tier                                                                         |
+| `score_modifier` | Added to score on match                                                                                     |
+| `enabled`        | Disabling it rejects releases that only match this tier and removes it from the per-show/per-movie dropdown |
+
+Defaults: 4K (UHD) +400, 1080p +300, 720p +200, SD +100.
+
+## Codec options (`[[indexers.codec_options]]`)
+
+Same shape as quality options. Defaults: H.265/HEVC +300, H.264/AVC +200,
+AV1 +100. At least one must be enabled.
+
+## Title rules (`[[indexers.title_scoring_rules]]`)
+
+Adjust score by keywords in the release title. MiraMedia ships with a default
+`avoid_cam` rule that rejects pre-retail sources (cam, screener, telesync,
+telecine, workprint, etc.) — see `config.example.toml` for the full keyword
+list. Disable or customize it from **System → Settings → Scoring**.
+
+```toml
+[[indexers.title_scoring_rules]]
+name = "avoid_cam"
+keywords = ["cam", "camrip", "hdcam", "telesync", "ts", "screener", "scr"]
+score_modifier = -10000
+enabled = true
+```
+
+## Indexer flag rules (`[[indexers.indexer_flag_scoring_rules]]`)
+
+Adjust score by indexer-provided flags (freeleech, nuked, …).
+
+```toml
+[[indexers.indexer_flag_scoring_rules]]
+name = "prefer_freeleech"
+flags = ["freeleech", "freeleech75"]
+score_modifier = 100
+enabled = true
+
+[[indexers.indexer_flag_scoring_rules]]
+name = "reject_nuked"
+flags = ["nuked"]
+score_modifier = -10000
+enabled = true
+```
+
+Set `enabled = false` to disable a rule without deleting it.
+
+## Scoring rule sets (`[[indexers.scoring_rule_sets]]`)
+
+A rule set binds named title/flag rules to one or more libraries.
+
+```toml
+[[indexers.scoring_rule_sets]]
+name = "default"
+libraries = ["ALL_TV", "ALL_MOVIES"]
+rule_names = ["avoid_cam", "reject_nuked", "prefer_freeleech"]
+
+[[indexers.scoring_rule_sets]]
+name = "strict_movies"
+libraries = ["ALL_MOVIES"]
+rule_names = ["avoid_cam", "prefer_freeleech"]
+```
+
+`libraries` accepts custom library names (see [Libraries](libraries)) plus the
+sentinels `ALL_TV` (every TV library) and `ALL_MOVIES` (every movie library).
+
+## Per-media overrides
+
+Each show or movie can restrict allowed qualities/codecs. The behavior is
+tri-state:
+
+- **No override** — the matched quality/codec `score_modifier` is added
+  normally.
+- **"Any"** — kept, but quality/codec contributes no score.
+- **Whitelist** — only the listed qualities/codecs are accepted; everything
+  else is dropped.
+
+## Language and recency
+
+Set under `[indexers]`:
+
+- `preferred_languages` — `+100` when a language word matches.
+- `rejected_languages` — `−10000` (effectively a reject).
+- `recency_bonus` — maximum bonus for a brand-new release; decays linearly to
+  zero over `recency_decay_days`. `0` disables it.
+
+## Tuning with the scoring preview
+
+**System → Settings → Scoring** has a preview that runs a synthetic release
+title through every rule and shows the per-rule breakdown (matched / delta /
+reason) and final total — so you can tune rules without waiting for live
+searches.

@@ -1,0 +1,78 @@
+---
+title: Troubleshooting
+description: "Common issues and how to diagnose them."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info">
+
+Start with the logs. **System → Logs** in the dashboard shows filterable
+backend logs without shell access; `docker compose logs -f miramedia`
+shows the console stream. Set `MIRAMEDIA_LOG_LEVEL=DEBUG` for detail. See
+[Logging](configuration/logging).
+
+</Callout>
+
+## I can't log in
+
+- Make sure you're **logging in**, not signing up.
+- First boot creates a bootstrap admin and prints the credentials to the
+  container log. Find them with `docker compose logs miramedia`.
+- If you've lost access, a superuser can reset another user's password from
+  **System → Users**.
+
+## OAuth / OIDC login fails
+
+- Verify the provider's client id/secret and discovery endpoint.
+- The callback URI must match **exactly**:
+  `{frontend_url}/api/v1/auth/oauth/callback`, including scheme and any path
+  prefix.
+- `misc.frontend_url` must equal the URL you actually open MiraMedia at.
+- See [Authentication](configuration/authentication).
+
+## Hard linking
+
+Hard-linking only works **within one filesystem**. If downloads and the media
+library are on different volumes/mounts, imports fall back to slow copies and
+may fail on disk space. Put `misc.torrent_directory` and the show/movie
+directories on the same volume — see
+[Paths & Naming](configuration/paths-and-naming).
+
+## No torrent search results
+
+- Increase `indexers.timeout_seconds` — slow sites time out and return
+  nothing.
+- Test individual native sites from **System → Indexers**.
+- Check **System → Logs** for read-timeout or provider errors.
+- See [Indexers](configuration/indexers).
+
+## Imports failing or stuck
+
+- Open [Imports](user-guide/importing-media) — items needing a
+  manual pick are in **review**; I/O failures are in **retry**.
+- If you use a qBittorrent category save path, confirm the
+  [path mapping](advanced-features/qbittorrent-category).
+- The scheduler retries due imports automatically with backoff.
+
+## Cloudflare bypass fails / "network service crashed"
+
+On Synology and other hosts with an outdated Docker, Chromium's network
+service can crash because the default seccomp profile blocks the `clone3()`
+syscall. Add `security_opt: [seccomp:unconfined]` to the `api` service (the
+shipped `docker-compose.synology.yaml` already does this). See the
+[Synology guide](installation/synology). If Chromium is OOM-killed on a small
+NAS, disable the bypass with `enabled = false` under `[cloudflare]`.
+
+## Docker image pull errors (401/403)
+
+A `401`/`403` from GHCR is a misconfigured Docker client, not an
+image-permissions issue. Try `docker logout ghcr.io` and re-pull, or see
+[GitHub Container Registry troubleshooting](https://stackoverflow.com/questions/74656167/unable-to-pull-image-from-github-container-registry-ghcr).
+
+<Callout type="info">
+
+Still stuck? [Open an issue](https://github.com/miramedia-app/miramedia/issues)
+with the relevant log output.
+
+</Callout>

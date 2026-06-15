@@ -1,0 +1,235 @@
+# MiraMedia — Synology / NAS deployment.
+#
+# Stack: api (FastAPI on host :8000, serves SPA + REST in one process) +
+# db (postgres :5432, internal). All cross-container traffic stays on the
+# `media` bridge network. Front the api with DSM's built-in reverse proxy
+# if you want HTTPS on a custom hostname.
+#
+# Service keys (`api`/`db`) = short internal DNS / depends_on refs.
+# `container_name:` = the `miramedia-*` host-visible identity shown in
+# `docker ps`, DSM/Portainer, and the docs (`docker logs miramedia-postgres`).
+#
+# Tunables (see .env.example for the full list). The defaults below are
+# sized for ~2GB RAM hosts; uncomment + bump if you have more headroom.
+#   MIRAMEDIA_DB_POOL_SIZE / MIRAMEDIA_DB_MAX_OVERFLOW
+#   MIRAMEDIA_INTERACTIVE_TASK_LIMIT / MIRAMEDIA_BACKGROUND_TASK_LIMIT
+#   MIRAMEDIA_TORRENT_RPC_CONCURRENCY
+#   MIRAMEDIA_THREADPOOL_SIZE
+name: miramedia
+
+services:
+  api:
+    # Locally-built image, loaded on the NAS via `docker load < miramedia-local-amd64.tar.gz`.
+    # Swap to ghcr.io/miramedia-app/miramedia:<tag> once the registry image is published
+    # and the in-app updater will pull from there.
+    # ":local" is the slim image (no Chromium). For the Cloudflare native solver,
+    # build the chromium variant (`--target app-cf -t miramedia:local-cf`) and set
+    # this to `miramedia:local-cf` — or use an external solver, which runs on slim.
+    image: miramedia:local
+    container_name: miramedia
+    # tini reaps reparented Chrome helper processes from the cloudflare bypass.
+    # Without this PID 1 = startup.sh / fastapi, neither of which reaps SIGCHLD
+    # so orphan chrome helpers stack up as <defunct> entries.
+    init: true
+    # UID matches the host owner of /volume1/data/* (1000 in our case).
+    # GID 65536 is the host's `dockergroup` — host ACLs on /volume1/data/*
+    # explicitly grant rwx to that group, so the container needs it as its
+    # primary GID. Without this, ACL evaluation denies writes even when the
+    # POSIX bits look 0777.
+    user: "1000:65536"
+    environment:
+      - MIRAMEDIA_CONFIG_DIR=/app/config
+      # The non-root user needs writable HOME / uv cache locations because the
+      # base image's /home and /root are read-only for everyone else.
+      - HOME=/tmp
+      - UV_CACHE_DIR=/tmp/.cache/uv
+      # Don't write a file log inside /app/config — container manager captures
+      # stdout/stderr and the DB-backed activity log covers in-app needs. Avoids
+      # PermissionError when config dir UID/GID differs from the container user.
+      - MIRAMEDIA_LOG_FILE=/dev/null
+      # NAS-sized concurrency overrides — keep memory + CPU draw modest.
+      # The values below assume DS720+-class hardware (Celeron J4125, 2GB
+      # RAM, spinning rust). Bigger hosts can raise these — see .env.example
+      # for the documented defaults that target multi-user / SSD setups.
+      - MIRAMEDIA_DB_POOL_SIZE=10
+      - MIRAMEDIA_DB_MAX_OVERFLOW=5
+      - MIRAMEDIA_DB_BG_POOL_SIZE=5
+      - MIRAMEDIA_DB_BG_MAX_OVERFLOW=5
+      # Headroom for concurrent to_thread work (request disk scans, mediainfo,
+      # hardlinks, libtorrent RPC, the import sweep). The list-endpoint disk
+      # scans are now capped + cached so this no longer gets saturated; 128
+      # gives burst headroom without much memory cost. Raise toward 200 if RAM
+      # allows.
+      - MIRAMEDIA_THREADPOOL_SIZE=128
+      # TaskIQ two-lane budget. Interactive lane (manual add / scan / resolve)
+      # gets the larger slice so UI actions stay snappy; background lane
+      # (auto-import, metadata refresh, sha1 audit) is capped low so a long
+      # sweep can't starve the UI. Total = 10, same aggregate as the
+      # previous MIRAMEDIA_RECEIVER_MAX_TASKS=10 setting on this NAS profile.
+      - MIRAMEDIA_INTERACTIVE_TASK_LIMIT=8
+      - MIRAMEDIA_BACKGROUND_TASK_LIMIT=2
+      - MIRAMEDIA_TORRENT_RPC_CONCURRENCY=4
+      # SHA1 audit reads multi-GB files in 1MiB chunks — serial on spinning
+      # rust avoids thrashing the head and starving user requests.
+      - MIRAMEDIA_SHA1_CONCURRENCY=1
+      # libmediainfo invocations during bulk import — 2 keeps headroom for
+      # one user-triggered analyse while a scan is fanning out.
+      - MIRAMEDIA_MEDIAINFO_CONCURRENCY=2
+      # Chromium for cloudflare bypass: a single tab already costs ~150MB.
+      # Two concurrent CF challenges on a 2GB NAS = OOM risk.
+      - MIRAMEDIA_CHROMIUM_CONCURRENCY=1
+      - MIRAMEDIA_LOG_POOL_SIZE=3
+    volumes:
+      - /volume1/docker/miramedia/config:/app/config
+      # Poster / metadata image cache — lives alongside config, not in the
+      # media tree, so it survives moves of /volume1/data and isn't backed
+      # up with the (much larger) library.
+      - /volume1/docker/miramedia/images:/app/images
+      # Single mount for everything under /data so all subdirs sit on the
+      # same filesystem inside the container. Hardlinks require source +
+      # dest on one mount; splitting these into separate bind mounts (even
+      # when they live on the same host volume) makes Docker present them
+      # as separate filesystems and the import flow falls back to copying.
+      #
+      # Host dirs to pre-create on the NAS before `docker compose up`
+      # (Docker won't auto-create bind mount sources; container fails to
+      # start with "Bind mount failed: '<path>' does not exist" otherwise):
+      #   /volume1/docker/miramedia/config
+      #   /volume1/docker/miramedia/images
+      #   /volume1/docker/miramedia/postgres
+      #   /volume1/data/media/shows
+      #   /volume1/data/media/movies
+      #   /volume1/data/torrents
+      #
+      # One-liner:
+      #   sudo mkdir -p /volume1/docker/miramedia/{config,images,postgres} /volume1/data/media/{shows,movies} /volume1/data/torrents
+      #
+      # Then in config.toml (auto-created on first run inside
+      # /volume1/docker/miramedia/config/) set the library paths to match:
+      #   show_directory   = "/data/media/shows"
+      #   movie_directory  = "/data/media/movies"
+      #   torrent_directory = "/data/torrents"
+      # (paths are container-side: /volume1/data on the host = /data inside).
+      - /volume1/data:/data
+      # Required for in-app updates (updates.allow_in_app_apply). Read-write
+      # because the apply flow uses the Docker HTTP API to pull a new image
+      # and stop this container so the restart policy recreates it.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - 8000:8000
+      # Native libtorrent backend listen port. Must match
+      # torrents.native.listen_port_start in config.toml (default 6881).
+      - 6881:6881
+      - 6881:6881/udp
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Cold NAS does migrate + libtorrent resume restore before uvicorn binds;
+      # 60s could mark unhealthy mid-startup on spinning rust. 120s covers it.
+      start_period: 120s
+    # Sized for DS720+ (Celeron J4125, 2GB total RAM). DSM keeps ~600MB for
+    # itself; the rest is shared with other Docker services on the host.
+    # If the cloudflare bypass (chromium) trips the OOM killer, disable it
+    # via ``[cloudflare] enabled = false`` in config.toml — or raise this
+    # limit only if the host has spare RAM.
+    deploy:
+      resources:
+        limits:
+          memory: 1200m
+        reservations:
+          memory: 320m
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - media
+    security_opt:
+      - no-new-privileges:true
+      # Synology's Container Manager ships an outdated Docker whose default
+      # seccomp profile rejects the clone3() syscall with EPERM. glibc >= 2.34
+      # (the trixie base image ships 2.41) issues clone3() and does NOT fall
+      # back to clone() on EPERM (only on ENOSYS), so chromium's NetworkService
+      # subprocess crashes on launch ("Network service crashed or was
+      # terminated") and the Cloudflare-bypass DevTools handshake times out.
+      # Disabling seccomp confinement lets clone3() through. Runtime-only — no
+      # image rebuild needed. (Locked-down alternative: a custom profile =
+      # Docker default + clone3 allowlisted, via seccomp:/path/to/profile.json.)
+      - seccomp:unconfined
+    restart: always
+
+  db:
+    # Alpine variant shaves ~150MB off the image — meaningful on a 2GB NAS
+    # where every spare MB helps the page cache.
+    image: postgres:17-alpine
+    container_name: miramedia-postgres
+    # Default 64MB shm is enough for a single-user library; bumping it would
+    # only burn RAM the NAS doesn't have.
+    shm_size: 64mb
+    # Postgres tuned for the 256MB container memory limit below:
+    #   - shared_buffers ~25% of mem limit
+    #   - effective_cache_size ~75% (OS page cache the planner can rely on)
+    #   - max_connections 50 — single-app workload, plenty of headroom
+    #   - jit=off — JIT helps OLAP not OLTP and burns plan time
+    #   - log_min_duration_statement=500 → slow queries hit `docker logs miramedia-postgres`.
+    #   - idle_in_transaction_session_timeout=300000 (5 min): server auto-kills
+    #     leaked sessions where the app holds BEGIN across slow external I/O
+    #     (cloudflare bypass, subliminal, libtorrent). Defense in depth — root
+    #     cause is fixed by short-lived sessions in scheduler code.
+    #   - statement_timeout=60000 (1 min): kills runaway SELECTs / DDL.
+    #   - lock_timeout=10000: fail fast on row/table-lock waits so a stuck
+    #     DDL doesn't queue dashboard reads behind it.
+    #   - tcp_keepalives_* detects dead client peers (NAT timeouts, OOM-killed
+    #     workers) instead of leaving asyncpg sockets half-open until reaped.
+    #   - shared_preload_libraries=pg_stat_statements + the CREATE EXTENSION
+    #     migration enable per-query stats (read via the embedded Scalar docs).
+    #     ~few hundred KB of shared mem — cheap even on the 256MB limit.
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c shared_buffers=64MB
+      -c effective_cache_size=192MB
+      -c work_mem=4MB
+      -c maintenance_work_mem=32MB
+      -c max_connections=50
+      -c wal_buffers=4MB
+      -c checkpoint_completion_target=0.9
+      -c random_page_cost=2.0
+      -c effective_io_concurrency=4
+      -c jit=off
+      -c log_min_duration_statement=500
+      -c idle_in_transaction_session_timeout=300000
+      -c statement_timeout=60000
+      -c lock_timeout=10000
+      -c tcp_keepalives_idle=60
+      -c tcp_keepalives_interval=10
+      -c tcp_keepalives_count=6
+      -c pg_stat_statements.track=all
+    environment:
+      POSTGRES_USER: miramedia
+      POSTGRES_DB: miramedia
+      POSTGRES_PASSWORD: miramedia
+    volumes:
+      - /volume1/docker/miramedia/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+        reservations:
+          memory: 96m
+    networks:
+      - media
+    security_opt:
+      - no-new-privileges:true
+    restart: always
+
+networks:
+  media:
+    name: media
+    driver: bridge

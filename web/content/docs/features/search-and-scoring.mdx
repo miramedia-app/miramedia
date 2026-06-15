@@ -1,0 +1,33 @@
+---
+title: Search & Scoring
+description: "How a search turns into a single chosen release."
+---
+
+When MiraMedia needs a release (continuous download, a request, or a manual
+search), it runs this flow:
+
+1. **Query indexers.** Every enabled provider — the native indexer, Prowlarr,
+   Jackett — is queried in parallel. Native sites are searched concurrently
+   (capped by `max_concurrent_searches`). One failing provider is logged and
+   skipped; it never aborts the search. See
+   [Indexers](/docs/configuration/indexers).
+2. **Filter.** Seeder gates, size gates, and title relevance remove obvious
+   non-matches before any scoring.
+3. **Score.** Library-scoped [rule sets](/docs/configuration/scoring) apply
+   title and flag rules; the matched quality and codec options add their
+   modifiers; language and recency adjust the total. Negative-scoring and
+   rule-set-killed candidates are dropped.
+4. **Rank & pick.** Survivors sort by quality tier, then score, then
+   seeders/age, then smaller size. The top one is sent to the download
+   client.
+
+The full ordering, every rule type, per-media overrides, and the in-app
+**scoring preview** for tuning are documented in
+[Scoring](/docs/configuration/scoring).
+
+## Cloudflare-protected sites
+
+If a native site is behind Cloudflare, the [in-process
+bypass](/docs/configuration/cloudflare) solves the challenge transparently and
+caches the session — no external proxy. The **System → Indexers** test button
+auto-detects and records which sites need it.

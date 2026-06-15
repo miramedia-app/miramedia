@@ -1,0 +1,80 @@
+---
+title: Requests
+description: "The [requests] section: let users request media and have it fulfilled automatically."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Requests let non-admin users ask for movies and shows. Approved requests are
+fulfilled automatically through your configured indexers and download client.
+Requests are **enabled if either the native backend or Seerr is enabled** —
+there is no separate master toggle.
+
+## Shared settings (`[requests]`)
+
+- `auto_approve_users` — when `true`, regular users' requests skip approval.
+  Superusers' requests are always auto-approved. Default `false`.
+- `fulfill_interval_hours` — how often approved requests are checked and
+  auto-downloaded. Default `2`.
+
+## Native backend (`[requests.native]`)
+
+Built-in fulfillment using your indexers + download client. Enabled in the
+shipped `config.example.toml`.
+
+- `enabled`
+
+When a request is created, the server backfills the IMDb id (TMDB/TVDB search
+results don't include it) so the native indexer can fulfill it later.
+
+## Seerr (`[requests.seerr]`) — Overseerr / Jellyseerr
+
+- `enabled` — default `false`.
+- `url` — base URL of your Overseerr/Jellyseerr instance.
+- `api_key` — Seerr API key.
+
+A connectivity test is available in **System → Settings**.
+
+When enabled, Seerr runs **alongside** the native backend (composite
+provider) and stays in two-way sync — it does not replace native
+fulfillment:
+
+- **Pull** — Seerr requests are mirrored into the local request list and
+  fulfilled by the native indexer.
+- **Push** — requests created/approved/declined/deleted in MiraMedia are
+  forwarded to Seerr. IMDb-only requests are resolved to a TMDB id via
+  Seerr's own lookup (no separate TMDB key needed) and cached.
+- **Availability** — once the file exists, the request is marked available
+  in Seerr.
+
+Reconciliation runs on the `fulfill_interval_hours` schedule. If Seerr is
+misconfigured or unreachable it never blocks local actions — the native path
+keeps working and drift heals on the next sync.
+
+<Callout type="info">
+
+Enable both `[requests.native]` and `[requests.seerr]` for the full
+experience: Seerr as the request frontend, the native indexer as the
+fulfillment engine.
+
+</Callout>
+
+## Example
+
+```toml title="config.toml"
+[requests]
+auto_approve_users = false
+fulfill_interval_hours = 2
+
+[requests.native]
+enabled = true
+
+[requests.seerr]
+enabled = false
+url = ""
+api_key = ""
+```
+
+The endpoints are always present in the API for a stable client, but return
+`503` when requests are disabled. See
+[How requests work](../features/requests).

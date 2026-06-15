@@ -1,0 +1,41 @@
+---
+title: Adding Shows & Movies
+description: "Find a title and add it to your library (or request it)."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Add a show or movie
+
+1. Sidebar → **Shows** (or **Movies**), then the **Add Show** / **Add Movie**
+   button. (Shortcut: hover the sidebar item and click **+**.)
+2. The add page opens with **trending** results pre-loaded. Type in
+   _"Search for a show…"_ / _"Search for a movie…"_ to look something up.
+3. Each result card shows poster, year, rating, and an action:
+   - **Add** — (superuser) creates it and jumps to its detail page.
+   - **View** — it's already in your library; opens the detail page.
+   - **Request** — (regular users, if requests enabled) submits a request
+     instead. See [Requesting media](requesting-media).
+
+After adding, you land on the [detail page](managing-a-show) where you trigger
+downloads.
+
+## Sorting and finding existing media
+
+On the Shows/Movies list: a search box ("Search shows…") filters your
+library, and a sort dropdown offers Name / Year / Rating, ascending or
+descending. Click **View** on a poster to open it.
+
+<Callout type="info">
+
+"Add" is superuser-gated in the UI. Regular users only get **Request**. If
+you expected **Add** and see **Request**, you're not a superuser — an admin
+can promote you in **System → Users**.
+
+</Callout>
+
+## If search fails
+
+"Unable to reach the metadata provider. Check your configuration and try
+again." with a **Retry** button means the metadata provider isn't reachable.
+See [Metadata](/docs/configuration/metadata).

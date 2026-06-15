@@ -1,0 +1,84 @@
+---
+title: Imports
+description: "The [imports] section: automatic library scan, auto-import on scan, and provider matching for unmatched candidates."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `[imports]` section controls the library scanner and the **Imports** page
+behavior: how often MiraMedia scans configured library roots for media on
+disk, whether the strongest candidate is imported automatically, and whether
+unmatched directories are augmented with metadata-provider search results.
+For the click-by-click UI, see [Imports](/docs/user-guide/importing-media).
+
+## Automatic library scan
+
+- `auto_scan_enabled` — periodic background scan. Default `false`. Disabled
+  scans still run on demand from the **Scan** button in the UI.
+- `auto_scan_interval_hours` — interval. Default `6`.
+
+The scan walks every configured [library](libraries) root, climbs above
+season folders, honors `.mmignore` markers and remembered ignore paths, and
+feeds [Imports](/docs/user-guide/importing-media). It never touches the
+Movies / Shows pages.
+
+## Auto-import on scan
+
+- `auto_import_on_scan` — without human interaction, create the best-matching
+  media (existing library entry **or** metadata-provider result) and import
+  the directory into it. Default `false`.
+- `auto_import_min_confidence` — only auto-import when the best candidate's
+  confidence is **at or above** this value (0.0–1.0). Default `0.9`. Items
+  that don't clear the threshold stay in **Imports** for a manual pick.
+
+The single highest-scoring candidate wins, even if several clear the
+threshold.
+
+## Provider matching
+
+When a scanned directory has no strong existing-library match, MiraMedia can
+query the configured [metadata providers](metadata) by the detected
+name/year and surface the results as pickable candidates.
+
+- `provider_search_on_scan` — enable provider matching. Default `true`.
+- `provider_search_max_results` — cap on candidate results per item. Default
+  `5`.
+
+## Related `[misc]` keys
+
+These live in `[misc]`, not `[imports]`, but govern the same import surface:
+
+- `misc.auto_pick_confidence_threshold` — when the top candidate's confidence
+  is at or above this value, the **Import** button on a scan row is rendered
+  as the primary action; below it, Import is still available but rendered as
+  secondary so you think twice. Default `0.8`. See
+  [Paths & Naming](paths-and-naming).
+- `misc.import_sweep_interval_minutes` — how often finished downloads are
+  swept and imported (and due failures retried). Default `5`.
+- `misc.cleanup_after_import` — remove a torrent from the download client,
+  with its data, once it's fully imported. Default `true`.
+- `misc.integrity_check_enabled` / `misc.integrity_check_interval_hours` —
+  opt-in SHA1 audit of imported files. Off by default; interval default `168`
+  (weekly). See [Downloads & Imports](/docs/features/downloads-and-imports).
+
+## Example
+
+```toml title="config.toml"
+[imports]
+auto_scan_enabled = true
+auto_scan_interval_hours = 6
+
+auto_import_on_scan = false
+auto_import_min_confidence = 0.9
+
+provider_search_on_scan = true
+provider_search_max_results = 5
+```
+
+<Callout type="warn">
+
+Auto-import is opt-in. Enable it only when you trust your library naming and
+metadata-provider results — anything that clears
+`auto_import_min_confidence` is imported without confirmation.
+
+</Callout>

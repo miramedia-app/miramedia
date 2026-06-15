@@ -1,0 +1,380 @@
+import uuid
+from datetime import UTC, datetime
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi_users.router import get_oauth_router
+from httpx_oauth.oauth2 import OAuth2
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from miramedia.auth.api_tokens import UserApiToken, generate_token
+from miramedia.auth.db import User
+from miramedia.auth.schemas import AuthMetadata, UserRead
+from miramedia.auth.users import (
+    SECRET,
+    CurrentUserDep,
+    SuperuserDep,
+    current_superuser,
+    fastapi_users,
+    invalidate_auth_cache,
+    openid_client,
+    openid_cookie_auth_backend,
+)
+from miramedia.config import MiraMediaConfig
+from miramedia.database import DbSessionDependency
+
+users_router = APIRouter(tags=["users"])
+auth_metadata_router = APIRouter(tags=["openid"])
+
+
+def get_openid_router() -> APIRouter:
+    if openid_client:
+        return get_oauth_router(
+            oauth_client=openid_client,
+            backend=openid_cookie_auth_backend,
+            get_user_manager=fastapi_users.get_user_manager,
+            state_secret=SECRET,
+            associate_by_email=True,
+            is_verified_by_default=True,
+            redirect_url=None,
+        )
+    # this is there, so that the appropriate routes are created even if OIDC is not configured,
+    # e.g. for generating the frontend's openapi client
+    return get_oauth_router(
+        oauth_client=OAuth2(
+            client_id="mock",
+            client_secret="mock",  # noqa: S106
+            authorize_endpoint="https://example.com/authorize",
+            access_token_endpoint="https://example.com/token",  # noqa: S106
+        ),
+        backend=openid_cookie_auth_backend,
+        get_user_manager=fastapi_users.get_user_manager,
+        state_secret=SECRET,
+        associate_by_email=False,
+        is_verified_by_default=False,
+        redirect_url=None,
+    )
+
+
+openid_config = MiraMediaConfig().auth.openid_connect
+
+
+@users_router.get(
+    "/users",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(current_superuser)],
+)
+async def get_all_users(db: DbSessionDependency) -> list[UserRead]:
+    stmt = select(User)
+    result = (await db.execute(stmt)).scalars().unique()
+    return [UserRead.model_validate(user) for user in result]
+
+
+@auth_metadata_router.get("/auth/metadata", status_code=status.HTTP_200_OK)
+def get_auth_metadata() -> AuthMetadata:
+    if openid_config.enabled:
+        return AuthMetadata(oauth_providers=[openid_config.name])
+    return AuthMetadata(oauth_providers=[])
+
+
+# --- Personal API tokens -----------------------------------------------------
+
+
+class ApiTokenRead(BaseModel):
+    id: uuid.UUID
+    name: str
+    preview: str  # last 4 chars of the plaintext token, for disambiguation only
+    created_at: datetime
+    last_used_at: datetime | None
+    expires_at: datetime | None
+
+
+class ApiTokenCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    expires_at: datetime | None = None
+
+
+class ApiTokenCreated(ApiTokenRead):
+    """Response on creation — includes the plaintext token, shown to the user once."""
+
+    token: str
+
+
+@users_router.get(
+    "/users/me/tokens",
+    status_code=status.HTTP_200_OK,
+)
+async def list_my_tokens(
+    db: DbSessionDependency,
+    user: CurrentUserDep,
+) -> list[ApiTokenRead]:
+    rows = (
+        (
+            await db.execute(
+                select(UserApiToken)
+                .where(UserApiToken.user_id == user.id)
+                .order_by(UserApiToken.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [ApiTokenRead.model_validate(row, from_attributes=True) for row in rows]
+
+
+@users_router.post(
+    "/users/me/tokens",
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_my_token(
+    data: ApiTokenCreate,
+    db: DbSessionDependency,
+    user: CurrentUserDep,
+) -> ApiTokenCreated:
+    plaintext, token_hash, preview = generate_token()
+    if data.expires_at is not None and data.expires_at <= datetime.now(UTC):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="expires_at must be in the future",
+        )
+    row = UserApiToken(
+        user_id=user.id,
+        name=data.name.strip(),
+        token_hash=token_hash,
+        preview=preview,
+        expires_at=data.expires_at,
+    )
+    db.add(row)
+    await db.flush()
+    await db.refresh(row)
+    return ApiTokenCreated(
+        id=row.id,
+        name=row.name,
+        preview=row.preview,
+        created_at=row.created_at,
+        last_used_at=row.last_used_at,
+        expires_at=row.expires_at,
+        token=plaintext,
+    )
+
+
+@users_router.delete(
+    "/users/me/tokens/{token_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def revoke_my_token(
+    token_id: uuid.UUID,
+    db: DbSessionDependency,
+    user: CurrentUserDep,
+) -> None:
+    row = await db.get(UserApiToken, token_id)
+    if row is None or row.user_id != user.id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Token not found"
+        )
+    await db.delete(row)
+
+
+# --- Admin: trigger password reset --------------------------------------------------
+
+
+@users_router.post(
+    "/users/{user_id}/password-reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(current_superuser)],
+)
+async def admin_trigger_password_reset(user_id: uuid.UUID) -> None:
+    """Send a password reset email to the targeted user.
+
+    Reuses the existing ``UserManager.forgot_password`` flow so the reset link, token
+    expiry, and email template are identical to the user-initiated path. Superuser only.
+    """
+    from miramedia.auth.users import (  # local import avoids circular dep at import
+        get_async_session_context,
+        get_user_db_context,
+        get_user_manager_context,
+    )
+
+    async with get_async_session_context() as session:
+        async with get_user_db_context(session) as user_db:
+            async with get_user_manager_context(user_db) as user_manager:
+                target = await user_db.get(user_id)
+                if target is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+                    )
+                await user_manager.forgot_password(target)
+
+
+# --- Admin: bulk user updates -------------------------------------------------------
+
+
+class BulkUserUpdate(BaseModel):
+    user_ids: list[uuid.UUID] = Field(min_length=1)
+    is_active: bool | None = None
+
+
+class BulkUserUpdateResult(BaseModel):
+    updated: int
+
+
+@users_router.post(
+    "/users/bulk",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(current_superuser)],
+)
+async def admin_bulk_user_update(
+    body: BulkUserUpdate,
+    db: DbSessionDependency,
+    actor: SuperuserDep,
+) -> BulkUserUpdateResult:
+    """Apply an active/inactive flag to many users at once.
+
+    The acting superuser is filtered out so they can't lock themselves out by
+    deactivating their own account in a bulk sweep.
+    """
+    if body.is_active is None:
+        return BulkUserUpdateResult(updated=0)
+
+    from sqlalchemy import update as sa_update
+
+    target_ids = [uid for uid in body.user_ids if uid != actor.id]
+    if not target_ids:
+        return BulkUserUpdateResult(updated=0)
+
+    result = await db.execute(
+        sa_update(User).where(User.id.in_(target_ids)).values(is_active=body.is_active)
+    )
+    await db.commit()
+    # Bulk update bypasses ``UserManager.on_after_update``; drop cached auth
+    # state for the affected users so deactivation takes effect immediately.
+    for uid in target_ids:
+        invalidate_auth_cache(uid)
+    return BulkUserUpdateResult(updated=result.rowcount or 0)
+
+
+# --- Admin: invite by email --------------------------------------------------------
+
+
+class InviteUserRequest(BaseModel):
+    email: str
+    is_superuser: bool = False
+
+
+class InviteUserResponse(BaseModel):
+    user_id: uuid.UUID
+    email: str
+    invite_email_sent: bool
+
+
+@users_router.post(
+    "/users/invite",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(current_superuser)],
+)
+async def admin_invite_user(body: InviteUserRequest) -> InviteUserResponse:
+    """Create a pending user with a random password and email them a reset link.
+
+    Reuses ``forgot_password`` so the recipient can pick their own password through
+    the existing reset flow. Returns the new user id; the email is best-effort.
+    """
+    import secrets as _secrets
+
+    from sqlalchemy.exc import IntegrityError
+
+    from miramedia.auth.schemas import UserCreate
+    from miramedia.auth.users import (
+        get_async_session_context,
+        get_user_db_context,
+        get_user_manager_context,
+    )
+
+    async with get_async_session_context() as session:
+        async with get_user_db_context(session) as user_db:
+            async with get_user_manager_context(user_db) as user_manager:
+                try:
+                    new_user = await user_manager.create(
+                        UserCreate(
+                            email=body.email,
+                            password=_secrets.token_urlsafe(16),
+                            is_active=True,
+                            is_verified=True,
+                            is_superuser=body.is_superuser,
+                        )
+                    )
+                except IntegrityError as exc:
+                    raise HTTPException(
+                        status_code=409, detail="A user with that email already exists"
+                    ) from exc
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                    ) from exc
+
+                email_sent = True
+                try:
+                    await user_manager.forgot_password(new_user)
+                except Exception:
+                    email_sent = False
+                return InviteUserResponse(
+                    user_id=new_user.id,
+                    email=new_user.email,
+                    invite_email_sent=email_sent,
+                )
+
+
+# --- Admin: create user directly --------------------------------------------------
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    is_active: bool = True
+    is_superuser: bool = False
+    is_verified: bool = True
+
+
+@users_router.post(
+    "/users/create",
+    response_model=UserRead,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(current_superuser)],
+)
+async def admin_create_user(body: CreateUserRequest) -> User:
+    """Create a user honoring the active/verified/superuser flags.
+
+    The built-in ``/auth/register`` route calls ``user_manager.create`` with
+    ``safe=True``, which silently strips ``is_active``/``is_superuser``/
+    ``is_verified`` from the payload. Admin creation must respect those switches,
+    so this endpoint creates with the default ``safe=False`` (same as invite).
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    from miramedia.auth.schemas import UserCreate
+    from miramedia.auth.users import (
+        get_async_session_context,
+        get_user_db_context,
+        get_user_manager_context,
+    )
+
+    async with get_async_session_context() as session:
+        async with get_user_db_context(session) as user_db:
+            async with get_user_manager_context(user_db) as user_manager:
+                try:
+                    return await user_manager.create(
+                        UserCreate(
+                            email=body.email,
+                            password=body.password,
+                            is_active=body.is_active,
+                            is_verified=body.is_verified,
+                            is_superuser=body.is_superuser,
+                        )
+                    )
+                except IntegrityError as exc:
+                    raise HTTPException(
+                        status_code=409, detail="A user with that email already exists"
+                    ) from exc
+                except Exception as exc:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                    ) from exc

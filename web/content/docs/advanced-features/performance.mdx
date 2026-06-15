@@ -1,0 +1,105 @@
+---
+title: Performance Tuning
+description: "Sizing, multi-worker deployments, observability, and the indexes that keep large libraries fast."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+MiraMedia runs comfortably on a single host. These knobs help you size it for
+your library and scale it out when one process is not enough. The concurrency
+and pool variables referenced here are documented in full on the
+[Environment Variables](environment-variables#performance--concurrency) page —
+this guide covers how to combine them.
+
+## Resource sizing
+
+Starting points for a single-host Docker install. Lower the concurrency on a
+small NAS, raise it on bigger hardware.
+
+| Library size | API memory | `MIRAMEDIA_DB_POOL_SIZE` | `MIRAMEDIA_DISK_SCAN_CONCURRENCY` | `MIRAMEDIA_TORRENT_RPC_CONCURRENCY` |
+| ------------ | ---------- | ------------------------ | --------------------------------- | ----------------------------------- |
+| < 500 titles | 2 GB       | 20                       | 8                                 | 10                                  |
+| 500–5k       | 4 GB       | 30                       | 6                                 | 8                                   |
+| 5k+          | 8 GB+      | 40                       | 4                                 | 6                                   |
+
+## Multi-worker API
+
+A single Uvicorn worker is the default and is right for most installs. To run
+several worker processes:
+
+1. Set `MIRAMEDIA_WEB_WORKERS=N` on the API service.
+2. Set `MIRAMEDIA_SCHEDULER_DISABLED=true` on the API workers so they do not
+   each run the scheduler.
+3. Run the scheduler in a dedicated sidecar:
+   `python -m miramedia.scheduler_entrypoint` (see `docker-compose.yaml`).
+4. The Postgres event bridge powers SSE across workers and is enabled by
+   default — leave `MIRAMEDIA_EVENT_BRIDGE_DISABLED` unset.
+
+<Callout type="warn">
+
+On a NAS keep `MIRAMEDIA_WEB_WORKERS=1`. Extra workers multiply memory and DB
+connections; the concurrency tunables get you further on small hardware.
+
+</Callout>
+
+## Migrations
+
+Performance schema changes ship as normal migrations — apply them with the rest:
+
+```bash
+alembic upgrade head
+```
+
+Revision `i6j7k8l9m0n1` adds denormalized download counters, the import-queue
+index, and search indexes. Revision `j7k8l9m0n1o2` adds the BRIN index on
+activity logs.
+
+## Observability
+
+- **Prometheus** — `GET /api/v1/metrics` (scoped under the API prefix so
+  reverse-proxy ACLs can gate it).
+- **Slow queries** — statements over 500 ms are logged; `docker logs
+miramedia-postgres`.
+- **`pg_stat_statements`** — enabled in the compose Postgres config.
+- **Ops summary** — `GET /api/v1/ops/summary` (superuser).
+
+## Library state denormalization
+
+Download progress and import state are denormalized so list views avoid
+expensive joins. They refresh automatically on status changes. Set
+`MIRAMEDIA_LIBRARY_WATCHER=true` to add a periodic refresh loop (interval via
+`MIRAMEDIA_LIBRARY_WATCHER_INTERVAL`, default 120 s) as a safety net.
+
+## Import queue index
+
+The `import_queue_item` table powers SQL-side pagination on
+`/api/v1/imports`. Rows refresh on per-torrent import-status changes and on
+scan-cache updates (debounced full rebuild), so the Imports page stays fast no
+matter the backlog size.
+
+## Activity logs
+
+- The nightly `cleanup_old_logs_task` prunes rows older than
+  `misc.log_retention_days` (default 30). See [Logging](../configuration/logging).
+- A BRIN index on `activity_log.timestamp` keeps time-range scans cheap.
+
+## Streaming
+
+- **Direct play** — MP4 / M4V / WebM / MOV stream over HTTP range requests in
+  the browser.
+- **Other containers** — `/probe` returns an HLS playlist URL; ffmpeg
+  transcodes once to a cached HLS bundle under `MIRAMEDIA_HLS_CACHE` (default
+  `/app/images/hls`). `ffmpeg` must be present in the API image.
+- Playback uses [Mediabunny](https://mediabunny.dev) `UrlSource` + HLS formats
+  in the web player: lazy segment fetches, no full-file download, working in
+  Chrome and Firefox (where native `<video>` cannot play `.m3u8`).
+
+See [Streaming](../features/streaming) for the user-facing details.
+
+## Regenerate OpenAPI types
+
+Frontend API types are generated from the running backend:
+
+```bash
+cd web && pnpm openapi   # API must be running on :8001
+```

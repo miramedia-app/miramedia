@@ -1,0 +1,38 @@
+---
+title: Users & Auth
+description: "Sessions, the bootstrap admin, superusers, API tokens, and OIDC."
+---
+
+Authentication settings live in [Authentication](/docs/configuration/authentication);
+this page covers the behavior.
+
+## First login
+
+On first start, with an empty user table, MiraMedia creates a superuser
+and prints the credentials to the container log. Log in, change the password,
+then manage everyone else from **System → Users**.
+
+## Roles
+
+- **Regular users** can browse, stream, and (if enabled) submit
+  [requests](requests).
+- **Superusers** can add/remove media, manage downloads and imports, edit
+  indexer sites, change settings, and manage users. Most write endpoints are
+  superuser-only.
+
+Superuser status is a flag toggled in the UI. The acting superuser is
+filtered out of bulk user updates so you can't accidentally lock yourself
+out. Superusers can also invite users and trigger password resets.
+
+## API tokens
+
+Each user can mint personal API tokens (create / list / revoke) from their
+account settings — use these for scripting against the
+[API](/docs/api-reference).
+
+## OpenID Connect
+
+When OIDC is enabled, a provider button appears on the login page. Accounts
+are linked by email and treated as verified. The callback URI must be
+registered exactly with your provider — see
+[Authentication](/docs/configuration/authentication#redirect-uri).

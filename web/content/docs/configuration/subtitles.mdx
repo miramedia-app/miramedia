@@ -1,0 +1,107 @@
+---
+title: Subtitles
+description: "The [subtitles] section: native multi-provider search and optional Bazarr integration."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+MiraMedia can fetch subtitles automatically. Subtitles are **enabled if
+either the native search or Bazarr is enabled** — there is no separate master
+toggle.
+
+## Shared settings (`[subtitles]`)
+
+- `desired_languages` — ISO 639-1 codes to fetch. Default `["en"]`.
+
+## Native search (`[subtitles.native]`)
+
+Works out of the box. Searches several providers in the languages you want.
+
+- `enabled` — default `true`.
+- `scan_interval_hours` — how often missing subtitles are scanned for. Default
+  `6`. The scan job only runs when subtitles are enabled and native search is
+  enabled.
+
+### Providers
+
+Each provider is its own table, e.g. `[subtitles.native.gestdown]`, with
+`enabled` plus optional `username` / `password` / `api_key`.
+
+**Credential-free, enabled by default:** `gestdown`, `tvsubtitles`,
+`yifysubtitles`, `subtitlecat`, `subf2m`, `isubtitles`, `my_subs`,
+`embeddedsubtitles`.
+
+These need no account. `subf2m` is the Subscene successor, and the keyless
+scrapers (`subtitlecat`, `subf2m`, `isubtitles`, `my_subs`) cover broad,
+multi-language web sources. `embeddedsubtitles` is special: it extracts
+subtitle tracks already embedded in the local video file via ffmpeg, so it
+works fully offline.
+
+**Account required, off by default** (set credentials and `enabled = true`):
+`opensubtitlescom`, `addic7ed`, `subdl`, `subsource`.
+
+**Language-specific, off by default:** `napiprojekt`, `subtis`,
+`subtitulamos`.
+
+<Callout type="info">
+
+`subsource` requires an account and is **off by default**, even though older
+example configs showed it enabled.
+
+</Callout>
+
+<Callout type="warn">
+
+The legacy `opensubtitles` (XML-RPC, anonymous login no longer works) and
+`bsplayer` (dead servers) providers have been **removed**. If your
+`config.toml` still has `[subtitles.native.opensubtitles]` or
+`[subtitles.native.bsplayer]` sections, they are automatically stripped on
+load — but you should delete them. Use `opensubtitlescom` instead.
+
+</Callout>
+
+## Bazarr (`[subtitles.bazarr]`)
+
+Optional external integration, an alternative to native search.
+
+- `enabled` — default `false`.
+- `url`
+- `api_key`
+
+## Example
+
+```toml title="config.toml"
+[subtitles]
+desired_languages = ["en"]
+
+[subtitles.native]
+enabled = true
+scan_interval_hours = 6
+
+# Keyless providers (enabled by default — no account needed)
+[subtitles.native.gestdown]
+enabled = true
+
+[subtitles.native.subf2m]
+enabled = true
+
+# Extracts subtitle tracks embedded in the video file (offline)
+[subtitles.native.embeddedsubtitles]
+enabled = true
+
+# Account-required provider (off by default)
+[subtitles.native.opensubtitlescom]
+enabled = false
+username = ""
+password = ""
+api_key = ""
+
+[subtitles.bazarr]
+enabled = false
+url = ""
+api_key = ""
+```
+
+Subtitle language badges appear on movie and season detail pages. Subtitles
+are also streamable in the browser player, with SRT converted to WebVTT on
+the fly — see [Streaming](../features/streaming).

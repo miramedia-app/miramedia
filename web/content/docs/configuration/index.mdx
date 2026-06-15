@@ -1,0 +1,93 @@
+---
+title: Overview
+description: "MiraMedia is configured with a single TOML file. Every value can also be set via environment variables."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+All backend settings live in one file: `config.toml`. The shipped
+`config.example.toml` documents every option inline and is copied into place
+on first boot if no config exists.
+
+## File location
+
+By default the config is read from `/app/config/config.toml`. In the standard
+Docker setup that path is bind-mounted from `./config/` on the host
+(`./config:/app/config`).
+
+Two environment variables change the location:
+
+- `MIRAMEDIA_CONFIG_FILE` — full path to the TOML file. Takes precedence over everything.
+- `MIRAMEDIA_CONFIG_DIR` — directory containing `config.toml` (default `/app/config`).
+
+These two control _where_ the config is read from, so they are read directly
+from the environment at startup.
+
+## Secrets and environment variables
+
+Every config value can be overridden by an environment variable. The rule:
+uppercase the path, join sections with `__`, and prefix with `MIRAMEDIA_`.
+
+```toml
+[auth]
+token_secret = "your-secret"
+
+[auth.openid_connect]
+client_secret = "from-provider"
+```
+
+becomes
+
+```text
+MIRAMEDIA_AUTH__TOKEN_SECRET=your-secret
+MIRAMEDIA_AUTH__OPENID_CONNECT__CLIENT_SECRET=from-provider
+```
+
+Environment variables **override** the TOML file (precedence, highest to
+lowest: process env → `.env` → TOML file). Use them for secrets so credentials
+stay out of `config.toml`.
+
+<Callout type="warn">
+
+Config-value overrides use the `MIRAMEDIA_` prefix with `__` nesting. Some
+operational variables also take the prefix (`MIRAMEDIA_CONFIG_DIR`,
+`MIRAMEDIA_CONFIG_FILE`, `MIRAMEDIA_LOG_FILE`), while a few are bare (`PORT`,
+`BASE_PATH`). The names are not uniform — see
+[Environment Variables](../advanced-features/environment-variables).
+
+</Callout>
+
+## Settings UI vs. file
+
+Some settings can also be edited from **System → Settings** in the dashboard.
+Those overrides are stored in the database and applied on top of the file at
+startup. Schedule intervals (auto-download, subtitle scan, request fulfil,
+update check) hot-reload when you save in the UI; most other changes take
+effect on the next restart.
+
+<Callout type="info">
+
+When in doubt, edit `config.toml` and restart. The file is the source of
+truth; the UI is a convenience layer on top of it.
+
+</Callout>
+
+## Sections
+
+| Section                                      | Page                                 |
+| -------------------------------------------- | ------------------------------------ |
+| `[misc]` — paths, naming, cleanup, intervals | [Paths & Naming](paths-and-naming)   |
+| `[database]`                                 | [Database](database)                 |
+| `[auth]`                                     | [Authentication](authentication)     |
+| `[torrents]`                                 | [Download Clients](download-clients) |
+| `[indexers]` providers                       | [Indexers](indexers)                 |
+| `[indexers]` scoring                         | [Scoring](scoring)                   |
+| `[metadata]`                                 | [Metadata](metadata)                 |
+| `[subtitles]`                                | [Subtitles](subtitles)               |
+| `[requests]`                                 | [Requests](requests)                 |
+| `[notifications]`                            | [Notifications](notifications)       |
+| `[[misc.*_libraries]]`                       | [Libraries](libraries)               |
+| `[imports]`                                  | [Imports](imports)                   |
+| `[updates]`                                  | [Updates](updates)                   |
+| logging                                      | [Logging](logging)                   |
+| `[cloudflare]`                               | [Cloudflare Bypass](cloudflare)      |

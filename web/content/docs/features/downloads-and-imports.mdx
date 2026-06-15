@@ -1,0 +1,95 @@
+---
+title: Downloads & Imports
+description: "From a chosen release to organized files — and how broken imports recover."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Download → link → import
+
+1. The chosen release is sent to the active [download
+   client](/docs/configuration/download-clients) (native, qBittorrent,
+   Transmission, or SABnzbd).
+2. A file record is created linking the download to the episode/movie.
+   Duplicates (same media + quality + variant) are skipped.
+3. When the download finishes, the import pipeline runs on the next sweep
+   (every `misc.import_sweep_interval_minutes`, default 5). You can also import
+   on demand from the UI.
+
+## Import pipeline
+
+- Filenames are parsed with `guessit` (plus anime-aware fallbacks): season /
+  episode (`S01E01`, `1x01`, absolute numbering), movie video selection,
+  subtitle language + forced/SDH flags.
+- Optional mediainfo analysis reads the true height/codec/HDR; otherwise the
+  filename is used.
+- Files are **hard-linked** into the library folder. Same-filesystem links
+  are instant and idempotent (re-running is safe). Cross-filesystem falls
+  back to a copy with a free-space check.
+- Each file gets a per-file status: `imported`, `pending`, `failed_no_match`,
+  `failed_io`, or `ambiguous`.
+- Imported files are keyed by `quality` + a free-form `variant` (which
+  together drive the on-disk filename suffix), so multiple qualities/variants
+  of the same episode or movie can coexist.
+- If `misc.cleanup_after_import` is on (default), a fully-imported torrent is
+  removed from the client with its data.
+
+## Integrity audit (optional)
+
+Off by default. When `misc.integrity_check_enabled` is on, every newly
+imported file gets a SHA1 stored on its record, and a periodic task re-hashes
+imported files and logs a WARNING (plus stamps the file's import error) on any
+mismatch. The audit runs every `misc.integrity_check_interval_hours` (default
+168, i.e. weekly). Hashing reads files in 1 MiB chunks; it roughly doubles the
+disk read cost of each import, which is why it's opt-in.
+
+<Callout type="warn">
+
+Hard-linking only works within one filesystem. Keep downloads and the media
+library on the same volume — otherwise every import is a slow full copy.
+
+</Callout>
+
+## Imports
+
+`/dashboard/imports` (superuser) is the recovery surface. Filter by
+**Status** facet (Review / Retry / Done) and **Type** facet (Download /
+Scan); group by either:
+
+- **Review** — ambiguous or unmatched items, plus library-scan candidates.
+  Pick the correct destination and confirm.
+- **Retry** — I/O failures or items that hit the attempt cap. The scheduler
+  also retries due items automatically with exponential backoff (1, 2, 4 …
+  up to 120 min).
+- **Done** — fully imported items.
+
+The dashboard shows a banner when failed/ambiguous imports exist. For the
+full click-through walkthrough see
+[Imports](/docs/user-guide/importing-media).
+
+## Library scan
+
+The scanner walks every configured [library](/docs/configuration/libraries)
+root, climbs above season folders, and surfaces on-disk media that isn't
+matched yet — honoring `.mmignore` markers and remembered ignore paths.
+Trigger it from **Imports**. This is how you
+[import an existing library](/docs/user-guide/importing-media).
+
+## Manual add
+
+Superusers can add a magnet link or `.torrent` file from **Torrents → Add
+Torrent**. MiraMedia parses it, fuzzy-matches it to candidate media, and
+links it to the one you choose (with an optional library override).
+
+## Power tools
+
+- **Match confidence** — scan and manual-add candidates show a confidence
+  percentage (word overlap + year boost) so you can trust or override the
+  top match at a glance.
+- **Dry-run import** — preview an import plan (which files map where) without
+  touching disk before committing.
+- **Bulk re-import** — select many failed/partial rows on the Imports page
+  and retry them in one action.
+- **Move library** — relink an existing show or movie into a different
+  [library](/docs/configuration/libraries) root after the fact; files move
+  and records are repointed.

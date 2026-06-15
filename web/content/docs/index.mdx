@@ -1,0 +1,61 @@
+---
+title: Introduction
+description: "A self-hosted PVR for movies and TV shows — track your library, find releases, download, and import automatically."
+---
+
+MiraMedia is a self-hosted media manager for movies and TV shows. It tracks
+your library, knows what's missing, finds release candidates through your
+configured indexers, sends them to a download client, and imports finished
+downloads into a clean, predictable folder layout. Subtitles, metadata,
+requests, streaming, and notifications round out the rest.
+
+It is opinionated where it matters and configurable where it counts: sensible
+defaults out of the box, with deep tuning available for scoring, naming,
+language preferences, and external integrations. If you've used Sonarr and
+Radarr, think of MiraMedia as both of them in a single app.
+
+## Core capabilities
+
+- **TV and movies** — track shows season-by-season and episode-by-episode,
+  with continuous download for upcoming releases.
+- **Native indexers** — direct queries to popular public sites built in (YTS,
+  EZTV, The Pirate Bay, 1337x, TorrentGalaxy, LimeTorrents, Nyaa), plus
+  Prowlarr/Jackett and custom Torznab. Integrated Cloudflare bypass — no
+  external proxy required.
+- **Native torrent client** — a libtorrent-based client is built in, with an
+  optional incomplete/completed folder split. External clients (qBittorrent,
+  Transmission, SABnzbd) work just as well.
+- **Scoring rules** — quality, codec, title, flag, language and recency
+  scoring, with library-scoped rule sets so a 4K library can score
+  differently than an anime library.
+- **Subtitles** — native search across several free and account-based
+  providers; optional Bazarr integration.
+- **Metadata** — TVmaze + Cinemeta out of the box (no API key), TMDB and TVDB
+  optional.
+- **Requests** — users request media; superusers auto-approve, approved
+  requests are fulfilled automatically. Optional two-way Overseerr/Jellyseerr
+  sync.
+- **Streaming** — play movies and episodes in the browser, with on-the-fly
+  subtitle conversion.
+- **Imports** — failed, ambiguous, and unmatched imports surface in one
+  place for manual mapping or retry. A library scanner pulls in media already
+  on disk.
+- **Notifications** — in-app bell, email, Gotify, ntfy, Pushover.
+- **Auto-update** — checks GitHub for new releases and can apply them in place
+  via the Docker socket.
+
+## Where to next
+
+- **[Quick Start](/docs/quick-start)** — the fastest path from zero to a
+  running instance.
+- **[Installation](/docs/installation)** — Docker Compose deployment.
+- **[Using the App](/docs/user-guide)** — a click-by-click tour of the
+  dashboard.
+- **[Imports](/docs/user-guide/importing-media)** — bring an existing library in
+  without re-downloading, and recover failed imports.
+- **[Configuration](/docs/configuration)** — every `config.toml` section
+  explained.
+- **[How It Works](/docs/features)** — the search, scoring, and import
+  pipelines in plain terms.
+- **[Troubleshooting](/docs/troubleshooting)** — common issues and how to dig
+  into logs.

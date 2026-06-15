@@ -1,0 +1,14 @@
+{
+  "title": "Using the App",
+  "pages": [
+    "index",
+    "adding-shows-and-movies",
+    "managing-a-show",
+    "searching-and-downloading",
+    "requesting-media",
+    "importing-media",
+    "playing-media",
+    "account-and-notifications",
+    "admin-tasks"
+  ]
+}

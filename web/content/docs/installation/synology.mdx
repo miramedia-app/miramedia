@@ -1,0 +1,69 @@
+---
+title: Synology / NAS
+description: "Run MiraMedia on a Synology NAS or other low-RAM Docker host."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A dedicated `docker-compose.synology.yaml` targets Synology DSM (and similar
+low-RAM NAS hosts). It differs from the standard compose in four ways that
+matter on a NAS.
+
+## What's different
+
+- **Non-root `user:`** — runs as `user: "1000:65536"` so files land with the
+  right owner and the host's `dockergroup` ACLs on `/volume1/data/*` grant
+  write access. Adjust the UID/GID to match your share's owner and DSM's
+  Docker group. `HOME=/tmp` and `UV_CACHE_DIR=/tmp/.cache/uv` give the
+  non-root user writable cache locations.
+- **`seccomp:unconfined`** — Synology's Container Manager ships an outdated
+  Docker whose default seccomp profile rejects the `clone3()` syscall. glibc
+  2.41 (the trixie base image) issues `clone3()` and does **not** fall back,
+  so Chromium's network service crashes and the Cloudflare bypass fails.
+  `security_opt: [seccomp:unconfined]` (a runtime flag, no image rebuild)
+  fixes it. A locked-down alternative is a custom profile = the Docker default
+  with `clone3` allowlisted.
+- **NAS-tuned concurrency** — lower DB pools, task limits, threadpool, and
+  `MIRAMEDIA_SHA1_CONCURRENCY=1` / `MIRAMEDIA_CHROMIUM_CONCURRENCY=1`, sized for
+  ~2 GB RAM. See [Environment Variables](/docs/advanced-features/environment-variables)
+  and `.env.example` for what each knob does.
+- **Absolute `/volume1` bind mounts** so files live on the NAS volume, not in
+  the Docker layer.
+
+## Prepare host directories
+
+Bind-mount sources must exist before `docker compose up`, or the container
+fails with a "bind mount does not exist" error:
+
+```bash
+sudo mkdir -p /volume1/docker/miramedia/{config,images,postgres} \
+              /volume1/data/media/{shows,movies} /volume1/data/torrents
+```
+
+Then in `config.toml` (auto-created under
+`/volume1/docker/miramedia/config/` on first run) set the **container-side**
+library paths to match:
+
+```toml title="config.toml"
+[misc]
+show_directory    = "/data/media/shows"
+movie_directory   = "/data/media/movies"
+torrent_directory = "/data/torrents"
+```
+
+`/volume1/data` on the host maps to `/data` inside the container.
+
+## Image source
+
+The Synology compose references `image: miramedia:local`, loaded on the NAS
+via `docker load < miramedia-local-amd64.tar.gz`. Switch it to
+`ghcr.io/miramedia-app/miramedia:<tag>` once you want the in-app updater to
+pull published images.
+
+<Callout type="warn">
+
+If Chromium trips the OOM killer on a small NAS, disable the Cloudflare bypass
+with `enabled = false` under the `[cloudflare]` section in `config.toml`, or
+raise the container memory limit only if the host has spare RAM.
+
+</Callout>

@@ -1,0 +1,74 @@
+---
+title: Managing a Show or Movie
+description: "The detail page: seasons/episodes, wanted vs. skipped, downloads, torrents, per-title settings."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The detail page is where you control a single title. Most write actions are
+superuser-only.
+
+## Header actions
+
+- **Search** (superuser) — open the
+  [download dialog](searching-and-downloading) to find releases.
+- **Subtitles** (superuser, when subtitles are enabled) — fetch subtitles for
+  the whole title.
+- **Settings** (superuser) — opens the settings sheet (below).
+- **Delete** (superuser) — type `delete` to confirm; checkboxes let you **Also
+  delete files on disk** and **Also delete torrents from download clients**.
+- **Request** — shown to regular users (when requests are enabled) in place of
+  the superuser actions.
+
+To make MiraMedia download a season/episode, mark items **wanted** by clicking
+their status badge (or use the bulk **Mark Wanted** bar), then run **Search**
+or let continuous download pick them up. There is no single "download
+everything" button.
+
+## Downloads tree (TV)
+
+Shows expand **Season → Episode → Files/Subtitles**:
+
+- A magnifier **Search** icon on a season/episode opens the download dialog
+  scoped to it.
+- A subtitle-search button fetches subtitles for that item.
+- Click a season/episode **status badge** to toggle **wanted ⇄ skipped**
+  (toast confirms "Season marked as wanted." etc.). Skipped items are not
+  auto-downloaded.
+- File rows show a **Play** icon when imported (see
+  [Playing media](playing-media)) and a `⋮` → **Delete**.
+- A bulk selection bar offers **Mark Wanted**, **Skip**, **Delete Files**.
+
+Movies are the same idea without seasons: a file list with quality/language
+badges, Play on imported files, and bulk delete.
+
+The season URL redirects back to the parent show — everything lives in this
+one tree.
+
+## Torrents section (superuser)
+
+Per-torrent **Pause / Resume / Retry** icons, a progress bar, and
+`⋮` → **Delete**. A bulk bar gives **Pause All / Start All / Delete**.
+
+## Per-title settings sheet (superuser)
+
+The **Settings** button opens a side sheet:
+
+- **Preferred Quality / Preferred Codec** — three modes per axis: **Default**
+  (use global), **Any** (no scoring contribution), or pick **one or more
+  specific values** (multi-select whitelist). Drives
+  [scoring](/docs/configuration/scoring) for this title only.
+- **Subtitle Languages** — override the global list for this title.
+- **Continuous Download** — Use global default / On / Off.
+- **Skip this show** / **Skip this movie** switch — stop auto-downloading
+  entirely.
+- **Library** combobox + **Move** — move the title to another
+  [library](/docs/configuration/libraries).
+- **Refresh Metadata** — re-pull metadata now.
+
+<Callout type="info">
+
+"Wanted" means MiraMedia may download it; "skipped" means hands off. Toggle
+at season or episode granularity by clicking the status badge.
+
+</Callout>

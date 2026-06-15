@@ -1,0 +1,12 @@
+{
+  "title": "How It Works",
+  "pages": [
+    "index",
+    "tv-and-movies",
+    "search-and-scoring",
+    "downloads-and-imports",
+    "streaming",
+    "requests",
+    "users-and-auth"
+  ]
+}

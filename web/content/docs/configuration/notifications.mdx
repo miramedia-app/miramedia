@@ -1,0 +1,98 @@
+---
+title: Notifications
+description: "The [notifications] section: in-app notifications plus email, Gotify, ntfy, and Pushover."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Notifications fire on download/import milestones and missing-source errors,
+and optionally when a new release is available. There are two layers: the
+**in-app** notification center (the bell), and **external** providers.
+
+## Top-level (`[notifications]`)
+
+- `subject_prefix` — string prepended to every external notification title.
+  Re-read on each send (no restart needed). Default empty.
+
+## In-app (`[notifications.native]`)
+
+The bell icon and the `/dashboard/notifications` page.
+
+- `enabled` — default `true`.
+- `retention_days` — read notifications older than this are pruned daily.
+  Default `30`.
+
+## SMTP (`[notifications.smtp_config]`)
+
+Used for email notifications and emailed password resets.
+
+- `smtp_host`, `smtp_port`, `smtp_user`, `smtp_password`, `from_email`
+- `use_tls` — default `false` (set `true` for most providers).
+
+## Email (`[notifications.email_notifications]`)
+
+- `enabled` — default `false`.
+- `emails` — recipients.
+
+## Gotify (`[notifications.gotify]`)
+
+- `enabled` — default `false`.
+- `api_key`
+- `url` — your Gotify base URL, no trailing slash.
+
+## ntfy (`[notifications.ntfy]`)
+
+- `enabled` — default `false`.
+- `url` — your ntfy URL **including the topic** (the topic is part of the URL;
+  there is no separate token field).
+
+## Pushover (`[notifications.pushover]`)
+
+- `enabled` — default `false`.
+- `api_key`
+- `user`
+
+<Callout type="info">
+
+Multiple providers can be enabled at once. The in-app record is saved
+independently of external delivery, so the bell still works even if no
+external provider is configured.
+
+</Callout>
+
+## Example
+
+```toml title="config.toml"
+[notifications]
+subject_prefix = "[MiraMedia] "
+
+[notifications.native]
+enabled = true
+retention_days = 30
+
+[notifications.smtp_config]
+smtp_host = "smtp.example.com"
+smtp_port = 587
+smtp_user = "user"
+smtp_password = "app-password"
+from_email = "miramedia@example.com"
+use_tls = true
+
+[notifications.email_notifications]
+enabled = true
+emails = ["admin@example.com"]
+
+[notifications.gotify]
+enabled = false
+api_key = ""
+url = "https://gotify.example.com"
+
+[notifications.ntfy]
+enabled = false
+url = "https://ntfy.sh/your-private-topic"
+
+[notifications.pushover]
+enabled = false
+api_key = ""
+user = ""
+```

@@ -1,0 +1,70 @@
+---
+title: Updates
+description: "The [updates] section: check GitHub for new releases and optionally apply them in place."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+MiraMedia can check GitHub for new releases and, if you opt in, apply them
+in place by pulling the new image and recreating its own container via the
+Docker socket.
+
+## Settings (`[updates]`)
+
+- `enabled` — run the periodic check. Default `true`.
+- `repo` — GitHub `owner/repo` for the releases API. Default
+  `miramedia-app/miramedia`.
+- `check_interval_hours` — default `24`.
+- `include_prereleases` — default `false` (stable only).
+- `cache_ttl_seconds` — cache the release check result. Default `3600`.
+- `request_timeout_seconds` — HTTP timeout for the GitHub releases call.
+  Default `10`.
+- `notify_on_new_version` — send a notification when a newer version is
+  found. Default `false`. Uses your configured
+  [notification providers](notifications).
+
+### In-app apply (opt-in)
+
+- `allow_in_app_apply` — default `false`. When enabled, the **System →
+  Updates** page can pull and restart into the new image.
+- `docker_socket_path` — default `/var/run/docker.sock`.
+- `container_name` — default `miramedia`.
+- `image_repository` — default `ghcr.io/miramedia-app/miramedia`.
+- `image_tag` — default `latest`.
+
+<Callout type="warn">
+
+In-app apply requires the Docker socket mounted into the container and a
+restart policy on the compose service. Mounting the Docker socket grants
+broad host control — only enable this if you understand the risk.
+
+```yaml title="docker-compose.yaml (excerpt)"
+services:
+  api:
+    container_name: miramedia
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+</Callout>
+
+## Example
+
+```toml title="config.toml"
+[updates]
+enabled = true
+repo = "miramedia-app/miramedia"
+check_interval_hours = 24
+include_prereleases = false
+notify_on_new_version = true
+
+allow_in_app_apply = false
+docker_socket_path = "/var/run/docker.sock"
+container_name = "miramedia"
+image_repository = "ghcr.io/miramedia-app/miramedia"
+image_tag = "latest"
+```
+
+The current version is always visible via `GET /api/v1/system/version`.
+Update checks and apply are superuser-only.

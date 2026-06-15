@@ -1,0 +1,78 @@
+---
+title: Authentication
+description: "Sessions, the bootstrap admin, superuser management, and OpenID Connect."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Authentication is configured in `[auth]`. Email/password login is the
+default; OpenID Connect can be enabled alongside it.
+
+## Settings (`[auth]`)
+
+- `token_secret` — secret key for signing sessions. Generate with
+  `openssl rand -hex 32`. If unset, a random value is generated **per
+  process**, so every restart logs everyone out — always set a stable value.
+- `session_lifetime` — session length in seconds. Default `86400` (1 day).
+- `email_password_resets` — enable emailed password-reset links. Default
+  `false`. Requires SMTP (see [Notifications](notifications)).
+- `admin_emails` — _deprecated._ A list of emails that are auto-promoted to
+  superuser on startup. Optional and no longer the recommended path —
+  manage superusers from the UI instead.
+
+## Bootstrap admin
+
+On first start, **if the user table is empty**, MiraMedia creates a
+superuser with email `admin@example.com` and password `admin`. Log in, then
+**change the password immediately** from the account menu. After that, manage
+all users and superuser status at **System → Users** in the dashboard.
+
+
+## API tokens
+
+Each user can create personal API tokens from their account settings (list /
+create / revoke). Use these for scripting against the API.
+
+## OpenID Connect (`[auth.openid_connect]`)
+
+Integrates with any OIDC-compliant provider (Authentik, Keycloak, Pocket ID,
+Google, Azure AD, …).
+
+- `enabled` — default `false`.
+- `client_id` / `client_secret` — from your provider.
+- `configuration_endpoint` — the provider's discovery URL, usually ending in
+  `/.well-known/openid-configuration`. No trailing slash.
+- `name` — label shown on the login-page button.
+
+When enabled, accounts are associated by email and treated as verified.
+
+### Redirect URI
+
+Configure this callback URI in your provider:
+
+```text
+{FRONTEND_URL}/api/v1/auth/oauth/callback
+```
+
+<Callout type="warn">
+
+The callback URI must match exactly, including scheme and any path prefix,
+or login fails.
+
+</Callout>
+
+## Example
+
+```toml title="config.toml"
+[auth]
+token_secret = "REPLACE_WITH_openssl_rand_hex_32"
+session_lifetime = 604800  # 1 week
+email_password_resets = false
+
+[auth.openid_connect]
+enabled = true
+client_id = "miramedia-client"
+client_secret = "from-provider"
+configuration_endpoint = "https://auth.example.com/.well-known/openid-configuration"
+name = "Authentik"
+```

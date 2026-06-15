@@ -1,0 +1,45 @@
+---
+title: TV & Movies
+description: "How shows and movies are tracked, and how continuous download keeps a library current."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Tracking model
+
+TV is tracked as **Show → Season → Episode → file**. Movies are **Movie →
+file**. When you add a title, MiraMedia pulls its metadata (cast of
+seasons/episodes for TV) and figures out what's missing.
+
+Every show and movie belongs to a [library](/docs/configuration/libraries),
+which determines its folder root and which [scoring rule
+sets](/docs/configuration/scoring) apply.
+
+## Continuous download
+
+When `misc.continuous_download` is on (the global default), MiraMedia
+periodically looks for missing episodes/movies and downloads them
+automatically — including new episodes as they air.
+
+- Runs on an interval (`misc.auto_download_interval_hours`, default hourly)
+  and again after the weekly metadata refresh.
+- Each show/movie can override the global setting individually (follow global
+  / always / never).
+- Per show it skips when there are already active downloads, caps the number
+  of simultaneous downloads, and prefers season packs when most of a season
+  is missing.
+
+<Callout type="info">
+
+To grab something immediately, search and download it manually from the
+show/movie page — continuous download is the background safety net, not the
+only path.
+
+</Callout>
+
+## Manual and one-off downloads
+
+From a show or movie page you can search indexers directly and pick a
+specific release, or add a magnet/.torrent file from **Torrents → Add
+Torrent** (superuser) and link it to the right media. See
+[Downloads & Imports](downloads-and-imports).

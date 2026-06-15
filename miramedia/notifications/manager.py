@@ -1,0 +1,102 @@
+"""
+Notification Manager - Orchestrates sending notifications through all configured service providers
+"""
+
+import logging
+
+from miramedia.config import MiraMediaConfig
+from miramedia.notifications.schemas import MessageNotification
+from miramedia.notifications.service_providers.abstract_notification_service_provider import (
+    AbstractNotificationServiceProvider,
+)
+from miramedia.notifications.service_providers.email import (
+    EmailNotificationServiceProvider,
+)
+from miramedia.notifications.service_providers.gotify import (
+    GotifyNotificationServiceProvider,
+)
+from miramedia.notifications.service_providers.ntfy import (
+    NtfyNotificationServiceProvider,
+)
+from miramedia.notifications.service_providers.pushover import (
+    PushoverNotificationServiceProvider,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class NotificationManager:
+    """
+    Manages and orchestrates notifications across all configured service providers.
+    """
+
+    def __init__(self) -> None:
+        self.config = MiraMediaConfig().notifications
+        self.providers: list[AbstractNotificationServiceProvider] = []
+        self._initialize_providers()
+
+    def _initialize_providers(self) -> None:
+        # Email provider
+        if self.config.email_notifications.enabled:
+            try:
+                self.providers.append(EmailNotificationServiceProvider())
+                logger.info("Email notification provider initialized")
+            except Exception:
+                logger.exception("Failed to initialize Email provider")
+
+        # Gotify provider
+        if self.config.gotify.enabled:
+            try:
+                self.providers.append(GotifyNotificationServiceProvider())
+                logger.info("Gotify notification provider initialized")
+            except Exception:
+                logger.exception("Failed to initialize Gotify provider")
+
+        # Ntfy provider
+        if self.config.ntfy.enabled:
+            try:
+                self.providers.append(NtfyNotificationServiceProvider())
+                logger.info("Ntfy notification provider initialized")
+            except Exception:
+                logger.exception("Failed to initialize Ntfy provider")
+
+        # Pushover provider
+        if self.config.pushover.enabled:
+            try:
+                self.providers.append(PushoverNotificationServiceProvider())
+                logger.info("Pushover notification provider initialized")
+            except Exception:
+                logger.exception("Failed to initialize Pushover provider")
+
+        logger.info(f"Initialized {len(self.providers)} notification providers")
+
+    def send_notification(self, title: str, message: str) -> None:
+        # No-op silently when no external providers are configured — the in-app
+        # native notification is saved separately by NotificationService.
+        # Re-read config so subject_prefix changes apply without a restart.
+        prefix = (MiraMediaConfig().notifications.subject_prefix or "").strip()
+        if prefix:
+            title = f"{prefix} {title}"
+
+        notification = MessageNotification(title=title, message=message)
+
+        for provider in self.providers:
+            provider_name = provider.__class__.__name__
+            try:
+                success = provider.send_notification(notification)
+                if success:
+                    logger.info(f"Notification sent successfully via {provider_name}")
+                else:
+                    logger.warning(f"Failed to send notification via {provider_name}")
+
+            except Exception:
+                logger.exception(f"Error sending notification via {provider_name}")
+
+    def get_configured_providers(self) -> list[str]:
+        return [provider.__class__.__name__ for provider in self.providers]
+
+    def is_configured(self) -> bool:
+        return len(self.providers) > 0
+
+
+notification_manager = NotificationManager()

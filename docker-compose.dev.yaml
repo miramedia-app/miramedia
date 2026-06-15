@@ -1,0 +1,264 @@
+name: miramedia
+
+# Dev stack — exposed services:
+#   :8001  -> api    (direct backend, FastAPI serves SPA + REST)
+#   :5555  -> web    (next dev, proxies /api/* -> api:8000 internally)
+#   :5433  -> db
+#   :8090  -> qbittorrent (only with --profile external/all)
+#
+# Runtime tunables (MIRAMEDIA_*) documented in .env.example.
+services:
+  db:
+    # Alpine variant: smaller image, faster pulls/rebuilds during local
+    # iteration. Production + synology compose use the same variant.
+    image: postgres:17-alpine
+    container_name: miramedia-postgres
+    restart: unless-stopped
+    shm_size: 256mb
+    volumes:
+      - ./res/postgres:/var/lib/postgresql/data
+    # Mirrors the tuning in docker-compose.yaml so query plans look the same
+    # in dev as in prod. See the production compose for rationale.
+    # log_min_duration_statement=500 → slow queries appear in `docker logs miramedia-postgres`.
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=100
+      -c wal_buffers=16MB
+      -c checkpoint_completion_target=0.9
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c jit=off
+      -c log_min_duration_statement=500
+      -c idle_in_transaction_session_timeout=300000
+      -c statement_timeout=60000
+      -c lock_timeout=10000
+      -c tcp_keepalives_idle=60
+      -c tcp_keepalives_interval=10
+      -c tcp_keepalives_count=6
+      -c pg_stat_statements.track=all
+    environment:
+      POSTGRES_USER: miramedia
+      POSTGRES_DB: miramedia
+      POSTGRES_PASSWORD: miramedia
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: app
+      args:
+        - VERSION=locally-built
+        - BASE_PATH=
+    image: miramedia/api:dev
+    container_name: miramedia
+    restart: unless-stopped
+    # tini reaps reparented Chrome helper processes from the cloudflare bypass.
+    init: true
+    ports:
+      - "8001:8000"
+      - "6891:6891"
+      - "6891:6891/udp"
+    environment:
+      - MIRAMEDIA_CONFIG_DIR=/app/config
+      # Native torrent client listens on 6891 in dev (code default is 6881) so
+      # it doesn't collide with the bundled qbittorrent's host 6881 mapping
+      # under the external/all profile. Matches the 6891 ports above.
+      - MIRAMEDIA_TORRENTS__NATIVE__LISTEN_PORT_START=6891
+      - MIRAMEDIA_LOG_FILE=/dev/null
+      - MIRAMEDIA_LOG_LEVEL=DEBUG
+      - MIRAMEDIA_MISC__DEVELOPMENT=TRUE
+      - MIRAMEDIA_MISC__CORS_URLS=["http://localhost:5555","http://10.1.3.176:5555"]
+    volumes:
+      - ./res/config:/app/config
+      # Poster / metadata image cache — alongside config, not the media tree.
+      - ./res/images:/app/images
+      # Single mount for /data so shows/movies/torrents live on the same
+      # in-container filesystem — required for hardlinks to work during
+      # imports. Subdirs ./res/{shows,movies,torrents} are inside.
+      - ./res:/data
+      - ./miramedia:/app/miramedia
+      - ./alembic:/app/alembic
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # 60s matches the production compose + Dockerfile HEALTHCHECK so cold
+      # starts (alembic upgrade, libtorrent resume, chromium warmup) finish
+      # before the first healthcheck fires.
+      start_period: 60s
+    depends_on:
+      db:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: Dockerfile
+        - action: rebuild
+          path: pyproject.toml
+        - action: rebuild
+          path: uv.lock
+
+  web:
+    image: node:24-alpine
+    container_name: miramedia-web
+    restart: unless-stopped
+    working_dir: /app
+    command: sh -c "corepack enable && pnpm install && pnpm dev --hostname 0.0.0.0 --port 5173"
+    ports:
+      - "5555:5173"
+    environment:
+      # Empty -> apiClient uses RELATIVE /api/* URLs, which the Next dev rewrite
+      # in next.config.ts proxies to api:8000 internally. Relative is required so
+      # the browser hits whatever host it loaded the page from (localhost OR LAN
+      # IP like 10.1.3.176:5555). An absolute http://localhost:8001 breaks LAN
+      # access: a remote browser resolves "localhost" to its own machine.
+      - NEXT_PUBLIC_API_URL=
+      - PUBLIC_VERSION=dev
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --timeout=3 http://127.0.0.1:5173/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+    depends_on:
+      api:
+        condition: service_healthy
+    develop:
+      watch:
+        - action: rebuild
+          path: web/package.json
+        - action: rebuild
+          path: web/pnpm-lock.yaml
+
+# ----------------------------
+# External tool containers (opt-in via `--profile external` or `--profile all`)
+# ----------------------------
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    profiles: ["external", "all"]
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+    volumes:
+      - ./res/prowlarr:/config
+    restart: unless-stopped
+    ports:
+      - "9696:9696"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9696/ping >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    profiles: ["external", "all"]
+    environment:
+      - TZ=Etc/UTC
+      - WEBUI_PORT=8080
+      - TORRENTING_PORT=6881
+    # Host port 8090 to avoid colliding with anything else on :8080.
+    ports:
+      - 8090:8080
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
+    volumes:
+      - ./res/torrents:/download
+      - ./res/qbittorrent:/config
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  jackett:
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    profiles: ["external", "all"]
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Etc/UTC
+      - AUTO_UPDATE=true
+    volumes:
+      - ./res/jackett/data:/config
+      - ./res/jackett/torrents:/downloads
+    ports:
+      - 9117:9117
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9117/ >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+#  transmission:
+#    image: lscr.io/linuxserver/transmission:latest
+#    container_name: transmission
+#    profiles: ["external", "all"]
+#    environment:
+#      - PUID=1000
+#      - PGID=1000
+#      - TZ=Etc/UTC
+#      - USER=admin
+#      - PASS=admin
+#    volumes:
+#      - ./res/transmission:/config
+#      - ./res/torrents:/data/torrents
+#    ports:
+#      - 9091:9091
+#    restart: unless-stopped
+#  pocket-id:
+#    image: ghcr.io/pocket-id/pocket-id
+#    container_name: pocket-id
+#    profiles: ["external", "all"]
+#    restart: unless-stopped
+#    env_file: .env
+#    ports:
+#      - 1411:1411
+#    volumes:
+#      - ./res/pocket-id:/app/data
+#    healthcheck:
+#      test: "curl -f http://localhost:1411/healthz"
+#      interval: 1m30s
+#      timeout: 5s
+#      retries: 2
+#      start_period: 10s
+#  sabnzbd:
+#    image: lscr.io/linuxserver/sabnzbd:latest
+#    container_name: sabnzbd
+#    profiles: ["external", "all"]
+#    environment:
+#      - PUID=1000
+#      - PGID=1000
+#      - TZ=Etc/UTC
+#    volumes:
+#      - ./res/sabnzbd:/config
+#      - ./res/torrents:/downloads
+#    ports:
+#      - 8081:8080
+#    restart: unless-stopped

@@ -1,0 +1,36 @@
+---
+title: Account & Notifications
+description: "Change your email/password, manage API tokens, and handle notifications."
+---
+
+## Account settings
+
+Account avatar (bottom of sidebar) → **My Account**
+(`/dashboard/account/settings`):
+
+- **Change Email** — current email shown, enter a new one.
+- **Change Password** — new + confirm (mismatch is flagged).
+- One **Save Changes** button applies both.
+
+### API tokens
+
+Same page: create, list, and revoke personal API tokens. Use a token for
+scripting against the [API](/docs/api-reference) instead of your password.
+
+## Notifications
+
+The **bell** icon (top of sidebar, when notifications are enabled) →
+`/dashboard/notifications`. A list of messages with an unread dot and
+timestamp.
+
+- Per row: **Mark as read** / **Mark as unread**.
+- Toolbar: **Mark all read**. Bulk: **Mark read / Mark unread**.
+- Filter by status, group by read/unread.
+
+"Notifications disabled — Enable them in System → Settings → Notifications."
+means the in-app provider is off. Configure providers in
+[Notifications](/docs/configuration/notifications).
+
+## Theme
+
+The account menu has a light/dark theme toggle ("Light Mode" / "Dark Mode").

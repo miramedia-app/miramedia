@@ -1,0 +1,194 @@
+# MiraMedia — production single-host stack.
+#
+# Entry point: api on host :8000 (FastAPI serves the SPA + REST in the same
+# process). Postgres is internal-only on the compose network. Front this
+# with your own reverse proxy (DSM, nginx, traefik, …) if you want HTTPS
+# on a custom hostname.
+#
+# Service keys (`api`/`db`) = short internal DNS / depends_on refs.
+# `container_name:` = the `miramedia-*` host-visible identity shown in
+# `docker ps`, Portainer, and the docs (`docker logs miramedia-postgres`).
+#
+# Tunables in .env.example. Defaults below match a host with ~2GB free RAM;
+# raise MIRAMEDIA_DB_POOL_SIZE / MIRAMEDIA_RECEIVER_MAX_TASKS / etc on
+# beefier hosts. New deploys: copy .env.example to .env and uncomment
+# overrides as needed, then add `env_file: .env` to the api service.
+name: miramedia
+
+services:
+  api:
+    container_name: miramedia
+    # Pin to a specific version (e.g. ":v0.2.0") for stable updates instead of ":latest"
+    # ":latest" is the slim image (no bundled Chromium). To use the Cloudflare
+    # native solver ([cloudflare] enabled = true, solver = "native"), switch to
+    # the chromium variant: ghcr.io/miramedia-app/miramedia:latest-cf. External
+    # solvers (byparr/flaresolverr/remote/browser_run/firecrawl) run on slim.
+    image: ghcr.io/miramedia-app/miramedia:latest
+    restart: unless-stopped
+    # tini reaps reparented Chrome helper processes from the cloudflare bypass.
+    init: true
+    ports:
+      - "8000:8000"
+      # Native libtorrent backend listen port. Must match
+      # torrents.native.listen_port_start in config.toml (default 6881).
+      - "6881:6881"
+      - "6881:6881/udp"
+    environment:
+      - MIRAMEDIA_CONFIG_DIR=/app/config
+    volumes:
+      # Single mount for the in-container /data tree. Pre-create subdirs
+      # ./data/{shows,movies,torrents} on the host so the import flow can
+      # hardlink across them. Splitting these into separate bind mounts
+      # breaks hardlinks because Docker presents each bind as a separate
+      # filesystem inside the container.
+      - ./data/:/data/
+      # Config folder for application configuration
+      - ./config/:/app/config/
+      # Poster / metadata image cache — lives alongside config, not in the
+      # media tree.
+      - ./images/:/app/images/
+      # Required for in-app updates (updates.allow_in_app_apply, on by
+      # default). Read-write because the apply flow uses the Docker HTTP API
+      # to pull a new image and stop this container so the restart policy
+      # recreates it. Comment out if you want to disable in-app updates.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          # Chromium (cloudflare bypass) + libtorrent + Python workers can
+          # spike well past 1GB during heavy library scans. Raise via
+          # MIRAMEDIA_MEM_LIMIT if you run a large catalog.
+          memory: 2g
+        reservations:
+          memory: 512m
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # OPTIONAL — dedicated scheduler service for multi-worker API.
+  #
+  # Single-host NAS deployments should stay on MIRAMEDIA_WEB_WORKERS=1
+  # with the scheduler running in-process (the default). This sidecar is
+  # only needed on bigger hosts where you want N uvicorn workers handling
+  # HTTP traffic.
+  #
+  # To enable:
+  #   1. Add to the api service environment:
+  #        - MIRAMEDIA_WEB_WORKERS=4               # tune to nproc / 2
+  #        - MIRAMEDIA_SCHEDULER_DISABLED=true     # API workers don't own the broker
+  #   2. Uncomment the block below. It runs the same image but skips the
+  #      HTTP server and runs only the broker + cron loop. Don't expose
+  #      port 8000 on it — the API service still terminates HTTP.
+  #   3. Run the scheduler entrypoint module shipped in the image:
+  #      `python -m miramedia.scheduler_entrypoint`
+  #
+  # miramedia-scheduler:
+  #   image: ghcr.io/miramedia-app/miramedia:latest
+  #   container_name: miramedia-scheduler
+  #   restart: unless-stopped
+  #   init: true
+  #   environment:
+  #     - MIRAMEDIA_CONFIG_DIR=/app/config
+  #     - MIRAMEDIA_WEB_WORKERS=1
+  #     - MIRAMEDIA_SCHEDULER_DISABLED=false
+  #   command: ["python", "-m", "miramedia.scheduler_entrypoint"]
+  #   volumes:
+  #     # Mirror the api service's mounts so the scheduler can write
+  #     # imported files, read config, and reach the docker socket for
+  #     # in-app updates / restart hooks.
+  #     - ./data/:/data/
+  #     - ./config/:/app/config/
+  #     - ./images/:/app/images/
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+
+  # ------------------------------------------------------------------
+  # Optional Cloudflare bypass sidecar (Byparr — Camoufox-based, the
+  # FlareSolverr successor). Enable when `[cloudflare] solver = "byparr"`
+  # (or "flaresolverr" with the FlareSolverr image + url). Returns
+  # cf_clearance over HTTP so the API never runs its own chromium.
+  #
+  # For a real-device WebGL fingerprint run this on a host with a real GPU,
+  # and set `[cloudflare] proxy` to a residential IP. With `solver = "remote"`
+  # you don't need this at all — point the API at a Chrome you launch on a
+  # GPU box (`chrome --remote-debugging-port=9222`).
+  #
+  # byparr:
+  #   image: ghcr.io/thephaseless/byparr:latest
+  #   container_name: miramedia-byparr
+  #   restart: unless-stopped
+  #   init: true
+  #   ports:
+  #     - "8191:8191"   # only needed if you call it from outside the compose net
+
+  db:
+    container_name: miramedia-postgres
+    image: postgres:17-alpine
+    restart: unless-stopped
+    shm_size: 256mb
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+    # Tuned for the 1GB memory limit + 256MB shm_size below:
+    #   - shared_buffers ~25% of mem limit (256MB)
+    #   - effective_cache_size ~75% of mem limit (OS will cache disk reads)
+    #   - work_mem 16MB keeps dashboard list-query sorts/hashes in memory
+    #   - random_page_cost=1.1 for SSD-backed storage
+    #   - jit=off because pg JIT helps OLAP not OLTP and adds planning overhead
+    #   - log_min_duration_statement=500: any statement > 500ms shows in
+    #     `docker logs miramedia-postgres`. Lower (e.g. 100) when profiling.
+    #   - idle_in_transaction_session_timeout=300000 (5 min): server auto-kills
+    #     leaked sessions where the app holds BEGIN across slow external I/O
+    #     (cloudflare bypass, subliminal, libtorrent). Defense in depth — root
+    #     cause is fixed by short-lived sessions in scheduler code.
+    #   - statement_timeout=60000 (1 min): kills runaway SELECTs / DDL.
+    #   - lock_timeout=10000: fail fast on row/table-lock waits so a stuck
+    #     DDL doesn't queue dashboard reads behind it.
+    #   - tcp_keepalives_* detects dead client peers (NAT timeouts, OOM-killed
+    #     workers) instead of leaving asyncpg sockets half-open until reaped.
+    #   - shared_preload_libraries=pg_stat_statements + the CREATE EXTENSION
+    #     migration enable per-query stats — read via the embedded Scalar
+    #     docs site or Grafana.
+    command: >
+      postgres
+      -c shared_preload_libraries=pg_stat_statements
+      -c shared_buffers=256MB
+      -c effective_cache_size=768MB
+      -c work_mem=16MB
+      -c maintenance_work_mem=64MB
+      -c max_connections=100
+      -c wal_buffers=16MB
+      -c checkpoint_completion_target=0.9
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c jit=off
+      -c log_min_duration_statement=500
+      -c idle_in_transaction_session_timeout=300000
+      -c statement_timeout=60000
+      -c lock_timeout=10000
+      -c tcp_keepalives_idle=60
+      -c tcp_keepalives_interval=10
+      -c tcp_keepalives_count=6
+      -c pg_stat_statements.track=all
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      POSTGRES_USER: miramedia
+      POSTGRES_DB: miramedia
+      POSTGRES_PASSWORD: miramedia
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+        reservations:
+          memory: 256m

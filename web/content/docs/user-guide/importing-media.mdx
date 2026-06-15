@@ -1,0 +1,121 @@
+---
+title: Importing Media
+description: "Bring on-disk media into MiraMedia and recover failed/unmatched downloads. Superuser."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Sidebar → **Imports** (superuser). One page for two related jobs:
+
+- **Library scan** — discover media already on disk (e.g. a Sonarr/Radarr
+  library) and match it to shows/movies. Nothing is re-downloaded; files are
+  hard-linked into MiraMedia's layout (or copied across filesystems).
+- **Downloads** — recover torrents whose import didn't complete cleanly
+  (failed, ambiguous, or stuck on retry).
+
+The Dashboard shows a red banner — "N failed import(s) · N ambiguous" with a
+**Review** button — when there's something to do here.
+
+## Run a library scan
+
+1. Put your existing media under one of the configured library roots
+   (`misc.show_directory`, `misc.movie_directory`, or any path in
+   `misc.show_libraries` / `misc.movie_libraries` — see
+   [Libraries](/docs/configuration/libraries)).
+2. Open the **Imports** page and click **Scan**. Toast: "Scanning libraries…"
+   then "Scan complete · N candidate(s)".
+3. Matched directories with an existing show/movie or a high-confidence
+   provider match show up ready for one-click import. Anything ambiguous
+   waits for a manual pick.
+
+MiraMedia can also run scans on a schedule and even auto-import the strongest
+matches — see [Configuration → Imports](/docs/configuration/imports).
+
+### File requirements
+
+- **Movie folders** must contain exactly one primary video file. If several
+  large videos look equally plausible, the item is marked _ambiguous_ and
+  waits for you instead of being guessed.
+- **Episode files** must encode season + episode in the filename. Recognized
+  forms include `S01E01`, `1x01`, `Season 1 Episode 1`, and anime absolute
+  numbering. Season-folder layout doesn't matter.
+- Samples, trailers, featurettes and other extras are detected and skipped.
+- Subtitle files next to a video are imported too; language is parsed from
+  the filename (e.g. `Movie.en.srt`, `Show.S01E01.en.forced.srt`).
+- Existing folders tagged with a provider id (e.g. `[imdb-tt1375666]`,
+  `[tmdbid-1396]`, `[tvdbid-12345]`) are matched automatically; otherwise
+  matching falls back to name + year.
+
+### Excluding directories
+
+- Drop an empty `.mmignore` file in a directory to make the scanner skip it
+  and everything under it.
+- You can also **Ignore** a row from the page; ignored paths are remembered
+  and won't reappear in future scans.
+
+## What you see
+
+Columns:
+
+- **Source** — basename of the source directory.
+- **Destination** — linked media (download rows) or a candidate-picker chip
+  with a confidence pill (scan rows). Clicking the chip opens a **Choose
+  destination** dialog listing every candidate, labelled `LIBRARY` (already
+  in your library) or `SEARCH` (provider match).
+- **Type** — Download / Scan.
+- **Progress** — `imported / total` badge for torrents, `N videos` for scans.
+- **Status** — a pill reflecting the import outcome: Failed, Ambiguous,
+  Imported, or Pending (download rows also show the live torrent state, e.g.
+  Downloading). The Status _facet_ groups everything into Review / Retry / Done.
+
+The toolbar has a **Status** facet (Review / Retry / Done), a **Type** facet
+(Download / Scan), search, sort, group-by (default Status), and the **Scan**
+and **Refresh** buttons.
+
+## Resolving items
+
+**Download rows** (a torrent that failed/partly imported):
+
+- **Map** (pencil) → the _Manually map files_ dialog. Each source file gets a
+  **Target** dropdown: **Skip**, `Movie: {name}`, or an episode
+  (`S01E01 — Title`). **Apply mapping**.
+- **Retry** (circular arrow) — re-run the import.
+- `⋮` → **Delete** ("Remove torrent \"&lt;title&gt;\" and delete files?").
+- Expand a row to see per-file status badges and errors.
+- Bulk **Retry** — acts on torrent rows in the selection; scan rows are
+  skipped with an info toast.
+
+**Scan rows** (media found on disk):
+
+- Primary action **Import** uses the top candidate shown in the Destination
+  chip. The button is rendered prominently when the candidate's confidence
+  is at or above `misc.auto_pick_confidence_threshold` (default `0.8`);
+  below it, **Import** is still available but secondary.
+- Click the **Destination** chip to open the **Choose destination** dialog
+  and pick a different match (existing library entries labelled `LIBRARY`, or
+  provider search results labelled `SEARCH`). Selecting one stages it and
+  closes the dialog; press **Import** on the row to run it.
+- `⋮` → **Ignore** ("Ignore … forever?") to stop the path reappearing in
+  future scans.
+
+<Callout type="info">
+
+The scheduler also retries due imports automatically with exponential
+backoff (1, 2, 4 … up to 120 min), so transient failures often clear
+without you. This page is for the ones that need a human decision.
+
+</Callout>
+
+## After importing
+
+- Fully-imported items move to the **Done** status group (sourced from a
+  durable history table, so they survive `misc.cleanup_after_import` deleting
+  the torrent; older ones may age out of the visible list).
+- The container log records anything that couldn't be imported, with the
+  reason. **System → Logs** surfaces the same entries in the UI.
+- With the optional integrity audit enabled (`misc.integrity_check_enabled`),
+  imported files are SHA1-checked on a schedule and any mismatch is logged —
+  see [Downloads & Imports](/docs/features/downloads-and-imports).
+
+Empty page: "No imports yet — Run a scan to surface library candidates." The
+toolbar **Scan** button still works from there.

@@ -1,0 +1,44 @@
+---
+title: Requests
+description: "How user requests are approved and fulfilled."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Requests let non-admin users ask for media without giving them full library
+control. Enable and tune them in [Requests](/docs/configuration/requests).
+
+## Flow
+
+1. A user searches and requests a movie or show.
+2. **Approval** — superuser requests are always auto-approved. Regular users
+   are auto-approved only if `requests.auto_approve_users` is on; otherwise a
+   superuser approves them.
+3. **Fulfillment** — a background job (`requests.fulfill_interval_hours`,
+   default every 2 h) takes approved requests, adds the media, and downloads
+   it through the normal [search & scoring](search-and-scoring) path. The
+   request is marked downloaded once a file exists.
+
+On creation the server backfills the IMDb id (TMDB/TVDB search results omit
+it) so the native indexer can find the release later.
+
+## Seerr (Overseerr / Jellyseerr)
+
+When `requests.seerr` is enabled it runs **alongside** the native backend
+and stays in two-way sync:
+
+- **Pull** — every Seerr request is mirrored into the local request list,
+  so it shows in the MM UI and is fulfilled by the native indexer.
+- **Push** — requests created/approved/declined/deleted in MM are
+  forwarded to Seerr. IMDb-only requests are resolved to a TMDB id
+  through Seerr's own lookup (no separate TMDB API key needed) and the
+  id is cached on the request.
+- **Availability** — once MM has the file, the request is marked
+  available in Seerr so it stops showing as outstanding.
+
+Reconciliation runs on the same `fulfill_interval_hours` schedule. Seerr
+being unreachable never blocks a local action — drift is healed on the
+next sync.
+
+The request API is always mounted (for a stable generated client) but returns
+`503` when requests are disabled.

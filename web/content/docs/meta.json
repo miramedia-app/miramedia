@@ -1,0 +1,18 @@
+{
+  "title": "MiraMedia Documentation",
+  "pages": [
+    "index",
+    "---Get Started---",
+    "quick-start",
+    "installation",
+    "---Guides---",
+    "user-guide",
+    "configuration",
+    "features",
+    "---Reference---",
+    "advanced-features",
+    "troubleshooting",
+    "api-reference",
+    "contributing-to-miramedia"
+  ]
+}

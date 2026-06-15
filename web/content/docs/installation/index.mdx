@@ -1,0 +1,17 @@
+---
+title: Overview
+description: "The recommended way to run MiraMedia is Docker Compose."
+---
+
+The recommended and officially supported way to run MiraMedia is **Docker
+Compose**. It ships as a single container that serves both the API and the
+web UI, alongside a PostgreSQL container.
+
+- **[Docker Compose](docker)** — recommended. Single image, runs the backend,
+  the static frontend, and the in-process scheduler.
+- **[Synology / NAS](synology)** — a NAS-tuned compose file with reduced
+  concurrency, a non-root `user:`, and the `seccomp:unconfined` workaround the
+  Cloudflare bypass needs on Synology's older Docker.
+
+If you just want the shortest path, follow the [Quick Start](/docs/quick-start)
+instead — it covers the common case end to end.

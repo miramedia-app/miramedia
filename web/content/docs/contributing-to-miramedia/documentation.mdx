@@ -1,0 +1,82 @@
+---
+title: Documentation
+description: "How this documentation is built and how to work on it locally."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+This documentation is built with [Fumadocs](https://fumadocs.dev/) and lives
+inside the frontend app, **not** in a separate `docs/` directory.
+
+## Where the files are
+
+- Content: `web/content/docs/**/*.mdx`
+- Sidebar/order: `meta.json` in each docs folder
+- Served at `/docs` by the Next.js app
+
+## meta.json
+
+Each folder has a `meta.json` with a `title` and an ordered `pages` array.
+Entries are page slugs (filename without `.mdx`) or subfolder names.
+`"index"` is the folder's landing page. A `"---Label---"` entry renders a
+labeled section divider in the sidebar.
+
+## Frontmatter
+
+Every page needs YAML frontmatter:
+
+```yaml
+---
+title: Page Title
+description: "One-line summary used for the page header and meta description."
+---
+```
+
+## Components
+
+Default Fumadocs MDX components are available. In practice these docs use
+`Callout`; import it where needed:
+
+```js
+import { Callout } from "fumadocs-ui/components/callout";
+```
+
+Internal links use `/docs/...` (absolute) or relative paths
+(e.g. `../configuration/indexers`).
+
+## Reserved route: API Reference
+
+`/docs/api-reference` is **not** rendered from MDX. The catch-all docs page
+(`src/app/(docs)/docs/[[...slug]]/page.tsx`) calls `notFound()` for that slug,
+and a dedicated full-bleed route (`src/app/(docs)/docs/api-reference/page.tsx`)
+embeds an interactive [Scalar](https://scalar.com) reference built live from
+the backend's `/openapi.json`. `content/docs/api-reference.mdx` is a stub that
+exists only so the sidebar shows the entry — its body never displays. To
+change the API reference, edit the Scalar route/component, not the MDX.
+
+## Local preview
+
+The docs are part of the `web` app, so run the frontend dev server:
+
+```bash
+cd web
+pnpm install
+pnpm docs:gen   # regenerate the MDX collection
+pnpm dev
+```
+
+Then open `http://localhost:3000/docs` (or the dev port shown by Next.js).
+
+<Callout type="info">
+
+`pnpm build` also builds the docs as part of the static site. There is no
+separate docs build step or MkDocs container — older instructions referencing
+MkDocs are obsolete.
+
+</Callout>
+
+## Style
+
+- Keep pages task-focused and skimmable.
+- Document what the current code does — verify against the source, not memory.
+- Prefer tables for option references; show a minimal `config.toml` example.

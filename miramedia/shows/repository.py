@@ -1,0 +1,1306 @@
+from datetime import date, datetime
+from typing import cast as typing_cast
+from uuid import UUID
+
+from sqlalchemy import delete, func, not_, or_, select, tuple_, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload, selectinload
+from sqlalchemy.sql import Select
+from sqlalchemy.sql.base import ExecutableOption
+
+from miramedia.exceptions import ConflictError, NotFoundError
+from miramedia.file_status import ImportOutcome
+from miramedia.media_filters import apply_list_filters, apply_sort
+from miramedia.shows import log
+from miramedia.shows.models import Episode, EpisodeFile, Season, Show
+from miramedia.shows.schemas import Episode as EpisodeSchema
+from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
+from miramedia.shows.schemas import (
+    EpisodeId,
+    EpisodeNumber,
+    SeasonId,
+    SeasonNumber,
+    ShowId,
+)
+from miramedia.shows.schemas import Season as SeasonSchema
+from miramedia.shows.schemas import Show as ShowSchema
+from miramedia.torrents.models import Torrent
+from miramedia.torrents.schemas import Quality, TorrentId
+from miramedia.torrents.schemas import Torrent as TorrentSchema
+
+
+def _full_show_eager_loads() -> tuple[ExecutableOption, ...]:
+    """Eager-load chain: Show -> seasons -> episodes -> episode_files."""
+    return (
+        selectinload(Show.seasons)
+        .selectinload(Season.episodes)
+        .selectinload(Episode.episode_files),
+    )
+
+
+def _show_summary_eager_loads() -> tuple[ExecutableOption, ...]:
+    """Minimal eager-loads for list/search previews.
+
+    Returns just the columns needed to render a row — name, year, status,
+    poster — without pulling season/episode/file rows. New code that only
+    needs to know "does this show exist?" or "show me the title bar" should
+    use this in preference to :func:`_full_show_eager_loads`.
+
+    Downstream code MUST NOT touch ``Show.seasons`` on rows loaded this way
+    or async lazy-load will blow up with ``MissingGreenlet``.
+    """
+    return (noload(Show.seasons),)
+
+
+def _apply_show_list_filters(
+    stmt: Select[tuple[object, ...]],
+    *,
+    query: str | None = None,
+    libraries: list[str] | None = None,
+    excluded_libraries: list[str] | None = None,
+    genres: list[str] | None = None,
+    excluded_genres: list[str] | None = None,
+    decades: list[int] | None = None,
+    excluded_decades: list[int] | None = None,
+    airing: list[str] | None = None,
+    excluded_airing: list[str] | None = None,
+) -> Select[tuple[object, ...]]:
+    """Apply server-side filters shared by list + count endpoints."""
+    stmt = apply_list_filters(
+        stmt,
+        name_col=Show.name,
+        library_col=Show.library,
+        genres_col=Show.genres,
+        year_col=Show.year,
+        query=query,
+        libraries=libraries,
+        excluded_libraries=excluded_libraries,
+        genres=genres,
+        excluded_genres=excluded_genres,
+        decades=decades,
+        excluded_decades=excluded_decades,
+    )
+    if airing:
+        clauses = []
+        if "ended" in airing:
+            clauses.append(Show.ended.is_(True))
+        if "continuing" in airing:
+            clauses.append(Show.ended.is_(False))
+        if clauses:
+            stmt = stmt.where(or_(*clauses))
+    if excluded_airing:
+        clauses = []
+        if "ended" in excluded_airing:
+            clauses.append(Show.ended.is_(True))
+        if "continuing" in excluded_airing:
+            clauses.append(Show.ended.is_(False))
+        if clauses:
+            stmt = stmt.where(not_(or_(*clauses)))
+    return stmt
+
+
+def _apply_show_status_filters(
+    stmt: Select[tuple[object, ...]],
+    *,
+    statuses: list[str] | None = None,
+    excluded_statuses: list[str] | None = None,
+) -> Select[tuple[object, ...]]:
+    if statuses:
+        stmt = stmt.where(Show.list_progress_status.in_(statuses))
+    if excluded_statuses:
+        stmt = stmt.where(not_(Show.list_progress_status.in_(excluded_statuses)))
+    return stmt
+
+
+def _apply_show_sort(
+    stmt: Select[tuple[object, ...]], sort: str | None
+) -> Select[tuple[object, ...]]:
+    return apply_sort(
+        stmt,
+        sort,
+        name_col=Show.name,
+        year_col=Show.year,
+        rating_col=Show.vote_average,
+    )
+
+
+class ShowRepository:
+    """
+    Repository for managing shows, seasons, and episodes in the database.
+    Provides methods to retrieve, save, and delete shows and seasons.
+    """
+
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def get_show_by_id(self, show_id: ShowId) -> ShowSchema:
+        """
+        Retrieve a show by its ID, including seasons and episodes.
+
+        :param show_id: The ID of the show to retrieve.
+        :return: A Show object if found.
+        :raises NotFoundError: If the show with the given ID is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Show)
+                .where(Show.id == show_id)
+                .options(*_full_show_eager_loads())
+            )
+            result = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+            if not result:
+                msg = f"Show with id {show_id} not found."
+                raise NotFoundError(msg)
+            return ShowSchema.model_validate(result)
+        except SQLAlchemyError:
+            log.exception(f"Database error while retrieving show {show_id}")
+            raise
+
+    async def get_show_by_external_id(
+        self, external_id: str, metadata_provider: str
+    ) -> ShowSchema:
+        """
+        Retrieve a show by its metadata provider ID, including nested seasons and episodes.
+        """
+        try:
+            stmt = (
+                select(Show)
+                .where(Show.external_id == external_id)
+                .where(Show.metadata_provider == metadata_provider)
+                .options(*_full_show_eager_loads())
+            )
+            result = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+            if not result:
+                msg = f"Show with external_id {external_id} and provider {metadata_provider} not found."
+                raise NotFoundError(msg)
+            return ShowSchema.model_validate(result)
+        except SQLAlchemyError:
+            log.exception(
+                f"Database error while retrieving show by external_id {external_id}",
+            )
+            raise
+
+    async def show_exists_by_imdb_id(self, imdb_id: str) -> ShowSchema | None:
+        """Check if a show exists by imdb_id."""
+        try:
+            stmt = (
+                select(Show)
+                .where(Show.imdb_id == imdb_id)
+                .options(*_full_show_eager_loads())
+            )
+            result = (await self.db.execute(stmt)).unique().scalars().first()
+        except SQLAlchemyError:
+            log.exception(f"Error checking show existence for imdb_id {imdb_id}")
+            return None
+        else:
+            if result:
+                return ShowSchema.model_validate(result)
+            return None
+
+    async def shows_existing_by_identifiers(
+        self,
+        imdb_ids: list[str],
+        provider_keys: list[tuple[str, str]],
+    ) -> list[tuple[str | None, str, str, ShowId]]:
+        """Bulk lookup of shows matching search results, mirroring the scan's
+        ``_resolve_existing`` three-way match: a row counts as existing when
+        EITHER ``imdb_id`` OR ``external_id`` equals a result's IMDb id, OR
+        ``(external_id, metadata_provider)`` equals a result's provider key.
+
+        Native-provider shows store the IMDb id in ``external_id`` and leave the
+        ``imdb_id`` column NULL (the folder is still tagged ``[imdb-tt...]``), so
+        an imdb_id-only lookup wrongly flags them as not-added ("Add" vs "View").
+        Returns ``(imdb_id, external_id, metadata_provider, id)`` rows so the
+        caller can build the lookup maps; projects scalar columns only, so no
+        seasons/episodes eager-load.
+        """
+        if not imdb_ids and not provider_keys:
+            return []
+        conditions = []
+        if imdb_ids:
+            conditions.append(Show.imdb_id.in_(imdb_ids))
+            conditions.append(Show.external_id.in_(imdb_ids))
+        if provider_keys:
+            conditions.append(
+                tuple_(Show.external_id, Show.metadata_provider).in_(provider_keys)
+            )
+        try:
+            stmt = select(
+                Show.imdb_id, Show.external_id, Show.metadata_provider, Show.id
+            ).where(or_(*conditions))
+            rows = (await self.db.execute(stmt)).all()
+            return [
+                (imdb_id, ext, prov, show_id) for imdb_id, ext, prov, show_id in rows
+            ]
+        except SQLAlchemyError:
+            log.exception("Bulk show lookup by identifiers failed")
+            return []
+
+    async def native_imdb_index(self) -> dict[str, ShowId]:
+        """Map IMDb id -> show id for native-provider (IMDb-keyed) rows.
+
+        These are the library rows that can't be matched by a TMDB/TVDB search
+        result's provider key (their key is ``(tt..., 'native')``). Used to
+        bridge "Add vs View" after enriching a result with its IMDb id. Empty
+        for libraries with no native/scan-imported shows, so the enrichment
+        pass is skipped entirely for pure-TMDB users.
+        """
+        try:
+            stmt = select(Show.external_id, Show.id).where(
+                Show.metadata_provider == "native"
+            )
+            rows = (await self.db.execute(stmt)).all()
+            return {ext: sid for ext, sid in rows if ext}
+        except SQLAlchemyError:
+            log.exception("Native IMDb index lookup failed")
+            return {}
+
+    async def get_shows(self) -> list[ShowSchema]:
+        """
+        Retrieve all shows from the database.
+
+        :return: A list of Show objects.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = select(Show).options(*_full_show_eager_loads())
+            results = (await self.db.execute(stmt)).scalars().unique().all()
+            return [ShowSchema.model_validate(show) for show in results]
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving all shows")
+            raise
+
+    async def get_shows_paginated(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = 50,
+        query: str | None = None,
+        sort: str | None = None,
+        libraries: list[str] | None = None,
+        excluded_libraries: list[str] | None = None,
+        genres: list[str] | None = None,
+        excluded_genres: list[str] | None = None,
+        decades: list[int] | None = None,
+        excluded_decades: list[int] | None = None,
+        airing: list[str] | None = None,
+        excluded_airing: list[str] | None = None,
+        statuses: list[str] | None = None,
+        excluded_statuses: list[str] | None = None,
+    ) -> tuple[list[Show], int]:
+        """Paginated variant of :meth:`get_shows` for list endpoints.
+
+        Pushes LIMIT/OFFSET to SQL instead of slicing a fully-hydrated
+        in-memory list. Returns ORM rows (not :class:`ShowSchema`) so
+        callers avoid Pydantic touching unloaded ``seasons``.
+        """
+        try:
+            count_stmt = _apply_show_status_filters(
+                _apply_show_list_filters(
+                    select(func.count()).select_from(Show),
+                    query=query,
+                    libraries=libraries,
+                    excluded_libraries=excluded_libraries,
+                    genres=genres,
+                    excluded_genres=excluded_genres,
+                    decades=decades,
+                    excluded_decades=excluded_decades,
+                    airing=airing,
+                    excluded_airing=excluded_airing,
+                ),
+                statuses=statuses,
+                excluded_statuses=excluded_statuses,
+            )
+            stmt = _apply_show_sort(
+                _apply_show_status_filters(
+                    _apply_show_list_filters(
+                        select(Show).options(*_show_summary_eager_loads()),
+                        query=query,
+                        libraries=libraries,
+                        excluded_libraries=excluded_libraries,
+                        genres=genres,
+                        excluded_genres=excluded_genres,
+                        decades=decades,
+                        excluded_decades=excluded_decades,
+                        airing=airing,
+                        excluded_airing=excluded_airing,
+                    ),
+                    statuses=statuses,
+                    excluded_statuses=excluded_statuses,
+                ),
+                sort,
+            )
+            stmt = stmt.offset(offset).limit(limit)
+            total = (await self.db.scalar(count_stmt)) or 0
+            rows = (await self.db.execute(stmt)).scalars().unique().all()
+            return list(rows), int(total)
+        except SQLAlchemyError:
+            log.exception("Database error while paginating shows")
+            raise
+
+    async def count_shows_filtered(
+        self,
+        *,
+        query: str | None = None,
+        libraries: list[str] | None = None,
+        excluded_libraries: list[str] | None = None,
+        genres: list[str] | None = None,
+        excluded_genres: list[str] | None = None,
+        decades: list[int] | None = None,
+        excluded_decades: list[int] | None = None,
+        airing: list[str] | None = None,
+        excluded_airing: list[str] | None = None,
+        statuses: list[str] | None = None,
+        excluded_statuses: list[str] | None = None,
+    ) -> int:
+        try:
+            stmt = _apply_show_status_filters(
+                _apply_show_list_filters(
+                    select(func.count()).select_from(Show),
+                    query=query,
+                    libraries=libraries,
+                    excluded_libraries=excluded_libraries,
+                    genres=genres,
+                    excluded_genres=excluded_genres,
+                    decades=decades,
+                    excluded_decades=excluded_decades,
+                    airing=airing,
+                    excluded_airing=excluded_airing,
+                ),
+                statuses=statuses,
+                excluded_statuses=excluded_statuses,
+            )
+            return int((await self.db.scalar(stmt)) or 0)
+        except SQLAlchemyError:
+            log.exception("Database error while counting shows")
+            raise
+
+    async def get_show_facets(self) -> dict[str, list]:
+        """Return filter option values for show grids without loading episodes."""
+        try:
+            rows = (
+                await self.db.execute(select(Show.library, Show.genres, Show.year))
+            ).all()
+            libraries: set[str] = set()
+            genres: set[str] = set()
+            decades: set[int] = set()
+            for library, row_genres, year in rows:
+                if library:
+                    libraries.add(library)
+                for genre in row_genres or []:
+                    genres.add(genre)
+                if year is not None:
+                    decades.add((year // 10) * 10)
+            return {
+                "libraries": sorted(libraries),
+                "genres": sorted(genres),
+                "decades": sorted(decades, reverse=True),
+            }
+        except SQLAlchemyError:
+            log.exception("Database error while loading show facets")
+            raise
+
+    async def get_total_downloaded_episodes_count(self) -> int:
+        try:
+            stmt = select(func.count(Episode.id)).select_from(Episode).join(EpisodeFile)
+            return (await self.db.execute(stmt)).scalar_one_or_none() or 0
+        except SQLAlchemyError:
+            log.exception("Database error while calculating downloaded episodes count")
+            raise
+
+    async def save_show(self, show: ShowSchema) -> ShowSchema:
+        """
+        Save a new show or update an existing one in the database.
+
+        :param show: The Show object to save.
+        :return: The saved Show object.
+        :raises ValueError: If a show with the same primary key already exists (on insert).
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        # Native/Cinemeta media are keyed on the IMDb id (external_id == 'tt...').
+        # Mirror it into imdb_id when the provider didn't populate the column so
+        # IMDb-keyed rows always carry it — keeps "Add vs View" matching and
+        # cross-provider dedup working without relying on external_id fallbacks.
+        if not show.imdb_id and show.external_id.startswith("tt"):
+            show.imdb_id = show.external_id
+        # Use a fresh query with eager loads so any return path has relationships loaded.
+        db_show = None
+        if show.id:
+            stmt = (
+                select(Show)
+                .where(Show.id == show.id)
+                .options(*_full_show_eager_loads())
+            )
+            db_show = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+
+        if db_show:  # Update existing show
+            db_show.external_id = show.external_id
+            db_show.metadata_provider = show.metadata_provider
+            db_show.name = show.name
+            db_show.overview = show.overview
+            db_show.year = show.year
+            db_show.original_language = show.original_language
+            db_show.imdb_id = show.imdb_id
+        else:  # Insert new show
+            db_show = Show(
+                id=show.id,
+                external_id=show.external_id,
+                metadata_provider=show.metadata_provider,
+                name=show.name,
+                overview=show.overview,
+                year=show.year,
+                ended=show.ended,
+                original_language=show.original_language,
+                imdb_id=show.imdb_id,
+                seasons=[
+                    Season(
+                        id=season.id,
+                        show_id=show.id,
+                        number=season.number,
+                        episodes=[
+                            Episode(
+                                id=episode.id,
+                                season_id=season.id,
+                                number=episode.number,
+                                title=episode.title,
+                                overview=episode.overview,
+                            )
+                            for episode in season.episodes
+                        ],
+                    )
+                    for season in show.seasons
+                ],
+            )
+            self.db.add(db_show)
+
+        try:
+            await self.db.commit()
+            # Re-fetch with eager loads so model_validate can traverse relationships.
+            stmt = (
+                select(Show)
+                .where(Show.id == db_show.id)
+                .options(*_full_show_eager_loads())
+            )
+            db_show = (await self.db.execute(stmt)).unique().scalar_one()
+            return ShowSchema.model_validate(db_show)
+        except IntegrityError as e:
+            await self.db.rollback()
+            msg = f"Show with this primary key or unique constraint violation: {e.orig}"
+            raise ConflictError(msg) from e
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(f"Database error while saving show {show.name}")
+            raise
+
+    async def delete_show(self, show_id: ShowId) -> None:
+        """
+        Delete a show by its ID.
+
+        :param show_id: The ID of the show to delete.
+        :raises NotFoundError: If the show with the given ID is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            show = await self.db.get(Show, show_id)
+            if not show:
+                msg = f"Show with id {show_id} not found."
+                raise NotFoundError(msg)
+            await self.db.delete(show)
+            await self.db.commit()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(f"Database error while deleting show {show_id}")
+            raise
+
+    async def get_season(self, season_id: SeasonId) -> SeasonSchema:
+        """
+        Retrieve a season by its ID.
+
+        :param season_id: The ID of the season to get.
+        :return: A Season object.
+        :raises NotFoundError: If the season with the given ID is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Season)
+                .where(Season.id == season_id)
+                .options(
+                    selectinload(Season.episodes).selectinload(Episode.episode_files),
+                    selectinload(Season.show),
+                )
+            )
+            season = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+            if not season:
+                msg = f"Season with id {season_id} not found."
+                raise NotFoundError(msg)
+            return SeasonSchema.model_validate(season)
+        except SQLAlchemyError:
+            log.exception(f"Database error while retrieving season {season_id}")
+            raise
+
+    async def get_episode(self, episode_id: EpisodeId) -> EpisodeSchema:
+        """
+        Retrieve an episode by its ID.
+
+        :param episode_id: The ID of the episode to get.
+        :return: An Episode object.
+        :raises NotFoundError: If the episode with the given ID is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Episode)
+                .where(Episode.id == episode_id)
+                .options(selectinload(Episode.episode_files))
+            )
+            episode = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+            if not episode:
+                msg = f"Episode with id {episode_id} not found."
+                raise NotFoundError(msg)
+            return EpisodeSchema.model_validate(episode)
+        except SQLAlchemyError as e:
+            log.error(f"Database error while retrieving episode {episode_id}: {e}")
+            raise
+
+    async def get_season_by_episode(self, episode_id: EpisodeId) -> SeasonSchema:
+        try:
+            stmt = (
+                select(Season)
+                .join(Season.episodes)
+                .where(Episode.id == episode_id)
+                .options(
+                    selectinload(Season.episodes).selectinload(Episode.episode_files),
+                    selectinload(Season.show),
+                )
+            )
+
+            season = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+
+            if not season:
+                msg = f"Season not found for episode {episode_id}"
+                raise NotFoundError(msg)
+
+            return SeasonSchema.model_validate(season)
+
+        except SQLAlchemyError as e:
+            log.error(
+                f"Database error while retrieving season for episode {episode_id}: {e}"
+            )
+            raise
+
+    async def get_season_by_number(
+        self, season_number: int, show_id: ShowId
+    ) -> SeasonSchema:
+        """
+        Retrieve a season by its number and show ID.
+
+        :param season_number: The number of the season.
+        :param show_id: The ID of the show.
+        :return: A Season object.
+        :raises NotFoundError: If the season is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Season)
+                .where(Season.show_id == show_id)
+                .where(Season.number == season_number)
+                .options(
+                    selectinload(Season.episodes).selectinload(Episode.episode_files),
+                    selectinload(Season.show),
+                )
+            )
+            result = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+            if not result:
+                msg = f"Season number {season_number} for show_id {show_id} not found."
+                raise NotFoundError(msg)
+            return SeasonSchema.model_validate(result)
+        except SQLAlchemyError:
+            log.exception(
+                f"Database error retrieving season {season_number} for show {show_id}"
+            )
+            raise
+
+    async def add_episode_file(
+        self, episode_file: EpisodeFileSchema
+    ) -> EpisodeFileSchema:
+        """
+        Adds an episode file record to the database.
+
+        :param episode_file: The EpisodeFile object to add.
+        :return: The added EpisodeFile object.
+        :raises IntegrityError: If the record violates constraints.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        db_model = EpisodeFile(**episode_file.model_dump())
+        try:
+            self.db.add(db_model)
+            await self.db.commit()
+            await self.db.refresh(db_model)
+            return EpisodeFileSchema.model_validate(db_model)
+        except IntegrityError as e:
+            await self.db.rollback()
+            log.error(f"Integrity error while adding episode file: {e}")
+            raise
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            log.error(f"Database error while adding episode file: {e}")
+            raise
+
+    async def get_episode_file_by_id(self, file_id: UUID) -> EpisodeFileSchema | None:
+        """Load a single episode file row by its surrogate id, or ``None``."""
+        try:
+            db_model = await self.db.get(EpisodeFile, file_id)
+            if db_model is None:
+                return None
+            return EpisodeFileSchema.model_validate(db_model)
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving episode_file %s", file_id)
+            raise
+
+    async def update_episode_file_import_status(
+        self,
+        *,
+        file_id: UUID,
+        status: ImportOutcome,
+        error: str | None = None,
+    ) -> None:
+        """Persist a new import outcome for the given episode file row."""
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        try:
+            stmt = (
+                update(EpisodeFile)
+                .where(EpisodeFile.id == file_id)
+                .values(
+                    import_status=status,
+                    import_error=error,
+                    last_attempt_at=now,
+                    attempt_count=EpisodeFile.attempt_count + 1,
+                    imported_at=(
+                        now
+                        if status == ImportOutcome.imported
+                        else EpisodeFile.imported_at
+                    ),
+                )
+            )
+            await self.db.execute(stmt)
+            await self.db.flush()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception("Failed to update import status for episode_file %s", file_id)
+            raise
+
+    async def finalize_episode_file_import(
+        self,
+        *,
+        file_id: UUID,
+        quality: Quality,
+        codec: str,
+        hdr: bool,
+        source: str,
+        variant: str,
+        extra: str,
+        status: ImportOutcome,
+        error: str | None = None,
+    ) -> None:
+        """Stamp the detected naming components + import outcome on a row.
+
+        Sets every naming column (quality/codec/hdr/source/variant/extra) plus
+        the import bookkeeping (``last_attempt_at``, ``attempt_count`` bump, and
+        ``imported_at`` when the outcome is ``imported``).
+        """
+        from datetime import UTC, datetime
+
+        now = datetime.now(UTC)
+        try:
+            stmt = (
+                update(EpisodeFile)
+                .where(EpisodeFile.id == file_id)
+                .values(
+                    quality=quality,
+                    codec=codec,
+                    hdr=hdr,
+                    source=source,
+                    variant=variant,
+                    extra=extra,
+                    import_status=status,
+                    import_error=error,
+                    last_attempt_at=now,
+                    attempt_count=EpisodeFile.attempt_count + 1,
+                    imported_at=(
+                        now
+                        if status == ImportOutcome.imported
+                        else EpisodeFile.imported_at
+                    ),
+                )
+            )
+            await self.db.execute(stmt)
+            await self.db.flush()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception("Failed to finalize import for episode_file %s", file_id)
+            raise
+
+    async def set_episode_file_sha1(
+        self,
+        *,
+        file_id: UUID,
+        sha1: str | None,
+    ) -> None:
+        """Persist (or clear) the integrity-audit SHA1 for an episode file."""
+        try:
+            stmt = (
+                update(EpisodeFile).where(EpisodeFile.id == file_id).values(sha1=sha1)
+            )
+            await self.db.execute(stmt)
+            await self.db.flush()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception("Failed to set sha1 for episode_file %s", file_id)
+            raise
+
+    async def remove_episode_files_by_torrent_id(self, torrent_id: TorrentId) -> int:
+        """
+        Removes episode file records associated with a given torrent ID.
+
+        :param torrent_id: The ID of the torrent whose episode files are to be removed.
+        :return: The number of episode files removed.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = delete(EpisodeFile).where(EpisodeFile.torrent_id == torrent_id)
+            result = await self.db.execute(stmt)
+            await self.db.commit()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                f"Database error removing episode files for torrent_id {torrent_id}"
+            )
+            raise
+        return result.rowcount
+
+    async def set_show_library(self, show_id: ShowId, library: str) -> None:
+        """
+        Sets the library for a show.
+
+        :param show_id: The ID of the show to update.
+        :param library: The library path to set for the show.
+        :raises NotFoundError: If the show with the given ID is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            show = await self.db.get(Show, show_id)
+            if not show:
+                msg = f"Show with id {show_id} not found."
+                raise NotFoundError(msg)
+            show.library = library
+            await self.db.commit()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(f"Database error setting library for show {show_id}")
+            raise
+
+    async def get_episode_files_by_season_id(
+        self, season_id: SeasonId
+    ) -> list[EpisodeFileSchema]:
+        """
+        Retrieve all episode files for a given season ID.
+
+        :param season_id: The ID of the season.
+        :return: A list of EpisodeFile objects.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(EpisodeFile).join(Episode).where(Episode.season_id == season_id)
+            )
+            results = (await self.db.execute(stmt)).scalars().all()
+            return [EpisodeFileSchema.model_validate(ef) for ef in results]
+        except SQLAlchemyError:
+            log.exception(
+                f"Database error retrieving episode files for season_id {season_id}"
+            )
+            raise
+
+    async def delete_episode_file(self, file_id: UUID) -> None:
+        """Delete a specific episode file record from the database."""
+        stmt = delete(EpisodeFile).where(EpisodeFile.id == file_id)
+        await self.db.execute(stmt)
+        await self.db.commit()
+
+    async def get_episode_files_by_episode_id(
+        self, episode_id: EpisodeId
+    ) -> list[EpisodeFileSchema]:
+        """
+        Retrieve all episode files for a given episode ID.
+
+        :param episode_id: The ID of the episode.
+        :return: A list of EpisodeFile objects.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = select(EpisodeFile).where(EpisodeFile.episode_id == episode_id)
+            results = (await self.db.execute(stmt)).scalars().all()
+            return [EpisodeFileSchema.model_validate(sf) for sf in results]
+        except SQLAlchemyError as e:
+            log.error(
+                f"Database error retrieving episode files for episode_id {episode_id}: {e}"
+            )
+            raise
+
+    async def get_torrents_by_show_id(self, show_id: ShowId) -> list[TorrentSchema]:
+        """
+        Retrieve all torrents associated with a given show ID.
+
+        :param show_id: The ID of the show.
+        :return: A list of Torrent objects.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Torrent)
+                .distinct()
+                .join(EpisodeFile, EpisodeFile.torrent_id == Torrent.id)
+                .join(Episode, Episode.id == EpisodeFile.episode_id)
+                .join(Season, Season.id == Episode.season_id)
+                .where(Season.show_id == show_id)
+            )
+            results = (await self.db.execute(stmt)).scalars().unique().all()
+            return [TorrentSchema.model_validate(torrent) for torrent in results]
+        except SQLAlchemyError:
+            log.exception(f"Database error retrieving torrents for show_id {show_id}")
+            raise
+
+    async def get_seasons_by_torrent_id(
+        self, torrent_id: TorrentId
+    ) -> list[SeasonNumber]:
+        """
+        Retrieve season numbers associated with a given torrent ID.
+
+        :param torrent_id: The ID of the torrent.
+        :return: A list of SeasonNumber objects.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Season.number)
+                .distinct()
+                .join(Episode, Episode.season_id == Season.id)
+                .join(EpisodeFile, EpisodeFile.episode_id == Episode.id)
+                .where(EpisodeFile.torrent_id == torrent_id)
+            )
+            results = (await self.db.execute(stmt)).scalars().unique().all()
+            return [SeasonNumber(x) for x in results]
+        except SQLAlchemyError:
+            log.exception(
+                f"Database error retrieving season numbers for torrent_id {torrent_id}"
+            )
+            raise
+
+    async def get_episodes_by_torrent_id(
+        self, torrent_id: TorrentId
+    ) -> list[EpisodeNumber]:
+        """
+        Retrieve episode numbers associated with a given torrent ID.
+
+        :param torrent_id: The ID of the torrent.
+        :return: A list of EpisodeNumber objects.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Episode.number)
+                .join(EpisodeFile, EpisodeFile.episode_id == Episode.id)
+                .where(EpisodeFile.torrent_id == torrent_id)
+                .order_by(Episode.number)
+            )
+
+            episode_numbers = (await self.db.execute(stmt)).scalars().all()
+
+            return [EpisodeNumber(n) for n in sorted(set(episode_numbers))]
+
+        except SQLAlchemyError as e:
+            log.error(
+                f"Database error retrieving episodes for torrent_id {torrent_id}: {e}"
+            )
+            raise
+
+    async def get_show_by_season_id(self, season_id: SeasonId) -> ShowSchema:
+        """
+        Retrieve a show by one of its season's ID.
+
+        :param season_id: The ID of the season to retrieve the show for.
+        :return: A Show object.
+        :raises NotFoundError: If the show for the given season ID is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        try:
+            stmt = (
+                select(Show)
+                .join(Season, Show.id == Season.show_id)
+                .where(Season.id == season_id)
+                .options(*_full_show_eager_loads())
+            )
+            result = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+            if not result:
+                msg = f"Show for season_id {season_id} not found."
+                raise NotFoundError(msg)
+            return ShowSchema.model_validate(result)
+        except SQLAlchemyError:
+            log.exception(f"Database error retrieving show by season_id {season_id}")
+            raise
+
+    async def add_season_to_show(
+        self, show_id: ShowId, season_data: SeasonSchema, *, skipped: bool = False
+    ) -> SeasonSchema:
+        """
+        Adds a new season and its episodes to a show.
+        If the season number already exists for the show, it returns the existing season.
+
+        :param show_id: The ID of the show to add the season to.
+        :param season_data: The SeasonSchema object for the new season.
+        :param skipped: Whether the season and its episodes should be created as skipped.
+        :return: The added or existing SeasonSchema object.
+        :raises NotFoundError: If the show is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        db_show = await self.db.get(Show, show_id)
+        if not db_show:
+            msg = f"Show with id {show_id} not found."
+            raise NotFoundError(msg)
+
+        stmt = (
+            select(Season)
+            .where(Season.show_id == show_id)
+            .where(Season.number == season_data.number)
+            .options(
+                selectinload(Season.episodes).selectinload(Episode.episode_files),
+            )
+        )
+        existing_db_season = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing_db_season:
+            return SeasonSchema.model_validate(existing_db_season)
+
+        db_season = Season(
+            id=season_data.id,
+            show_id=show_id,
+            number=season_data.number,
+            skipped=skipped,
+            episodes=[
+                Episode(
+                    id=ep_schema.id,
+                    number=ep_schema.number,
+                    title=ep_schema.title,
+                    skipped=skipped,
+                )
+                for ep_schema in season_data.episodes
+            ],
+        )
+
+        self.db.add(db_season)
+        await self.db.commit()
+        # Re-fetch with eager loads
+        stmt = (
+            select(Season)
+            .where(Season.id == db_season.id)
+            .options(
+                selectinload(Season.episodes).selectinload(Episode.episode_files),
+            )
+        )
+        db_season = (await self.db.execute(stmt)).unique().scalar_one()
+        return SeasonSchema.model_validate(db_season)
+
+    async def add_episode_to_season(
+        self, season_id: SeasonId, episode_data: EpisodeSchema, *, skipped: bool = False
+    ) -> EpisodeSchema:
+        """
+        Adds a new episode to a season.
+        If the episode number already exists for the season, it returns the existing episode.
+
+        :param season_id: The ID of the season to add the episode to.
+        :param episode_data: The EpisodeSchema object for the new episode.
+        :param skipped: Whether the episode should be created as skipped.
+        :return: The added or existing EpisodeSchema object.
+        :raises NotFoundError: If the season is not found.
+        :raises SQLAlchemyError: If a database error occurs.
+        """
+        db_season = await self.db.get(Season, season_id)
+        if not db_season:
+            msg = f"Season with id {season_id} not found."
+            raise NotFoundError(msg)
+
+        stmt = (
+            select(Episode)
+            .where(Episode.season_id == season_id)
+            .where(Episode.number == episode_data.number)
+            .options(selectinload(Episode.episode_files))
+        )
+        existing_db_episode = (await self.db.execute(stmt)).scalar_one_or_none()
+        if existing_db_episode:
+            return EpisodeSchema.model_validate(existing_db_episode)
+
+        db_episode = Episode(
+            id=episode_data.id,
+            season_id=season_id,
+            number=episode_data.number,
+            title=episode_data.title,
+            air_date=episode_data.air_date,
+            skipped=skipped,
+        )
+
+        self.db.add(db_episode)
+        await self.db.commit()
+        stmt = (
+            select(Episode)
+            .where(Episode.id == db_episode.id)
+            .options(selectinload(Episode.episode_files))
+        )
+        db_episode = (await self.db.execute(stmt)).unique().scalar_one()
+        return EpisodeSchema.model_validate(db_episode)
+
+    async def update_show_skipped(self, show_id: ShowId, skipped: bool) -> None:
+        db_show = await self.db.get(Show, show_id)
+        if not db_show:
+            msg = f"Show with id {show_id} not found."
+            raise NotFoundError(msg)
+        db_show.skipped = skipped
+        await self.db.flush()
+
+    async def update_episode_skipped(
+        self, episode_id: EpisodeId, skipped: bool
+    ) -> None:
+        db_episode = await self.db.get(Episode, episode_id)
+        if not db_episode:
+            msg = f"Episode with id {episode_id} not found."
+            raise NotFoundError(msg)
+        db_episode.skipped = skipped
+        await self.db.flush()
+
+    async def update_season_skipped(self, season_id: SeasonId, skipped: bool) -> None:
+        db_season = await self.db.get(Season, season_id)
+        if not db_season:
+            msg = f"Season with id {season_id} not found."
+            raise NotFoundError(msg)
+        db_season.skipped = skipped
+        await self.db.flush()
+
+    async def get_show_ids_due_for_metadata(
+        self, *, older_than: datetime, limit: int = 200
+    ) -> list[ShowId]:
+        """Show PKs whose metadata refresh is due (SQL-filtered, bounded)."""
+        from datetime import UTC, datetime
+
+        from sqlalchemy import or_
+
+        now = datetime.now(UTC)
+        stmt = (
+            select(Show.id)
+            .where(
+                or_(
+                    Show.last_metadata_check.is_(None),
+                    Show.last_metadata_check < older_than,
+                ),
+                or_(
+                    Show.metadata_failure_backoff_until.is_(None),
+                    Show.metadata_failure_backoff_until <= now,
+                ),
+            )
+            .order_by(Show.last_metadata_check.asc().nulls_first())
+            .limit(limit)
+        )
+        return typing_cast(
+            "list[ShowId]", list((await self.db.execute(stmt)).scalars().all())
+        )
+
+    async def stamp_metadata_check(self, show_id: ShowId) -> None:
+        from datetime import UTC, datetime
+
+        db_show = await self.db.get(Show, show_id)
+        if db_show:
+            db_show.last_metadata_check = datetime.now(UTC)
+            db_show.metadata_failure_backoff_until = None
+            await self.db.flush()
+
+    async def mark_metadata_failure(
+        self, show_id: ShowId, backoff_until: datetime
+    ) -> None:
+        from datetime import UTC, datetime
+
+        db_show = await self.db.get(Show, show_id)
+        if db_show:
+            db_show.last_metadata_check = datetime.now(UTC)
+            db_show.metadata_failure_backoff_until = backoff_until
+            await self.db.flush()
+
+    async def set_auto_download_backoff(self, show_id: ShowId, until: datetime) -> None:
+        db_show = await self.db.get(Show, show_id)
+        if db_show:
+            db_show.auto_download_backoff_until = until
+            await self.db.flush()
+
+    async def update_show_attributes(
+        self,
+        show_id: ShowId,
+        name: str | None = None,
+        overview: str | None = None,
+        year: int | None = None,
+        ended: bool | None = None,
+        continuous_download: bool | None = ...,
+        external_id: str | None = None,
+        imdb_id: str | None = None,
+        preferred_quality: list[str] | None = ...,
+        preferred_codec: list[str] | None = ...,
+        subtitle_languages: list[str] | None = ...,
+        vote_average: float | None = ...,
+        content_rating: str | None = ...,
+        genres: list[str] | None = ...,
+        cast: list[str] | None = ...,
+    ) -> tuple[ShowSchema, bool]:
+        """
+        Update attributes of an existing show.
+
+        Returns a tuple of (updated show, whether any fields changed).
+        """
+        # Fetch with eager loads so we can return a fully-validated schema.
+        stmt = select(Show).where(Show.id == show_id).options(*_full_show_eager_loads())
+        db_show = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+        if not db_show:
+            msg = f"Show with id {show_id} not found."
+            raise NotFoundError(msg)
+
+        updated = False
+
+        def _lists_equal(a: list | None, b: list | None) -> bool:
+            if a is None and b is None:
+                return True
+            if a is None or b is None:
+                return False
+            return sorted(a) == sorted(b)
+
+        def _floats_equal(a: float | None, b: float | None) -> bool:
+            if a is None and b is None:
+                return True
+            if a is None or b is None:
+                return False
+            return round(a, 2) == round(b, 2)
+
+        if name is not None and db_show.name != name:
+            db_show.name = name
+            updated = True
+        if overview is not None and db_show.overview != overview:
+            db_show.overview = overview
+            updated = True
+        if year is not None and db_show.year != year:
+            db_show.year = year
+            updated = True
+        if ended is not None and db_show.ended != ended:
+            db_show.ended = ended
+            updated = True
+        if (
+            continuous_download is not ...
+            and db_show.continuous_download != continuous_download
+        ):
+            db_show.continuous_download = continuous_download
+            updated = True
+        if external_id is not None and db_show.external_id != external_id:
+            db_show.external_id = external_id
+            updated = True
+        if imdb_id is not None and db_show.imdb_id != imdb_id:
+            db_show.imdb_id = imdb_id
+            updated = True
+        if preferred_quality is not ... and not _lists_equal(
+            db_show.preferred_quality, preferred_quality
+        ):
+            db_show.preferred_quality = preferred_quality
+            updated = True
+        if preferred_codec is not ... and not _lists_equal(
+            db_show.preferred_codec, preferred_codec
+        ):
+            db_show.preferred_codec = preferred_codec
+            updated = True
+        if subtitle_languages is not ... and not _lists_equal(
+            db_show.subtitle_languages, subtitle_languages
+        ):
+            db_show.subtitle_languages = subtitle_languages
+            updated = True
+        if vote_average is not ... and not _floats_equal(
+            db_show.vote_average, vote_average
+        ):
+            db_show.vote_average = vote_average
+            updated = True
+        if content_rating is not ... and db_show.content_rating != content_rating:
+            db_show.content_rating = content_rating
+            updated = True
+        if genres is not ... and not _lists_equal(db_show.genres, genres):
+            db_show.genres = genres
+            updated = True
+        if cast is not ... and not _lists_equal(db_show.cast, cast):
+            db_show.cast = cast
+            updated = True
+        if updated:
+            await self.db.flush()
+            # Re-fetch fully eager-loaded for validation.
+            stmt = (
+                select(Show)
+                .where(Show.id == show_id)
+                .options(*_full_show_eager_loads())
+            )
+            db_show = (await self.db.execute(stmt)).unique().scalar_one()
+        return ShowSchema.model_validate(db_show), updated
+
+    async def update_episode_attributes(
+        self,
+        episode_id: EpisodeId,
+        title: str | None = None,
+        overview: str | None = None,
+        air_date: date | None = None,
+    ) -> EpisodeSchema:
+        """Update attributes of an existing episode.
+
+        ``air_date`` takes ``date | None``; passing ``None`` here means "no
+        change" (we don't allow clearing the field via this path). The
+        sentinel value is reserved by checking against the actual current
+        value during the metadata refresh path.
+        """
+        stmt = (
+            select(Episode)
+            .where(Episode.id == episode_id)
+            .options(selectinload(Episode.episode_files))
+        )
+        db_episode = (await self.db.execute(stmt)).unique().scalar_one_or_none()
+        if not db_episode:
+            msg = f"Episode with id {episode_id} not found."
+            raise NotFoundError(msg)
+
+        updated = False
+        if title is not None and db_episode.title != title:
+            db_episode.title = title
+            updated = True
+        if overview is not None and db_episode.overview != overview:
+            db_episode.overview = overview
+            updated = True
+        if air_date is not None and db_episode.air_date != air_date:
+            db_episode.air_date = air_date
+            updated = True
+
+        if updated:
+            await self.db.flush()
+            stmt = (
+                select(Episode)
+                .where(Episode.id == episode_id)
+                .options(
+                    selectinload(Episode.episode_files),
+                    selectinload(Episode.season).selectinload(Season.show),
+                )
+            )
+            db_episode = (await self.db.execute(stmt)).unique().scalar_one()
+            log.debug(
+                f"Updated episode S{db_episode.season.number:02d}E{db_episode.number:02d} "
+                f"for show {db_episode.season.show.name}"
+            )
+        return EpisodeSchema.model_validate(db_episode)
