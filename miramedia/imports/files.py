@@ -205,9 +205,36 @@ def import_file(
     try:
         target_file.hardlink_to(source_file)
     except FileExistsError as exc:
-        # TOCTOU race: target re-appeared after our unlink above. Surface as
-        # a structured conflict so callers record failed_io rather than
-        # silently treating the import as successful.
+        # TOCTOU race: a concurrent import re-published the target between our
+        # ``unlink`` above and this link. If the file now in place is the same
+        # content as our source (same inode, or a complete copy of equal size),
+        # the other writer already finished this exact import — treat it as an
+        # idempotent success instead of recording a false ``failed_io`` that
+        # would outlive the torrent and inflate the dashboard badge.
+        try:
+            src_stat = source_file.stat()
+            dst_stat = target_file.stat()
+        except OSError:
+            src_stat = dst_stat = None
+        if (
+            src_stat is not None
+            and dst_stat is not None
+            and (
+                (
+                    dst_stat.st_ino == src_stat.st_ino
+                    and dst_stat.st_dev == src_stat.st_dev
+                )
+                or (target_file.is_file() and dst_stat.st_size == src_stat.st_size)
+            )
+        ):
+            log.debug(
+                "Target %s re-published by a concurrent import; treating as done",
+                target_file,
+            )
+            return
+        # Genuine conflict (different content occupies the path). Surface as a
+        # structured error so callers record failed_io rather than silently
+        # treating the import as successful.
         msg = f"Target {target_file} reappeared during link"
         raise ImportConflictError(msg) from exc
     except (OSError, UnsupportedOperation, NotImplementedError) as exc:

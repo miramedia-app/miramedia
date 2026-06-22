@@ -156,6 +156,44 @@ def test_import_file_toctou_hardlink_raises_conflict(tmp_path: Path) -> None:
             import_file(dst, src)
 
 
+def test_import_file_reappeared_full_copy_is_idempotent(tmp_path: Path) -> None:
+    """A concurrent import that re-published an equal-content target is success.
+
+    Reproduces the "ghost failure" race: a second importer unlinks then loses
+    the hardlink to a peer that already published the same file. If the target
+    now in place matches the source by size, treat it as done — not failed_io.
+    """
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"content")
+    dst = tmp_path / "target.mkv"
+
+    def _race_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        # Simulate the peer winning the race between our unlink and our link:
+        # the equal-content file reappears, then our hardlink_to collides.
+        dst.write_bytes(b"content")
+        raise FileExistsError("simulated race")
+
+    with patch.object(Path, "hardlink_to", _race_hardlink):
+        import_file(dst, src)  # must NOT raise
+
+    assert dst.read_bytes() == b"content"
+
+
+def test_import_file_reappeared_different_content_raises(tmp_path: Path) -> None:
+    """A reappeared target with mismatched content is a real conflict."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"the source content")
+    dst = tmp_path / "target.mkv"
+
+    def _race_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        dst.write_bytes(b"different")  # different size -> genuine conflict
+        raise FileExistsError("simulated race")
+
+    with patch.object(Path, "hardlink_to", _race_hardlink):
+        with pytest.raises(ImportConflictError):
+            import_file(dst, src)
+
+
 def test_import_file_replaced_target_is_linked_to_source(tmp_path: Path) -> None:
     """After replacing a different-size target the new file shares source inode (same fs)."""
     src = tmp_path / "source.mkv"

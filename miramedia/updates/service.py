@@ -307,7 +307,9 @@ class UpdateService:
         return UpdateInfo(
             enabled=True,
             current_version=current,
-            latest_version=latest_tag or None,
+            # Display the v-stripped form so it matches current_version (which is
+            # bare, e.g. "1.0.1"); the raw tag ("v1.0.0") would read as a mismatch.
+            latest_version=latest or None,
             update_available=update_available,
             release_url=cached.get("html_url"),
             release_notes=cached.get("body"),

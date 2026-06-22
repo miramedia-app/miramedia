@@ -581,6 +581,22 @@ class MovieRepository:
             log.exception("Failed to update import status for movie_file %s", file_id)
             raise
 
+    async def get_orphaned_failed_movie_files(self) -> list[MovieFileSchema]:
+        """Movie files stuck ``failed_*`` with no torrent left to surface them.
+
+        See :meth:`ShowRepository.get_orphaned_failed_episode_files` — same
+        "ghost" failure: a detached row (FK ``ON DELETE SET NULL``) the imports
+        page can never show, yet the dashboard file-count badge still counts.
+        """
+        stmt = select(MovieFile).where(
+            MovieFile.torrent_id.is_(None),
+            MovieFile.import_status.in_(
+                (ImportOutcome.failed_io, ImportOutcome.failed_no_match)
+            ),
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return [MovieFileSchema.model_validate(r) for r in rows]
+
     async def set_movie_file_sha1(
         self,
         *,

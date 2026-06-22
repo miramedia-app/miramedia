@@ -1150,6 +1150,28 @@ class MovieService:
                     return candidate
         return None
 
+    async def reconcile_orphaned_failed_imports(self) -> int:
+        """Heal "ghost" failed movie files whose library file is on disk.
+
+        See :meth:`ShowService.reconcile_orphaned_failed_imports` — a detached
+        (FK ``ON DELETE SET NULL``) ``failed_io`` row the imports page can never
+        retry, but whose real file the winning import already published. If the
+        on-disk library file exists, flip it to ``imported`` so the dashboard
+        "failed" badge clears truthfully.
+        """
+        orphans = await self.movie_repository.get_orphaned_failed_movie_files()
+        healed = 0
+        for mf in orphans:
+            if await self.resolve_movie_file_path(mf) is None:
+                continue
+            await self.movie_repository.update_movie_file_import_status(
+                file_id=mf.id, status=ImportOutcome.imported, error=None
+            )
+            healed += 1
+        if healed:
+            log.info("Reconciled %d ghost failed movie import(s) to imported", healed)
+        return healed
+
     async def import_movie_from_file(
         self,
         *,
@@ -1832,6 +1854,11 @@ class MovieService:
         scheduler session for the whole batch.
         """
         from miramedia.database import bg_movie_service
+
+        # Heal detached "ghost" failures first, in their own short-lived
+        # session, so the disk globbing never pins the outer scheduler session.
+        async with bg_movie_service() as svc:
+            await svc.reconcile_orphaned_failed_imports()
 
         torrents = await self.torrent_service.get_all_torrents()
         finished = [t for t in torrents if t.status == TorrentStatus.finished]

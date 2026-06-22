@@ -106,6 +106,8 @@ postgres/
 pgdata/
 res/
 images/
+# ...but the frontend ships a bundled login background under web/public/images.
+!web/public/images/
 
 # ---- Docker ----
 docker-compose.override.yaml

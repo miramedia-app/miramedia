@@ -695,6 +695,23 @@ class ShowRepository:
             log.exception("Failed to update import status for episode_file %s", file_id)
             raise
 
+    async def get_orphaned_failed_episode_files(self) -> list[EpisodeFileSchema]:
+        """Episode files stuck ``failed_*`` with no torrent left to surface them.
+
+        These are "ghost" failures: a torrent's cleanup (FK ``ON DELETE SET
+        NULL``) detached the row after an overlapping import marked it failed,
+        so the imports page (torrent-centric) can never show or retry them, yet
+        the dashboard's file-count badge still counts them.
+        """
+        stmt = select(EpisodeFile).where(
+            EpisodeFile.torrent_id.is_(None),
+            EpisodeFile.import_status.in_(
+                (ImportOutcome.failed_io, ImportOutcome.failed_no_match)
+            ),
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return [EpisodeFileSchema.model_validate(r) for r in rows]
+
     async def finalize_episode_file_import(
         self,
         *,

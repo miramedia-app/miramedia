@@ -1560,6 +1560,30 @@ class ShowService:
                     return candidate
         return None
 
+    async def reconcile_orphaned_failed_imports(self) -> int:
+        """Heal "ghost" failed episode files whose library file is on disk.
+
+        A torrent's post-import cleanup can detach an episode file (FK ``ON
+        DELETE SET NULL``) right after an overlapping import stamped it
+        ``failed_io`` — but the winning attempt had already published the real
+        file. Such rows can never be retried (no torrent) and are invisible on
+        the torrent-centric imports page, yet keep the dashboard "failed" badge
+        lit. If the on-disk library file exists, the import genuinely
+        succeeded: flip the row to ``imported`` so the count clears truthfully.
+        """
+        orphans = await self.show_repository.get_orphaned_failed_episode_files()
+        healed = 0
+        for ef in orphans:
+            if await self.resolve_episode_file_path(ef) is None:
+                continue
+            await self.show_repository.update_episode_file_import_status(
+                file_id=ef.id, status=ImportOutcome.imported, error=None
+            )
+            healed += 1
+        if healed:
+            log.info("Reconciled %d ghost failed episode import(s) to imported", healed)
+        return healed
+
     async def import_episode_from_file(
         self,
         *,
@@ -2515,6 +2539,11 @@ class ShowService:
         scheduler session for the whole batch.
         """
         from miramedia.database import bg_show_service
+
+        # Heal detached "ghost" failures first, in their own short-lived
+        # session, so the disk globbing never pins the outer scheduler session.
+        async with bg_show_service() as svc:
+            await svc.reconcile_orphaned_failed_imports()
 
         torrents = await self.torrent_service.get_all_torrents()
         finished = [t for t in torrents if t.status == TorrentStatus.finished]

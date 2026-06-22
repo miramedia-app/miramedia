@@ -132,6 +132,30 @@ taskiq_fastapi.init(background_broker, "miramedia.main:app")
 log = logging.getLogger(__name__)
 
 
+# Serialise the import sweeps so overlapping ticks never race on the same
+# torrent. The sweep is cron'd every minute AND re-dispatched by
+# ``detect_finished_downloads_task`` the moment a download finishes; a large
+# cross-volume copy on the NAS can outlast the 1-min interval, so a second
+# invocation would import the same files concurrently — producing
+# ``LockNotAvailableError`` on the per-file UPDATE, "reappeared during link"
+# conflicts, and source-file-gone errors. Worse, when the winning attempt
+# cleans up the torrent (FK ``ON DELETE SET NULL``) the loser then stamps an
+# already-imported episode ``failed_io`` with no torrent left to surface it on
+# the imports page — an invisible "ghost" failure inflating the dashboard
+# badge. A non-blocking guard turns an overlapping tick into a no-op; the next
+# free tick picks up any remaining work. Lazy per-loop init mirrors
+# ``_get_sha1_semaphore`` (a module-import-time lock binds to the wrong loop).
+_IMPORT_SWEEP_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _import_sweep_lock(key: str) -> asyncio.Lock:
+    lock = _IMPORT_SWEEP_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _IMPORT_SWEEP_LOCKS[key] = lock
+    return lock
+
+
 # --------------------------------------------------------------------------
 # Task / service lifetime
 # --------------------------------------------------------------------------
@@ -153,10 +177,15 @@ async def import_all_movie_torrents_task() -> None:
     # service via status=='finished' AND is_due_for_retry(...) (exp backoff
     # 1→120m on attempt_count). On a healthy library this filters down to
     # a handful of rows per minute-cron tick.
-    from miramedia.database import bg_movie_service
+    lock = _import_sweep_lock("movie")
+    if lock.locked():
+        log.debug("Movie import sweep already running; skipping overlapping tick")
+        return
+    async with lock:
+        from miramedia.database import bg_movie_service
 
-    async with bg_movie_service() as movie_service:
-        await movie_service.import_all_torrents()
+        async with bg_movie_service() as movie_service:
+            await movie_service.import_all_torrents()
     # Broadcast a refresh hint so connected SSE clients re-query the
     # torrents + imports endpoints without waiting for their backstop poll.
     from miramedia.events.bus import Event, get_event_bus
@@ -166,10 +195,15 @@ async def import_all_movie_torrents_task() -> None:
 
 @background_broker.task(labels={"priority": "background"})
 async def import_all_show_torrents_task() -> None:
-    from miramedia.database import bg_show_service
+    lock = _import_sweep_lock("show")
+    if lock.locked():
+        log.debug("Show import sweep already running; skipping overlapping tick")
+        return
+    async with lock:
+        from miramedia.database import bg_show_service
 
-    async with bg_show_service() as show_service:
-        await show_service.import_all_torrents()
+        async with bg_show_service() as show_service:
+            await show_service.import_all_torrents()
     from miramedia.events.bus import Event, get_event_bus
 
     get_event_bus().publish(Event(type="torrent.refresh"))

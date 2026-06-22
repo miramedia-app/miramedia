@@ -10,14 +10,22 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  # One job per (target, arch) on its NATIVE runner — no QEMU. Emulated
+  # linux/arm64 builds of the chromium `app-cf` variant + `pnpm install` were
+  # so slow they blew past the 6h job limit. arm64 runners are free for public
+  # repos (ubuntu-24.04-arm). Each job pushes by digest; the `merge` job then
+  # assembles the multi-arch manifest. (docker docs: "Distribute build across
+  # multiple runners".)
+  build:
+    runs-on: ${{ matrix.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     permissions:
       contents: read
       packages: write
-
     strategy:
+      fail-fast: false
       matrix:
+        target: [app, app-cf]
+        platform: [linux/amd64, linux/arm64]
         include:
           - target: app
             suffix: ""
@@ -27,8 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+      - name: Prepare platform slug
+        id: prep
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: echo "slug=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -42,7 +53,82 @@ jobs:
 
       - name: Extract version from tag
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Image labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          target: ${{ matrix.target }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }},push-by-digest=true,name-canonical=true,push=true
+          # Per (target, arch) cache scope — a shared scope caused the
+          # "Unable to reserve cache ... another job may be creating this cache"
+          # collision when both targets raced for the same key.
+          cache-from: type=gha,scope=${{ matrix.target }}-${{ steps.prep.outputs.slug }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}-${{ steps.prep.outputs.slug }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.target }}-${{ steps.prep.outputs.slug }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Assemble the per-arch digests into one multi-arch manifest per target and
+  # tag it (semver + latest for the slim variant).
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - target: app
+            suffix: ""
+          - target: app-cf
+            suffix: "-cf"
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          # Anchor on the `-linux-` slug prefix: `app` is a prefix of `app-cf`,
+          # so a bare `digests-app-*` glob would also pull in the app-cf
+          # artifacts and try to assemble their digests under the wrong image
+          # name ("not found"). The slug always begins `linux-`.
+          pattern: digests-${{ matrix.target }}-linux-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker metadata
         id: meta
@@ -55,23 +141,21 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ matrix.suffix == '' }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          target: ${{ matrix.target }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ steps.version.outputs.version }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}@sha256:%s ' *)
+
+      - name: Inspect
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}${{ matrix.suffix }}:${{ steps.meta.outputs.version }}
 
   github-release:
     runs-on: ubuntu-latest
-    needs: build-and-push
+    needs: merge
     permissions:
       contents: write
     steps:
