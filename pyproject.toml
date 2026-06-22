@@ -1,11 +1,16 @@
 [project]
 name = "miramedia"
-version = "1.0.0"
+version = "1.0.1"
 description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [
     "cachetools>=6.0.0",
-    "fastapi[standard]>=0.115.12",
+    # Upper bound: FastAPI 0.137 stores included routers as `_IncludedRouter`
+    # objects (no `.path`) in `app.routes`, which crashes
+    # prometheus-fastapi-instrumentator 8.0.0 (`route.path` -> AttributeError ->
+    # HTTP 500 on every request). Lift once the instrumentator ships a fix.
+    # https://github.com/trallnag/prometheus-fastapi-instrumentator/issues/370
+    "fastapi[standard]>=0.115.12,<0.137",
     "fastapi-users[sqlalchemy]>=15.0.2",
     "httpx>=0.28.1",
     "httpx-oauth>=0.16.1",

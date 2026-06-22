@@ -25,7 +25,7 @@ services:
     # ":local" is the slim image (no Chromium). For the Cloudflare native solver,
     # build the chromium variant (`--target app-cf -t miramedia:local-cf`) and set
     # this to `miramedia:local-cf` — or use an external solver, which runs on slim.
-    image: miramedia:local
+    image: ghcr.io/miramedia-app/miramedia:latest
     container_name: miramedia
     # tini reaps reparented Chrome helper processes from the cloudflare bypass.
     # Without this PID 1 = startup.sh / fastapi, neither of which reaps SIGCHLD
