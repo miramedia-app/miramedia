@@ -396,6 +396,31 @@ def _is_title_relevant(title: str, media_name: str) -> bool:
     return bool(_RELEASE_MARKERS.match(next_token))
 
 
+_YEAR_TOKEN = re.compile(r"\b(19\d{2}|20\d{2})\b")
+
+
+def _extract_years(title: str) -> set[int]:
+    """All 4-digit 19xx/20xx tokens in a release title."""
+    return {int(m) for m in _YEAR_TOKEN.findall(title)}
+
+
+def _is_year_relevant(title: str, media_year: int | None) -> bool:
+    """Reject a release whose title carries a year that excludes ``media_year``.
+
+    Tolerant by design: a title with no year is kept (many legit releases omit
+    it), and a title that mentions several years (e.g. ``Blade Runner 2049
+    (2017)``) is kept as long as ``media_year`` is among them. Only a title that
+    states one or more years, none of which is the media's year, is rejected —
+    that is the ``Supergirl 2026`` vs ``Supergirl 1984`` case.
+    """
+    if not media_year:
+        return True
+    years = _extract_years(title)
+    if not years:
+        return True
+    return media_year in years
+
+
 def evaluate_indexer_query_results(
     query_results: list[IndexerQueryResult],
     media: Show | Movie,
@@ -465,6 +490,22 @@ def evaluate_indexer_query_results(
         log.info(
             f"Filtered {filtered}/{before_count} results not matching '{media.name}'"
         )
+
+    # Year gate (movies only): drop releases whose title states a wrong year so a
+    # remake/older film (e.g. "Supergirl 1984") can't be picked for a different
+    # year's movie ("Supergirl 2026"). TV release titles often carry per-episode
+    # air years, so the gate is not applied to shows.
+    if not is_tv and media.year:
+        before_year = len(query_results)
+        query_results = [
+            r for r in query_results if _is_year_relevant(r.title, media.year)
+        ]
+        year_filtered = before_year - len(query_results)
+        if year_filtered:
+            log.info(
+                f"Filtered {year_filtered}/{before_year} results not matching "
+                f"year {media.year} for '{media.name}'"
+            )
 
     for ruleset in scoring_rulesets:
         if (

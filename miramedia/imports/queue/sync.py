@@ -43,6 +43,28 @@ def _dedupe_import_items(
     return out
 
 
+def _bucket_rank(item: TorrentImportItem | ScanImportItem) -> int:
+    """Status bucket order (Review=0, Retry=1, Done=2).
+
+    Mirrors the frontend ``bucketOf`` grouping so the ``all`` tab lists every
+    action-needed row before Done rows — reviewable scan + torrent items stay
+    together on the first page instead of scattering behind chronologically
+    newer imports.
+    """
+    if item.kind == "scan":
+        return 2 if item.result.status == "imported" else 0
+    if item.kind == "media":
+        return 2
+    p = item.entry.progress
+    if p.failed > 0 or p.ambiguous > 0:
+        return 0
+    if p.all_imported:
+        return 2
+    if item.backoff_seconds is not None:
+        return 1
+    return 0
+
+
 def _queue_rows_for_item(
     service: ImportsService,
     item: TorrentImportItem | ScanImportItem,
@@ -50,6 +72,7 @@ def _queue_rows_for_item(
     """Build at most one row per (kind, ref_id, tab)."""
     row_by_key: dict[tuple[str, str, str], dict] = {}
     tabs = (ImportTab.review, ImportTab.retry, ImportTab.done, ImportTab.all)
+    rank = _bucket_rank(item)
     for tab in tabs:
         if not service._tab_matches(item, tab):
             continue
@@ -68,6 +91,7 @@ def _queue_rows_for_item(
             "kind": item.kind,
             "ref_id": ref,
             "tab": tab.value,
+            "bucket_rank": rank,
             "sort_at": sort_at,
             "payload": item.model_dump(mode="json"),
         }
@@ -88,6 +112,7 @@ async def rebuild_import_queue(db: AsyncSession, service: ImportsService) -> int
             stmt = stmt.on_conflict_do_update(
                 index_elements=["kind", "ref_id", "tab"],
                 set_={
+                    "bucket_rank": stmt.excluded.bucket_rank,
                     "sort_at": stmt.excluded.sort_at,
                     "payload": stmt.excluded.payload,
                 },
@@ -114,7 +139,7 @@ async def list_queue_page(
     stmt = (
         select(ImportQueueItem.payload)
         .where(ImportQueueItem.tab == tab_value)
-        .order_by(ImportQueueItem.sort_at.desc())
+        .order_by(ImportQueueItem.bucket_rank.asc(), ImportQueueItem.sort_at.desc())
         .offset(offset)
         .limit(limit)
     )

@@ -174,6 +174,16 @@ class ShowService:
             )
             if existing:
                 return existing
+        # Specials (Season 0) are persisted as skipped on add unless specials
+        # auto-download is enabled — so the skipped flag is the single source of
+        # truth (a user can later mark an individual special wanted and it
+        # sticks). See _show_to_public for the display side.
+        if not MiraMediaConfig().misc.download_specials:
+            for season in show_with_metadata.seasons:
+                if season.number == 0:
+                    season.skipped = True
+                    for episode in season.episodes:
+                        episode.skipped = True
         saved_show = await self.show_repository.save_show(show=show_with_metadata)
         log.info(
             "Added show %s (%s) [id=%s, provider=%s]",
@@ -970,15 +980,13 @@ class ShowService:
         public_show.skipped = show.skipped
         public_seasons: list[PublicSeason] = []
 
-        # Specials (Season 0) are surfaced as skipped unless auto-download of
-        # specials is enabled globally. Derived here (not persisted) so toggling
-        # the setting takes effect immediately without a DB migration.
-        specials_enabled = MiraMediaConfig().misc.download_specials
-
+        # Specials (Season 0) are persisted as skipped at add time when specials
+        # auto-download is off (see ``add_show``), so the skipped flags below are
+        # the single source of truth — a user can mark an individual special
+        # wanted and it sticks.
         for season in show.seasons:
             public_season = PublicSeason.model_validate(season)
             season_files = disk_by_season.get(season.id, set())
-            is_special_season = season.number == 0
 
             for public_episode, episode in zip(
                 public_season.episodes, season.episodes, strict=True
@@ -988,10 +996,6 @@ class ShowService:
                     season_number=season.number,
                     season_files=season_files,
                 )
-                if is_special_season and not specials_enabled:
-                    # Effective skip — keeps specials out of wanted counts and
-                    # the season/show status rollups below.
-                    public_episode.skipped = True
                 if public_episode.skipped:
                     public_episode.status = MediaStatus.skipped
                 elif public_episode.downloaded:
@@ -2275,7 +2279,11 @@ class ShowService:
                     if db_show.continuous_download is not None
                     else global_cd
                 )
-                skip_new = not effective_cd
+                specials_enabled = MiraMediaConfig().misc.download_specials
+                if fresh_season_data.number == 0 and not specials_enabled:
+                    skip_new = True  # Specials default to skipped unless enabled
+                else:
+                    skip_new = not effective_cd
 
                 episodes_for_schema = [
                     Episode(
@@ -2720,12 +2728,9 @@ async def _auto_download_for_show_impl(show: Show, max_downloads: int) -> None:
         # episodes — chasing a release that doesn't exist yet just hits
         # indexers for nothing. Manual search still works on demand for
         # users who want to grab early-leaked rips.
-        specials_enabled = MiraMediaConfig().misc.download_specials
         for season in show.seasons:
-            if season.number == 0 and not specials_enabled:
-                continue  # Specials disabled in settings
             if season.skipped:
-                continue  # Respect per-season skip
+                continue  # Respect per-season skip (specials default skipped)
             for episode in season.episodes:
                 if episode.skipped:
                     continue  # Respect per-episode skip

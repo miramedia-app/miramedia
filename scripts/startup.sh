@@ -46,6 +46,28 @@ if [ "$(id -u)" = '0' ]; then
             echo "/data ownership is already correct."
         fi
     fi
+
+    # In-app updates talk to the host Docker daemon over its UNIX socket. The
+    # socket is owned root:docker (mode 660) on the host, but the host 'docker'
+    # gid varies per platform (Synology often 101). Grant the miramedia user
+    # access by adding it to a group matching the socket's actual gid, so gosu
+    # carries that supplementary group when it drops privileges. Without this,
+    # the apply flow fails with "[Errno 13] Permission denied" on connect.
+    DOCKER_SOCK=${MIRAMEDIA_UPDATES__DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+    if [ -S "$DOCKER_SOCK" ]; then
+        SOCK_GID="$(stat -c '%g' "$DOCKER_SOCK")"
+        if [ "$SOCK_GID" != "0" ]; then
+            SOCK_GROUP="$(getent group "$SOCK_GID" | cut -d: -f1)"
+            if [ -z "$SOCK_GROUP" ]; then
+                SOCK_GROUP="dockersock"
+                groupadd -g "$SOCK_GID" "$SOCK_GROUP"
+            fi
+            if ! id -nG miramedia | tr ' ' '\n' | grep -qx "$SOCK_GROUP"; then
+                echo "Adding miramedia to group '$SOCK_GROUP' (gid $SOCK_GID) for Docker socket access..."
+                usermod -aG "$SOCK_GROUP" miramedia
+            fi
+        fi
+    fi
 else
     echo "Running as non-root user ($(id -u)). Skipping permission fixes."
     echo "Note: Ensure your host volumes are manually set to the correct permissions."

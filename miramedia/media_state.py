@@ -113,16 +113,11 @@ async def refresh_show_progress(
     else:
         await refresh_episode_downloaded(db)
 
-    # Mirror the detail-path counting in ShowService._show_to_public: Season 0
-    # specials are excluded from wanted/downloaded unless download_specials is
-    # on. Without this the denormalized list counters (used by the /shows grid)
-    # drifted above the detail page, which counts specials as "skipped".
-    from miramedia.config import MiraMediaConfig
-
-    specials_enabled = MiraMediaConfig().misc.download_specials
+    # Wanted = non-skipped episodes. Specials (Season 0) are persisted as
+    # skipped at add time when download_specials is off, so the skipped flag
+    # alone keeps the denormalized list counters consistent with the detail
+    # page in ShowService._show_to_public.
     wanted_filter: list[ColumnElement[bool]] = [Episode.skipped.is_(False)]
-    if not specials_enabled:
-        wanted_filter.append(Season.number != 0)
 
     stats = (
         select(

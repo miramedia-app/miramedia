@@ -27,6 +27,9 @@ jobs:
       # Project Pages site lives under /<repo>; assets and links must be prefixed.
       BASE_PATH: /miramedia
       NODE_ENV: production
+      # No backend on Pages to serve /openapi.json, so point Scalar at the
+      # static spec bundled from web/public (served under BASE_PATH).
+      NEXT_PUBLIC_OPENAPI_URL: /miramedia/openapi.json
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

@@ -41,13 +41,19 @@ class ImportQueueItem(Base):
     __tablename__ = "import_queue_item"
     __table_args__ = (
         sa.UniqueConstraint("kind", "ref_id", "tab", name="uq_import_queue_item_ref"),
-        Index("ix_import_queue_item_tab_sort", "tab", "sort_at"),
+        Index("ix_import_queue_item_tab_sort", "tab", "bucket_rank", "sort_at"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     kind: Mapped[str]  # torrent | scan
     ref_id: Mapped[str]
     tab: Mapped[str]  # review | retry | done | all
+    # Status bucket order within a tab (Review=0, Retry=1, Done=2). Keeps all
+    # action-needed rows together at the top of the ``all`` tab so reviewable
+    # items don't scatter across pages behind already-Done rows.
+    bucket_rank: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
     sort_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 

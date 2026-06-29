@@ -81,3 +81,58 @@ def test_default_rule_keeps_legit(legit) -> None:
         )
     kept = evaluate_indexer_query_results([_result(legit)], media, is_tv=False)
     assert [r.title for r in kept] == [legit]
+
+
+def _movie_named(name: str, year: int) -> Movie:
+    return Movie(
+        name=name,
+        year=year,
+        library="/movies",
+        overview="",
+        external_id="tt-year",
+        metadata_provider="native",
+    )
+
+
+def test_year_gate_drops_wrong_year_remake() -> None:
+    # The bug: "Supergirl" (2026) was added but "Supergirl 1984" got picked.
+    media = _movie_named("Supergirl", 2026)
+    wrong = _result("Supergirl 1984 1080p BluRay x264-GRP")
+    right = _result("Supergirl 2026 1080p WEB-DL x265-GRP")
+    kept = evaluate_indexer_query_results([wrong, right], media, is_tv=False)
+    titles = [r.title for r in kept]
+    assert "Supergirl 1984 1080p BluRay x264-GRP" not in titles
+    assert "Supergirl 2026 1080p WEB-DL x265-GRP" in titles
+
+
+def test_year_gate_keeps_year_in_title() -> None:
+    # A year that is part of the title must not false-reject (release year present).
+    media = _movie_named("Blade Runner 2049", 2017)
+    r = _result("Blade Runner 2049 2017 1080p BluRay x264-GRP")
+    kept = evaluate_indexer_query_results([r], media, is_tv=False)
+    assert [x.title for x in kept] == [r.title]
+
+
+def test_year_gate_keeps_release_without_year() -> None:
+    # No year in the title -> tolerant, keep it.
+    media = _movie_named("Some Movie", 2024)
+    r = _result("Some Movie 1080p WEB-DL x265-GRP")
+    kept = evaluate_indexer_query_results([r], media, is_tv=False)
+    assert [x.title for x in kept] == [r.title]
+
+
+def test_year_gate_not_applied_to_tv() -> None:
+    # TV release titles can carry per-episode air years; gate is movies-only.
+    from miramedia.shows.schemas import Show
+
+    show = Show(
+        name="Supergirl",
+        year=2015,
+        library="/tv",
+        overview="",
+        external_id="tt-show",
+        metadata_provider="native",
+    )
+    r = _result("Supergirl 2021 S06E01 1080p WEB-DL x265-GRP")
+    kept = evaluate_indexer_query_results([r], show, is_tv=True)
+    assert [x.title for x in kept] == [r.title]

@@ -58,9 +58,11 @@ frontend:
 	@$(DC) exec -it $(FRONTEND_SVC) bash 2>/dev/null || $(DC) exec -it $(FRONTEND_SVC) sh
 
 # Regenerate frontend OpenAPI client types (web/src/lib/api/api.d.ts) without running the server.
+# Also writes a static spec to web/public/openapi.json — bundled into the export so the
+# backendless GitHub Pages docs site can render the Scalar API reference.
 openapi:
-	@MIRAMEDIA_LOG_FILE=/tmp/mm.log uv run --python 3.13 python -c "import sys, io, json; buf = io.StringIO(); sys.stdout = buf; from miramedia.main import app; sys.stdout = sys.__stdout__; sys.stdout.write(json.dumps(app.openapi()))" > /tmp/mm-openapi.json
-	@cd web && pnpm exec openapi-typescript /tmp/mm-openapi.json -o src/lib/api/api.d.ts
+	@MIRAMEDIA_LOG_FILE=/tmp/mm.log uv run --python 3.13 python -c "import sys, io, json; buf = io.StringIO(); sys.stdout = buf; from miramedia.main import app; sys.stdout = sys.__stdout__; sys.stdout.write(json.dumps(app.openapi(), indent=2))" > web/public/openapi.json
+	@cd web && pnpm exec openapi-typescript public/openapi.json -o src/lib/api/api.d.ts
 
 # Type-check the Next.js frontend
 .PHONY: tsc frontend-build

@@ -352,6 +352,14 @@ class TorrentRepository:
                 )
             await self.db.delete(torrent)
 
+        # Commit like every other mutation here. Without this the row-delete is
+        # only *staged*: callers that re-raise after a link failure (see
+        # ``download_and_link``'s cleanup branch) trigger a session rollback that
+        # undoes the delete, stranding the torrent as an unlinked "ghost" on the
+        # torrents page — while its file rows (removed via their own committing
+        # helpers) are really gone.
+        await self.db.commit()
+
     async def get_movie_of_torrent(self, torrent_id: TorrentId) -> MovieSchema | None:
         stmt = (
             select(Movie)

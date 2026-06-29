@@ -459,6 +459,7 @@ class ShowRepository:
                         id=season.id,
                         show_id=show.id,
                         number=season.number,
+                        skipped=season.skipped,
                         episodes=[
                             Episode(
                                 id=episode.id,
@@ -466,6 +467,7 @@ class ShowRepository:
                                 number=episode.number,
                                 title=episode.title,
                                 overview=episode.overview,
+                                skipped=episode.skipped,
                             )
                             for episode in season.episodes
                         ],
