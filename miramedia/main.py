@@ -1,8 +1,10 @@
 import asyncio
+import importlib.metadata
 import logging
 import mimetypes
 import os
 import time
+import tomllib
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -540,9 +542,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
 # Swagger UI / ReDoc are replaced by the embedded Scalar API reference in the
 # docs site (frontend /docs/api-reference). The backend only exposes the raw
 # OpenAPI schema at /openapi.json.
+def _resolve_app_version() -> str:
+    """Version shown in the OpenAPI spec / docs API reference.
+
+    Prefer ``PUBLIC_VERSION`` (injected at image build from the release tag,
+    ``dev`` in the dev stack) so the docs match the running build. Fall back to
+    the installed package metadata so a bare ``uvicorn`` run still reports the
+    real version instead of FastAPI's ``0.1.0`` default.
+    """
+    env_version = os.getenv("PUBLIC_VERSION")
+    if env_version:
+        return env_version
+    try:
+        return importlib.metadata.version("miramedia")
+    except importlib.metadata.PackageNotFoundError:
+        pass
+    # Source checkout (not pip-installed): read the version straight from
+    # pyproject.toml sitting one level above this package.
+    try:
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        return data["project"]["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError):
+        return "0.0.0"
+
+
 app = FastAPI(
     root_path=BASE_PATH,
     lifespan=lifespan,
+    version=_resolve_app_version(),
     docs_url=None,
     redoc_url=None,
 )

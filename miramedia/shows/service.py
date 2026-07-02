@@ -287,7 +287,7 @@ class ShowService:
                 for stem in stems:
                     for f in files_matching_stem(season_dir, stem):
                         try:
-                            f.unlink()
+                            f.unlink(missing_ok=True)
                             log.info(f"Deleted file: {f}")
                         except OSError:
                             log.warning(f"Failed to delete file: {f}", exc_info=True)

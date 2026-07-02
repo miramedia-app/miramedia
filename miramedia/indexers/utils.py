@@ -404,6 +404,25 @@ def _extract_years(title: str) -> set[int]:
     return {int(m) for m in _YEAR_TOKEN.findall(title)}
 
 
+_TV_MARKER = re.compile(
+    r"(?:\bs\d{1,3}(?:e\d{1,4})+\b"  # S05E12, S01E01E02
+    r"|\bs\d{1,3}[ ._-]?-[ ._-]?s\d{1,3}\b"  # S01-S03 season range
+    r"|\b\d{1,2}x\d{2,3}\b"  # 5x12
+    r"|\bseason[ ._-]?\d{1,3}\b"  # Season 5
+    r"|\bcomplete[ ._-]?series\b)",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_episode(title: str) -> bool:
+    """True when a release title carries TV season/episode markers.
+
+    Used to keep an episode/season pack (``Supergirl S05E12 ...``) from being
+    grabbed for a movie of the same name.
+    """
+    return bool(_TV_MARKER.search(title))
+
+
 def _is_year_relevant(title: str, media_year: int | None) -> bool:
     """Reject a release whose title carries a year that excludes ``media_year``.
 
@@ -490,6 +509,19 @@ def evaluate_indexer_query_results(
         log.info(
             f"Filtered {filtered}/{before_count} results not matching '{media.name}'"
         )
+
+    # TV-marker gate (movies only): a release tagged with SxxEyy / season packs
+    # (e.g. "Supergirl S05E12 ...") is a TV episode and must never be grabbed for
+    # a same-named movie.
+    if not is_tv:
+        before_tv = len(query_results)
+        query_results = [r for r in query_results if not _looks_like_episode(r.title)]
+        tv_filtered = before_tv - len(query_results)
+        if tv_filtered:
+            log.info(
+                f"Filtered {tv_filtered}/{before_tv} TV-episode results for "
+                f"movie '{media.name}'"
+            )
 
     # Year gate (movies only): drop releases whose title states a wrong year so a
     # remake/older film (e.g. "Supergirl 1984") can't be picked for a different

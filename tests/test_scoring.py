@@ -121,6 +121,34 @@ def test_year_gate_keeps_release_without_year() -> None:
     assert [x.title for x in kept] == [r.title]
 
 
+def test_movie_drops_tv_episode_release() -> None:
+    # The bug: movie "Supergirl" grabbed the TV episode "Supergirl S05E12 ...".
+    media = _movie_named("Supergirl", 2026)
+    episode = _result(
+        "Supergirl.S05E12.Back.from.the.Future.-.Part.Two.1080p.AMZN.WEB-DL.DDP5.1.H.264-TRB"
+    )
+    movie = _result("Supergirl 2026 1080p WEB-DL x265-GRP")
+    kept = evaluate_indexer_query_results([episode, movie], media, is_tv=False)
+    titles = [r.title for r in kept]
+    assert episode.title not in titles
+    assert movie.title in titles
+
+
+@pytest.mark.parametrize(
+    "tv_title",
+    [
+        "Supergirl S05E12 1080p WEB-DL x264-GRP",
+        "Supergirl 5x12 1080p WEB-DL x264-GRP",
+        "Supergirl Season 5 1080p WEB-DL x264-GRP",
+        "Supergirl S01-S06 Complete Series 1080p WEB-DL",
+    ],
+)
+def test_movie_drops_various_tv_markers(tv_title) -> None:
+    media = _movie_named("Supergirl", 2026)
+    kept = evaluate_indexer_query_results([_result(tv_title)], media, is_tv=False)
+    assert kept == []
+
+
 def test_year_gate_not_applied_to_tv() -> None:
     # TV release titles can carry per-episode air years; gate is movies-only.
     from miramedia.shows.schemas import Show
