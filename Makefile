@@ -12,7 +12,7 @@ ARGS ?=
 APP_SVC ?= api
 FRONTEND_SVC ?= web
 
-.PHONY: help up up-all dev down logs ps restart app frontend openapi test
+.PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json test
 
 help:
 	@echo "Usage:"
@@ -57,11 +57,15 @@ app:
 frontend:
 	@$(DC) exec -it $(FRONTEND_SVC) bash 2>/dev/null || $(DC) exec -it $(FRONTEND_SVC) sh
 
+# Write the static OpenAPI spec (web/public/openapi.json) — bundled into the export so the
+# backendless GitHub Pages docs site can render the Scalar API reference. PUBLIC_VERSION is
+# unset so the committed spec is deterministic (pyproject version), not a stray shell/CI value;
+# CI diffs this target's output against the committed file to catch drift.
+openapi-json:
+	@env -u PUBLIC_VERSION MIRAMEDIA_LOG_FILE=/tmp/mm.log uv run --python 3.13 python -c "import sys, io, json; buf = io.StringIO(); sys.stdout = buf; from miramedia.main import app; sys.stdout = sys.__stdout__; sys.stdout.write(json.dumps(app.openapi(), indent=2))" > web/public/openapi.json
+
 # Regenerate frontend OpenAPI client types (web/src/lib/api/api.d.ts) without running the server.
-# Also writes a static spec to web/public/openapi.json — bundled into the export so the
-# backendless GitHub Pages docs site can render the Scalar API reference.
-openapi:
-	@MIRAMEDIA_LOG_FILE=/tmp/mm.log uv run --python 3.13 python -c "import sys, io, json; buf = io.StringIO(); sys.stdout = buf; from miramedia.main import app; sys.stdout = sys.__stdout__; sys.stdout.write(json.dumps(app.openapi(), indent=2))" > web/public/openapi.json
+openapi: openapi-json
 	@cd web && pnpm exec openapi-typescript public/openapi.json -o src/lib/api/api.d.ts
 
 # Type-check the Next.js frontend

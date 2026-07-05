@@ -368,6 +368,22 @@ _RELEASE_MARKERS = re.compile(
 )
 
 
+def search_name_variants(media_name: str) -> list[str]:
+    """The full media name plus its pre-colon main title, when they differ.
+
+    Metadata providers often title media with a subtitle after a colon
+    (``The Agency: Central Intelligence``) while release groups use only the
+    main title (``The.Agency.S01E01``). Searching and matching must accept
+    both forms.
+    """
+    variants = [media_name]
+    main, sep, _ = media_name.partition(":")
+    main = main.strip()
+    if sep and main:
+        variants.append(main)
+    return variants
+
+
 def _is_title_relevant(title: str, media_name: str) -> bool:
     """Reject torrent titles whose leading segment doesn't equal the media name.
 
@@ -378,22 +394,29 @@ def _is_title_relevant(title: str, media_name: str) -> bool:
     media name, immediately followed by a release marker (year, SxxEyy,
     resolution, codec, source, …) or the end of the string.
 
+    The media name's pre-colon main title is accepted too, because release
+    groups usually drop metadata subtitles (``The Agency: Central
+    Intelligence`` → ``The.Agency.S01E01``).
+
     Uses the same normalisation as the query sanitizer so a torrent fetched
     with ``Greys Anatomy`` is not rejected against the raw name ``Grey's
     Anatomy``.
     """
     norm_title = sanitize_search_query(title).lower()
-    norm_name = sanitize_search_query(media_name).lower()
 
-    if not norm_name:
-        return False
-    if norm_title == norm_name:
-        return True
-    if not norm_title.startswith(norm_name + " "):
-        return False
+    for variant in search_name_variants(media_name):
+        norm_name = sanitize_search_query(variant).lower()
+        if not norm_name:
+            continue
+        if norm_title == norm_name:
+            return True
+        if not norm_title.startswith(norm_name + " "):
+            continue
+        next_token = norm_title[len(norm_name) + 1 :].split(" ", 1)[0]
+        if _RELEASE_MARKERS.match(next_token):
+            return True
 
-    next_token = norm_title[len(norm_name) + 1 :].split(" ", 1)[0]
-    return bool(_RELEASE_MARKERS.match(next_token))
+    return False
 
 
 _YEAR_TOKEN = re.compile(r"\b(19\d{2}|20\d{2})\b")

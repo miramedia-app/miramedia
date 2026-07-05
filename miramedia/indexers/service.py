@@ -11,7 +11,7 @@ from miramedia.indexers.backends.native import get_native_indexer
 from miramedia.indexers.backends.prowlarr import Prowlarr
 from miramedia.indexers.repository import IndexerRepository
 from miramedia.indexers.schemas import IndexerQueryResult, IndexerQueryResultId
-from miramedia.indexers.utils import sanitize_search_query
+from miramedia.indexers.utils import sanitize_search_query, search_name_variants
 from miramedia.movies.schemas import Movie
 from miramedia.shows.schemas import Show
 
@@ -27,6 +27,33 @@ _BREAKER_COOLDOWN = max(
     1, int(os.getenv("MIRAMEDIA_INDEXER_CIRCUIT_COOLDOWN_SECONDS", "300"))
 )
 _INDEXER_FANOUT_LIMIT = max(1, int(os.getenv("MIRAMEDIA_INDEXER_FANOUT_LIMIT", "8")))
+
+
+def _query_variants(name: str, suffix: str = "") -> list[str]:
+    """Sanitized search queries for a media name.
+
+    Full title plus its pre-colon main title — release groups usually drop
+    metadata subtitles, so a subtitle-only query returns nothing on most
+    trackers.
+    """
+    queries: list[str] = []
+    for variant in search_name_variants(name):
+        query = sanitize_search_query(f"{variant}{suffix}")
+        if query and query not in queries:
+            queries.append(query)
+    return queries
+
+
+def _dedupe_results(results: list[IndexerQueryResult]) -> list[IndexerQueryResult]:
+    """Drop duplicate torrents surfaced by more than one query variant."""
+    seen: set[str] = set()
+    unique: list[IndexerQueryResult] = []
+    for result in results:
+        if result.download_url in seen:
+            continue
+        seen.add(result.download_url)
+        unique.append(result)
+    return unique
 
 
 class IndexerService:
@@ -194,13 +221,14 @@ class IndexerService:
         self, movie: Movie, on_partial: OnPartial | None = None
     ) -> list[IndexerQueryResult]:
         await self._ensure_initialized()
-        query = movie.name
-        query = sanitize_search_query(query)
+        queries = _query_variants(movie.name)
 
         extra = {"on_site_result": on_partial} if on_partial is not None else {}
         sem = asyncio.Semaphore(_INDEXER_FANOUT_LIMIT)
 
-        async def _run_one(indexer: GenericIndexer) -> list[IndexerQueryResult]:
+        async def _run_one(
+            indexer: GenericIndexer, query: str
+        ) -> list[IndexerQueryResult]:
             name = self._indexer_name(indexer)
             if not self._circuit_allows(name):
                 log.info("Skipping %s: circuit breaker open", name)
@@ -226,11 +254,14 @@ class IndexerService:
                 return result
 
         await self._release_before_fanout(on_partial)
-        gathered = await asyncio.gather(*(_run_one(i) for i in self.indexers))
+        gathered = await asyncio.gather(
+            *(_run_one(i, q) for q in queries for i in self.indexers)
+        )
         results: list[IndexerQueryResult] = []
         for r in gathered:
             if r:
                 results.extend(r)
+        results = _dedupe_results(results)
 
         if results:
             await self.repository.save_results(results)
@@ -241,13 +272,14 @@ class IndexerService:
         self, show: Show, season_number: int, on_partial: OnPartial | None = None
     ) -> list[IndexerQueryResult]:
         await self._ensure_initialized()
-        query = f"{show.name} S{season_number:02d}"
-        query = sanitize_search_query(query)
+        queries = _query_variants(show.name, f" S{season_number:02d}")
 
         extra = {"on_site_result": on_partial} if on_partial is not None else {}
         sem = asyncio.Semaphore(_INDEXER_FANOUT_LIMIT)
 
-        async def _run_one(indexer: GenericIndexer) -> list[IndexerQueryResult]:
+        async def _run_one(
+            indexer: GenericIndexer, query: str
+        ) -> list[IndexerQueryResult]:
             name = self._indexer_name(indexer)
             if not self._circuit_allows(name):
                 log.info("Skipping %s: circuit breaker open", name)
@@ -273,11 +305,14 @@ class IndexerService:
                 return result
 
         await self._release_before_fanout(on_partial)
-        gathered = await asyncio.gather(*(_run_one(i) for i in self.indexers))
+        gathered = await asyncio.gather(
+            *(_run_one(i, q) for q in queries for i in self.indexers)
+        )
         results: list[IndexerQueryResult] = []
         for r in gathered:
             if r:
                 results.extend(r)
+        results = _dedupe_results(results)
 
         if results:
             await self.repository.save_results(results)
@@ -292,13 +327,16 @@ class IndexerService:
         on_partial: OnPartial | None = None,
     ) -> list[IndexerQueryResult]:
         await self._ensure_initialized()
-        query = f"{show.name} S{season_number:02d}E{episode_number:02d}"
-        query = sanitize_search_query(query)
+        queries = _query_variants(
+            show.name, f" S{season_number:02d}E{episode_number:02d}"
+        )
 
         extra = {"on_site_result": on_partial} if on_partial is not None else {}
         sem = asyncio.Semaphore(_INDEXER_FANOUT_LIMIT)
 
-        async def _run_one(indexer: GenericIndexer) -> list[IndexerQueryResult]:
+        async def _run_one(
+            indexer: GenericIndexer, query: str
+        ) -> list[IndexerQueryResult]:
             name = self._indexer_name(indexer)
             if not self._circuit_allows(name):
                 log.info("Skipping %s: circuit breaker open", name)
@@ -324,11 +362,14 @@ class IndexerService:
                 return result
 
         await self._release_before_fanout(on_partial)
-        gathered = await asyncio.gather(*(_run_one(i) for i in self.indexers))
+        gathered = await asyncio.gather(
+            *(_run_one(i, q) for q in queries for i in self.indexers)
+        )
         results: list[IndexerQueryResult] = []
         for r in gathered:
             if r:
                 results.extend(r)
+        results = _dedupe_results(results)
 
         if results:
             await self.repository.save_results(results)

@@ -32,6 +32,15 @@ jobs:
         run: uv run pytest
         env:
           MIRAMEDIA_LOG_FILE: /dev/null
+      - name: OpenAPI spec in sync
+        # On PRs (incl. forks, which the sync job can't push to) fail if the
+        # committed spec drifts. On push to main the openapi-sync job regenerates
+        # and commits it instead, so this check is PR-only.
+        if: github.event_name == 'pull_request'
+        run: |
+          make openapi-json
+          git diff --exit-code web/public/openapi.json \
+            || { echo "::error::web/public/openapi.json is stale — run 'make openapi' and commit the result."; exit 1; }
 
   frontend:
     runs-on: ubuntu-latest
@@ -54,5 +63,59 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Generate types (fumadocs source + next typegen)
         run: pnpm exec fumadocs-mdx && pnpm exec next typegen
+      - name: API types in sync
+        # PR-only drift gate; push to main is auto-synced by the openapi-sync job.
+        if: github.event_name == 'pull_request'
+        run: |
+          pnpm exec openapi-typescript public/openapi.json -o src/lib/api/api.d.ts
+          git diff --exit-code src/lib/api/api.d.ts \
+            || { echo "::error::src/lib/api/api.d.ts is stale vs public/openapi.json — run 'make openapi' and commit the result."; exit 1; }
       - name: Typecheck
         run: pnpm exec tsgo --noEmit
+
+  # Regenerate the OpenAPI spec + client types on main and commit them if they
+  # drift, so the Pages docs site (which renders the committed web/public/openapi.json)
+  # is never stale — no manual `make openapi` needed. Runs only on direct pushes to
+  # main (fork PRs can't be pushed to; the PR-only drift checks above gate those).
+  # The commit re-triggers this workflow, but the regen is idempotent: the second
+  # run finds no diff, commits nothing, and stops — no loop. That web/** commit is
+  # what makes the Docs workflow redeploy with the fresh spec.
+  openapi-sync:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      UV_PYTHON: "3.13"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install web deps (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - name: Regenerate OpenAPI spec + client types
+        run: make openapi
+      - name: Commit if changed
+        # checkout@v6 persists the GITHUB_TOKEN credentials, so a plain push works.
+        run: |
+          if git diff --quiet -- web/public/openapi.json web/src/lib/api/api.d.ts; then
+            echo "OpenAPI spec + types already in sync — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/public/openapi.json web/src/lib/api/api.d.ts
+          git commit -m "Sync OpenAPI spec + client types"
+          git push

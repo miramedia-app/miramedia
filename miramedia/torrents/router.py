@@ -117,27 +117,16 @@ async def search_torrents_stream(
     if media_type == MediaType.show:
         show = await show_service.show_repository.get_show_by_id(show_id=media_id)
         media_obj = show
-        if not query_override:
-            base = f"{show.name} {show.year}"
-            if season_number is not None and episode_number is not None:
-                query = f"{base} S{season_number:02d}E{episode_number:02d}"
-            elif season_number is not None:
-                query = f"{base} S{season_number:02d}"
-            else:
-                query = base
-        else:
-            query = query_override
         is_tv = True
     else:
         movie = await movie_service.get_movie_by_id(media_id)
         media_obj = movie
-        if not query_override:
-            query = f"{movie.name} {movie.year}"
-        else:
-            query = query_override
         is_tv = False
 
-    from miramedia.indexers.utils import evaluate_indexer_query_results
+    from miramedia.indexers.utils import (
+        evaluate_indexer_query_results,
+        search_name_variants,
+    )
 
     # Bounded queue with drop-oldest semantics. Caps backend memory if the
     # client stalls without observable harm: search results are append-only
@@ -161,19 +150,35 @@ async def search_torrents_stream(
             except asyncio.QueueFull:
                 pass
 
+    # Variant queries (full title vs pre-colon main title) can surface the
+    # same torrent from more than one fan-out — dedupe across chunks.
+    seen_urls: set[str] = set()
+    seen_lock = threading.Lock()
+
     def _on_partial(source_name: str, results: list[IndexerQueryResult]) -> None:
         # Called from indexer backend threadpool workers — must hop back
         # onto the event loop before touching the asyncio.Queue.
         if abort.is_set():
             return
         try:
-            scored = evaluate_indexer_query_results(
-                query_results=list(results),
-                media=media_obj,
-                is_tv=is_tv,
-                quality_allowed=quality,
-                codec_allowed=codec,
-            )
+            with seen_lock:
+                fresh = [r for r in results if r.download_url not in seen_urls]
+                seen_urls.update(r.download_url for r in fresh)
+            if not fresh:
+                return
+            if query_override:
+                # Manual query: the user asked for exactly this search — don't
+                # second-guess the results against the media name (mirrors the
+                # non-streaming /search override behavior).
+                scored = fresh
+            else:
+                scored = evaluate_indexer_query_results(
+                    query_results=fresh,
+                    media=media_obj,
+                    is_tv=is_tv,
+                    quality_allowed=quality,
+                    codec_allowed=codec,
+                )
             scored = _filter_results_by_options(scored, quality, codec)
             log.debug(
                 "SSE chunk: source=%s raw=%d scored=%d",
@@ -191,33 +196,44 @@ async def search_torrents_stream(
             log.exception("Failed to serialize partial result chunk")
 
     async def _run_search() -> None:
+        media = media_obj
         try:
-            if media_type == MediaType.show and media_obj is not None:
+            if query_override:
+                # Manual query wins for every media type / season / episode
+                # combination — previously the typed season/episode/movie
+                # searches ignored it and re-derived a query from the name.
+                await indexer_service.search(
+                    query=query_override, is_tv=is_tv, on_partial=_on_partial
+                )
+            elif media_type == MediaType.show and media is not None:
                 if episode_number is not None and season_number is not None:
                     await indexer_service.search_episode(
-                        show=media_obj,
+                        show=media,
                         season_number=season_number,
                         episode_number=episode_number,
                         on_partial=_on_partial,
                     )
                 elif season_number is not None:
                     await indexer_service.search_season(
-                        show=media_obj,
+                        show=media,
                         season_number=season_number,
                         on_partial=_on_partial,
                     )
                 else:
-                    await indexer_service.search(
-                        query=query, is_tv=True, on_partial=_on_partial
+                    queries = [
+                        f"{name} {media.year}"
+                        for name in search_name_variants(media.name)
+                    ]
+                    await asyncio.gather(
+                        *(
+                            indexer_service.search(
+                                query=q, is_tv=True, on_partial=_on_partial
+                            )
+                            for q in queries
+                        )
                     )
-            elif media_type == MediaType.movie and media_obj is not None:
-                await indexer_service.search_movie(
-                    movie=media_obj, on_partial=_on_partial
-                )
-            else:
-                await indexer_service.search(
-                    query=query, is_tv=is_tv, on_partial=_on_partial
-                )
+            elif media_type == MediaType.movie and media is not None:
+                await indexer_service.search_movie(movie=media, on_partial=_on_partial)
         except asyncio.CancelledError:
             raise
         except Exception:

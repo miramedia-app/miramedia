@@ -164,3 +164,51 @@ def test_year_gate_not_applied_to_tv() -> None:
     r = _result("Supergirl 2021 S06E01 1080p WEB-DL x265-GRP")
     kept = evaluate_indexer_query_results([r], show, is_tv=True)
     assert [x.title for x in kept] == [r.title]
+
+
+def _show_named(name: str, year: int):
+    from miramedia.shows.schemas import Show
+
+    return Show(
+        name=name,
+        year=year,
+        library="/tv",
+        overview="",
+        external_id="tt-sub",
+        metadata_provider="native",
+    )
+
+
+def test_subtitled_name_matches_main_title_release() -> None:
+    # The bug: metadata name "The Agency: Central Intelligence" filtered out
+    # every release because groups name them "The.Agency.S01E01...".
+    show = _show_named("The Agency: Central Intelligence", 2024)
+    r = _result("The.Agency.2024.S01E01.1080p.WEB-DL.x265-GRP")
+    kept = evaluate_indexer_query_results([r], show, is_tv=True)
+    assert [x.title for x in kept] == [r.title]
+
+
+def test_subtitled_name_still_matches_full_title_release() -> None:
+    show = _show_named("The Agency: Central Intelligence", 2024)
+    r = _result("The Agency Central Intelligence S01E01 1080p WEB-DL x265-GRP")
+    kept = evaluate_indexer_query_results([r], show, is_tv=True)
+    assert [x.title for x in kept] == [r.title]
+
+
+def test_subtitled_name_rejects_different_show_sharing_main_title() -> None:
+    # Main-title fallback must not accept a different show: after "star trek"
+    # the next token is a word, not a release marker.
+    show = _show_named("Star Trek: Discovery", 2017)
+    r = _result("Star.Trek.Strange.New.Worlds.S01E01.1080p.WEB-DL.x265-GRP")
+    kept = evaluate_indexer_query_results([r], show, is_tv=True)
+    assert kept == []
+
+
+def test_search_name_variants() -> None:
+    from miramedia.indexers.utils import search_name_variants
+
+    assert search_name_variants("The Agency: Central Intelligence") == [
+        "The Agency: Central Intelligence",
+        "The Agency",
+    ]
+    assert search_name_variants("Supergirl") == ["Supergirl"]

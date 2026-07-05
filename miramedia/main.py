@@ -570,6 +570,7 @@ def _resolve_app_version() -> str:
 app = FastAPI(
     root_path=BASE_PATH,
     lifespan=lifespan,
+    title="MiraMedia",
     version=_resolve_app_version(),
     docs_url=None,
     redoc_url=None,
