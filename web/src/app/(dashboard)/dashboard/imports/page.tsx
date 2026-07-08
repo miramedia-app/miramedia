@@ -630,9 +630,7 @@ export default function ImportsPage() {
         id: "kind",
         header: "Type",
         width: "92px",
-        render: (it) => (
-          <TypePill>{it.kind === "scan" ? "Scan" : "Torrent"}</TypePill>
-        ),
+        render: (it) => <TypePill>{it.kind === "scan" ? "Scan" : "Torrent"}</TypePill>,
       },
       {
         id: "progress",

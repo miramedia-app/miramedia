@@ -770,7 +770,8 @@ export default function ShowDetailClientPage() {
               return (
                 <div className="mt-2 text-xs text-muted-foreground">
                   {show.year != null && <>{show.year} &middot; </>}
-                  {seasonCount} Season{seasonCount !== 1 ? "s" : ""} &middot; {episodeCount} Episodes
+                  {seasonCount} Season{seasonCount !== 1 ? "s" : ""} &middot; {episodeCount}{" "}
+                  Episodes
                 </div>
               );
             })()}

@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["**/*.md", "**/*.mdx"],
+  "ignorePatterns": ["**/*.md", "**/*.mdx", "src/lib/api/api.d.ts", "public/openapi.json"],
   "sortTailwindcss": {
     "stylesheet": "src/app/globals.css",
     "functions": ["cn", "cva", "clsx", "twMerge"]

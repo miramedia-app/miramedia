@@ -428,7 +428,7 @@ def _extract_years(title: str) -> set[int]:
 
 
 _TV_MARKER = re.compile(
-    r"(?:\bs\d{1,3}(?:e\d{1,4})+\b"  # S05E12, S01E01E02
+    r"(?:\bs\d{1,3}(?:e\d{1,4})*\b"  # S05E12, S01E01E02, bare season pack S05
     r"|\bs\d{1,3}[ ._-]?-[ ._-]?s\d{1,3}\b"  # S01-S03 season range
     r"|\b\d{1,2}x\d{2,3}\b"  # 5x12
     r"|\bseason[ ._-]?\d{1,3}\b"  # Season 5

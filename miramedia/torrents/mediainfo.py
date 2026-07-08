@@ -126,6 +126,19 @@ def _parse_with_mediainfo(path: Path) -> MediaFileInfo | None:
     )
 
 
+def _first_str(value: str | list[str] | None) -> str | None:
+    """Coerce a guessit codec value to a single string.
+
+    guessit returns a LIST when a name carries several tokens for the same
+    property (see :func:`miramedia.torrents.parsing._normalize_token`). The
+    raw ``MediaFileInfo`` codec fields hold a single string, so pick the first
+    token. Returns ``None`` when absent.
+    """
+    if isinstance(value, list):
+        return value[0] if value else None
+    return value
+
+
 def _parse_with_filename(
     path: Path, fallback_title: str | None = None
 ) -> MediaFileInfo:
@@ -136,8 +149,8 @@ def _parse_with_filename(
     return MediaFileInfo(
         quality=quality,
         height=info.height,
-        video_codec=info.video_codec,
-        audio_codec=info.audio_codec,
+        video_codec=_first_str(info.video_codec),
+        audio_codec=_first_str(info.audio_codec),
         container=info.container or path.suffix.lstrip(".").lower(),
         source="filename",
     )

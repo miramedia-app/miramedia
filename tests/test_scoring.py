@@ -141,6 +141,8 @@ def test_movie_drops_tv_episode_release() -> None:
         "Supergirl 5x12 1080p WEB-DL x264-GRP",
         "Supergirl Season 5 1080p WEB-DL x264-GRP",
         "Supergirl S01-S06 Complete Series 1080p WEB-DL",
+        "Supergirl.S05.COMPLETE.720p.AMZN.WEBRip.x264-GalaxyTV",
+        "Supergirl S05 1080p WEB-DL x264-GRP",
     ],
 )
 def test_movie_drops_various_tv_markers(tv_title) -> None:
