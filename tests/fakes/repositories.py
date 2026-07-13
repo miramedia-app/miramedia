@@ -476,40 +476,50 @@ class FakeSettingsRepository:
     def __init__(self, overrides: dict | None = None) -> None:
         self.db = FakeDb()
         self.overrides: dict = copy.deepcopy(overrides or {})
-        self.revision = 0
+        self.revision = 0 if not self.overrides else 1
         self.save_calls: list[dict] = []
         self.cas_calls: list[tuple[dict, int]] = []
         self.reset_called = False
         self.clear_path_calls: list[list[str]] = []
+        self._insert_lost_race = False
 
     async def get_overrides(self) -> dict:
-        return copy.deepcopy(self.overrides)
+        from miramedia.settings.normalize import normalize_stored_overrides
+
+        return normalize_stored_overrides(self.overrides)
 
     async def get_overrides_with_revision(self) -> tuple[dict, int]:
-        return copy.deepcopy(self.overrides), self.revision
+        from miramedia.settings.normalize import normalize_stored_overrides
 
-    async def save_overrides(self, overrides: dict) -> dict:
-        saved, _revision = await self.save_overrides_cas(
-            overrides, expected_revision=self.revision
-        )
-        return saved
+        return normalize_stored_overrides(self.overrides), self.revision
 
     async def save_overrides_cas(
         self,
         overrides: dict,
-        expected_revision: int | None = None,
+        expected_revision: int,
     ) -> tuple[dict, int]:
         from miramedia.settings.repository import SettingsRevisionConflictError
 
-        if expected_revision is not None and expected_revision != self.revision:
+        if expected_revision == 0 and self.revision == 0:
+            if self._insert_lost_race:
+                self.revision = 1
+                self.overrides = copy.deepcopy(overrides)
+                self.cas_calls.append((copy.deepcopy(overrides), 0))
+                self.save_calls.append(copy.deepcopy(overrides))
+                raise SettingsRevisionConflictError(0, 1)
+
+        if expected_revision != self.revision:
             raise SettingsRevisionConflictError(expected_revision, self.revision)
-        self.cas_calls.append((copy.deepcopy(overrides), expected_revision or 0))
+        self.cas_calls.append((copy.deepcopy(overrides), expected_revision))
         self.save_calls.append(copy.deepcopy(overrides))
         self.overrides = copy.deepcopy(overrides)
         self.revision += 1
         if not overrides:
             self.reset_called = True
         return self.overrides, self.revision
+
+    async def fetch_overrides_with_revision(self) -> tuple[dict, int]:
+        return await self.get_overrides_with_revision()
 
     async def reset_overrides(self) -> None:
         self.reset_called = True
@@ -520,4 +530,5 @@ class FakeSettingsRepository:
 
         self.clear_path_calls.append(list(path))
         updated = compute_clear_override_path(self.overrides, path)
-        return await self.save_overrides(updated)
+        saved, _revision = await self.save_overrides_cas(updated, self.revision)
+        return saved

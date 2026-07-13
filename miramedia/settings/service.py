@@ -314,6 +314,9 @@ def apply_live_config_from_overrides(overrides: dict) -> None:
                 setattr(live, section, source.model_copy(deep=True))
             else:
                 setattr(live, section, copy.deepcopy(source))
+    from miramedia.auth.users import apply_mutable_transport_settings
+
+    apply_mutable_transport_settings()
 
 
 def revert_field_to_toml_default(path: list[str]) -> None:

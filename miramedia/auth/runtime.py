@@ -48,6 +48,12 @@ class AuthRuntimeGeneration:
     client: OpenID | None = None
     cookie_secure: bool = False
     frontend_url: str = ""
+    session_lifetime: int = 3600
+
+
+def join_frontend_path(frontend_url: str, path: str) -> str:
+    """Join frontend base URL and relative path without missing/double slashes."""
+    return f"{frontend_url.rstrip('/')}/{path.lstrip('/')}"
 
 
 class AuthRuntimeStore:
@@ -64,6 +70,7 @@ class AuthRuntimeStore:
             client=None,
             cookie_secure=False,
             frontend_url="",
+            session_lifetime=3600,
         )
 
     def get_active(self) -> AuthRuntimeGeneration:
@@ -92,6 +99,7 @@ class AuthRuntimeStore:
                 client=None,
                 cookie_secure=False,
                 frontend_url="",
+                session_lifetime=3600,
             )
             return self._active
 
@@ -132,6 +140,7 @@ async def build_auth_runtime_generation(
     """Validate/build a prospective OIDC runtime off the async event loop."""
     cookie_secure = _cookie_secure_from_config(auth_config, misc_config)
     frontend_url = str(misc_config.frontend_url)
+    session_lifetime = auth_config.session_lifetime
     oidc = auth_config.openid_connect
     if not oidc.enabled:
         return AuthRuntimeGeneration(
@@ -142,6 +151,7 @@ async def build_auth_runtime_generation(
             client=None,
             cookie_secure=cookie_secure,
             frontend_url=frontend_url,
+            session_lifetime=session_lifetime,
         )
     try:
         client = await asyncio.to_thread(_build_openid_client_sync, oidc)
@@ -159,6 +169,7 @@ async def build_auth_runtime_generation(
         client=client,
         cookie_secure=cookie_secure,
         frontend_url=frontend_url,
+        session_lifetime=session_lifetime,
     )
 
 
@@ -174,11 +185,7 @@ def commit_auth_runtime_generation(
     prospective: AuthRuntimeGeneration,
 ) -> AuthRuntimeGeneration:
     """Atomically activate a pre-validated runtime generation."""
-    activated = auth_runtime_store.swap(prospective)
-    from miramedia.auth.users import restore_mutable_transport_settings
-
-    restore_mutable_transport_settings(prospective.cookie_secure)
-    return activated
+    return auth_runtime_store.swap(prospective)
 
 
 async def initialize_auth_runtime() -> AuthRuntimeGeneration:

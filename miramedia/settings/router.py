@@ -24,6 +24,7 @@ from miramedia.settings.dependencies import settings_repository_dep
 from miramedia.settings.integration_tests import HANDLERS as TEST_HANDLERS
 from miramedia.settings.integration_tests import IntegrationTestResult
 from miramedia.settings.mutation import (
+    SETTINGS_MUTATION_FAILED_DETAIL,
     SettingsMutationError,
     SettingsMutationSupersededError,
     execute_settings_mutation,
@@ -69,13 +70,18 @@ async def _stage_auth_runtime(
 
 async def _commit_settings_mutation(
     *,
+    repo: settings_repository_dep,
     prepare: Callable[[], Awaitable[tuple[dict, dict, int]]],
-    persist_overrides_cas: Callable[[dict, int | None], Awaitable[tuple[dict, int]]],
 ) -> dict:
+    async def _fetch_current() -> tuple[dict, int]:
+        return await repo.get_overrides_with_revision()
+
     try:
         return await execute_settings_mutation(
             prepare=prepare,
-            persist_overrides_cas=persist_overrides_cas,
+            persist_overrides_cas=repo.save_overrides_cas,
+            fetch_current=_fetch_current,
+            db_session=repo.db,
             stage_auth_runtime=_stage_auth_runtime,
         )
     except SettingsMutationSupersededError as exc:
@@ -86,7 +92,7 @@ async def _commit_settings_mutation(
     except SettingsMutationError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(exc),
+            detail=SETTINGS_MUTATION_FAILED_DETAIL,
         ) from exc
 
 
@@ -213,8 +219,7 @@ async def update_system_settings(
     new_overrides = diff_against_defaults(new_overrides, toml_defaults)
 
     async def _prepare() -> tuple[dict, dict, int]:
-        prior_overrides = await repo.get_overrides()
-        _overrides, revision = await repo.get_overrides_with_revision()
+        prior_overrides, revision = await repo.get_overrides_with_revision()
         return (
             deep_merge(prior_overrides, new_overrides),
             prior_overrides,
@@ -222,8 +227,8 @@ async def update_system_settings(
         )
 
     merged_overrides = await _commit_settings_mutation(
+        repo=repo,
         prepare=_prepare,
-        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     # Clear per-show/movie overrides that reference now-disabled options
@@ -248,13 +253,12 @@ async def reset_system_settings(
     """Reset all system settings to TOML defaults (removes all DB overrides)."""
 
     async def _prepare() -> tuple[dict, dict, int]:
-        prior_overrides = await repo.get_overrides()
-        _overrides, revision = await repo.get_overrides_with_revision()
+        prior_overrides, revision = await repo.get_overrides_with_revision()
         return {}, prior_overrides, revision
 
     await _commit_settings_mutation(
+        repo=repo,
         prepare=_prepare,
-        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     await _cleanup_stale_media_preferences(repo.db)
@@ -322,8 +326,7 @@ async def import_settings(
         incoming_merged = None
 
     async def _prepare() -> tuple[dict, dict, int]:
-        existing = await repo.get_overrides()
-        _overrides, revision = await repo.get_overrides_with_revision()
+        existing, revision = await repo.get_overrides_with_revision()
         if incoming_merged is not None:
             merged = incoming_merged
         else:
@@ -331,8 +334,8 @@ async def import_settings(
         return merged, existing, revision
 
     merged = await _commit_settings_mutation(
+        repo=repo,
         prepare=_prepare,
-        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     await _cleanup_stale_media_preferences(repo.db)
@@ -371,13 +374,12 @@ async def clear_override_path(
         ) from exc
 
     async def _prepare() -> tuple[dict, dict, int]:
-        prior = await repo.get_overrides()
-        _overrides, revision = await repo.get_overrides_with_revision()
+        prior, revision = await repo.get_overrides_with_revision()
         return compute_clear_override_path(prior, body.path), prior, revision
 
     updated_overrides = await _commit_settings_mutation(
+        repo=repo,
         prepare=_prepare,
-        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     await _cleanup_stale_media_preferences(repo.db)

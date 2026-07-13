@@ -348,22 +348,20 @@ def test_request_snapshot_is_immutable_across_runtime_swap() -> None:
 
 
 def test_cookie_secure_refreshes_from_misc_frontend_url() -> None:
-    from miramedia.auth.users import openid_cookie_transport
-
     with settings_client() as (client, _repo):
         response = client.put(
             SETTINGS_PREFIX,
             json={"misc": {"frontend_url": "https://app.example.com/"}},
         )
         assert response.status_code == 200
-        assert openid_cookie_transport.cookie_secure is True
+        assert auth_runtime_store.get_active().cookie_secure is True
 
         insecure = client.put(
             SETTINGS_PREFIX,
             json={"misc": {"frontend_url": "http://app.example.com/"}},
         )
         assert insecure.status_code == 200
-        assert openid_cookie_transport.cookie_secure is False
+        assert auth_runtime_store.get_active().cookie_secure is False
 
 
 def test_override_clear_updates_runtime_metadata() -> None:
@@ -383,12 +381,11 @@ def test_override_clear_updates_runtime_metadata() -> None:
 
 
 def _capture_runtime_state() -> dict[str, Any]:
-    from miramedia.auth.users import openid_cookie_transport
-
+    generation = auth_runtime_store.get_active()
     return {
-        "generation_id": auth_runtime_store.get_active().generation_id,
-        "metadata": auth_runtime_store.get_active().provider_name,
-        "cookie_secure": openid_cookie_transport.cookie_secure,
+        "generation_id": generation.generation_id,
+        "metadata": generation.provider_name,
+        "cookie_secure": generation.cookie_secure,
     }
 
 
@@ -529,6 +526,10 @@ def test_import_runtime_activation_failure_rolls_back_state(
         monkeypatch.setattr(
             "miramedia.auth.runtime.commit_auth_runtime_generation",
             _flaky_commit,
+        )
+        monkeypatch.setattr(
+            "miramedia.settings.mutation.publish_settings_revision_changed",
+            lambda _revision: None,
         )
         response = client.post(
             f"{SETTINGS_PREFIX}/import",

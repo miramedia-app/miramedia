@@ -90,6 +90,31 @@ def test_validate_incoming_settings_update_rejects_unknown_section_key() -> None
         validate_incoming_settings_update({"bogus": {"x": 1}})
 
 
+def test_validate_incoming_rejects_unknown_nested_auth_field() -> None:
+    with pytest.raises(ValidationError):
+        validate_incoming_settings_update(
+            {"auth": {"openid_connect": {"bogus_field": "x"}}}
+        )
+
+
+def test_validate_incoming_rejects_unknown_misc_nested_field() -> None:
+    with pytest.raises(ValidationError):
+        validate_incoming_settings_update(
+            {"misc": {"naming": {"unknown_key": "value"}}}
+        )
+
+
+def test_join_frontend_path_normalizes_slashes() -> None:
+    from miramedia.auth.runtime import join_frontend_path
+
+    assert join_frontend_path("http://localhost:8080/", "web/dashboard") == (
+        "http://localhost:8080/web/dashboard"
+    )
+    assert join_frontend_path("https://app.example.com", "/web/dashboard") == (
+        "https://app.example.com/web/dashboard"
+    )
+
+
 def test_clear_path_rejects_restart_only_token_secret() -> None:
     from miramedia.settings.validation import (
         SettingsValidationError,

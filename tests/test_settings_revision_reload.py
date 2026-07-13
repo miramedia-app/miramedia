@@ -149,22 +149,23 @@ def test_rollback_skips_when_local_revision_advanced() -> None:
             overrides={"misc": {"development": False}},
             revision=1,
             runtime_generation=generation,
-            cookie_secure=generation.cookie_secure,
             epoch=0,
         )
         set_local_committed_revision(5)
         save_calls: list[int] = []
 
-        async def _save(
-            _overrides: dict, _expected_revision: int | None
-        ) -> tuple[dict, int]:
+        async def _save(_overrides: dict, _expected_revision: int) -> tuple[dict, int]:
             save_calls.append(1)
             return _overrides, 6
+
+        async def _fetch() -> tuple[dict, int]:
+            return {"misc": {"development": True}}, 5
 
         await rollback_mutation_snapshot(
             snapshot,
             restore_overrides_cas=_save,
             committed_revision=3,
+            fetch_current=_fetch,
         )
         assert not save_calls
         assert auth_runtime_store.get_active().generation_id == generation.generation_id
@@ -190,23 +191,24 @@ def test_compensation_skips_db_when_cas_conflict() -> None:
             overrides={"misc": {"development": False}},
             revision=1,
             runtime_generation=generation,
-            cookie_secure=generation.cookie_secure,
             epoch=0,
         )
 
         repo = FakeSettingsRepository(overrides={"misc": {"development": True}})
         set_local_committed_revision(1)
 
-        async def _save(
-            _overrides: dict, expected_revision: int | None
-        ) -> tuple[dict, int]:
+        async def _save(_overrides: dict, expected_revision: int) -> tuple[dict, int]:
             assert expected_revision == 1
             raise SettingsRevisionConflictError(1, 2)
+
+        async def _fetch() -> tuple[dict, int]:
+            return repo.overrides, repo.revision
 
         await rollback_mutation_snapshot(
             snapshot,
             restore_overrides_cas=_save,
             committed_revision=1,
+            fetch_current=_fetch,
         )
         assert repo.overrides["misc"]["development"] is True
 

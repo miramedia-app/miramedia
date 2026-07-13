@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 
 from miramedia.auth.runtime import (
     AuthRuntimeGeneration,
@@ -16,9 +17,13 @@ from miramedia.settings.service import apply_live_config_from_overrides
 log = logging.getLogger(__name__)
 
 SETTINGS_REVISION_EVENT = "settings.revision.changed"
+RECONCILE_INTERVAL_SECONDS = 30.0
 
 _local_committed_revision = 0
 _reload_lock = asyncio.Lock()
+_subscriber_task: asyncio.Task[None] | None = None
+_subscriber_sub_id: str | None = None
+_subscriber_queue: asyncio.Queue[Event] | None = None
 
 
 def get_local_committed_revision() -> int:
@@ -29,6 +34,14 @@ def publish_settings_revision_changed(revision: int) -> None:
     get_event_bus().publish(
         Event(type=SETTINGS_REVISION_EVENT, data={"revision": revision})
     )
+
+
+def _apply_live_mutation_critical_section(
+    merged_overrides: dict,
+    prospective: AuthRuntimeGeneration,
+) -> None:
+    apply_live_config_from_overrides(merged_overrides)
+    commit_auth_runtime_generation(prospective)
 
 
 async def reload_committed_settings(
@@ -51,12 +64,14 @@ async def reload_committed_settings(
         log.info("Reloaded committed settings revision %s", revision)
 
 
-def _apply_live_mutation_critical_section(
-    merged_overrides: dict,
-    prospective: AuthRuntimeGeneration,
+async def reconcile_settings_revision_from_db(
+    fetch: Callable[[], Awaitable[tuple[dict, int]]],
 ) -> None:
-    apply_live_config_from_overrides(merged_overrides)
-    commit_auth_runtime_generation(prospective)
+    """Load current DB revision and converge if newer than local."""
+    overrides, revision = await fetch()
+    if revision <= _local_committed_revision:
+        return
+    await reload_committed_settings(overrides, revision=revision)
 
 
 async def handle_settings_revision_event(event: Event) -> None:
@@ -102,29 +117,73 @@ def reset_settings_reload_state_for_tests() -> None:
     _local_committed_revision = 0
 
 
-async def start_settings_revision_subscriber() -> asyncio.Task[None]:
-    bus = get_event_bus()
-    sub_id, queue = await bus.subscribe()
-
-    async def _run() -> None:
+async def _subscriber_loop() -> None:
+    assert _subscriber_queue is not None  # noqa: S101
+    while True:
         try:
-            while True:
-                event = await queue.get()
-                if event.type != SETTINGS_REVISION_EVENT:
-                    continue
-                try:
-                    await handle_settings_revision_event(event)
-                except Exception:
-                    log.exception("Failed to reload settings from revision event")
-        finally:
-            await bus.unsubscribe(sub_id)
+            event = await asyncio.wait_for(
+                _subscriber_queue.get(),
+                timeout=RECONCILE_INTERVAL_SECONDS,
+            )
+        except TimeoutError:
+            try:
+                await reconcile_settings_revision_from_db(_fetch_db_revision)
+            except Exception:
+                log.exception("Periodic settings revision reconciliation failed")
+            continue
+        if event.type != SETTINGS_REVISION_EVENT:
+            continue
+        try:
+            await handle_settings_revision_event(event)
+        except Exception:
+            log.exception("Failed to reload settings from revision event")
 
-    import asyncio
 
-    task = asyncio.create_task(_run())
+async def _fetch_db_revision() -> tuple[dict, int]:
+    from miramedia.database import SessionLocalBackground
+    from miramedia.settings.repository import SettingsRepository
 
-    def _discard(_task: asyncio.Task[None]) -> None:
-        _task.cancel()
+    assert SessionLocalBackground is not None  # noqa: S101
+    async with SessionLocalBackground() as db:
+        return await SettingsRepository(db).get_overrides_with_revision()
 
-    task.add_done_callback(_discard)
-    return task
+
+async def start_settings_revision_subscriber() -> asyncio.Task[None]:
+    """Start the revision subscriber once per process; idempotent."""
+    global _subscriber_task, _subscriber_sub_id, _subscriber_queue
+
+    if _subscriber_task is not None and not _subscriber_task.done():
+        return _subscriber_task
+
+    bus = get_event_bus()
+    _subscriber_sub_id, _subscriber_queue = await bus.subscribe()
+    _subscriber_task = asyncio.create_task(_subscriber_loop())
+    return _subscriber_task
+
+
+async def stop_settings_revision_subscriber() -> None:
+    """Cancel subscriber and release bus subscription."""
+    global _subscriber_task, _subscriber_sub_id, _subscriber_queue
+
+    if _subscriber_task is not None and not _subscriber_task.done():
+        _subscriber_task.cancel()
+        try:
+            await _subscriber_task
+        except asyncio.CancelledError:
+            pass
+    _subscriber_task = None
+
+    if _subscriber_sub_id is not None:
+        await get_event_bus().unsubscribe(_subscriber_sub_id)
+    _subscriber_sub_id = None
+    _subscriber_queue = None
+
+
+def reset_settings_subscriber_for_tests() -> None:
+    """Reset subscriber globals without awaiting (tests only)."""
+    global _subscriber_task, _subscriber_sub_id, _subscriber_queue
+    if _subscriber_task is not None and not _subscriber_task.done():
+        _subscriber_task.cancel()
+    _subscriber_task = None
+    _subscriber_sub_id = None
+    _subscriber_queue = None

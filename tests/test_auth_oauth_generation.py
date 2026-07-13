@@ -15,7 +15,12 @@ import pytest
 from fastapi.testclient import TestClient
 from fastapi_users.router.oauth import CSRF_TOKEN_COOKIE_NAME
 
-from miramedia.auth.runtime import OAUTH_ROUTE_NAME, dynamic_oauth_client
+from miramedia.auth.runtime import (
+    OAUTH_ROUTE_NAME,
+    auth_runtime_store,
+    current_oauth_runtime_generation,
+    dynamic_oauth_client,
+)
 from tests.fakes.repositories import FakeSettingsRepository
 
 SETTINGS_PREFIX = "/api/v1/system/settings"
@@ -299,3 +304,113 @@ def test_oauth_callback_reuses_existing_account_without_duplicate_provider(
         ("StableProvider", "account-1"),
         ("StableProvider", "account-1"),
     ]
+
+
+def test_oauth_callback_keeps_request_generation_after_concurrent_swap(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openid: list[MagicMock],  # noqa: ARG001
+) -> None:
+    import threading
+
+    from miramedia.auth.users import (
+        GenerationScopedRedirectingCookieTransport,
+        UserManager,
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+    captured: list[tuple[str, int, bool]] = []
+
+    original_login_response = (
+        GenerationScopedRedirectingCookieTransport.get_login_response
+    )
+
+    async def _slow_login_response(
+        self: GenerationScopedRedirectingCookieTransport, token: str
+    ) -> object:
+        generation = current_oauth_runtime_generation()
+        captured.append(
+            (
+                generation.frontend_url,
+                generation.session_lifetime,
+                generation.cookie_secure,
+            )
+        )
+        entered.set()
+        assert release.wait(timeout=2)
+        return await original_login_response(self, token)
+
+    async def _oauth_callback(
+        _self: UserManager,
+        _provider: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        return types.SimpleNamespace(
+            id=uuid.uuid4(),
+            email="user@example.com",
+            is_active=True,
+        )
+
+    monkeypatch.setattr(UserManager, "oauth_callback", _oauth_callback)
+    monkeypatch.setattr(
+        GenerationScopedRedirectingCookieTransport,
+        "get_login_response",
+        _slow_login_response,
+    )
+
+    with settings_client() as (client, _repo):
+        client.put(
+            SETTINGS_PREFIX,
+            json={
+                "misc": {"frontend_url": "http://gen-a.example.com/"},
+                "auth": {
+                    "session_lifetime": 3600,
+                    **_oidc_payload(enabled=True, name="GenA")["auth"],
+                },
+            },
+        )
+        authorize = client.get(OIDC_AUTHORIZE_PATH)
+        set_cookie = authorize.headers.get("set-cookie", "")
+        csrf_match = re.search(
+            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
+            set_cookie,
+            re.IGNORECASE,
+        )
+        assert csrf_match is not None
+        state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+
+        callback_error: list[BaseException] = []
+
+        def _call_callback() -> None:
+            try:
+                client.get(
+                    OIDC_CALLBACK_PATH,
+                    params={"code": "auth-code", "state": state},
+                    cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+                    follow_redirects=False,
+                )
+            except BaseException as exc:
+                callback_error.append(exc)
+
+        thread = threading.Thread(target=_call_callback)
+        thread.start()
+        assert entered.wait(timeout=2)
+
+        swap = client.put(
+            SETTINGS_PREFIX,
+            json={
+                "misc": {"frontend_url": "https://gen-b.example.com/"},
+                "auth": {"session_lifetime": 7200},
+            },
+        )
+        assert swap.status_code == 200
+        release.set()
+        thread.join(timeout=3)
+        assert not callback_error
+
+    assert captured == [("http://gen-a.example.com/", 3600, False)]
+    assert auth_runtime_store.get_active().frontend_url == "https://gen-b.example.com/"
+    assert auth_runtime_store.get_active().session_lifetime == 7200

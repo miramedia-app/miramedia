@@ -145,7 +145,9 @@ async def start_persistence() -> bool:
 
     await initialize_auth_runtime()
     set_local_committed_revision(revision)
-    await start_settings_revision_subscriber()
+    subscriber_task = await start_settings_revision_subscriber()
+    _startup_tasks.add(subscriber_task)
+    subscriber_task.add_done_callback(_startup_tasks.discard)
 
     # config.misc.development is now final (config.toml + any DB override).
     # Force DEBUG end-to-end so the toggle actually surfaces debug logs —
@@ -437,8 +439,11 @@ async def shutdown_startup(
         except asyncio.CancelledError:
             pass
     # Cancel fire-and-forget startup tasks (library watcher = infinite loop,
-    # import-queue warm-up) so they don't run against a torn-down engine on a
-    # non-exit lifespan teardown (tests, --reload, embedding).
+    # import-queue warm-up, settings revision subscriber) so they don't run
+    # against a torn-down engine on a non-exit lifespan teardown (tests, --reload).
+    from miramedia.settings.reload import stop_settings_revision_subscriber
+
+    await stop_settings_revision_subscriber()
     outstanding = [t for t in list(_startup_tasks) if not t.done()]
     for t in outstanding:
         t.cancel()
