@@ -28,22 +28,24 @@ UPDATE scan_result_cache
 SET payload = (payload - 'import_error' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object(
         'status', 'queued',
-        'queued_at', :queued_at,
-        'claim_token', :claim_token
+        'queued_at', CAST(:queued_at AS text),
+        'claim_token', CAST(:claim_token AS text)
     )
 WHERE directory = :directory
   AND payload->>'status' IN ('pending', 'failed')
-  AND payload->>'media_type_hint' = :media_type
+  AND payload->>'media_type_hint' = CAST(:media_type AS text)
 RETURNING directory
 """
 
 BEGIN_MANUAL_SCAN_WORKER_SQL = """
 UPDATE scan_result_cache
-SET payload = payload || jsonb_build_object('worker_started_at', :worker_started_at)
+SET payload = payload || jsonb_build_object(
+    'worker_started_at', CAST(:worker_started_at AS text)
+)
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
-  AND payload->>'media_type_hint' = :media_type
-  AND payload->>'claim_token' = :claim_token
+  AND payload->>'media_type_hint' = CAST(:media_type AS text)
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
   AND payload->>'worker_started_at' IS NULL
 RETURNING directory
 """
@@ -59,13 +61,13 @@ WHERE payload->>'status' = 'queued'
 
 STAMP_LEGACY_QUEUED_AT_SQL = """
 UPDATE scan_result_cache
-SET payload = payload || jsonb_build_object('queued_at', :queued_at)
+SET payload = payload || jsonb_build_object('queued_at', CAST(:queued_at AS text))
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
   AND payload->>'worker_started_at' IS NULL
   AND (
-    (:expected_queued_at IS NULL AND payload->>'queued_at' IS NULL)
-    OR payload->>'queued_at' = :expected_queued_at
+    (CAST(:expected_queued_at AS text) IS NULL AND payload->>'queued_at' IS NULL)
+    OR payload->>'queued_at' = CAST(:expected_queued_at AS text)
   )
 RETURNING directory
 """
@@ -73,14 +75,17 @@ RETURNING directory
 RECLAIM_STALE_QUEUED_IMPORT_SQL = """
 UPDATE scan_result_cache
 SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
-    || jsonb_build_object('status', 'failed', 'import_error', :error)
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
   AND payload->>'worker_started_at' IS NULL
-  AND payload->>'queued_at' = :expected_queued_at
+  AND payload->>'queued_at' = CAST(:expected_queued_at AS text)
   AND (
-    (:expected_claim_token IS NULL AND payload->>'claim_token' IS NULL)
-    OR payload->>'claim_token' = :expected_claim_token
+    (CAST(:expected_claim_token AS text) IS NULL AND payload->>'claim_token' IS NULL)
+    OR payload->>'claim_token' = CAST(:expected_claim_token AS text)
   )
 RETURNING directory
 """
@@ -93,10 +98,13 @@ _STALE_RECLAIM_ERROR = (
 COMPENSATE_SCAN_CACHE_CLAIM_SQL = """
 UPDATE scan_result_cache
 SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
-    || jsonb_build_object('status', 'failed', 'import_error', :error)
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
-  AND payload->>'claim_token' = :claim_token
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
   AND payload->>'worker_started_at' IS NULL
 RETURNING directory
 """
@@ -106,13 +114,13 @@ UPDATE scan_result_cache
 SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object(
         'status', 'imported',
-        'imported_name', :imported_name,
-        'imported_media_id', :imported_media_id,
-        'imported_media_type', :imported_media_type
+        'imported_name', CAST(:imported_name AS text),
+        'imported_media_id', CAST(:imported_media_id AS text),
+        'imported_media_type', CAST(:imported_media_type AS text)
     )
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
-  AND payload->>'claim_token' = :claim_token
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
   AND payload->>'worker_started_at' IS NOT NULL
 RETURNING directory
 """
@@ -120,10 +128,13 @@ RETURNING directory
 FAIL_MANUAL_SCAN_IMPORT_SQL = """
 UPDATE scan_result_cache
 SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
-    || jsonb_build_object('status', 'failed', 'import_error', :error)
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
-  AND payload->>'claim_token' = :claim_token
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
   AND payload->>'worker_started_at' IS NOT NULL
 RETURNING directory
 """

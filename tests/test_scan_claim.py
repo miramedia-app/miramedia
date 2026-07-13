@@ -88,7 +88,9 @@ def test_terminal_sql_requires_worker_started_marker() -> None:
     assert "worker_started_at' IS NOT NULL" in COMPLETE_MANUAL_SCAN_IMPORT_SQL
     assert "worker_started_at' IS NOT NULL" in FAIL_MANUAL_SCAN_IMPORT_SQL
     assert "worker_started_at' IS NULL" in RECLAIM_STALE_QUEUED_IMPORT_SQL
-    assert "expected_claim_token IS NULL" in RECLAIM_STALE_QUEUED_IMPORT_SQL
+    assert (
+        "CAST(:expected_claim_token AS text) IS NULL" in RECLAIM_STALE_QUEUED_IMPORT_SQL
+    )
 
 
 def test_claim_success_bumps_batch_in_same_commit() -> None:
