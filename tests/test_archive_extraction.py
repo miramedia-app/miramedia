@@ -5,6 +5,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import os
 import stat
 import tarfile
 import zipfile
@@ -579,6 +580,79 @@ def test_rollback_skips_destination_replaced_during_failure(tmp_path: Path) -> N
         extract_archive_to_directory(archive, dest)
 
     assert (dest / "first.mkv").read_bytes() == b"post-promotion-replacement"
+    assert not (dest / "second.mkv").exists()
+
+
+def test_rollback_skips_symlink_replacement_with_matching_target_identity(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    outside_target = outside / "vault.mkv"
+    dest.mkdir()
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    real_unlink = Path.unlink
+
+    def _replace_first_with_symlink_then_fail(
+        self: Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if self.name == "second.mkv" and any(
+            ".mm-extract" in part for part in self.parts
+        ):
+            promoted = dest / "first.mkv"
+            os.link(promoted, outside_target)
+            promoted.unlink()
+            promoted.symlink_to(outside_target)
+            msg = "simulated staging unlink failure"
+            raise OSError(msg)
+        real_unlink(self, *args, **kwargs)
+
+    with (
+        patch.object(Path, "unlink", _replace_first_with_symlink_then_fail),
+        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert (dest / "first.mkv").is_symlink()
+    assert (dest / "first.mkv").read_bytes() == b"first-bytes"
+    assert outside_target.read_bytes() == b"first-bytes"
+    assert not (dest / "second.mkv").exists()
+
+
+def test_identity_record_failure_cleans_linked_destination(tmp_path: Path) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    from miramedia.imports import archive_extraction as mod
+
+    real_identity = mod._promoted_identity
+
+    def _fail_second_identity(path: Path) -> mod._PromotedIdentity:
+        if path.name == "second.mkv":
+            msg = "simulated identity record failure"
+            raise OSError(msg)
+        return real_identity(path)
+
+    with (
+        patch.object(mod, "_promoted_identity", side_effect=_fail_second_identity),
+        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert not (dest / "first.mkv").exists()
     assert not (dest / "second.mkv").exists()
 
 

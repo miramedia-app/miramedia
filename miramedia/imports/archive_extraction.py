@@ -556,7 +556,11 @@ def _atomic_promote_file(src: Path, dst: Path) -> _PromotedIdentity:
     except FileExistsError as exc:
         msg = f"destination file already exists: {dst}"
         raise ArchiveExtractionError(msg) from exc
-    identity = _promoted_identity(dst)
+    try:
+        identity = _promoted_identity(dst)
+    except OSError:
+        _unlink_fresh_link(dst)
+        raise
     try:
         src.unlink()
     except OSError:
@@ -566,14 +570,23 @@ def _atomic_promote_file(src: Path, dst: Path) -> _PromotedIdentity:
 
 
 def _promoted_identity(path: Path) -> _PromotedIdentity:
-    stat_result = path.stat()
+    stat_result = path.lstat()
     return _PromotedIdentity(path, stat_result.st_ino, stat_result.st_dev)
+
+
+def _unlink_fresh_link(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        log.warning("Failed to remove freshly linked destination: %s", path)
 
 
 def _unlink_if_owned(identity: _PromotedIdentity) -> None:
     try:
-        current = identity.path.stat()
+        current = identity.path.lstat()
     except OSError:
+        return
+    if stat.S_ISLNK(current.st_mode):
         return
     if current.st_ino == identity.st_ino and current.st_dev == identity.st_dev:
         identity.path.unlink()
