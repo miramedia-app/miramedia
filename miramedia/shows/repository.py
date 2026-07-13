@@ -1,5 +1,4 @@
 from datetime import date, datetime
-from typing import NamedTuple
 from typing import cast as typing_cast
 from uuid import UUID
 
@@ -19,6 +18,7 @@ from miramedia.shows.schemas import Episode as EpisodeSchema
 from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.shows.schemas import (
     EpisodeId,
+    EpisodeIntegrityContext,
     EpisodeNumber,
     SeasonId,
     SeasonNumber,
@@ -33,15 +33,6 @@ from miramedia.torrents.integrity import (
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
-
-
-class EpisodeIntegrityContext(NamedTuple):
-    """Narrow episode/season/show fields for integrity-mismatch listing."""
-
-    episode_number: int
-    season_number: int
-    show_id: ShowId
-    show_name: str
 
 
 def _full_show_eager_loads() -> tuple[ExecutableOption, ...]:
@@ -841,6 +832,20 @@ class ShowRepository:
         )
         rows = (await self.db.execute(stmt)).scalars().all()
         return [EpisodeFileSchema.model_validate(r) for r in rows]
+
+    async def get_sha1_mismatch_episode_files_by_ids(
+        self, file_ids: list[UUID]
+    ) -> dict[UUID, EpisodeFileSchema]:
+        """Batch-load mismatch episode files still matching the list predicate."""
+        if not file_ids:
+            return {}
+        stmt = select(EpisodeFile).where(
+            EpisodeFile.id.in_(file_ids),
+            EpisodeFile.import_status == ImportOutcome.imported,
+            EpisodeFile.import_error.like("sha1 mismatch%"),
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return {row.id: EpisodeFileSchema.model_validate(row) for row in rows}
 
     async def get_shows_by_ids(
         self, show_ids: list[ShowId]

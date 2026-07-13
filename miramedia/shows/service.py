@@ -3,7 +3,6 @@ import os
 import pprint
 import shutil
 import threading
-from collections import defaultdict
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from functools import partial
@@ -101,14 +100,12 @@ from miramedia.naming import (  # noqa: E402
 from miramedia.notifications.service import NotificationService  # noqa: E402
 from miramedia.shows import log  # noqa: E402
 from miramedia.shows.models import Show as ShowOrm  # noqa: E402
-from miramedia.shows.repository import (  # noqa: E402
-    EpisodeIntegrityContext,
-    ShowRepository,
-)
+from miramedia.shows.repository import ShowRepository  # noqa: E402
 from miramedia.shows.schemas import (  # noqa: E402
     Episode,
     EpisodeFile,
     EpisodeId,
+    EpisodeIntegrityContext,
     PublicEpisodeFile,
     PublicSeason,
     PublicShow,
@@ -119,7 +116,6 @@ from miramedia.shows.schemas import (  # noqa: E402
     ShowId,
 )
 from miramedia.torrents.integrity import (  # noqa: E402
-    list_video_files_in_directory,
     resolve_episode_file_path_in_memory,
 )
 from miramedia.torrents.mediainfo import analyze_async  # noqa: E402
@@ -1556,36 +1552,17 @@ class ShowService(MediaService[Show, ShowId]):
         shows: dict[ShowId, Show],
     ) -> dict[UUID, Path | None]:
         """Resolve on-disk paths for a batch with one directory scan per season."""
-        grouped: dict[
-            tuple[ShowId, int], list[tuple[EpisodeFile, EpisodeIntegrityContext]]
-        ] = defaultdict(list)
-        for row in rows:
-            ctx = episode_context.get(row.episode_id)
-            if ctx is None:
-                continue
-            grouped[(ctx.show_id, ctx.season_number)].append((row, ctx))
+        from miramedia.database import release_session_before_external_io
+        from miramedia.torrents.integrity import (
+            IntegrityPathLayout,
+            batch_resolve_episode_paths_async,
+        )
 
-        paths: dict[UUID, Path | None] = {row.id: None for row in rows}
-        for (show_id, season_number), items in grouped.items():
-            show = shows.get(show_id)
-            if show is None:
-                continue
-            season_dir = self.get_root_season_directory(
-                show=show, season_number=season_number
-            )
-            video_files = await asyncio.to_thread(
-                list_video_files_in_directory, season_dir
-            )
-            for row, ctx in items:
-                paths[row.id] = resolve_episode_file_path_in_memory(
-                    show=show,
-                    season_number=ctx.season_number,
-                    episode_number=ctx.episode_number,
-                    episode_file=row,
-                    season_dir=season_dir,
-                    video_files=video_files,
-                )
-        return paths
+        await release_session_before_external_io(self.show_repository.db)
+        layout = IntegrityPathLayout.from_config()
+        return await batch_resolve_episode_paths_async(
+            rows, episode_context, shows, layout
+        )
 
     async def import_episode_from_file(
         self,

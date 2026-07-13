@@ -18,7 +18,12 @@ from miramedia.file_status import ImportOutcome
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.movies.schemas import Movie, MovieFile
 from miramedia.shows.schemas import Episode, EpisodeFile, EpisodeNumber, Show
-from miramedia.torrents.integrity import INTEGRITY_MISMATCH_MAX_LIMIT
+from miramedia.torrents.integrity import (
+    INTEGRITY_MISMATCH_MAX_LIMIT,
+    IntegrityPathLayout,
+    batch_resolve_episode_paths_async,
+    batch_resolve_movie_paths_async,
+)
 from miramedia.torrents.manager import DownloadManager
 from miramedia.torrents.repository import TorrentRepository
 from miramedia.torrents.schemas import (
@@ -1847,35 +1852,56 @@ class TorrentService:
         """List imported files whose integrity audit recorded a SHA1 mismatch.
 
         Global order is shows first (by file id), then movies (by file id).
-        Only the requested page slice is loaded from the database.
+        Page keys and total come from one SQL snapshot; path resolution runs
+        only after the request session is released.
         """
         page_limit = min(limit, INTEGRITY_MISMATCH_MAX_LIMIT)
         show_repo = show_service.show_repository
         movie_repo = movie_service.movie_repository
 
-        show_total = await show_repo.count_sha1_mismatch_files()
-        movie_total = await movie_repo.count_sha1_mismatch_files()
-        total = show_total + movie_total
+        page = await self.torrent_repository.paginate_sha1_mismatch_keys(
+            offset=offset,
+            limit=page_limit,
+        )
+        show_ids = [key.file_id for key in page.keys if key.media_type == "show"]
+        movie_ids = [key.file_id for key in page.keys if key.media_type == "movie"]
+
+        show_rows_map = await show_repo.get_sha1_mismatch_episode_files_by_ids(show_ids)
+        movie_rows_map = await movie_repo.get_sha1_mismatch_movie_files_by_ids(
+            movie_ids
+        )
+        show_rows = [show_rows_map[fid] for fid in show_ids if fid in show_rows_map]
+        movie_rows = [movie_rows_map[fid] for fid in movie_ids if fid in movie_rows_map]
+
+        episode_context = await show_repo.batch_episodes_with_context(
+            [row.episode_id for row in show_rows]
+        )
+        shows = await show_repo.get_shows_by_ids(
+            list({ctx.show_id for ctx in episode_context.values()})
+        )
+        movie_names = await movie_repo.get_movie_names_by_ids(
+            [row.movie_id for row in movie_rows]
+        )
+        movies = await movie_repo.get_movies_by_ids(
+            [row.movie_id for row in movie_rows]
+        )
+
+        from miramedia.database import release_session_before_external_io
+
+        await release_session_before_external_io(show_repo.db)
+
+        layout = IntegrityPathLayout.from_config()
+        show_paths = await batch_resolve_episode_paths_async(
+            show_rows, episode_context, shows, layout
+        )
+        movie_paths = await batch_resolve_movie_paths_async(movie_rows, movies, layout)
 
         out: list[IntegrityMismatch] = []
-
-        show_offset = min(offset, show_total)
-        show_take = 0
-        if offset < show_total:
-            show_take = min(page_limit, show_total - show_offset)
-            show_rows = await show_repo.list_sha1_mismatch_files(
-                offset=show_offset, limit=show_take
-            )
-            episode_context = await show_repo.batch_episodes_with_context(
-                [row.episode_id for row in show_rows]
-            )
-            shows = await show_repo.get_shows_by_ids(
-                list({ctx.show_id for ctx in episode_context.values()})
-            )
-            paths = await show_service.batch_resolve_episode_file_paths(
-                show_rows, episode_context, shows
-            )
-            for row in show_rows:
+        for key in page.keys:
+            if key.media_type == "show":
+                row = show_rows_map.get(key.file_id)
+                if row is None:
+                    continue
                 media_title = ""
                 episode_label: str | None = None
                 try:
@@ -1887,7 +1913,7 @@ class TorrentService:
                         "Failed to resolve show title for mismatched episode_file %s",
                         row.id,
                     )
-                path = paths.get(row.id)
+                path = show_paths.get(row.id)
                 out.append(
                     IntegrityMismatch(
                         file_id=row.id,
@@ -1901,23 +1927,10 @@ class TorrentService:
                         detected_at=row.last_attempt_at,
                     )
                 )
-
-        movie_take = page_limit - len(out)
-        if movie_take > 0:
-            movie_offset = max(0, offset - show_total)
-            movie_rows = await movie_repo.list_sha1_mismatch_files(
-                offset=movie_offset, limit=movie_take
-            )
-            movie_names = await movie_repo.get_movie_names_by_ids(
-                [row.movie_id for row in movie_rows]
-            )
-            movies = await movie_repo.get_movies_by_ids(
-                [row.movie_id for row in movie_rows]
-            )
-            paths = await movie_service.batch_resolve_movie_file_paths(
-                movie_rows, movies
-            )
-            for row in movie_rows:
+            else:
+                row = movie_rows_map.get(key.file_id)
+                if row is None:
+                    continue
                 media_title = ""
                 try:
                     media_title = movie_names[row.movie_id]
@@ -1926,7 +1939,7 @@ class TorrentService:
                         "Failed to resolve movie title for mismatched movie_file %s",
                         row.id,
                     )
-                path = paths.get(row.id)
+                path = movie_paths.get(row.id)
                 out.append(
                     IntegrityMismatch(
                         file_id=row.id,
@@ -1941,10 +1954,15 @@ class TorrentService:
                     )
                 )
 
-        next_offset = offset + len(out) if offset + len(out) < total else None
+        page_span = len(page.keys)
+        next_offset = (
+            offset + page_span
+            if page_span > 0 and offset + page_span < page.total
+            else None
+        )
         return PaginatedIntegrityMismatches(
             items=out,
-            total=total,
+            total=page.total,
             offset=offset,
             limit=page_limit,
             next_offset=next_offset,

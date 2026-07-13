@@ -2,11 +2,12 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, exists, func, or_, select, text
+from sqlalchemy import and_, delete, exists, func, literal, or_, select, text, union_all
 from sqlalchemy.orm import selectinload
 
 from miramedia.database import DbSessionDependency
 from miramedia.exceptions import NotFoundError
+from miramedia.file_status import ImportOutcome
 from miramedia.movies.models import Movie, MovieFile
 from miramedia.movies.schemas import Movie as MovieSchema
 from miramedia.movies.schemas import MovieFile as MovieFileSchema
@@ -19,6 +20,7 @@ from miramedia.pagination import (
 from miramedia.shows.models import Episode, EpisodeFile, Season, Show
 from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.shows.schemas import Show as ShowSchema
+from miramedia.torrents.integrity import Sha1MismatchPage, Sha1MismatchPageKey
 from miramedia.torrents.models import (
     ManualParseToken,
     Torrent,
@@ -664,3 +666,51 @@ class TorrentRepository:
         for tid, st, err, attempt in (await self.db.execute(mv_stmt)).all():
             result.setdefault(tid, []).append((st, err, attempt))
         return result
+
+    async def paginate_sha1_mismatch_keys(
+        self, *, offset: int, limit: int
+    ) -> Sha1MismatchPage:
+        """Single-snapshot page of mismatch file keys (shows first, then movies)."""
+        mismatch = "sha1 mismatch%"
+        show_part = select(
+            literal(0).label("type_sort"),
+            EpisodeFile.id.label("file_id"),
+        ).where(
+            EpisodeFile.import_status == ImportOutcome.imported,
+            EpisodeFile.import_error.like(mismatch),
+        )
+        movie_part = select(
+            literal(1).label("type_sort"),
+            MovieFile.id.label("file_id"),
+        ).where(
+            MovieFile.import_status == ImportOutcome.imported,
+            MovieFile.import_error.like(mismatch),
+        )
+        union = union_all(show_part, movie_part).subquery()
+        stmt = (
+            select(
+                union.c.type_sort,
+                union.c.file_id,
+                func.count().over().label("total"),
+            )
+            .order_by(union.c.type_sort, union.c.file_id)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self.db.execute(stmt)).all()
+        if not rows:
+            total = int(
+                (
+                    await self.db.execute(select(func.count()).select_from(union))
+                ).scalar_one()
+            )
+            return Sha1MismatchPage(keys=[], total=total)
+        total = int(rows[0].total)
+        keys = [
+            Sha1MismatchPageKey(
+                media_type="show" if type_sort == 0 else "movie",
+                file_id=file_id,
+            )
+            for type_sort, file_id, _total in rows
+        ]
+        return Sha1MismatchPage(keys=keys, total=total)

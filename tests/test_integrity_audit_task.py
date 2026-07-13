@@ -13,15 +13,13 @@ from sqlalchemy.sql.dml import Update
 import miramedia.scheduler as scheduler
 from miramedia.movies.models import MovieFile
 from miramedia.shows.models import EpisodeFile
+from miramedia.torrents.integrity import INTEGRITY_AUDIT_CHUNK_SIZE
 from tests.fakes.config import fake_scheduler_config
-from tests.fakes.repositories import make_show
+from tests.fakes.db import RecordingSession
 from tests.fakes.scheduler import (
     FakeFileRow,
-    FakeMoviePathService,
-    FakeShowService,
-    background_session_factory,
-    bg_movie_path_service_factory,
-    bg_show_service_factory,
+    patch_audit_repository_lookups,
+    patch_batch_resolve_paths,
 )
 
 
@@ -46,14 +44,40 @@ def _update_table(stmt: Update) -> str:
 
 
 def _patch_integrity_config(monkeypatch, *, enabled: bool = True) -> None:
-    monkeypatch.setattr(
-        "miramedia.config.MiraMediaConfig",
-        lambda: fake_scheduler_config(integrity_check_enabled=enabled),
-    )
+    cfg = fake_scheduler_config(integrity_check_enabled=enabled)
+    monkeypatch.setattr("miramedia.config.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
+    patch_audit_repository_lookups(monkeypatch)
 
 
 async def _return_sha(sha: str | None):
     return sha
+
+
+def _high_water_background_session_factory(
+    *,
+    episode_rows: list[Any] | None = None,
+    movie_rows: list[Any] | None = None,
+    episode_high_water: uuid.UUID | None = None,
+    movie_high_water: uuid.UUID | None = None,
+) -> tuple[Any, list[RecordingSession]]:
+    """Recording sessions with explicit high-water snapshots per phase."""
+    shared_episode_rows = list(episode_rows or [])
+    shared_movie_rows = list(movie_rows or [])
+    sessions: list[RecordingSession] = []
+
+    @asynccontextmanager
+    async def _background_session():
+        session = RecordingSession(
+            episode_rows=shared_episode_rows,
+            movie_rows=shared_movie_rows,
+            episode_high_water=episode_high_water,
+            movie_high_water=movie_high_water,
+        )
+        sessions.append(session)
+        yield session
+
+    return _background_session, sessions
 
 
 def test_integrity_disabled_skips_background_session(monkeypatch) -> None:
@@ -80,19 +104,11 @@ def test_baseline_sha1_written_when_prior_is_none(monkeypatch, tmp_path: Path) -
     media_path = tmp_path / "episode.mkv"
     media_path.write_bytes(b"baseline-content")
     row = FakeFileRow(id=file_id, sha1=None, _resolved_path=media_path)
-    bg_session, sessions = background_session_factory(episode_rows=[row])
-    show_service = FakeShowService(make_show(), path_by_row_id={file_id: media_path})
+    bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -114,19 +130,11 @@ def test_matching_prior_sha1_produces_no_update(monkeypatch, tmp_path: Path) -> 
     media_path.write_bytes(b"same-content")
     prior = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     row = FakeFileRow(id=file_id, sha1=prior, _resolved_path=media_path)
-    bg_session, sessions = background_session_factory(episode_rows=[row])
-    show_service = FakeShowService(make_show(), path_by_row_id={file_id: media_path})
+    bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -145,20 +153,18 @@ def test_mismatch_stamps_import_error_without_status_change(
     media_path = tmp_path / "changed.mkv"
     media_path.write_bytes(b"new-content")
     prior = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    row = FakeFileRow(id=file_id, sha1=prior, _resolved_path=media_path)
-    bg_session, sessions = background_session_factory(movie_rows=[row])
-    movie_service = FakeMoviePathService(path_by_row_id={file_id: media_path})
+    row = FakeFileRow(
+        id=file_id,
+        sha1=prior,
+        _resolved_path=media_path,
+        movie_id=uuid.uuid4(),
+        episode_id=None,
+    )
+    bg_session, sessions = _high_water_background_session_factory(movie_rows=[row])
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(FakeShowService(make_show())),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(movie_service),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -179,8 +185,7 @@ def test_mismatch_stamps_import_error_without_status_change(
 
 def test_unresolvable_path_skips_row_without_crash(monkeypatch) -> None:
     row = FakeFileRow(id=uuid.uuid4(), sha1=None, _resolved_path=None)
-    bg_session, sessions = background_session_factory(episode_rows=[row])
-    show_service = FakeShowService(make_show(), path_by_row_id={row.id: None})
+    bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
     hashed: list[Path] = []
 
     async def _track_hash(path: Path) -> str:
@@ -189,14 +194,7 @@ def test_unresolvable_path_skips_row_without_crash(monkeypatch) -> None:
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {row.id: None})
     monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
 
     _run(scheduler.verify_imported_files_task())
@@ -211,19 +209,11 @@ def test_hash_io_error_skips_row(monkeypatch, tmp_path: Path) -> None:
     media_path = tmp_path / "on-disk.mkv"
     media_path.write_bytes(b"content")
     row = FakeFileRow(id=file_id, sha1=None, _resolved_path=media_path)
-    bg_session, sessions = background_session_factory(episode_rows=[row])
-    show_service = FakeShowService(make_show(), path_by_row_id={file_id: media_path})
+    bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -248,7 +238,7 @@ def test_integrity_audit_no_session_held_during_slow_hash(
     @asynccontextmanager
     async def _tracking_background_session():
         sessions_open.append(True)
-        bg_session, _ = background_session_factory(episode_rows=[row])
+        bg_session, _ = _high_water_background_session_factory(episode_rows=[row])
         async with bg_session() as session:
             try:
                 yield session
@@ -264,24 +254,62 @@ def test_integrity_audit_no_session_held_during_slow_hash(
     monkeypatch.setattr(
         "miramedia.database.background_session", _tracking_background_session
     )
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(
-            FakeShowService(make_show(), path_by_row_id={file_id: media_path})
-        ),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(scheduler, "_compute_sha1_async", _slow_hash)
 
     _run(scheduler.verify_imported_files_task())
 
 
-def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> None:
-    from miramedia.torrents.integrity import INTEGRITY_AUDIT_CHUNK_SIZE
+def test_integrity_audit_no_session_held_during_path_resolve(
+    monkeypatch, tmp_path: Path
+) -> None:
+    file_id = uuid.uuid4()
+    media_path = tmp_path / "scan.mkv"
+    media_path.write_bytes(b"scan-content")
+    row = FakeFileRow(id=file_id, sha1=None, _resolved_path=media_path)
+    sessions_open: list[bool] = []
+    released_before_scan = False
 
+    @asynccontextmanager
+    async def _tracking_background_session():
+        sessions_open.append(True)
+        bg_session, _ = _high_water_background_session_factory(episode_rows=[row])
+        async with bg_session() as session:
+            try:
+                yield session
+            finally:
+                sessions_open.pop()
+
+    async def _tracking_episode_paths(rows, episode_context, shows, layout):  # noqa: ARG001
+        nonlocal released_before_scan
+        assert sessions_open == [], "DB session must not be open during path resolve"
+        released_before_scan = True
+        return {row.id: media_path for row in rows}
+
+    _patch_integrity_config(monkeypatch)
+    monkeypatch.setattr(
+        "miramedia.database.background_session", _tracking_background_session
+    )
+    monkeypatch.setattr(
+        "miramedia.torrents.integrity.batch_resolve_episode_paths_async",
+        _tracking_episode_paths,
+    )
+    monkeypatch.setattr(
+        "miramedia.torrents.integrity.batch_resolve_movie_paths_async",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_compute_sha1_async",
+        lambda _path: _return_sha("hash-value000000000000000000000000"),
+    )
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert released_before_scan is True
+
+
+def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> None:
     rows: list[FakeFileRow] = []
     path_by_id: dict[uuid.UUID, Path] = {}
     for i in range(INTEGRITY_AUDIT_CHUNK_SIZE + 5):
@@ -296,7 +324,7 @@ def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> Non
     @asynccontextmanager
     async def _chunk_observing_session():
         nonlocal max_select_rows
-        bg_session, _ = background_session_factory(episode_rows=rows)
+        bg_session, _ = _high_water_background_session_factory(episode_rows=rows)
         async with bg_session() as session:
             original_execute = session.execute
 
@@ -320,16 +348,7 @@ def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setattr(
         "miramedia.database.background_session", _chunk_observing_session
     )
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(
-            FakeShowService(make_show(), path_by_row_id=path_by_id)
-        ),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, path_by_id)
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -339,3 +358,184 @@ def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> Non
     _run(scheduler.verify_imported_files_task())
 
     assert max_select_rows <= INTEGRITY_AUDIT_CHUNK_SIZE
+
+
+def test_integrity_audit_high_water_defers_rows_inserted_after_start(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    initial_id = uuid.UUID(int=1)
+    deferred_id = uuid.UUID(int=2)
+    initial_path = tmp_path / "initial.mkv"
+    deferred_path = tmp_path / "deferred.mkv"
+    initial_path.write_bytes(b"initial")
+    deferred_path.write_bytes(b"deferred")
+
+    shared_rows = [FakeFileRow(id=initial_id, sha1=None, _resolved_path=initial_path)]
+    high_water = initial_id
+    session_calls = 0
+    hashed_ids: list[uuid.UUID] = []
+
+    @asynccontextmanager
+    async def _deferred_insert_session():
+        nonlocal session_calls
+        session_calls += 1
+        if session_calls == 2:
+            shared_rows.append(
+                FakeFileRow(
+                    id=deferred_id,
+                    sha1=None,
+                    _resolved_path=deferred_path,
+                )
+            )
+        session = RecordingSession(
+            episode_rows=shared_rows,
+            episode_high_water=high_water,
+        )
+        yield session
+
+    async def _track_hash(path: Path) -> str:
+        if path == initial_path:
+            hashed_ids.append(initial_id)
+        if path == deferred_path:
+            hashed_ids.append(deferred_id)
+        return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    _patch_integrity_config(monkeypatch)
+    monkeypatch.setattr(
+        "miramedia.database.background_session", _deferred_insert_session
+    )
+    patch_batch_resolve_paths(
+        monkeypatch, {initial_id: initial_path, deferred_id: deferred_path}
+    )
+    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert hashed_ids == [initial_id]
+
+
+def test_integrity_audit_empty_table_skips_chunk_reads(monkeypatch) -> None:
+    opened = 0
+
+    @asynccontextmanager
+    async def _counting_session():
+        nonlocal opened
+        opened += 1
+        session = RecordingSession()
+        yield session
+
+    _patch_integrity_config(monkeypatch)
+    monkeypatch.setattr("miramedia.database.background_session", _counting_session)
+    patch_batch_resolve_paths(monkeypatch, {})
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert opened == 2
+
+
+def test_integrity_audit_exact_chunk_boundary(monkeypatch, tmp_path: Path) -> None:
+    rows: list[FakeFileRow] = []
+    path_by_id: dict[uuid.UUID, Path] = {}
+    for i in range(INTEGRITY_AUDIT_CHUNK_SIZE):
+        file_id = uuid.UUID(int=i + 1)
+        media_path = tmp_path / f"ep-{i}.mkv"
+        media_path.write_bytes(f"content-{i}".encode())
+        rows.append(FakeFileRow(id=file_id, sha1=None, _resolved_path=media_path))
+        path_by_id[file_id] = media_path
+
+    chunk_reads = 0
+    max_chunk_size = 0
+
+    @asynccontextmanager
+    async def _boundary_session():
+        nonlocal chunk_reads, max_chunk_size
+        bg_session, _ = _high_water_background_session_factory(episode_rows=rows)
+        async with bg_session() as session:
+            original_execute = session.execute
+
+            async def _execute(stmt):
+                nonlocal chunk_reads, max_chunk_size
+                from sqlalchemy.sql.selectable import Select
+
+                result = await original_execute(stmt)
+                if isinstance(stmt, Select):
+                    entity = stmt.column_descriptions[0].get("entity")
+                    if getattr(entity, "__name__", "") == "EpisodeFile":
+                        chunk_rows = result.scalars().all()
+                        if chunk_rows:
+                            chunk_reads += 1
+                            max_chunk_size = max(max_chunk_size, len(chunk_rows))
+                return result
+
+            session.execute = _execute  # type: ignore[method-assign]
+            yield session
+
+    _patch_integrity_config(monkeypatch)
+    monkeypatch.setattr("miramedia.database.background_session", _boundary_session)
+    patch_batch_resolve_paths(monkeypatch, path_by_id)
+    monkeypatch.setattr(
+        scheduler,
+        "_compute_sha1_async",
+        lambda _path: _return_sha("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert chunk_reads == 1
+    assert max_chunk_size == INTEGRITY_AUDIT_CHUNK_SIZE
+
+
+def test_integrity_audit_overlapping_cross_table_uuids(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    shared_id = uuid.UUID(int=42)
+    show_path = tmp_path / "show.mkv"
+    movie_path = tmp_path / "movie.mkv"
+    show_path.write_bytes(b"show")
+    movie_path.write_bytes(b"movie")
+    episode_row = FakeFileRow(
+        id=shared_id, sha1=None, _resolved_path=show_path, episode_id=uuid.uuid4()
+    )
+    movie_row = FakeFileRow(
+        id=shared_id,
+        sha1=None,
+        _resolved_path=movie_path,
+        movie_id=uuid.uuid4(),
+        episode_id=None,
+    )
+    hashed: list[Path] = []
+
+    async def _track_hash(path: Path) -> str:
+        hashed.append(path)
+        return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    bg_session, sessions = _high_water_background_session_factory(
+        episode_rows=[episode_row],
+        movie_rows=[movie_row],
+    )
+
+    _patch_integrity_config(monkeypatch)
+    monkeypatch.setattr("miramedia.database.background_session", bg_session)
+
+    async def _episode_paths(rows, episode_context, shows, layout):  # noqa: ARG001
+        return {row.id: show_path for row in rows}
+
+    async def _movie_paths(rows, movies, layout):  # noqa: ARG001
+        return {row.id: movie_path for row in rows}
+
+    monkeypatch.setattr(
+        "miramedia.torrents.integrity.batch_resolve_episode_paths_async",
+        _episode_paths,
+    )
+    monkeypatch.setattr(
+        "miramedia.torrents.integrity.batch_resolve_movie_paths_async",
+        _movie_paths,
+    )
+    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert hashed == [show_path, movie_path]
+    assert len(_write_sessions(sessions)) == 2

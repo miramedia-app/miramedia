@@ -747,17 +747,20 @@ async def verify_imported_files_task() -> None:
 
     from sqlalchemy import select
 
-    from miramedia.database import (
-        background_session,
-        bg_movie_service,
-        bg_show_service,
-    )
+    from miramedia.database import background_session
     from miramedia.file_status import ImportOutcome
     from miramedia.movies.models import MovieFile
     from miramedia.movies.repository import MovieRepository
+    from miramedia.movies.schemas import MovieFile as MovieFileSchema
     from miramedia.shows.models import EpisodeFile
     from miramedia.shows.repository import ShowRepository
-    from miramedia.torrents.integrity import INTEGRITY_AUDIT_CHUNK_SIZE
+    from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
+    from miramedia.torrents.integrity import (
+        INTEGRITY_AUDIT_CHUNK_SIZE,
+        IntegrityPathLayout,
+        batch_resolve_episode_paths_async,
+        batch_resolve_movie_paths_async,
+    )
 
     baselined = 0
     verified = 0
@@ -856,126 +859,158 @@ async def verify_imported_files_task() -> None:
         else:
             verified += 1
 
-    last_episode_id = uuid.UUID(int=0)
-    while True:
-        row_snapshots: list[tuple] = []
-        episode_context = {}
-        shows = {}
-        async with background_session() as db:
-            ep_result = await db.execute(
-                select(EpisodeFile)
-                .where(
-                    EpisodeFile.import_status == ImportOutcome.imported,
-                    EpisodeFile.id > last_episode_id,
-                )
-                .order_by(EpisodeFile.id)
-                .limit(INTEGRITY_AUDIT_CHUNK_SIZE)
-            )
-            ep_rows = ep_result.scalars().all()
-            if not ep_rows:
-                break
-            last_episode_id = ep_rows[-1].id
-            show_repo = ShowRepository(db)
-            episode_context = await show_repo.batch_episodes_with_context(
-                [
-                    row.episode_id
-                    for row in ep_rows
-                    if getattr(row, "episode_id", None) is not None
-                ]
-            )
-            shows = await show_repo.get_shows_by_ids(
-                list({ctx.show_id for ctx in episode_context.values()})
-            )
-            row_snapshots = [
-                (row.id, row.sha1, row.import_error, row) for row in ep_rows
-            ]
+    layout = IntegrityPathLayout.from_config()
 
-        async with bg_show_service() as show_service:
-            paths = await show_service.batch_resolve_episode_file_paths(
-                [snap[3] for snap in row_snapshots],
+    ep_high_water: uuid.UUID | None = None
+    async with background_session() as db:
+        ep_high_water = (
+            await db.execute(
+                select(EpisodeFile.id)
+                .where(EpisodeFile.import_status == ImportOutcome.imported)
+                .order_by(EpisodeFile.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    last_episode_id = uuid.UUID(int=0)
+    if ep_high_water is not None:
+        while True:
+            row_snapshots: list[tuple] = []
+            episode_context = {}
+            shows = {}
+            ep_schema_rows: list[EpisodeFileSchema] = []
+            async with background_session() as db:
+                ep_result = await db.execute(
+                    select(EpisodeFile)
+                    .where(
+                        EpisodeFile.import_status == ImportOutcome.imported,
+                        EpisodeFile.id > last_episode_id,
+                        EpisodeFile.id <= ep_high_water,
+                    )
+                    .order_by(EpisodeFile.id)
+                    .limit(INTEGRITY_AUDIT_CHUNK_SIZE)
+                )
+                ep_rows = ep_result.scalars().all()
+                if not ep_rows:
+                    break
+                last_episode_id = ep_rows[-1].id
+                show_repo = ShowRepository(db)
+                ep_schema_rows = [
+                    EpisodeFileSchema.model_validate(row) for row in ep_rows
+                ]
+                episode_context = await show_repo.batch_episodes_with_context(
+                    [
+                        row.episode_id
+                        for row in ep_schema_rows
+                        if row.episode_id is not None
+                    ]
+                )
+                shows = await show_repo.get_shows_by_ids(
+                    list({ctx.show_id for ctx in episode_context.values()})
+                )
+                row_snapshots = [
+                    (row.id, row.sha1, row.import_error, row) for row in ep_rows
+                ]
+
+            paths = await batch_resolve_episode_paths_async(
+                ep_schema_rows,
                 episode_context,
                 shows,
+                layout,
             )
 
-        chunk_targets: list[tuple] = []
-        for file_id, prior, prior_error, _row in row_snapshots:
-            target = paths.get(file_id)
-            if target is None or not target.exists():
-                continue
-            chunk_targets.append((file_id, prior, prior_error, target))
+            chunk_targets: list[tuple] = []
+            for file_id, prior, prior_error, _row in row_snapshots:
+                target = paths.get(file_id)
+                if target is None or not target.exists():
+                    continue
+                chunk_targets.append((file_id, prior, prior_error, target))
 
-        chunk_results: list[tuple] = []
-        for file_id, prior, prior_error, target in chunk_targets:
-            sha = await _compute_sha1_async(target)
-            if sha is None:
-                continue
-            chunk_results.append((file_id, prior, prior_error, sha, target))
+            chunk_results: list[tuple] = []
+            for file_id, prior, prior_error, target in chunk_targets:
+                sha = await _compute_sha1_async(target)
+                if sha is None:
+                    continue
+                chunk_results.append((file_id, prior, prior_error, sha, target))
 
-        async with background_session() as db:
-            show_repo = ShowRepository(db)
-            for file_id, prior, prior_error, sha, target in chunk_results:
-                await _apply_episode_result(
-                    show_repo, file_id, prior, prior_error, sha, target
-                )
-            await db.commit()
+            async with background_session() as db:
+                show_repo = ShowRepository(db)
+                for file_id, prior, prior_error, sha, target in chunk_results:
+                    await _apply_episode_result(
+                        show_repo, file_id, prior, prior_error, sha, target
+                    )
+                await db.commit()
+
+    mv_high_water: uuid.UUID | None = None
+    async with background_session() as db:
+        mv_high_water = (
+            await db.execute(
+                select(MovieFile.id)
+                .where(MovieFile.import_status == ImportOutcome.imported)
+                .order_by(MovieFile.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
 
     last_movie_id = uuid.UUID(int=0)
-    while True:
-        row_snapshots = []
-        movies = {}
-        async with background_session() as db:
-            mv_result = await db.execute(
-                select(MovieFile)
-                .where(
-                    MovieFile.import_status == ImportOutcome.imported,
-                    MovieFile.id > last_movie_id,
+    if mv_high_water is not None:
+        while True:
+            row_snapshots = []
+            movies = {}
+            mv_schema_rows: list[MovieFileSchema] = []
+            async with background_session() as db:
+                mv_result = await db.execute(
+                    select(MovieFile)
+                    .where(
+                        MovieFile.import_status == ImportOutcome.imported,
+                        MovieFile.id > last_movie_id,
+                        MovieFile.id <= mv_high_water,
+                    )
+                    .order_by(MovieFile.id)
+                    .limit(INTEGRITY_AUDIT_CHUNK_SIZE)
                 )
-                .order_by(MovieFile.id)
-                .limit(INTEGRITY_AUDIT_CHUNK_SIZE)
-            )
-            mv_rows = mv_result.scalars().all()
-            if not mv_rows:
-                break
-            last_movie_id = mv_rows[-1].id
-            movie_repo = MovieRepository(db)
-            movies = await movie_repo.get_movies_by_ids(
-                [
-                    row.movie_id
-                    for row in mv_rows
-                    if getattr(row, "movie_id", None) is not None
+                mv_rows = mv_result.scalars().all()
+                if not mv_rows:
+                    break
+                last_movie_id = mv_rows[-1].id
+                movie_repo = MovieRepository(db)
+                mv_schema_rows = [
+                    MovieFileSchema.model_validate(row) for row in mv_rows
                 ]
-            )
-            row_snapshots = [
-                (row.id, row.sha1, row.import_error, row) for row in mv_rows
-            ]
-
-        async with bg_movie_service() as movie_service:
-            paths = await movie_service.batch_resolve_movie_file_paths(
-                [snap[3] for snap in row_snapshots],
-                movies,
-            )
-
-        chunk_targets = []
-        for file_id, prior, prior_error, _row in row_snapshots:
-            target = paths.get(file_id)
-            if target is None or not target.exists():
-                continue
-            chunk_targets.append((file_id, prior, prior_error, target))
-
-        chunk_results = []
-        for file_id, prior, prior_error, target in chunk_targets:
-            sha = await _compute_sha1_async(target)
-            if sha is None:
-                continue
-            chunk_results.append((file_id, prior, prior_error, sha, target))
-
-        async with background_session() as db:
-            movie_repo = MovieRepository(db)
-            for file_id, prior, prior_error, sha, target in chunk_results:
-                await _apply_movie_result(
-                    movie_repo, file_id, prior, prior_error, sha, target
+                movies = await movie_repo.get_movies_by_ids(
+                    [row.movie_id for row in mv_schema_rows if row.movie_id is not None]
                 )
-            await db.commit()
+                row_snapshots = [
+                    (row.id, row.sha1, row.import_error, row) for row in mv_rows
+                ]
+
+            paths = await batch_resolve_movie_paths_async(
+                mv_schema_rows,
+                movies,
+                layout,
+            )
+
+            chunk_targets = []
+            for file_id, prior, prior_error, _row in row_snapshots:
+                target = paths.get(file_id)
+                if target is None or not target.exists():
+                    continue
+                chunk_targets.append((file_id, prior, prior_error, target))
+
+            chunk_results = []
+            for file_id, prior, prior_error, target in chunk_targets:
+                sha = await _compute_sha1_async(target)
+                if sha is None:
+                    continue
+                chunk_results.append((file_id, prior, prior_error, sha, target))
+
+            async with background_session() as db:
+                movie_repo = MovieRepository(db)
+                for file_id, prior, prior_error, sha, target in chunk_results:
+                    await _apply_movie_result(
+                        movie_repo, file_id, prior, prior_error, sha, target
+                    )
+                await db.commit()
 
     log.info(
         "integrity audit: %d baselined, %d verified, %d MISMATCH, %d stale skipped",

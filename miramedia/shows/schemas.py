@@ -1,6 +1,7 @@
 import typing
 import uuid
 from datetime import date, datetime
+from typing import NamedTuple
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +18,15 @@ EpisodeId = typing.NewType("EpisodeId", UUID)
 
 SeasonNumber = typing.NewType("SeasonNumber", int)
 EpisodeNumber = typing.NewType("EpisodeNumber", int)
+
+
+class EpisodeIntegrityContext(NamedTuple):
+    """Narrow episode/season/show fields for integrity-mismatch listing."""
+
+    episode_number: int
+    season_number: int
+    show_id: ShowId
+    show_name: str
 
 
 class Episode(BaseModel):

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from miramedia.imports.files import files_matching_stem
 from miramedia.torrents.integrity import (
     resolve_episode_file_path_in_memory,
     resolve_movie_file_path_in_memory,
+    scan_directory_for_stem_prefixes,
 )
 from miramedia.torrents.schemas import Quality
 from tests.fakes.repositories import make_movie, make_show
@@ -104,3 +106,32 @@ def test_resolve_movie_path_missing_file(tmp_path: Path) -> None:
         )
         is None
     )
+
+
+def test_scan_directory_matches_files_matching_stem_order(tmp_path: Path) -> None:
+    season_dir = tmp_path / "Season 01"
+    season_dir.mkdir()
+    stems = ["StemOrder.S01E01.1080p", "StemOrder.S01E01.720p"]
+    (season_dir / f"{stems[0]}.mkv").write_bytes(b"a")
+    (season_dir / f"{stems[1]}.mp4").write_bytes(b"b")
+
+    prefixes = frozenset(f"{stem}." for stem in stems)
+    scanned = scan_directory_for_stem_prefixes(season_dir, prefixes)
+    legacy = [p for stem in stems for p in files_matching_stem(season_dir, stem)]
+    assert {p.name for p in scanned} == {p.name for p in legacy}
+
+
+def test_scan_directory_does_not_retain_unrelated_files(tmp_path: Path) -> None:
+    season_dir = tmp_path / "Season 01"
+    season_dir.mkdir()
+    target = season_dir / "Target.S01E01.1080p.mkv"
+    target.write_bytes(b"match")
+    for i in range(1000):
+        (season_dir / f"noise-{i:04d}.mkv").write_bytes(b"x")
+
+    matches = scan_directory_for_stem_prefixes(
+        season_dir, frozenset({"Target.S01E01.1080p."})
+    )
+
+    assert matches == [target]
+    assert len(matches) == 1

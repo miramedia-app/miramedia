@@ -672,6 +672,20 @@ class MovieRepository:
         rows = (await self.db.execute(stmt)).scalars().all()
         return [MovieFileSchema.model_validate(r) for r in rows]
 
+    async def get_sha1_mismatch_movie_files_by_ids(
+        self, file_ids: list[UUID]
+    ) -> dict[UUID, MovieFileSchema]:
+        """Batch-load mismatch movie files still matching the list predicate."""
+        if not file_ids:
+            return {}
+        stmt = select(MovieFile).where(
+            MovieFile.id.in_(file_ids),
+            MovieFile.import_status == ImportOutcome.imported,
+            MovieFile.import_error.like("sha1 mismatch%"),
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return {row.id: MovieFileSchema.model_validate(row) for row in rows}
+
     async def get_movies_by_ids(
         self, movie_ids: list[MovieId]
     ) -> dict[MovieId, MovieSchema]:
