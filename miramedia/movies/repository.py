@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Mapping
 from datetime import date, datetime
+from typing import Any
 from typing import cast as typing_cast
 from uuid import UUID
 
@@ -35,6 +37,40 @@ from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
 
 log = logging.getLogger(__name__)
+
+_MOVIE_INTEGRITY_COLUMNS = (
+    Movie.id,
+    Movie.name,
+    Movie.overview,
+    Movie.year,
+    Movie.release_date,
+    Movie.external_id,
+    Movie.metadata_provider,
+    Movie.continuous_download,
+    Movie.skipped,
+    Movie.library,
+    Movie.original_language,
+    Movie.imdb_id,
+    Movie.vote_average,
+    Movie.content_rating,
+    Movie.runtime,
+    Movie.genres,
+    Movie.cast,
+    Movie.preferred_quality,
+    Movie.preferred_codec,
+    Movie.subtitle_languages,
+    Movie.last_metadata_check,
+    Movie.metadata_failure_backoff_until,
+    Movie.auto_download_backoff_until,
+    Movie.downloaded,
+)
+
+
+def _movie_schema_from_row_mapping(row: Mapping[str, Any]) -> MovieSchema:
+    """Build a MovieSchema from a scalar column mapping."""
+    payload = dict(row)
+    payload["id"] = MovieId(payload["id"])
+    return MovieSchema.model_validate(payload)
 
 
 def _movie_summary_eager_loads() -> tuple[ExecutableOption, ...]:
@@ -692,9 +728,9 @@ class MovieRepository:
         """Batch-load movies by primary key for integrity path resolution."""
         if not movie_ids:
             return {}
-        stmt = select(Movie).where(Movie.id.in_(movie_ids))
-        rows = (await self.db.execute(stmt)).scalars().all()
-        return {MovieId(row.id): MovieSchema.model_validate(row) for row in rows}
+        stmt = select(*_MOVIE_INTEGRITY_COLUMNS).where(Movie.id.in_(movie_ids))
+        rows = (await self.db.execute(stmt)).mappings().all()
+        return {MovieId(row["id"]): _movie_schema_from_row_mapping(row) for row in rows}
 
     async def get_movie_names_by_ids(
         self, movie_ids: list[MovieId]

@@ -814,3 +814,70 @@ def test_null_sha1_baseline_predicate_distinguishes_from_nonempty_sha1() -> None
     )
     assert "IS NULL" in _compile_sql(null_where)
     assert _compile_sql(nonempty_where).count("IS NOT DISTINCT FROM") == 2
+
+
+def test_show_audit_batch_loads_shows_via_column_mapping(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Audit snapshot phase must load shows without lazy Show.seasons access."""
+    from miramedia.shows.schemas import EpisodeId, EpisodeIntegrityContext
+    from tests.fakes.repositories import make_show
+    from tests.test_integrity_repository_lookups import (
+        _REAL_GET_SHOWS_BY_IDS,
+        _MappingRecordingSession,
+        _show_mapping,
+    )
+
+    show = make_show(name="Audit Show")
+    show_id = show.id
+    episode_id = show.seasons[0].episodes[0].id
+    file_id = uuid.uuid4()
+    media_path = tmp_path / "audit-show.mkv"
+    media_path.write_bytes(b"content")
+    snapshot_row = _MutableRow(
+        id=file_id,
+        sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        import_error=None,
+        episode_id=episode_id,
+        _resolved_path=media_path,
+    )
+    bg_session, _write_sessions = _audit_background_session_factory(
+        snapshot_episode_rows=[snapshot_row],
+        write_episode_rows=[snapshot_row],
+    )
+    cfg = fake_scheduler_config(integrity_check_enabled=True)
+    monkeypatch.setattr("miramedia.config.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr("miramedia.database.background_session", bg_session)
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
+    monkeypatch.setattr(
+        scheduler,
+        "_compute_sha1_async",
+        lambda _path: _return_sha("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+
+    lookup_sessions: list[_MappingRecordingSession] = []
+
+    async def _episode_context(self, episode_ids):  # noqa: ARG001
+        return {
+            EpisodeId(episode_id): EpisodeIntegrityContext(
+                episode_number=1,
+                season_number=1,
+                show_id=show_id,
+                show_name="Audit Show",
+            )
+        }
+
+    async def _mapping_shows_by_ids(self, show_ids):  # noqa: ARG001
+        session = _MappingRecordingSession(rows=[_show_mapping(show)])
+        lookup_sessions.append(session)
+        repo = ShowRepository(session)  # type: ignore[arg-type]
+        return await _REAL_GET_SHOWS_BY_IDS(repo, show_ids)
+
+    monkeypatch.setattr(ShowRepository, "batch_episodes_with_context", _episode_context)
+    monkeypatch.setattr(ShowRepository, "get_shows_by_ids", _mapping_shows_by_ids)
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert len(lookup_sessions) == 1
+    assert len(lookup_sessions[0].executes) == 1

@@ -1,4 +1,6 @@
+from collections.abc import Mapping
 from datetime import date, datetime
+from typing import Any
 from typing import cast as typing_cast
 from uuid import UUID
 
@@ -12,6 +14,7 @@ from sqlalchemy.sql.base import ExecutableOption
 from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.file_status import ImportOutcome
 from miramedia.media_filters import apply_list_filters, apply_sort
+from miramedia.media_state import ProgressStatus
 from miramedia.shows import log
 from miramedia.shows.models import Episode, EpisodeFile, Season, Show
 from miramedia.shows.schemas import Episode as EpisodeSchema
@@ -33,6 +36,44 @@ from miramedia.torrents.integrity import (
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
+
+_SHOW_INTEGRITY_COLUMNS = (
+    Show.id,
+    Show.name,
+    Show.overview,
+    Show.year,
+    Show.ended,
+    Show.external_id,
+    Show.metadata_provider,
+    Show.continuous_download,
+    Show.skipped,
+    Show.library,
+    Show.original_language,
+    Show.imdb_id,
+    Show.vote_average,
+    Show.content_rating,
+    Show.genres,
+    Show.cast,
+    Show.preferred_quality,
+    Show.preferred_codec,
+    Show.subtitle_languages,
+    Show.last_metadata_check,
+    Show.metadata_failure_backoff_until,
+    Show.auto_download_backoff_until,
+    Show.wanted_episode_count,
+    Show.downloaded_episode_count,
+    Show.list_progress_status,
+)
+
+
+def _show_schema_from_row_mapping(row: Mapping[str, Any]) -> ShowSchema:
+    """Build a ShowSchema from a scalar column mapping (no seasons graph)."""
+    payload = dict(row)
+    payload["id"] = ShowId(payload["id"])
+    status = payload.get("list_progress_status")
+    if status is not None and not isinstance(status, ProgressStatus):
+        payload["list_progress_status"] = ProgressStatus(status)
+    return ShowSchema.model_validate(payload)
 
 
 def _full_show_eager_loads() -> tuple[ExecutableOption, ...]:
@@ -853,9 +894,9 @@ class ShowRepository:
         """Batch-load shows by primary key for integrity path resolution."""
         if not show_ids:
             return {}
-        stmt = select(Show).where(Show.id.in_(show_ids))
-        rows = (await self.db.execute(stmt)).scalars().all()
-        return {ShowId(row.id): ShowSchema.model_validate(row) for row in rows}
+        stmt = select(*_SHOW_INTEGRITY_COLUMNS).where(Show.id.in_(show_ids))
+        rows = (await self.db.execute(stmt)).mappings().all()
+        return {ShowId(row["id"]): _show_schema_from_row_mapping(row) for row in rows}
 
     async def batch_episodes_with_context(
         self, episode_ids: list[EpisodeId]
