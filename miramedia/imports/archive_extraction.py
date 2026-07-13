@@ -25,12 +25,14 @@ import logging
 import ntpath
 import os
 import re
-import shutil
 import stat
 import tempfile
 import unicodedata
 from pathlib import Path, PurePosixPath
-from typing import Literal, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
+
+if TYPE_CHECKING:
+    from miramedia.imports.archive_publication import BoundStagingDirectory
 
 log = logging.getLogger(__name__)
 
@@ -172,13 +174,13 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     if classification.disposition == "unsupported":
         raise _unsupported_format_error(classification.format)
 
-    staging: Path | None = None
+    staging: BoundStagingDirectory | None = None
     primary_error: BaseException | None = None
     published = False
     try:
         staging = _create_staging_dir(destination_dir.absolute().parent)
-        _extract_to_staging(archive, staging, classification.format)
-        _collect_validated_regular_files(staging)
+        _extract_to_staging(archive, staging.path, classification.format)
+        _collect_validated_regular_files(staging.path)
         from miramedia.imports.archive_publication import publish_staging_tree
 
         container_path = publish_staging_tree(
@@ -196,45 +198,111 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     else:
         return container_path
     finally:
-        if staging is not None and not published:
-            _cleanup_staging(staging, primary_error=primary_error)
+        if staging is not None:
+            if published:
+                staging.close()
+            else:
+                _cleanup_staging(staging, primary_error=primary_error)
 
 
-def _create_staging_dir(parent: Path) -> Path:
+def _create_staging_dir(parent: Path) -> BoundStagingDirectory:
+    from miramedia.imports.archive_publication import (
+        BoundStagingDirectory,
+        bind_directory,
+        quarantine_owned_directory,
+    )
+
     try:
         parent.mkdir(parents=True, exist_ok=True)
+        parent_fd = bind_directory(parent)
+    except OSError as exc:
+        msg = f"failed to open staging parent directory under {parent}"
+        raise ArchiveExtractionError(msg) from exc
+    try:
         staging_path = tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent))
         staging = Path(staging_path)
     except OSError as exc:
+        os.close(parent_fd)
         msg = f"failed to create staging directory under {parent}"
         raise ArchiveExtractionError(msg) from exc
     try:
         staging.chmod(STAGING_DIR_MODE)
     except OSError as exc:
-        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging_stat = os.stat(
+                staging.name, dir_fd=parent_fd, follow_symlinks=False
+            )
+        except OSError:
+            os.close(parent_fd)
+            msg = f"failed to secure staging directory permissions: {staging}"
+            raise ArchiveExtractionError(msg) from exc
+        quarantine_owned_directory(
+            parent_fd,
+            staging.name,
+            staging_stat,
+            allow_recursive_cleanup=True,
+        )
+        os.close(parent_fd)
         msg = f"failed to secure staging directory permissions: {staging}"
         raise ArchiveExtractionError(msg) from exc
-    return staging
+    try:
+        staging_fd = os.open(
+            staging.name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        try:
+            staging_stat = os.stat(
+                staging.name, dir_fd=parent_fd, follow_symlinks=False
+            )
+        except OSError:
+            os.close(parent_fd)
+            msg = f"failed to bind staging directory: {staging}"
+            raise ArchiveExtractionError(msg) from exc
+        quarantine_owned_directory(
+            parent_fd,
+            staging.name,
+            staging_stat,
+            allow_recursive_cleanup=True,
+        )
+        os.close(parent_fd)
+        msg = f"failed to bind staging directory: {staging}"
+        raise ArchiveExtractionError(msg) from exc
+    staging_stat = os.fstat(staging_fd)
+    return BoundStagingDirectory(
+        path=staging,
+        name=staging.name,
+        parent_fd=parent_fd,
+        fd=staging_fd,
+        stat=staging_stat,
+    )
 
 
 def _cleanup_staging(
-    staging: Path,
+    staging: BoundStagingDirectory,
     *,
     primary_error: BaseException | None = None,
 ) -> None:
-    if not staging.exists():
-        return
+    from miramedia.imports.archive_publication import quarantine_owned_directory
+
     try:
-        shutil.rmtree(staging)
+        quarantine_owned_directory(
+            staging.parent_fd,
+            staging.name,
+            staging.stat,
+            allow_recursive_cleanup=True,
+        )
     except OSError as cleanup_error:
         log.exception(
-            "Failed to remove archive staging directory %s",
-            staging,
+            "Failed to quarantine archive staging directory %s",
+            staging.path,
         )
-        if primary_error is not None:
-            return
-        msg = f"failed to clean staging directory: {staging}"
-        raise ArchiveExtractionError(msg) from cleanup_error
+        if primary_error is None:
+            msg = f"failed to clean staging directory: {staging.path}"
+            raise ArchiveExtractionError(msg) from cleanup_error
+    finally:
+        staging.close()
 
 
 def _identify_archive_format(archive: Path) -> str | None:

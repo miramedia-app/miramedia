@@ -186,7 +186,7 @@ def test_publication_parent_symlink_swap_blocks_root_open(tmp_path: Path) -> Non
     real_publish = publication.publish_staging_tree
 
     def _swap_destination_then_publish(
-        staging: Path,
+        staging: publication.BoundStagingDirectory,
         destination_dir: Path,
         *,
         destination_stat: os.stat_result,

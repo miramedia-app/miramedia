@@ -81,7 +81,12 @@ def test_quarantine_cleanup_leaves_replaced_private(tmp_path: Path) -> None:
 
     parent_fd = publication.bind_directory(parent)
     try:
-        publication._quarantine_private_build(parent_fd, private_name, private_stat)
+        publication.quarantine_owned_directory(
+            parent_fd,
+            private_name,
+            private_stat,
+            allow_recursive_cleanup=True,
+        )
         assert (private_path / "marker").read_bytes() == b"safe"
         assert list(parent.glob(f"{publication.QUARANTINE_PREFIX}*")) == []
     finally:

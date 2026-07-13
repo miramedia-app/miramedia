@@ -279,11 +279,251 @@ def test_quarantine_cleanup_leaves_replaced_private(tmp_path: Path) -> None:
 
     parent_fd = publication.bind_directory(parent)
     try:
-        publication._quarantine_private_build(parent_fd, private_name, private_stat)
+        publication.quarantine_owned_directory(
+            parent_fd,
+            private_name,
+            private_stat,
+            allow_recursive_cleanup=True,
+        )
         assert (private_path / "marker").read_bytes() == b"safe"
         assert list(parent.glob(f"{QUARANTINE_PREFIX}*")) == []
     finally:
         os.close(parent_fd)
+
+
+def test_quarantine_swap_between_stat_and_rename_leaves_marker(tmp_path: Path) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    parent = tmp_path / "import"
+    parent.mkdir()
+    owned = parent / f"{PRIVATE_BUILD_PREFIX}owned"
+    owned.mkdir()
+    owned_stat = owned.lstat()
+    parent_fd = publication.bind_directory(parent)
+    real_stat = os.stat
+    try:
+
+        def _swap_after_first_stat(
+            name: str,
+            *,
+            dir_fd: int | None = None,
+            follow_symlinks: bool = True,
+        ) -> os.stat_result:
+            result = real_stat(name, dir_fd=dir_fd, follow_symlinks=follow_symlinks)
+            if (
+                dir_fd == parent_fd
+                and name == owned.name
+                and result.st_ino == owned_stat.st_ino
+            ):
+                hidden = parent / "hidden-owned"
+                owned.rename(hidden)
+                replacement = parent / "replacement"
+                replacement.mkdir()
+                (replacement / "marker").write_bytes(b"safe")
+                replacement.rename(parent / owned.name)
+            return result
+
+        with patch.object(os, "stat", side_effect=_swap_after_first_stat):
+            publication.quarantine_owned_directory(
+                parent_fd,
+                owned.name,
+                owned_stat,
+                allow_recursive_cleanup=True,
+            )
+        assert (parent / owned.name / "marker").read_bytes() == b"safe"
+    finally:
+        os.close(parent_fd)
+
+
+def test_quarantine_swap_before_rmdir_leaves_quarantine(tmp_path: Path) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    parent = tmp_path / "import"
+    parent.mkdir()
+    owned = parent / f"{PRIVATE_BUILD_PREFIX}owned"
+    owned.mkdir()
+    owned_stat = owned.lstat()
+    parent_fd = publication.bind_directory(parent)
+    try:
+        with patch.object(
+            publication,
+            "_directory_is_empty",
+            return_value=False,
+        ):
+            publication.quarantine_owned_directory(
+                parent_fd,
+                owned.name,
+                owned_stat,
+                allow_recursive_cleanup=True,
+            )
+        quarantines = list(parent.glob(f"{QUARANTINE_PREFIX}*"))
+        assert len(quarantines) == 1
+    finally:
+        os.close(parent_fd)
+
+
+def test_quarantine_without_recursive_cleanup_preserves_contents(
+    tmp_path: Path,
+) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    parent = tmp_path / "import"
+    parent.mkdir()
+    owned = parent / f"{PRIVATE_BUILD_PREFIX}owned"
+    owned.mkdir()
+    (owned / "payload.txt").write_bytes(b"keep")
+    owned_stat = owned.lstat()
+    parent_fd = publication.bind_directory(parent)
+    try:
+        publication.quarantine_owned_directory(
+            parent_fd,
+            owned.name,
+            owned_stat,
+            allow_recursive_cleanup=False,
+        )
+        quarantines = list(parent.glob(f"{QUARANTINE_PREFIX}*"))
+        assert len(quarantines) == 1
+        assert (quarantines[0] / "payload.txt").read_bytes() == b"keep"
+    finally:
+        os.close(parent_fd)
+
+
+def test_staging_directory_replacement_before_publish_rejected(
+    tmp_path: Path,
+) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "evil.mkv").write_bytes(b"evil")
+    _write_zip(archive, {"clip.mkv": b"good"})
+
+    real_publish = publication.publish_staging_tree
+
+    def _swap_directory_at_publish(
+        staging: publication.BoundStagingDirectory,
+        destination_dir: Path,
+        *,
+        destination_stat: os.stat_result,
+    ) -> Path:
+        replacement = dest.parent / "replacement"
+        replacement.mkdir()
+        (replacement / "evil.mkv").write_bytes(b"evil")
+        for child in staging.path.iterdir():
+            child.unlink()
+        staging.path.rmdir()
+        replacement.rename(staging.path)
+        return real_publish(staging, destination_dir, destination_stat=destination_stat)
+
+    with (
+        patch.object(
+            publication,
+            "publish_staging_tree",
+            side_effect=_swap_directory_at_publish,
+        ),
+        pytest.raises(ArchiveExtractionError, match="replaced"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+    assert (outside / "evil.mkv").read_bytes() == b"evil"
+
+
+def test_foreign_payload_preserved_when_verify_fails(tmp_path: Path) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"clip.mkv": b"x"})
+
+    with (
+        patch.object(
+            publication,
+            "_verify_installed_payload_identity",
+            side_effect=ArchiveExtractionError("identity mismatch"),
+        ),
+        pytest.raises(ArchiveExtractionError, match="identity mismatch"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+    quarantines = list(dest.parent.glob(f"{QUARANTINE_PREFIX}*"))
+    publishes = list(dest.parent.glob(f"{PRIVATE_BUILD_PREFIX}*"))
+    assert quarantines or publishes
+    survivors = quarantines or publishes
+    assert any(p.rglob("clip.mkv") for p in survivors)
+
+
+def test_inplace_file_mutation_during_hash_rejected(tmp_path: Path) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    root = tmp_path / "tree"
+    root.mkdir()
+    target = root / "mutate.txt"
+    target.write_bytes(b"aaaa")
+
+    real_read = os.read
+
+    def _mutate_on_second_read(fd: int, size: int = -1, /) -> bytes:
+        data = real_read(fd, size)
+        if data:
+            target.write_bytes(b"bbbb")
+        return data
+
+    fd = publication.bind_directory(root)
+    try:
+        with (
+            patch(
+                "miramedia.imports.archive_publication.os.read",
+                side_effect=_mutate_on_second_read,
+            ),
+            pytest.raises(ArchiveExtractionError, match="changed during hashing"),
+        ):
+            canonical_tree_digest(fd)
+    finally:
+        os.close(fd)
+
+
+def test_staging_cleanup_leaves_replaced_directory(tmp_path: Path) -> None:
+    from miramedia.imports import archive_extraction as mod
+
+    archive = tmp_path / "bad.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"../escape.mkv": b"x"})
+
+    captured: list[mod.BoundStagingDirectory] = []
+    real_cleanup = mod._cleanup_staging
+
+    def _swap_then_cleanup(
+        staging: mod.BoundStagingDirectory,
+        *,
+        primary_error: BaseException | None = None,
+    ) -> None:
+        captured.append(staging)
+        replacement = dest.parent / "replacement"
+        replacement.mkdir()
+        (replacement / "marker").write_bytes(b"safe")
+        if staging.path.exists():
+            for child in staging.path.iterdir():
+                child.unlink()
+            staging.path.rmdir()
+        replacement.rename(staging.path)
+        real_cleanup(staging, primary_error=primary_error)
+
+    with (
+        patch.object(mod, "_cleanup_staging", side_effect=_swap_then_cleanup),
+        pytest.raises(ArchiveExtractionError),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert captured
+    assert (captured[0].path / "marker").read_bytes() == b"safe"
+    assert list(dest.parent.glob(f"{QUARANTINE_PREFIX}*")) == []
 
 
 def test_missing_atomic_primitive_cleans_private_build(tmp_path: Path) -> None:
@@ -305,8 +545,8 @@ def test_missing_atomic_primitive_cleans_private_build(tmp_path: Path) -> None:
         extract_archive_to_directory(archive, dest)
 
     assert container_paths(dest) == []
-    assert list(dest.parent.glob(f"{PRIVATE_BUILD_PREFIX}*")) == []
     assert list(dest.parent.glob(f"{QUARANTINE_PREFIX}*")) == []
+    assert len(list(dest.parent.glob(f"{PRIVATE_BUILD_PREFIX}*"))) == 1
 
 
 def test_raced_identical_winner_returns_existing_container(tmp_path: Path) -> None:

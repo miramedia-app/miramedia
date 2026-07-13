@@ -38,6 +38,27 @@ class _DigestWriter(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class BoundStagingDirectory:
+    """Staging directory opened and inode-bound at mkdtemp creation."""
+
+    path: Path
+    name: str
+    parent_fd: int
+    fd: int
+    stat: os.stat_result
+
+    def close(self) -> None:
+        os.close(self.fd)
+        os.close(self.parent_fd)
+
+    def assert_identity(self) -> None:
+        opened = os.fstat(self.fd)
+        if opened.st_dev != self.stat.st_dev or opened.st_ino != self.stat.st_ino:
+            msg = "staging directory identity changed"
+            raise ArchiveExtractionError(msg)
+
+
+@dataclass(frozen=True, slots=True)
 class _CanonicalEntry:
     rel_path: str
     entry_type: Literal["dir", "file"]
@@ -83,13 +104,13 @@ def container_name_for_digest(digest: str) -> str:
 
 
 def publish_staging_tree(
-    staging: Path,
+    staging: BoundStagingDirectory,
     destination_dir: Path,
     *,
     destination_stat: os.stat_result,
 ) -> Path:
     """Publish ``staging`` under ``destination_dir`` and return the container path."""
-    staging = staging.absolute()
+    staging.assert_identity()
     destination_abs = destination_dir.absolute()
     parent_abs = destination_abs.parent
 
@@ -101,7 +122,8 @@ def publish_staging_tree(
             destination_stat,
         )
         try:
-            staging_stat = _stat_entry(parent_fd, staging.name)
+            staging_stat = staging.stat
+            staging_name = staging.name
             private_name = f"{PRIVATE_BUILD_PREFIX}{secrets.token_hex(16)}"
             try:
                 os.mkdir(private_name, mode=CONTAINER_DIR_MODE, dir_fd=parent_fd)
@@ -116,24 +138,24 @@ def publish_staging_tree(
             )
             private_stat = os.fstat(private_fd)
             published = False
+            installed_staging = False
+            payload_verified = False
             try:
                 _install_staging_payload(
                     parent_fd=parent_fd,
-                    staging_name=staging.name,
+                    staging_name=staging_name,
                     staging_stat=staging_stat,
                     private_fd=private_fd,
                 )
+                installed_staging = True
                 payload_fd = os.open(
                     PAYLOAD_DIR_NAME,
                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                     dir_fd=private_fd,
                 )
                 try:
-                    _verify_installed_payload_identity(
-                        private_fd,
-                        payload_fd,
-                        staging_stat,
-                    )
+                    _verify_installed_payload_identity(payload_fd, staging_stat)
+                    payload_verified = True
                     _apply_importable_modes_at(payload_fd)
                     digest = canonical_tree_digest(payload_fd)
                 finally:
@@ -178,7 +200,15 @@ def publish_staging_tree(
             finally:
                 os.close(private_fd)
                 if not published:
-                    _quarantine_private_build(parent_fd, private_name, private_stat)
+                    allow_recursive_cleanup = (
+                        not installed_staging
+                    ) or payload_verified
+                    quarantine_owned_directory(
+                        parent_fd,
+                        private_name,
+                        private_stat,
+                        allow_recursive_cleanup=allow_recursive_cleanup,
+                    )
         finally:
             os.close(destination_fd)
     finally:
@@ -254,7 +284,6 @@ def _install_staging_payload(
 
 
 def _verify_installed_payload_identity(
-    _private_fd: int,
     payload_fd: int,
     staging_stat: os.stat_result,
 ) -> None:
@@ -270,52 +299,56 @@ def _verify_installed_payload_identity(
         raise ArchiveExtractionError(msg)
 
 
-def _quarantine_private_build(
+def quarantine_owned_directory(
     parent_fd: int,
-    private_name: str,
-    private_stat: os.stat_result,
+    name: str,
+    expected_stat: os.stat_result,
+    *,
+    allow_recursive_cleanup: bool,
 ) -> None:
-    """Move a private build aside and delete it only when identity is proven."""
+    """Quarantine ``name`` and optionally delete it when identity is proven."""
     try:
-        current = os.stat(
-            private_name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     except FileNotFoundError:
         return
     except OSError as exc:
+        log.warning("Failed to stat %s during cleanup: %s", name, exc)
+        return
+    if current.st_ino != expected_stat.st_ino or current.st_dev != expected_stat.st_dev:
+        log.warning("%s was replaced before cleanup; leaving it in place", name)
+        return
+    if not stat.S_ISDIR(current.st_mode):
+        log.warning("%s is no longer a directory; leaving it in place", name)
+        return
+
+    try:
+        pre_rename = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as exc:
         log.warning(
-            "Failed to stat private build %s during cleanup: %s",
-            private_name,
+            "Failed to re-stat %s before quarantine rename; leaving it: %s",
+            name,
             exc,
         )
         return
-    if current.st_ino != private_stat.st_ino or current.st_dev != private_stat.st_dev:
-        log.warning(
-            "Private build %s was replaced before cleanup; leaving it in place",
-            private_name,
-        )
-        return
-    if not stat.S_ISDIR(current.st_mode):
-        log.warning(
-            "Private build %s is no longer a directory; leaving it in place",
-            private_name,
-        )
+    if (
+        pre_rename.st_ino != expected_stat.st_ino
+        or pre_rename.st_dev != expected_stat.st_dev
+    ):
+        log.warning("%s changed before quarantine rename; leaving it in place", name)
         return
 
     quarantine_name = f"{QUARANTINE_PREFIX}{secrets.token_hex(16)}"
     try:
-        os.rename(
-            private_name,
+        atomic_rename_noreplace(
+            parent_fd,
+            name,
+            parent_fd,
             quarantine_name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
         )
     except OSError as exc:
         log.warning(
-            "Failed to quarantine private build %s; leaving it in place: %s",
-            private_name,
+            "Failed to quarantine %s; leaving it in place: %s",
+            name,
             exc,
         )
         return
@@ -328,17 +361,17 @@ def _quarantine_private_build(
         )
     except OSError as exc:
         log.warning(
-            "Failed to stat quarantined build %s; leaving it in place: %s",
+            "Failed to stat quarantined directory %s; leaving it: %s",
             quarantine_name,
             exc,
         )
         return
     if (
-        quarantined.st_ino != private_stat.st_ino
-        or quarantined.st_dev != private_stat.st_dev
+        quarantined.st_ino != expected_stat.st_ino
+        or quarantined.st_dev != expected_stat.st_dev
     ):
         log.warning(
-            "Quarantined build %s was replaced; leaving it in place",
+            "Quarantined directory %s was replaced; leaving it in place",
             quarantine_name,
         )
         return
@@ -351,29 +384,59 @@ def _quarantine_private_build(
         )
     except OSError as exc:
         log.warning(
-            "Failed to open quarantined build %s; leaving it in place: %s",
+            "Failed to open quarantined directory %s; leaving it: %s",
             quarantine_name,
             exc,
         )
         return
     try:
         opened = os.fstat(top_fd)
-        if opened.st_ino != private_stat.st_ino or opened.st_dev != private_stat.st_dev:
+        if (
+            opened.st_ino != expected_stat.st_ino
+            or opened.st_dev != expected_stat.st_dev
+        ):
             log.warning(
-                "Quarantined build %s identity changed after open; leaving it",
+                "Quarantined directory %s identity changed after open; leaving it",
                 quarantine_name,
             )
             return
-        _rmtree_at_fd(top_fd)
+        if allow_recursive_cleanup:
+            _rmtree_at_fd(top_fd)
     except OSError as exc:
         log.warning(
-            "Failed to clean quarantined build %s; leaving it in place: %s",
+            "Failed to clean quarantined directory %s; leaving it: %s",
             quarantine_name,
             exc,
         )
         return
     finally:
         os.close(top_fd)
+
+    try:
+        final = os.stat(
+            quarantine_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        log.warning(
+            "Failed to stat quarantine directory %s before removal: %s",
+            quarantine_name,
+            exc,
+        )
+        return
+    if final.st_ino != expected_stat.st_ino or final.st_dev != expected_stat.st_dev:
+        log.warning(
+            "Quarantine directory %s was replaced before removal; leaving it",
+            quarantine_name,
+        )
+        return
+    if not _directory_is_empty(parent_fd, quarantine_name):
+        log.warning(
+            "Quarantine directory %s is not empty; leaving it in place",
+            quarantine_name,
+        )
+        return
     try:
         os.rmdir(quarantine_name, dir_fd=parent_fd)
     except OSError as exc:
@@ -382,6 +445,21 @@ def _quarantine_private_build(
             quarantine_name,
             exc,
         )
+
+
+def _directory_is_empty(parent_fd: int, name: str) -> bool:
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    try:
+        for _root, dirs, files, _walk_fd in os.fwalk(".", dir_fd=fd):
+            if dirs or files:
+                return False
+        return True
+    finally:
+        os.close(fd)
 
 
 def _rmtree_at_fd(top_fd: int) -> None:
@@ -561,6 +639,26 @@ def _assert_matching_stat(opened: os.stat_result, expected: os.stat_result) -> N
         raise ArchiveExtractionError(msg)
 
 
+def _assert_file_stat_stable(
+    before: os.stat_result,
+    after: os.stat_result,
+    rel_path: str,
+) -> None:
+    checks = (
+        ("device", before.st_dev, after.st_dev),
+        ("inode", before.st_ino, after.st_ino),
+        ("mode", before.st_mode, after.st_mode),
+        ("link count", before.st_nlink, after.st_nlink),
+        ("size", before.st_size, after.st_size),
+        ("mtime", before.st_mtime, after.st_mtime),
+        ("ctime", before.st_ctime, after.st_ctime),
+    )
+    for label, expected, actual in checks:
+        if expected != actual:
+            msg = f"archive tree file {label} changed during hashing: {rel_path!r}"
+            raise ArchiveExtractionError(msg)
+
+
 def _open_path_at(
     root_fd: int, rel_path: str, *, directory: bool
 ) -> tuple[int, list[int]]:
@@ -614,6 +712,8 @@ def _hash_regular_file_at(
         if os.read(file_fd, 1):
             msg = f"archive tree file exceeds declared size: {rel_path!r}"
             raise ArchiveExtractionError(msg)
+        after = os.fstat(file_fd)
+        _assert_file_stat_stable(expected_stat, after, rel_path)
     finally:
         os.close(file_fd)
         for fd in opened_fds:

@@ -528,9 +528,9 @@ def test_staging_cleaned_up_after_success(tmp_path: Path) -> None:
     created: list[Path] = []
     real_create = mod._create_staging_dir
 
-    def _track(parent: Path) -> Path:
+    def _track(parent: Path) -> mod.BoundStagingDirectory:
         staging = real_create(parent)
-        created.append(staging)
+        created.append(staging.path)
         return staging
 
     with patch.object(mod, "_create_staging_dir", side_effect=_track):
@@ -552,9 +552,9 @@ def test_staging_cleaned_up_after_failure(tmp_path: Path) -> None:
     created: list[Path] = []
     real_create = mod._create_staging_dir
 
-    def _track(parent: Path) -> Path:
+    def _track(parent: Path) -> mod.BoundStagingDirectory:
         staging = real_create(parent)
-        created.append(staging)
+        created.append(staging.path)
         return staging
 
     with (
@@ -573,10 +573,14 @@ def test_cleanup_failure_preserves_primary_exception(tmp_path: Path) -> None:
     dest.mkdir()
     _write_zip(archive, {"../escape.mkv": b"x"})
 
-    from miramedia.imports import archive_extraction as mod
+    from miramedia.imports import archive_publication as publication
 
     with (
-        patch.object(mod.shutil, "rmtree", side_effect=OSError("cleanup failed")),
+        patch.object(
+            publication,
+            "quarantine_owned_directory",
+            side_effect=OSError("cleanup failed"),
+        ),
         pytest.raises(ArchiveExtractionError, match="traversal"),
     ):
         extract_archive_to_directory(archive, dest)

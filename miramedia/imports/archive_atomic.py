@@ -25,20 +25,8 @@ def atomic_rename_noreplace(
         _renameatx_np_excl(src_dir_fd, src_name, dst_dir_fd, dst_name)
         return
     if os.name == "nt":
-        try:
-            os.rename(
-                src_name,
-                dst_name,
-                src_dir_fd=src_dir_fd,
-                dst_dir_fd=dst_dir_fd,
-            )
-        except FileExistsError:
-            raise
-        except OSError as exc:
-            if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
-                raise FileExistsError(dst_name) from exc
-            raise
-        return
+        msg = "atomic no-replace publication is not available on this platform"
+        raise OSError(errno.ENOTSUP, msg)
     msg = "atomic no-replace publication is not available on this platform"
     raise OSError(errno.ENOTSUP, msg)
 
