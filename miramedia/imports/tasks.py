@@ -352,7 +352,7 @@ async def resolve_import_task(body_json: dict) -> None:
     for the duration of the resolve (which may include disk-walk and import).
     """
     from miramedia.database import background_session
-    from miramedia.imports.repository import ImportsRepository
+    from miramedia.imports.repository import ImportsRepository, ScanWorkerBeginResult
     from miramedia.imports.schemas import ResolveImportTaskPayload
     from miramedia.imports.service import ImportsService
     from miramedia.indexers.repository import IndexerRepository
@@ -400,6 +400,29 @@ async def resolve_import_task(body_json: dict) -> None:
                 if payload.scan_claim_token is None:
                     log.error(
                         "Scan resolve for %s missing claim token; refusing to mutate",
+                        body.id,
+                    )
+                    return
+                if body.media_type is None:
+                    log.error(
+                        "Scan resolve for %s missing media_type; refusing to mutate",
+                        body.id,
+                    )
+                    return
+                began = await repo.begin_manual_scan_worker(
+                    body.id,
+                    claim_token=payload.scan_claim_token,
+                    media_type=body.media_type.value,
+                )
+                if began is ScanWorkerBeginResult.duplicate:
+                    log.info(
+                        "Duplicate scan delivery for %s; skipping mutation",
+                        body.id,
+                    )
+                    return
+                if began is ScanWorkerBeginResult.stale:
+                    log.info(
+                        "Stale scan claim for %s; skipping mutation",
                         body.id,
                     )
                     return

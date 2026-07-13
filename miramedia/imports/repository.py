@@ -22,7 +22,7 @@ _SINGLETON_ID = "current"
 
 CLAIM_SCAN_CACHE_ROW_SQL = """
 UPDATE scan_result_cache
-SET payload = (payload - 'import_error' - 'claim_token')
+SET payload = (payload - 'import_error' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object(
         'status', 'queued',
         'queued_at', :queued_at,
@@ -34,19 +34,31 @@ WHERE directory = :directory
 RETURNING directory
 """
 
+BEGIN_MANUAL_SCAN_WORKER_SQL = """
+UPDATE scan_result_cache
+SET payload = payload || jsonb_build_object('worker_started_at', :worker_started_at)
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'media_type_hint' = :media_type
+  AND payload->>'claim_token' = :claim_token
+  AND payload->>'worker_started_at' IS NULL
+RETURNING directory
+"""
+
 COMPENSATE_SCAN_CACHE_CLAIM_SQL = """
 UPDATE scan_result_cache
-SET payload = (payload - 'queued_at' - 'claim_token')
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object('status', 'failed', 'import_error', :error)
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
   AND payload->>'claim_token' = :claim_token
+  AND payload->>'worker_started_at' IS NULL
 RETURNING directory
 """
 
 COMPLETE_MANUAL_SCAN_IMPORT_SQL = """
 UPDATE scan_result_cache
-SET payload = (payload - 'queued_at' - 'claim_token')
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object(
         'status', 'imported',
         'imported_name', :imported_name,
@@ -56,16 +68,18 @@ SET payload = (payload - 'queued_at' - 'claim_token')
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
   AND payload->>'claim_token' = :claim_token
+  AND payload->>'worker_started_at' IS NOT NULL
 RETURNING directory
 """
 
 FAIL_MANUAL_SCAN_IMPORT_SQL = """
 UPDATE scan_result_cache
-SET payload = (payload - 'queued_at' - 'claim_token')
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object('status', 'failed', 'import_error', :error)
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
   AND payload->>'claim_token' = :claim_token
+  AND payload->>'worker_started_at' IS NOT NULL
 RETURNING directory
 """
 
@@ -88,6 +102,25 @@ class ScanClaimResult(enum.Enum):
 class ScanClaimOutcome:
     result: ScanClaimResult
     claim_token: str | None = None
+
+
+class ScanWorkerBeginResult(enum.Enum):
+    started = "started"
+    duplicate = "duplicate"
+    stale = "stale"
+
+
+def _worker_started_before(worker_started_at: str | None, cutoff: datetime) -> bool:
+    """True when ``worker_started_at`` is older than ``cutoff``."""
+    if not worker_started_at:
+        return True
+    try:
+        ts = datetime.fromisoformat(worker_started_at)
+    except ValueError:
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts < cutoff
 
 
 def _queued_before(queued_at: str | None, cutoff: datetime) -> bool:
@@ -249,16 +282,20 @@ class ImportsRepository:
         reclaimed = 0
         for row in rows:
             payload = dict(row.payload)
-            if cutoff is not None and not _queued_before(
-                payload.get("queued_at"), cutoff
-            ):
-                continue
+            if cutoff is not None:
+                started_at = payload.get("worker_started_at")
+                if started_at:
+                    if not _worker_started_before(started_at, cutoff):
+                        continue
+                elif not _queued_before(payload.get("queued_at"), cutoff):
+                    continue
             payload["status"] = "failed"
             payload["import_error"] = (
                 "Import was interrupted before completing (worker restarted). "
                 "Press Import to retry."
             )
             payload.pop("queued_at", None)
+            payload.pop("worker_started_at", None)
             row.payload = payload
             reclaimed += 1
         if reclaimed == 0:
@@ -346,6 +383,41 @@ class ImportsRepository:
 
         schedule_import_queue_rebuild()
         return True
+
+    async def begin_manual_scan_worker(
+        self, directory: str, *, claim_token: str, media_type: str
+    ) -> ScanWorkerBeginResult:
+        """Atomically mark one queued manual resolve as worker-started.
+
+        Only the first delivery with a matching claim token may proceed to
+        filesystem mutation. Duplicate deliveries observe an existing
+        ``worker_started_at`` and return without touching the row.
+        """
+        worker_started_at = datetime.now(UTC).isoformat()
+        result = await self.db.execute(
+            text(BEGIN_MANUAL_SCAN_WORKER_SQL),
+            {
+                "directory": directory,
+                "claim_token": claim_token,
+                "media_type": media_type,
+                "worker_started_at": worker_started_at,
+            },
+        )
+        if result.first() is not None:
+            await self.db.commit()
+            return ScanWorkerBeginResult.started
+
+        row = await self.get_scan_cache_entry(directory)
+        if row is None:
+            return ScanWorkerBeginResult.stale
+        if (
+            row.get("status") == "queued"
+            and row.get("claim_token") == claim_token
+            and row.get("media_type_hint") == media_type
+            and row.get("worker_started_at") is not None
+        ):
+            return ScanWorkerBeginResult.duplicate
+        return ScanWorkerBeginResult.stale
 
     async def complete_manual_scan_import(
         self,

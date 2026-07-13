@@ -375,6 +375,8 @@ class ImportsService:
             raise HTTPException(409, "scan entry not eligible")
         if cache_row.get("claim_token") != claim_token:
             raise HTTPException(409, "scan entry not eligible")
+        if not cache_row.get("worker_started_at"):
+            raise HTTPException(409, "scan entry not eligible")
 
         roots = library_roots_for_media_type(body.media_type)
         try:

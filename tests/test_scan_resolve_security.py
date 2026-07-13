@@ -396,6 +396,7 @@ def test_resolve_scan_requires_queued_exact_row_before_import(
             "status": "pending",
             "media_type_hint": "show",
             "claim_token": "token-a",
+            "worker_started_at": "2026-07-13T00:00:00+00:00",
         }
     )
     service = ImportsService(
@@ -428,6 +429,40 @@ def test_resolve_scan_rejects_missing_media_type_hint(
         return_value={
             "directory": str(target),
             "status": "queued",
+            "claim_token": "token-a",
+            "worker_started_at": "2026-07-13T00:00:00+00:00",
+        }
+    )
+    service = ImportsService(
+        repository=repository,
+        torrent_service=MagicMock(),
+        show_service=MagicMock(),
+        movie_service=MagicMock(),
+    )
+    body = ResolveRequest.model_validate(_scan_body(str(target)))
+
+    async def _run() -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await service.resolve_manual_scan(body, claim_token="token-a")
+        assert exc_info.value.status_code == 409
+
+    asyncio.run(_run())
+
+
+def test_resolve_scan_rejects_missing_worker_started_marker(
+    library_roots: tuple[Path, Path],
+) -> None:
+    from miramedia.imports.service import ImportsService
+
+    show_root, _ = library_roots
+    target = show_root / "show"
+    target.mkdir()
+    repository = MagicMock()
+    repository.get_scan_cache_entry = AsyncMock(
+        return_value={
+            "directory": str(target),
+            "status": "queued",
+            "media_type_hint": "show",
             "claim_token": "token-a",
         }
     )
@@ -464,6 +499,7 @@ def test_resolve_scan_does_not_import_outside_root(
             "status": "queued",
             "media_type_hint": "show",
             "claim_token": "token-a",
+            "worker_started_at": "2026-07-13T00:00:00+00:00",
         }
     )
     service = ImportsService(

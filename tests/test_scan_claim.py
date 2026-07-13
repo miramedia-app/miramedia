@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.sql.elements import TextClause
 
 from miramedia.imports.repository import (
+    BEGIN_MANUAL_SCAN_WORKER_SQL,
     CLAIM_SCAN_CACHE_ROW_SQL,
     COMPENSATE_SCAN_CACHE_CLAIM_SQL,
     FAIL_MANUAL_SCAN_IMPORT_SQL,
@@ -21,6 +22,7 @@ from miramedia.imports.repository import (
     ImportsRepository,
     ScanClaimOutcome,
     ScanClaimResult,
+    ScanWorkerBeginResult,
 )
 
 PREFIX = "/api/v1/imports"
@@ -68,6 +70,21 @@ def test_claim_sql_requires_status_media_type_and_claim_token() -> None:
     assert "failed" in CLAIM_SCAN_CACHE_ROW_SQL
     assert "media_type_hint" in CLAIM_SCAN_CACHE_ROW_SQL
     assert "claim_token" in CLAIM_SCAN_CACHE_ROW_SQL
+    assert "worker_started_at" in CLAIM_SCAN_CACHE_ROW_SQL
+
+
+def test_begin_worker_sql_requires_queued_media_token_and_no_marker() -> None:
+    assert "queued" in BEGIN_MANUAL_SCAN_WORKER_SQL
+    assert "media_type_hint" in BEGIN_MANUAL_SCAN_WORKER_SQL
+    assert "claim_token" in BEGIN_MANUAL_SCAN_WORKER_SQL
+    assert "worker_started_at' IS NULL" in BEGIN_MANUAL_SCAN_WORKER_SQL
+
+
+def test_terminal_sql_requires_worker_started_marker() -> None:
+    from miramedia.imports.repository import COMPLETE_MANUAL_SCAN_IMPORT_SQL
+
+    assert "worker_started_at' IS NOT NULL" in COMPLETE_MANUAL_SCAN_IMPORT_SQL
+    assert "worker_started_at' IS NOT NULL" in FAIL_MANUAL_SCAN_IMPORT_SQL
 
 
 def test_claim_success_bumps_batch_in_same_commit() -> None:
@@ -283,6 +300,175 @@ def test_complete_manual_scan_import_rejects_aba_token() -> None:
 
         assert ok is False
         db.rollback.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+class _CacheRow:
+    def __init__(self, directory: str, payload: dict[str, object]) -> None:
+        self.directory = directory
+        self.payload = payload
+
+
+def test_begin_worker_marks_started_in_one_commit() -> None:
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=_FakeResult([("/safe/show",)]))
+    db.commit = AsyncMock()
+    repo = _repo_with_db(db)
+
+    async def _run() -> None:
+        began = await repo.begin_manual_scan_worker(
+            "/safe/show", claim_token="token-a", media_type="show"
+        )
+
+        assert began is ScanWorkerBeginResult.started
+        begin_sql = _sql_text(db.execute.await_args_list[0])
+        assert BEGIN_MANUAL_SCAN_WORKER_SQL.strip() in begin_sql
+        assert db.execute.await_args_list[0].args[1]["claim_token"] == "token-a"
+        db.commit.assert_awaited_once()
+
+    asyncio.run(_run())
+
+
+def test_second_begin_is_duplicate_without_touching_row() -> None:
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _FakeResult([("/safe/show",)]),
+            _FakeResult([]),
+            _FakeResult(
+                [
+                    _CacheRow(
+                        "/safe/show",
+                        {
+                            "status": "queued",
+                            "claim_token": "token-a",
+                            "media_type_hint": "show",
+                            "worker_started_at": "2026-07-13T00:00:00+00:00",
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+    db.commit = AsyncMock()
+    repo = _repo_with_db(db)
+
+    async def _run() -> None:
+        first = await repo.begin_manual_scan_worker(
+            "/safe/show", claim_token="token-a", media_type="show"
+        )
+        second = await repo.begin_manual_scan_worker(
+            "/safe/show", claim_token="token-a", media_type="show"
+        )
+
+        assert first is ScanWorkerBeginResult.started
+        assert second is ScanWorkerBeginResult.duplicate
+        assert db.execute.await_count == 3
+        assert db.commit.await_count == 1
+
+    asyncio.run(_run())
+
+
+def test_begin_with_stale_claim_token_returns_stale() -> None:
+    db = MagicMock()
+    db.execute = AsyncMock(
+        side_effect=[
+            _FakeResult([]),
+            _FakeResult(
+                [
+                    _CacheRow(
+                        "/safe/show",
+                        {
+                            "status": "queued",
+                            "claim_token": "new-token",
+                            "media_type_hint": "show",
+                        },
+                    )
+                ]
+            ),
+        ]
+    )
+    repo = _repo_with_db(db)
+
+    async def _run() -> None:
+        began = await repo.begin_manual_scan_worker(
+            "/safe/show", claim_token="old-token", media_type="show"
+        )
+
+        assert began is ScanWorkerBeginResult.stale
+
+    asyncio.run(_run())
+
+
+def test_duplicate_scan_task_deliveries_invoke_service_once() -> None:
+    from contextlib import asynccontextmanager
+
+    from miramedia.imports.schemas import (
+        ResolveImportTaskPayload,
+        ResolveRequest,
+        ResolveResult,
+    )
+    from miramedia.imports.tasks import resolve_import_task
+
+    body = ResolveRequest.model_validate(_scan_body())
+    payload = ResolveImportTaskPayload(body=body, scan_claim_token="token-a")
+    service = MagicMock()
+    service.resolve_manual_scan = AsyncMock(
+        return_value=ResolveResult(ok=True, detail="imported")
+    )
+    repo = MagicMock()
+    repo.begin_manual_scan_worker = AsyncMock(
+        side_effect=[
+            ScanWorkerBeginResult.started,
+            ScanWorkerBeginResult.duplicate,
+        ]
+    )
+    repo.fail_manual_scan_import = AsyncMock(return_value=True)
+
+    @asynccontextmanager
+    async def _session():
+        yield MagicMock()
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.database.background_session", _session),
+            patch(
+                "miramedia.torrents.service.TorrentService",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "miramedia.indexers.service.IndexerService",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "miramedia.notifications.service.NotificationService",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "miramedia.shows.service.ShowService",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "miramedia.movies.service.MovieService",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "miramedia.imports.repository.ImportsRepository",
+                return_value=repo,
+            ),
+            patch(
+                "miramedia.imports.service.ImportsService",
+                return_value=service,
+            ),
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+        ):
+            dumped = payload.model_dump(mode="json")
+            await resolve_import_task(dumped)
+            await resolve_import_task(dumped)
+
+        service.resolve_manual_scan.assert_awaited_once()
+        repo.fail_manual_scan_import.assert_not_awaited()
 
     asyncio.run(_run())
 
