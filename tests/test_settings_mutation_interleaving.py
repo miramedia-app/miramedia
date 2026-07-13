@@ -168,3 +168,141 @@ def test_rollback_publishes_compensation_revision_on_success() -> None:
         assert published == [2]
 
     asyncio.run(_run())
+
+
+def test_mutation_skips_apply_when_local_revision_advanced() -> None:
+    from miramedia.settings.mutation import SettingsMutationSupersededError
+
+    repo = FakeSettingsRepository()
+
+    async def _prepare() -> tuple[dict, dict, int]:
+        return {"misc": {"development": True}}, {}, 0
+
+    async def _fetch() -> tuple[dict, int]:
+        return await repo.get_overrides_with_revision()
+
+    async def _stage(_overrides: dict) -> Any:
+        from miramedia.auth.runtime import build_auth_runtime_generation
+
+        live = MiraMediaConfig()
+        return await build_auth_runtime_generation(live.auth, live.misc)
+
+    async def _persist(overrides: dict, expected_revision: int) -> tuple[dict, int]:
+        return overrides, expected_revision + 1
+
+    async def _run() -> None:
+        set_local_committed_revision(2)
+        with pytest.raises(SettingsMutationSupersededError):
+            await execute_settings_mutation(
+                prepare=_prepare,
+                persist_overrides_cas=_persist,
+                fetch_current=_fetch,
+                stage_auth_runtime=_stage,
+            )
+        assert get_local_committed_revision() == 2
+
+    asyncio.run(_run())
+
+
+def test_reload_wins_n_plus_one_interleaving_over_stale_mutation_apply() -> None:
+    from miramedia.settings.mutation import SettingsMutationSupersededError
+    from miramedia.settings.reload import reload_committed_settings
+
+    staging_started = asyncio.Event()
+    staging_release = asyncio.Event()
+
+    async def _slow_stage(_overrides: dict) -> Any:
+        from miramedia.auth.runtime import build_auth_runtime_generation
+
+        staging_started.set()
+        await staging_release.wait()
+        live = MiraMediaConfig()
+        return await build_auth_runtime_generation(live.auth, live.misc)
+
+    async def _run() -> None:
+        repo = FakeSettingsRepository()
+
+        async def _prepare() -> tuple[dict, dict, int]:
+            return {"misc": {"development": False}}, {}, 0
+
+        async def _fetch() -> tuple[dict, int]:
+            return {"misc": {"development": True}}, 2
+
+        mutation_task = asyncio.create_task(
+            execute_settings_mutation(
+                prepare=_prepare,
+                persist_overrides_cas=repo.save_overrides_cas,
+                fetch_current=_fetch,
+                stage_auth_runtime=_slow_stage,
+            )
+        )
+        await staging_started.wait()
+        await reload_committed_settings(
+            {"misc": {"development": True}},
+            revision=2,
+        )
+        staging_release.set()
+        with pytest.raises(SettingsMutationSupersededError):
+            await mutation_task
+
+        assert get_local_committed_revision() == 2
+        assert MiraMediaConfig().misc.development is True
+
+    asyncio.run(_run())
+
+
+def test_rollback_reconcile_stages_outside_coordinator_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from miramedia.auth.runtime import build_auth_runtime_generation
+    from miramedia.settings.coordinator import get_settings_coordinator_lock
+
+    lock_held: list[bool] = []
+
+    async def _stage_outside_lock(_overrides: dict) -> Any:
+        lock_held.append(get_settings_coordinator_lock().locked())
+        live = MiraMediaConfig()
+        return await build_auth_runtime_generation(live.auth, live.misc)
+
+    async def _reconcile(fetch: Any) -> None:
+        from miramedia.settings.reload import reload_committed_settings
+
+        overrides, revision = await fetch()
+        await reload_committed_settings(overrides, revision=revision)
+
+    monkeypatch.setattr(
+        "miramedia.settings.mutation.reconcile_settings_revision_from_db",
+        _reconcile,
+    )
+    monkeypatch.setattr(
+        "miramedia.settings.reload.prepare_auth_runtime_for_overrides",
+        _stage_outside_lock,
+    )
+
+    async def _run() -> None:
+        live = MiraMediaConfig()
+        generation = await build_auth_runtime_generation(live.auth, live.misc)
+        snapshot = SettingsMutationSnapshot(
+            overrides={"misc": {"development": False}},
+            revision=0,
+            runtime_generation=generation,
+            epoch=0,
+        )
+        set_local_committed_revision(1)
+
+        async def _save(_overrides: dict, expected_revision: int) -> tuple[dict, int]:
+            raise SettingsRevisionConflictError(expected_revision, 2)
+
+        async def _fetch() -> tuple[dict, int]:
+            return {"misc": {"development": True}}, 2
+
+        await rollback_mutation_snapshot(
+            snapshot,
+            restore_overrides_cas=_save,
+            committed_revision=1,
+            fetch_current=_fetch,
+        )
+        assert lock_held == [False]
+        assert get_local_committed_revision() == 2
+
+    asyncio.run(_run())

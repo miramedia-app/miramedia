@@ -24,13 +24,15 @@ from fastapi_users.router.oauth import (
     generate_csrf_token,
     generate_state_token,
 )
-from httpx_oauth.integrations.fastapi import OAuth2AuthorizeCallback
-from httpx_oauth.oauth2 import OAuth2Token
+from httpx_oauth.oauth2 import GetAccessTokenError, OAuth2Token
 
 from miramedia.auth.runtime import (
+    OAUTH_GENERATION_STATE_KEY,
     OAUTH_ROUTE_NAME,
+    bind_oauth_runtime_generation,
     current_oauth_runtime_generation,
     dynamic_oauth_client,
+    lookup_retained_auth_runtime_generation,
 )
 
 
@@ -52,17 +54,6 @@ def get_dynamic_oauth_router(
     router = APIRouter()
     callback_route_name = f"oauth:{OAUTH_ROUTE_NAME}.{backend.name}.callback"
 
-    if redirect_url is not None:
-        oauth2_authorize_callback = OAuth2AuthorizeCallback(
-            dynamic_oauth_client,
-            redirect_url=redirect_url,
-        )
-    else:
-        oauth2_authorize_callback = OAuth2AuthorizeCallback(
-            dynamic_oauth_client,
-            route_name=callback_route_name,
-        )
-
     @router.get(
         "/authorize",
         name=f"oauth:{OAUTH_ROUTE_NAME}.{backend.name}.authorize",
@@ -78,7 +69,10 @@ def get_dynamic_oauth_router(
             authorize_redirect_url = str(request.url_for(callback_route_name))
 
         csrf_token = generate_csrf_token()
-        state_data: dict[str, str] = {CSRF_TOKEN_KEY: csrf_token}
+        state_data: dict[str, str] = {
+            CSRF_TOKEN_KEY: csrf_token,
+            OAUTH_GENERATION_STATE_KEY: str(generation.generation_id),
+        }
         state = generate_state_token(state_data, state_secret)
         authorization_url = await dynamic_oauth_client.get_authorization_url(
             authorize_redirect_url,
@@ -125,14 +119,22 @@ def get_dynamic_oauth_router(
     )
     async def callback(
         request: Request,
-        access_token_state: tuple[OAuth2Token, str] = Depends(
-            oauth2_authorize_callback
-        ),
+        code: str | None = None,
+        state: str | None = None,
+        error: str | None = None,
         user_manager: BaseUserManager[models.UP, models.ID] = Depends(get_user_manager),
         strategy: Strategy[models.UP, models.ID] = Depends(backend.get_strategy),
     ):
-        generation = current_oauth_runtime_generation()
-        token, state = access_token_state
+        if code is None or error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error if error is not None else ErrorCode.OAUTH_INVALID_STATE,
+            )
+        if state is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.OAUTH_INVALID_STATE,
+            )
 
         try:
             state_data = decode_jwt(state, state_secret, [STATE_TOKEN_AUDIENCE])
@@ -147,55 +149,99 @@ def get_dynamic_oauth_router(
                 detail=ErrorCode.ACCESS_TOKEN_ALREADY_EXPIRED,
             ) from None
 
-        cookie_csrf_token = request.cookies.get(csrf_token_cookie_name)
-        state_csrf_token = state_data.get(CSRF_TOKEN_KEY)
-        if (
-            not cookie_csrf_token
-            or not state_csrf_token
-            or not secrets.compare_digest(cookie_csrf_token, state_csrf_token)
-        ):
+        generation_id_raw = state_data.get(OAUTH_GENERATION_STATE_KEY)
+        if generation_id_raw is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.OAUTH_INVALID_STATE,
+            )
+        try:
+            generation_id = int(generation_id_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.OAUTH_INVALID_STATE,
+            ) from None
+
+        generation = lookup_retained_auth_runtime_generation(generation_id)
+        if generation is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ErrorCode.OAUTH_INVALID_STATE,
             )
 
-        account_id, account_email = await dynamic_oauth_client.get_id_email(
-            token["access_token"]
-        )
+        if redirect_url is not None:
+            callback_redirect_url = redirect_url
+        else:
+            callback_redirect_url = str(request.url_for(callback_route_name))
 
-        if account_email is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ErrorCode.OAUTH_NOT_AVAILABLE_EMAIL,
+        async with bind_oauth_runtime_generation(generation):
+            cookie_csrf_token = request.cookies.get(csrf_token_cookie_name)
+            state_csrf_token = state_data.get(CSRF_TOKEN_KEY)
+            if (
+                not cookie_csrf_token
+                or not state_csrf_token
+                or not secrets.compare_digest(cookie_csrf_token, state_csrf_token)
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorCode.OAUTH_INVALID_STATE,
+                )
+
+            if generation.client is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorCode.OAUTH_INVALID_STATE,
+                )
+
+            try:
+                token: OAuth2Token = await generation.client.get_access_token(
+                    code,
+                    callback_redirect_url,
+                )
+            except GetAccessTokenError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=ErrorCode.OAUTH_INVALID_STATE,
+                ) from exc
+
+            account_id, account_email = await generation.client.get_id_email(
+                token["access_token"]
             )
 
-        provider_name = generation.account_provider_name or generation.provider_name
-        try:
-            user = await user_manager.oauth_callback(  # ty: ignore[invalid-argument-type]
-                str(provider_name),
-                token["access_token"],
-                account_id,
-                account_email,
-                token.get("expires_at"),
-                token.get("refresh_token"),
-                request,
-                associate_by_email=associate_by_email,
-                is_verified_by_default=is_verified_by_default,
-            )
-        except UserAlreadyExists:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ErrorCode.OAUTH_USER_ALREADY_EXISTS,
-            ) from None
+            if account_email is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorCode.OAUTH_NOT_AVAILABLE_EMAIL,
+                )
 
-        if not user.is_active:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ErrorCode.LOGIN_BAD_CREDENTIALS,
-            )
+            provider_name = generation.account_provider_name
+            try:
+                user = await user_manager.oauth_callback(  # ty: ignore[invalid-argument-type]
+                    str(provider_name),
+                    token["access_token"],
+                    account_id,
+                    account_email,
+                    token.get("expires_at"),
+                    token.get("refresh_token"),
+                    request,
+                    associate_by_email=associate_by_email,
+                    is_verified_by_default=is_verified_by_default,
+                )
+            except UserAlreadyExists:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorCode.OAUTH_USER_ALREADY_EXISTS,
+                ) from None
 
-        response = await backend.login(strategy, user)
-        await user_manager.on_after_login(user, request, response)
-        return response
+            if not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorCode.LOGIN_BAD_CREDENTIALS,
+                )
+
+            response = await backend.login(strategy, user)
+            await user_manager.on_after_login(user, request, response)
+            return response
 
     return router

@@ -11,6 +11,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from cachetools import TTLCache
 from fastapi import HTTPException, Request, status
 from httpx_oauth.clients.openid import OpenID
 from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
@@ -24,9 +25,15 @@ from miramedia.settings.service import build_isolated_config
 log = logging.getLogger(__name__)
 
 OAUTH_ROUTE_NAME = "oidc"
+OAUTH_GENERATION_STATE_KEY = "generation_id"
 OIDC_CONFIG_INVALID_DETAIL = "OpenID Connect provider configuration is invalid."
+OAUTH_STATE_GENERATION_TTL_SECONDS = 3600
 _oauth_runtime_ctx: ContextVar[AuthRuntimeGeneration | None] = ContextVar(
     "auth_oidc_runtime_generation", default=None
+)
+_retained_generations: TTLCache[int, AuthRuntimeGeneration] = TTLCache(
+    maxsize=256,
+    ttl=OAUTH_STATE_GENERATION_TTL_SECONDS,
 )
 
 
@@ -81,11 +88,13 @@ class AuthRuntimeStore:
             activated = replace(prospective, generation_id=self._next_id)
             self._next_id += 1
             self._active = activated
+            retain_auth_runtime_generation(activated)
             return activated
 
     def restore(self, generation: AuthRuntimeGeneration) -> AuthRuntimeGeneration:
         with self._lock:
             self._active = generation
+            retain_auth_runtime_generation(generation)
             return self._active
 
     def reset_for_tests(self) -> AuthRuntimeGeneration:
@@ -105,6 +114,23 @@ class AuthRuntimeStore:
 
 
 auth_runtime_store = AuthRuntimeStore()
+
+
+def retain_auth_runtime_generation(generation: AuthRuntimeGeneration) -> None:
+    """Retain a generation for OAuth state lookup until TTL expiry."""
+    if generation.generation_id > 0:
+        _retained_generations[generation.generation_id] = generation
+
+
+def lookup_retained_auth_runtime_generation(
+    generation_id: int,
+) -> AuthRuntimeGeneration | None:
+    """Return a retained generation for callback binding, or None if expired."""
+    return _retained_generations.get(generation_id)
+
+
+def reset_retained_auth_generations_for_tests() -> None:
+    _retained_generations.clear()
 
 
 def get_live_auth_config() -> AuthConfig:
@@ -165,7 +191,7 @@ async def build_auth_runtime_generation(
         generation_id=0,
         oidc_enabled=True,
         provider_name=oidc.name,
-        account_provider_name=oidc.name,
+        account_provider_name=OAUTH_ROUTE_NAME,
         client=client,
         cookie_secure=cookie_secure,
         frontend_url=frontend_url,
@@ -209,6 +235,18 @@ def current_oauth_runtime_generation() -> AuthRuntimeGeneration:
     if bound is not None:
         return bound
     return auth_runtime_store.get_active()
+
+
+@contextlib.asynccontextmanager
+async def bind_oauth_runtime_generation(
+    generation: AuthRuntimeGeneration,
+) -> AsyncIterator[AuthRuntimeGeneration]:
+    """Bind one immutable runtime generation for the current async context."""
+    token = _oauth_runtime_ctx.set(generation)
+    try:
+        yield generation
+    finally:
+        _oauth_runtime_ctx.reset(token)
 
 
 @contextlib.asynccontextmanager
@@ -291,4 +329,5 @@ dynamic_oauth_client = DynamicOAuthClient()
 
 def reset_auth_runtime_for_tests() -> AuthRuntimeGeneration:
     """Restore disabled runtime generation (tests only)."""
+    reset_retained_auth_generations_for_tests()
     return auth_runtime_store.reset_for_tests()

@@ -201,7 +201,7 @@ def test_authorize_csrf_cookie_secure_explicit_override(
     assert _set_cookie_secure_flag(response.headers.get("set-cookie", ""))
 
 
-def test_oauth_callback_uses_configured_provider_name_not_route_name(
+def test_oauth_callback_uses_stable_provider_key_not_display_name(
     monkeypatch: pytest.MonkeyPatch,
     fake_openid: list[MagicMock],
 ) -> None:
@@ -248,14 +248,14 @@ def test_oauth_callback_uses_configured_provider_name_not_route_name(
             follow_redirects=False,
         )
     assert callback.status_code in {200, 204, 302, 307}
-    assert captured == ["MyIdentityProvider"]
+    assert captured == [OAUTH_ROUTE_NAME]
     assert dynamic_oauth_client.name == OAUTH_ROUTE_NAME
     assert fake_openid[-1].name == "MyIdentityProvider"
 
 
-def test_oauth_callback_reuses_existing_account_without_duplicate_provider(
+def test_oauth_provider_key_stable_across_display_name_rename(
     monkeypatch: pytest.MonkeyPatch,
-    fake_openid: list[MagicMock],  # noqa: ARG001
+    fake_openid: list[MagicMock],
 ) -> None:
     from miramedia.auth.users import UserManager
 
@@ -279,31 +279,50 @@ def test_oauth_callback_reuses_existing_account_without_duplicate_provider(
     monkeypatch.setattr(UserManager, "oauth_callback", _oauth_callback)
 
     with settings_client() as (client, _repo):
-        _enable_oidc(client, name="StableProvider")
-        for _ in range(2):
-            authorize = client.get(OIDC_AUTHORIZE_PATH)
-            set_cookie = authorize.headers.get("set-cookie", "")
-            csrf_match = re.search(
-                rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-                set_cookie,
-                re.IGNORECASE,
-            )
-            assert csrf_match is not None
-            state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
-                "state"
-            ][0]
-            callback = client.get(
-                OIDC_CALLBACK_PATH,
-                params={"code": "auth-code", "state": state},
-                cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
-                follow_redirects=False,
-            )
-            assert callback.status_code in {200, 204, 302, 307}
+        _enable_oidc(client, name="DisplayNameA")
+        authorize_a = client.get(OIDC_AUTHORIZE_PATH)
+        state_a = parse_qs(urlparse(authorize_a.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+        csrf_a = re.search(
+            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
+            authorize_a.headers.get("set-cookie", ""),
+            re.IGNORECASE,
+        )
+        assert csrf_a is not None
+        client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state_a},
+            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_a.group(1)},
+            follow_redirects=False,
+        )
+
+        client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(enabled=True, name="DisplayNameB"),
+        )
+        authorize_b = client.get(OIDC_AUTHORIZE_PATH)
+        state_b = parse_qs(urlparse(authorize_b.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+        csrf_b = re.search(
+            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
+            authorize_b.headers.get("set-cookie", ""),
+            re.IGNORECASE,
+        )
+        assert csrf_b is not None
+        client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state_b},
+            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_b.group(1)},
+            follow_redirects=False,
+        )
 
     assert calls == [
-        ("StableProvider", "account-1"),
-        ("StableProvider", "account-1"),
+        (OAUTH_ROUTE_NAME, "account-1"),
+        (OAUTH_ROUTE_NAME, "account-1"),
     ]
+    assert fake_openid[-1].name == "DisplayNameB"
 
 
 def test_oauth_callback_keeps_request_generation_after_concurrent_swap(
@@ -414,3 +433,119 @@ def test_oauth_callback_keeps_request_generation_after_concurrent_swap(
     assert captured == [("http://gen-a.example.com/", 3600, False)]
     assert auth_runtime_store.get_active().frontend_url == "https://gen-b.example.com/"
     assert auth_runtime_store.get_active().session_lifetime == 7200
+
+
+def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openid: list[MagicMock],
+) -> None:
+    from miramedia.auth.users import UserManager
+
+    token_clients: list[str] = []
+
+    def _tracking_factory(**kwargs: object) -> MagicMock:
+        client = MagicMock()
+        client.client_id = kwargs.get("client_id")
+        client.client_secret = kwargs.get("client_secret")
+        client.name = kwargs.get("name", "Provider")
+
+        async def _authorize_url(
+            redirect_url: str, state: str, *_args: object, **_kwargs: object
+        ) -> str:
+            return (
+                f"https://idp.example/authorize?state={state}"
+                f"&redirect_uri={redirect_url}"
+            )
+
+        async def _exchange(
+            _code: str,
+            _redirect_uri: str,
+            _code_verifier: str | None = None,
+        ) -> dict[str, str]:
+            token_clients.append(str(client.client_id))
+            return {"access_token": "access-token", "token_type": "bearer"}
+
+        client.get_authorization_url = AsyncMock(side_effect=_authorize_url)
+        client.get_access_token = AsyncMock(side_effect=_exchange)
+        client.get_id_email = AsyncMock(return_value=("account-1", "user@example.com"))
+        fake_openid.append(client)
+        return client
+
+    monkeypatch.setattr("miramedia.auth.runtime.OpenID", _tracking_factory)
+
+    captured_login: list[tuple[str, int, bool]] = []
+
+    async def _oauth_callback(
+        _self: UserManager,
+        _provider: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        generation = current_oauth_runtime_generation()
+        captured_login.append(
+            (
+                generation.frontend_url,
+                generation.session_lifetime,
+                generation.cookie_secure,
+            )
+        )
+        return types.SimpleNamespace(
+            id=uuid.uuid4(),
+            email="user@example.com",
+            is_active=True,
+        )
+
+    monkeypatch.setattr(UserManager, "oauth_callback", _oauth_callback)
+
+    with settings_client() as (client, _repo):
+        client.put(
+            SETTINGS_PREFIX,
+            json={
+                "misc": {"frontend_url": "http://gen-a.example.com/"},
+                "auth": {
+                    "session_lifetime": 3600,
+                    **_oidc_payload(enabled=True, name="GenA", client_id="client-a")[
+                        "auth"
+                    ],
+                },
+            },
+        )
+        authorize = client.get(OIDC_AUTHORIZE_PATH)
+        set_cookie = authorize.headers.get("set-cookie", "")
+        csrf_match = re.search(
+            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
+            set_cookie,
+            re.IGNORECASE,
+        )
+        assert csrf_match is not None
+        state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+
+        swap = client.put(
+            SETTINGS_PREFIX,
+            json={
+                "misc": {"frontend_url": "https://gen-b.example.com/"},
+                "auth": {
+                    "session_lifetime": 7200,
+                    **_oidc_payload(enabled=True, name="GenB", client_id="client-b")[
+                        "auth"
+                    ],
+                },
+            },
+        )
+        assert swap.status_code == 200
+
+        callback = client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state},
+            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+            follow_redirects=False,
+        )
+        assert callback.status_code in {200, 204, 302, 307}
+
+    assert token_clients == ["client-a"]
+    assert captured_login == [("http://gen-a.example.com/", 3600, False)]
+    assert auth_runtime_store.get_active().frontend_url == "https://gen-b.example.com/"
+    assert auth_runtime_store.get_active().session_lifetime == 7200
+    assert fake_openid[-1].client_id == "client-b"

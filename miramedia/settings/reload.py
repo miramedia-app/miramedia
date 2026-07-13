@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from miramedia.auth.runtime import (
@@ -12,6 +13,7 @@ from miramedia.auth.runtime import (
     prepare_auth_runtime_for_overrides,
 )
 from miramedia.events.bus import Event, get_event_bus
+from miramedia.settings.coordinator import get_settings_coordinator_lock
 from miramedia.settings.service import apply_live_config_from_overrides
 
 log = logging.getLogger(__name__)
@@ -20,7 +22,6 @@ SETTINGS_REVISION_EVENT = "settings.revision.changed"
 RECONCILE_INTERVAL_SECONDS = 30.0
 
 _local_committed_revision = 0
-_reload_lock = asyncio.Lock()
 _subscriber_task: asyncio.Task[None] | None = None
 _subscriber_sub_id: str | None = None
 _subscriber_queue: asyncio.Queue[Event] | None = None
@@ -50,17 +51,16 @@ async def reload_committed_settings(
     revision: int,
 ) -> None:
     """Validate, stage, and atomically apply a committed DB settings snapshot."""
-    global _local_committed_revision
-
     if revision <= _local_committed_revision:
         return
 
     prospective = await prepare_auth_runtime_for_overrides(overrides)
-    async with _reload_lock:
+    coordinator = get_settings_coordinator_lock()
+    async with coordinator:
         if revision <= _local_committed_revision:
             return
         _apply_live_mutation_critical_section(overrides, prospective)
-        _local_committed_revision = revision
+        set_local_committed_revision(revision)
         log.info("Reloaded committed settings revision %s", revision)
 
 
@@ -108,8 +108,10 @@ async def bootstrap_settings_revision_from_db() -> None:
 
 
 def set_local_committed_revision(revision: int) -> None:
+    """Monotonic: only advances local revision."""
     global _local_committed_revision
-    _local_committed_revision = revision
+    if revision > _local_committed_revision:
+        _local_committed_revision = revision
 
 
 def reset_settings_reload_state_for_tests() -> None:
@@ -119,13 +121,13 @@ def reset_settings_reload_state_for_tests() -> None:
 
 async def _subscriber_loop() -> None:
     assert _subscriber_queue is not None  # noqa: S101
+    next_reconcile_at = time.monotonic() + RECONCILE_INTERVAL_SECONDS
     while True:
+        timeout = max(0.0, next_reconcile_at - time.monotonic())
         try:
-            event = await asyncio.wait_for(
-                _subscriber_queue.get(),
-                timeout=RECONCILE_INTERVAL_SECONDS,
-            )
+            event = await asyncio.wait_for(_subscriber_queue.get(), timeout=timeout)
         except TimeoutError:
+            next_reconcile_at = time.monotonic() + RECONCILE_INTERVAL_SECONDS
             try:
                 await reconcile_settings_revision_from_db(_fetch_db_revision)
             except Exception:
@@ -148,12 +150,25 @@ async def _fetch_db_revision() -> tuple[dict, int]:
         return await SettingsRepository(db).get_overrides_with_revision()
 
 
+async def _cleanup_subscriber_subscription() -> None:
+    global _subscriber_sub_id, _subscriber_queue
+
+    if _subscriber_sub_id is not None:
+        await get_event_bus().unsubscribe(_subscriber_sub_id)
+    _subscriber_sub_id = None
+    _subscriber_queue = None
+
+
 async def start_settings_revision_subscriber() -> asyncio.Task[None]:
-    """Start the revision subscriber once per process; idempotent."""
+    """Start the revision subscriber once per process; idempotent while alive."""
     global _subscriber_task, _subscriber_sub_id, _subscriber_queue
 
     if _subscriber_task is not None and not _subscriber_task.done():
         return _subscriber_task
+
+    if _subscriber_task is not None and _subscriber_task.done():
+        await _cleanup_subscriber_subscription()
+        _subscriber_task = None
 
     bus = get_event_bus()
     _subscriber_sub_id, _subscriber_queue = await bus.subscribe()
@@ -163,7 +178,7 @@ async def start_settings_revision_subscriber() -> asyncio.Task[None]:
 
 async def stop_settings_revision_subscriber() -> None:
     """Cancel subscriber and release bus subscription."""
-    global _subscriber_task, _subscriber_sub_id, _subscriber_queue
+    global _subscriber_task
 
     if _subscriber_task is not None and not _subscriber_task.done():
         _subscriber_task.cancel()
@@ -172,11 +187,7 @@ async def stop_settings_revision_subscriber() -> None:
         except asyncio.CancelledError:
             pass
     _subscriber_task = None
-
-    if _subscriber_sub_id is not None:
-        await get_event_bus().unsubscribe(_subscriber_sub_id)
-    _subscriber_sub_id = None
-    _subscriber_queue = None
+    await _cleanup_subscriber_subscription()
 
 
 def reset_settings_subscriber_for_tests() -> None:
