@@ -15,8 +15,8 @@ from sqlalchemy import create_engine, text
 from tests.oauth_test_helpers import KEY_A, KEY_B
 from tests.pg_disposable import (
     assert_temporary_schema_name,
+    disposable_database_sync_url,
     new_temporary_schema_name,
-    require_disposable_database_url,
 )
 
 _MIGRATION_PATH = (
@@ -41,7 +41,7 @@ def _load_migration():
 
 
 def _pg_engine():
-    url = require_disposable_database_url()
+    url = disposable_database_sync_url()
     engine = create_engine(url, pool_pre_ping=True)
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))

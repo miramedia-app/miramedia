@@ -9,6 +9,7 @@ from tests.pg_disposable import (
     DisposableDatabaseRejectedError,
     assert_temporary_schema_name,
     database_name_from_url,
+    disposable_database_sync_url,
     new_temporary_schema_name,
     require_disposable_database_url,
     resolve_disposable_database_url,
@@ -70,3 +71,15 @@ def test_cleanup_only_targets_generated_schema_prefix() -> None:
 def test_skip_reason_is_actionable() -> None:
     assert "MIRAMEDIA_TEST_DATABASE_URL" in DISPOSABLE_DATABASE_SKIP_REASON
     assert "miramedia_test" in DISPOSABLE_DATABASE_SKIP_REASON
+
+
+def test_disposable_database_sync_url_converts_asyncpg_driver() -> None:
+    sync_url = disposable_database_sync_url(
+        env={
+            "MIRAMEDIA_TEST_DATABASE_URL": (
+                "postgresql+asyncpg://test:test@127.0.0.1:55432/miramedia_integration_test"
+            )
+        }
+    )
+    assert sync_url.startswith("postgresql+psycopg://")
+    assert "miramedia_integration_test" in sync_url

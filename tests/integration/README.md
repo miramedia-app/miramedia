@@ -30,4 +30,5 @@ fixture) and fails fast when the URL is missing or not PostgreSQL.
 - Integrity audit compare-and-set (Plan 079)
 
 Plan 082 (integrity pagination, scalar lookups, audit chunk) is covered here.
-Plan 083 migrations are not pinned — head revision is asserted dynamically.
+Plan 083 OAuth migration characterization runs via `pytest -m postgresql tests/`
+(also invoked by `make integration-test`). Head revision is asserted dynamically.

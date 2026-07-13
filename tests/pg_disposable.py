@@ -74,6 +74,16 @@ def require_disposable_database_url(
     return url
 
 
+def disposable_database_sync_url(
+    env: Mapping[str, str] | None = None,
+) -> str:
+    """Return a psycopg URL for synchronous SQLAlchemy engines."""
+    url = make_url(require_disposable_database_url(env))
+    if url.drivername in {"postgresql", "postgresql+asyncpg"}:
+        url = url.set(drivername="postgresql+psycopg")
+    return url.render_as_string(hide_password=False)
+
+
 def new_temporary_schema_name(*, prefix: str) -> str:
     safe_prefix = prefix.strip("_").lower()
     if not safe_prefix or not _SCHEMA_NAME_RE.match(safe_prefix):

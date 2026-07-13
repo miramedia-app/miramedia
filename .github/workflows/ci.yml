@@ -73,7 +73,9 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://test:test@localhost:5432/miramedia_integration_test
       - name: PostgreSQL integration tests
-        run: uv run pytest -m integration tests/integration
+        run: |
+          uv run pytest -m integration tests/integration
+          uv run pytest -m postgresql tests/
 
   types-drift:
     if: github.event_name == 'pull_request'

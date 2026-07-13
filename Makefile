@@ -136,6 +136,7 @@ test:
 # PostgreSQL integration suite — not collected by `make test`.
 integration-test:
 	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest -m integration tests/integration
+	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest -m postgresql tests/
 
 migration-head-audit:
 	@uv run --python 3.13 python scripts/migration_head_audit.py
