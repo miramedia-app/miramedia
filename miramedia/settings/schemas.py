@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 # --- Misc ---
@@ -63,8 +63,11 @@ class OpenIdSettingsSchema(BaseModel):
 
 
 class AuthSettingsSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     session_lifetime: int | None = None
     email_password_resets: bool | None = None
+    cookie_secure: bool | None = None
     openid_connect: OpenIdSettingsSchema | None = None
     # admin_emails intentionally omitted — deprecated, manage superusers via the Users page.
 
@@ -389,6 +392,8 @@ class ImportsSettingsSchema(BaseModel):
 # --- Top-level ---
 class SystemSettingsUpdate(BaseModel):
     """Partial update — only include sections/fields you want to override."""
+
+    model_config = ConfigDict(extra="forbid")
 
     misc: MiscSettingsSchema | None = None
     auth: AuthSettingsSchema | None = None

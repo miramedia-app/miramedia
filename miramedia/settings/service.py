@@ -298,10 +298,9 @@ def compute_clear_override_path(overrides: dict, path: list[str]) -> dict:
 
 def build_isolated_config(overrides: dict | None = None) -> MiraMediaConfig:
     """Build a complete config snapshot from TOML + overrides without mutating live state."""
-    isolated = MiraMediaConfig.load_isolated()
-    if overrides:
-        apply_overrides_to_config(isolated, overrides)
-    return isolated
+    from miramedia.settings.validation import build_merged_validated_config
+
+    return build_merged_validated_config(overrides)
 
 
 def apply_live_config_from_overrides(overrides: dict) -> None:
