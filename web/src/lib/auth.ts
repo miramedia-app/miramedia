@@ -107,8 +107,13 @@ export async function handleLogout(queryClient: QueryClient) {
 /**
  * OAuth is an auth boundary too: it hands the tab to the provider, and the
  * browser may restore this page from the bfcache on the way back. Transition
- * before assigning `location.href`, or a restored page can still hold — and
- * render — the previous account's identity and privileged data.
+ * before leaving, or a restored page can still hold — and render — the previous
+ * account's identity and privileged data.
+ *
+ * The handover goes through `hardNavigate` like every other auth exit: full
+ * document only (replace -> assign -> href), never an SPA navigation. If every
+ * mechanism fails we surface it and stay blank rather than continuing to render
+ * the old session.
  */
 export async function handleOauth(queryClient: QueryClient, toastError: (msg: string) => void) {
   const { error, data } = await apiClient.GET("/api/v1/auth/oauth/authorize", {
@@ -120,7 +125,9 @@ export async function handleOauth(queryClient: QueryClient, toastError: (msg: st
   });
   if (!error && data?.authorization_url) {
     await beginAuthTransition(queryClient);
-    window.location.href = data.authorization_url;
+    if (!hardNavigate(data.authorization_url)) {
+      toastError("Could not open the OAuth provider.");
+    }
   } else {
     toastError("Failed to initiate OAuth login.");
   }
