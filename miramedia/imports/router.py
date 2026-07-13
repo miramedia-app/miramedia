@@ -11,7 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from miramedia.auth.users import current_active_user, current_superuser
 from miramedia.imports.dependencies import imports_repository_dep, imports_service_dep
 from miramedia.imports.repository import ScanClaimResult
-from miramedia.imports.scan_resolve import validate_scan_resolve_request
+from miramedia.imports.scan_resolve import (
+    validate_scan_resolve_request,
+    validate_scan_resolve_target,
+)
 from miramedia.imports.schemas import (
     IgnoreRequest,
     ImportCounts,
@@ -70,6 +73,7 @@ async def resolve_item(
                 status.HTTP_400_BAD_REQUEST,
                 "media_type required for scan resolve",
             )
+        validate_scan_resolve_target(body)
         cache_key = await validate_scan_resolve_request(repository, body)
         claim = await repository.claim_scan_cache_row(
             cache_key, media_type=body.media_type.value

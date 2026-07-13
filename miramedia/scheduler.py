@@ -453,7 +453,6 @@ _STARTUP_SCHEDULES: dict[str, list[dict[str, str]]] = {
 
 # Grace window before a still-"queued" scan row is presumed orphaned. Generous
 # enough to cover a large multi-file cross-filesystem import on a slow NAS.
-_STALE_QUEUED_IMPORT_GRACE = timedelta(minutes=30)
 
 
 @background_broker.task(labels={"priority": "background"})
@@ -464,10 +463,11 @@ async def reclaim_stale_queued_imports_task() -> None:
     never drains."""
     from miramedia.database import SessionLocalBackground
     from miramedia.imports.repository import ImportsRepository
+    from miramedia.imports.scan_lease import STALE_QUEUED_IMPORT_GRACE
 
     async with SessionLocalBackground() as db:
         reclaimed = await ImportsRepository(db).reclaim_stale_queued_imports(
-            older_than=_STALE_QUEUED_IMPORT_GRACE
+            older_than=STALE_QUEUED_IMPORT_GRACE
         )
     if reclaimed:
         log.warning("Reclaimed %d stale queued import(s)", reclaimed)

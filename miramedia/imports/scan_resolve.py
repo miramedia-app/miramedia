@@ -18,6 +18,35 @@ from miramedia.media_paths import (
 )
 
 
+def _nonempty(value: str | None) -> bool:
+    return bool(value and value.strip())
+
+
+def validate_scan_resolve_target(body: ResolveRequest) -> None:
+    """Require exactly one usable scan import target before claim/dispatch."""
+    has_media_id = body.media_id is not None
+    has_external = _nonempty(body.external_id)
+    has_provider = _nonempty(body.metadata_provider)
+    has_provider_pair = has_external and has_provider
+    has_partial_pair = has_external != has_provider
+
+    if has_media_id and has_provider_pair:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "scan resolve accepts either media_id or external_id + metadata_provider, not both",
+        )
+    if has_partial_pair:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "scan resolve requires both external_id and metadata_provider",
+        )
+    if not has_media_id and not has_provider_pair:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "scan resolve needs either media_id or external_id + metadata_provider",
+        )
+
+
 async def validate_scan_resolve_request(
     repository: ImportsRepository, body: ResolveRequest
 ) -> str:

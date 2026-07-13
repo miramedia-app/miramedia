@@ -352,7 +352,11 @@ async def resolve_import_task(body_json: dict) -> None:
     for the duration of the resolve (which may include disk-walk and import).
     """
     from miramedia.database import background_session
-    from miramedia.imports.repository import ImportsRepository, ScanWorkerBeginResult
+    from miramedia.imports.repository import (
+        ImportsRepository,
+        ScanWorkerBeginResult,
+    )
+    from miramedia.imports.scan_lease import ScanWorkerLease, ScanWorkerLeaseHeartbeat
     from miramedia.imports.schemas import ResolveImportTaskPayload
     from miramedia.imports.service import ImportsService
     from miramedia.indexers.repository import IndexerRepository
@@ -395,6 +399,7 @@ async def resolve_import_task(body_json: dict) -> None:
             show_service=show_service,
             movie_service=movie_service,
         )
+        worker_began = False
         try:
             if body.kind == "scan":
                 if payload.scan_claim_token is None:
@@ -414,21 +419,35 @@ async def resolve_import_task(body_json: dict) -> None:
                     claim_token=payload.scan_claim_token,
                     media_type=body.media_type.value,
                 )
-                if began is ScanWorkerBeginResult.duplicate:
+                if began.result is ScanWorkerBeginResult.duplicate:
                     log.info(
                         "Duplicate scan delivery for %s; skipping mutation",
                         body.id,
                     )
                     return
-                if began is ScanWorkerBeginResult.stale:
+                if began.result is ScanWorkerBeginResult.stale:
                     log.info(
                         "Stale scan claim for %s; skipping mutation",
                         body.id,
                     )
                     return
-                result = await service.resolve_manual_scan(
-                    body, claim_token=payload.scan_claim_token
+                if began.worker_started_at is None:
+                    log.error(
+                        "Scan resolve for %s missing worker lease; refusing to mutate",
+                        body.id,
+                    )
+                    return
+                worker_began = True
+                lease = ScanWorkerLease(
+                    directory=body.id,
+                    claim_token=payload.scan_claim_token,
+                    media_type=body.media_type.value,
+                    worker_started_at=began.worker_started_at,
                 )
+                async with ScanWorkerLeaseHeartbeat(lease):
+                    result = await service.resolve_manual_scan(
+                        body, claim_token=payload.scan_claim_token
+                    )
             else:
                 result = await service.resolve(body)
             log.info(
@@ -451,7 +470,7 @@ async def resolve_import_task(body_json: dict) -> None:
         except Exception as exc:
             log.exception("Queued import failed for %s", body.id)
             if body.kind == "scan":
-                if payload.scan_claim_token is None:
+                if payload.scan_claim_token is None or not worker_began:
                     return
                 try:
                     await repo.fail_manual_scan_import(

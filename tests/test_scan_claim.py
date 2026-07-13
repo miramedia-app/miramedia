@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,10 +18,12 @@ from miramedia.imports.repository import (
     CLAIM_SCAN_CACHE_ROW_SQL,
     COMPENSATE_SCAN_CACHE_CLAIM_SQL,
     FAIL_MANUAL_SCAN_IMPORT_SQL,
+    RECLAIM_STALE_QUEUED_IMPORT_SQL,
     RESET_IMPORT_BATCH_IF_IDLE_SQL,
     ImportsRepository,
     ScanClaimOutcome,
     ScanClaimResult,
+    ScanWorkerBeginOutcome,
     ScanWorkerBeginResult,
 )
 
@@ -85,6 +87,7 @@ def test_terminal_sql_requires_worker_started_marker() -> None:
 
     assert "worker_started_at' IS NOT NULL" in COMPLETE_MANUAL_SCAN_IMPORT_SQL
     assert "worker_started_at' IS NOT NULL" in FAIL_MANUAL_SCAN_IMPORT_SQL
+    assert "claim_token" in RECLAIM_STALE_QUEUED_IMPORT_SQL
 
 
 def test_claim_success_bumps_batch_in_same_commit() -> None:
@@ -321,7 +324,7 @@ def test_begin_worker_marks_started_in_one_commit() -> None:
             "/safe/show", claim_token="token-a", media_type="show"
         )
 
-        assert began is ScanWorkerBeginResult.started
+        assert began.result is ScanWorkerBeginResult.started
         begin_sql = _sql_text(db.execute.await_args_list[0])
         assert BEGIN_MANUAL_SCAN_WORKER_SQL.strip() in begin_sql
         assert db.execute.await_args_list[0].args[1]["claim_token"] == "token-a"
@@ -362,8 +365,8 @@ def test_second_begin_is_duplicate_without_touching_row() -> None:
             "/safe/show", claim_token="token-a", media_type="show"
         )
 
-        assert first is ScanWorkerBeginResult.started
-        assert second is ScanWorkerBeginResult.duplicate
+        assert first.result is ScanWorkerBeginResult.started
+        assert second.result is ScanWorkerBeginResult.duplicate
         assert db.execute.await_count == 3
         assert db.commit.await_count == 1
 
@@ -396,7 +399,7 @@ def test_begin_with_stale_claim_token_returns_stale() -> None:
             "/safe/show", claim_token="old-token", media_type="show"
         )
 
-        assert began is ScanWorkerBeginResult.stale
+        assert began.result is ScanWorkerBeginResult.stale
 
     asyncio.run(_run())
 
@@ -420,8 +423,11 @@ def test_duplicate_scan_task_deliveries_invoke_service_once() -> None:
     repo = MagicMock()
     repo.begin_manual_scan_worker = AsyncMock(
         side_effect=[
-            ScanWorkerBeginResult.started,
-            ScanWorkerBeginResult.duplicate,
+            ScanWorkerBeginOutcome(
+                ScanWorkerBeginResult.started,
+                worker_started_at="2026-07-13T00:00:00+00:00",
+            ),
+            ScanWorkerBeginOutcome(ScanWorkerBeginResult.duplicate),
         ]
     )
     repo.fail_manual_scan_import = AsyncMock(return_value=True)
@@ -430,9 +436,22 @@ def test_duplicate_scan_task_deliveries_invoke_service_once() -> None:
     async def _session():
         yield MagicMock()
 
+    class _NoopHeartbeat:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
     async def _run() -> None:
         with (
             patch("miramedia.database.background_session", _session),
+            patch(
+                "miramedia.imports.scan_lease.ScanWorkerLeaseHeartbeat", _NoopHeartbeat
+            ),
             patch(
                 "miramedia.torrents.service.TorrentService",
                 return_value=MagicMock(),

@@ -182,6 +182,7 @@ def schedule_import_queue_warmup() -> None:
             )
             from miramedia.imports.queue.sync import rebuild_import_queue
             from miramedia.imports.repository import ImportsRepository
+            from miramedia.imports.scan_lease import STALE_QUEUED_IMPORT_GRACE
             from miramedia.imports.service import ImportsService
 
             assert SessionLocalBackground is not None  # noqa: S101 — invariant guard
@@ -195,13 +196,13 @@ def schedule_import_queue_warmup() -> None:
                                 show_service=show_service,
                                 movie_service=movie_service,
                             )
-                            # In-process workers (Receiver) cannot survive this
-                            # restart, so any leftover "queued" scan row is an
-                            # orphan whose import never finished — reclaim it
-                            # before rebuilding so it shows as retryable, not
-                            # stuck "Importing".
+                            # Only reclaim rows whose dispatch/worker lease has
+                            # expired — a live task-worker lease must survive a
+                            # web-worker-only restart.
                             reclaimed = (
-                                await service.repository.reclaim_stale_queued_imports()
+                                await service.repository.reclaim_stale_queued_imports(
+                                    older_than=STALE_QUEUED_IMPORT_GRACE
+                                )
                             )
                             if reclaimed:
                                 log.info(
