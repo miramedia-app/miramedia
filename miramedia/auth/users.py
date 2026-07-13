@@ -17,7 +17,6 @@ from fastapi_users.authentication import (
     JWTStrategy,
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
-from httpx_oauth.clients.openid import OpenID
 from sqlalchemy import func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import make_transient
@@ -25,25 +24,19 @@ from starlette import status
 
 import miramedia.notifications.utils
 from miramedia.auth.db import OAuthAccount, User, get_user_db
+from miramedia.auth.runtime import (
+    current_oauth_runtime_generation,
+    get_live_auth_config,
+    join_frontend_path,
+)
 from miramedia.auth.schemas import UserCreate, UserUpdate
 from miramedia.config import MiraMediaConfig
 from miramedia.database import get_session
 
 log = logging.getLogger(__name__)
 
-config = MiraMediaConfig().auth
-SECRET = config.token_secret
-
-openid_client: OpenID | None = None
-if config.openid_connect.enabled:
-    log.info(f"Configured OIDC provider: {config.openid_connect.name}")
-    openid_client = OpenID(
-        base_scopes=["openid", "email", "profile"],
-        client_id=config.openid_connect.client_id,
-        client_secret=config.openid_connect.client_secret,
-        name=config.openid_connect.name,
-        openid_configuration_endpoint=config.openid_connect.configuration_endpoint,
-    )
+# Restart-only: token signing secrets are captured at process start.
+SECRET = MiraMediaConfig().auth.token_secret
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
@@ -72,7 +65,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         self, user: User, request: Request | None = None
     ) -> None:
         log.info(f"User {user.id} has registered.")
-        if user.email in config.admin_emails:
+        if user.email in get_live_auth_config().admin_emails:
             updated_user = UserUpdate(is_superuser=True, is_verified=True)
             await self.update(user=user, user_update=updated_user)
 
@@ -83,7 +76,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         link = f"{MiraMediaConfig().misc.frontend_url}web/login/reset-password?token={token}"
         log.info(f"User {user.id} requested a password reset.")
 
-        if not config.email_password_resets:
+        if not get_live_auth_config().email_password_resets:
             # No email channel is configured, so the log is deliberately the
             # only delivery mechanism for the reset link. WARNING level keeps
             # it visible; the token grants a one-time password reset.
@@ -122,9 +115,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_request_verify(
         self, user: User, token: str, request: Request | None = None
     ) -> None:
-        log.info(
-            f"Verification requested for user {user.id}. Verification token: {token}"
-        )
+        log.info(f"Verification requested for user {user.id}")
 
     @override
     async def on_after_verify(self, user: User, request: Request | None = None) -> None:
@@ -355,6 +346,14 @@ def get_jwt_strategy() -> JWTStrategy[models.UP, models.ID]:
     )
 
 
+def get_openid_jwt_strategy() -> JWTStrategy[models.UP, models.ID]:
+    generation = current_oauth_runtime_generation()
+    return CachedJWTStrategy(
+        secret=SECRET,
+        lifetime_seconds=generation.session_lifetime,
+    )
+
+
 class _LiveLifetimeCookieTransport(CookieTransport):
     """CookieTransport that reads ``cookie_max_age`` fresh from the config singleton on every login.
 
@@ -373,12 +372,30 @@ class _LiveLifetimeCookieTransport(CookieTransport):
 
 # needed because the default CookieTransport does not redirect after login,
 # thus the user would be stuck on the OAuth Providers "redirecting" page
-class RedirectingCookieTransport(_LiveLifetimeCookieTransport):
-    async def get_login_response(self, token: str) -> Response:
-        response = RedirectResponse(
-            str(MiraMediaConfig().misc.frontend_url) + "web/dashboard",
-            status_code=status.HTTP_302_FOUND,
+class GenerationScopedRedirectingCookieTransport(CookieTransport):
+    """OAuth login transport reading cookie policy from the request generation."""
+
+    def __init__(self) -> None:
+        super().__init__(cookie_samesite="lax", cookie_secure=False)
+
+    def _set_login_cookie(self, response: Response, token: str) -> Response:
+        generation = current_oauth_runtime_generation()
+        response.set_cookie(
+            self.cookie_name,
+            token,
+            max_age=generation.session_lifetime,
+            path=self.cookie_path,
+            domain=self.cookie_domain,
+            secure=generation.cookie_secure,
+            httponly=self.cookie_httponly,
+            samesite=self.cookie_samesite,
         )
+        return response
+
+    async def get_login_response(self, token: str) -> Response:
+        generation = current_oauth_runtime_generation()
+        redirect = join_frontend_path(generation.frontend_url, "web/dashboard")
+        response = RedirectResponse(redirect, status_code=status.HTTP_302_FOUND)
         return self._set_login_cookie(response, token)
 
 
@@ -393,9 +410,18 @@ bearer_transport = BearerTransport(tokenUrl="auth/jwt/login")
 cookie_transport = _LiveLifetimeCookieTransport(
     cookie_samesite="lax", cookie_secure=_cookie_secure()
 )
-openid_cookie_transport = RedirectingCookieTransport(
-    cookie_samesite="lax", cookie_secure=_cookie_secure()
-)
+openid_cookie_transport = GenerationScopedRedirectingCookieTransport()
+
+
+def apply_mutable_transport_settings() -> None:
+    """Refresh cookie transport flags from the live config singleton."""
+    secure = _cookie_secure()
+    restore_mutable_transport_settings(secure)
+
+
+def restore_mutable_transport_settings(secure: bool) -> None:
+    cookie_transport.cookie_secure = secure
+
 
 bearer_auth_backend = AuthenticationBackend(
     name="jwt",
@@ -410,7 +436,7 @@ cookie_auth_backend = AuthenticationBackend(
 openid_cookie_auth_backend = AuthenticationBackend(
     name="cookie",
     transport=openid_cookie_transport,
-    get_strategy=get_jwt_strategy,
+    get_strategy=get_openid_jwt_strategy,
 )
 
 

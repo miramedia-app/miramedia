@@ -1,15 +1,19 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+
+class SettingsSectionSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 # --- Misc ---
-class LibraryItemSchema(BaseModel):
+class LibraryItemSchema(SettingsSectionSchema):
     name: str
     path: str
 
 
-class NamingSettingsSchema(BaseModel):
+class NamingSettingsSchema(SettingsSectionSchema):
     movie_folder_format: str | None = None
     show_folder_format: str | None = None
     season_folder_format: str | None = None
@@ -17,7 +21,7 @@ class NamingSettingsSchema(BaseModel):
     episode_file_format: str | None = None
 
 
-class MiscSettingsSchema(BaseModel):
+class MiscSettingsSchema(SettingsSectionSchema):
     image_directory: str | None = None
     show_directory: str | None = None
     movie_directory: str | None = None
@@ -54,7 +58,7 @@ class MiscSettingsSchema(BaseModel):
 
 
 # --- Auth ---
-class OpenIdSettingsSchema(BaseModel):
+class OpenIdSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     client_id: str | None = None
     client_secret: str | None = None
@@ -62,15 +66,25 @@ class OpenIdSettingsSchema(BaseModel):
     name: str | None = None
 
 
-class AuthSettingsSchema(BaseModel):
+class AuthSettingsSchema(SettingsSectionSchema):
     session_lifetime: int | None = None
     email_password_resets: bool | None = None
+    cookie_secure: bool | None = None
     openid_connect: OpenIdSettingsSchema | None = None
     # admin_emails intentionally omitted — deprecated, manage superusers via the Users page.
 
+    @field_validator("session_lifetime")
+    @classmethod
+    def validate_session_lifetime(cls, value: int | None) -> int | None:
+        from miramedia.auth.config import validate_session_lifetime_value
+
+        if value is None:
+            return None
+        return validate_session_lifetime_value(value)
+
 
 # --- Notifications ---
-class SmtpSettingsSchema(BaseModel):
+class SmtpSettingsSchema(SettingsSectionSchema):
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None
@@ -79,34 +93,34 @@ class SmtpSettingsSchema(BaseModel):
     use_tls: bool | None = None
 
 
-class EmailNotificationsSettingsSchema(BaseModel):
+class EmailNotificationsSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     emails: list[str] | None = None
 
 
-class GotifySettingsSchema(BaseModel):
+class GotifySettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     api_key: str | None = None
     url: str | None = None
 
 
-class NtfySettingsSchema(BaseModel):
+class NtfySettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     url: str | None = None
 
 
-class PushoverSettingsSchema(BaseModel):
+class PushoverSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     api_key: str | None = None
     user: str | None = None
 
 
-class NativeNotificationSettingsSchema(BaseModel):
+class NativeNotificationSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     retention_days: int | None = None
 
 
-class NotificationSettingsSchema(BaseModel):
+class NotificationSettingsSchema(SettingsSectionSchema):
     subject_prefix: str | None = None
     native: NativeNotificationSettingsSchema | None = None
     smtp_config: SmtpSettingsSchema | None = None
@@ -117,7 +131,7 @@ class NotificationSettingsSchema(BaseModel):
 
 
 # --- Torrents ---
-class QbittorrentSettingsSchema(BaseModel):
+class QbittorrentSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     host: str | None = None
     port: int | None = None
@@ -127,7 +141,7 @@ class QbittorrentSettingsSchema(BaseModel):
     category_save_path: str | None = None
 
 
-class TransmissionSettingsSchema(BaseModel):
+class TransmissionSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     path: str | None = None
     https_enabled: bool | None = None
@@ -137,7 +151,7 @@ class TransmissionSettingsSchema(BaseModel):
     password: str | None = None
 
 
-class SabnzbdSettingsSchema(BaseModel):
+class SabnzbdSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     host: str | None = None
     port: int | None = None
@@ -145,14 +159,14 @@ class SabnzbdSettingsSchema(BaseModel):
     base_path: str | None = None
 
 
-class NativeTorrentSettingsSchema(BaseModel):
+class NativeTorrentSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     listen_port_start: int | None = None
     max_download_rate: int | None = None
     max_upload_rate: int | None = None
 
 
-class TorrentSettingsSchema(BaseModel):
+class TorrentSettingsSchema(SettingsSectionSchema):
     qbittorrent: QbittorrentSettingsSchema | None = None
     transmission: TransmissionSettingsSchema | None = None
     sabnzbd: SabnzbdSettingsSchema | None = None
@@ -160,25 +174,25 @@ class TorrentSettingsSchema(BaseModel):
 
 
 # --- Indexers ---
-class ProwlarrSettingsSchema(BaseModel):
+class ProwlarrSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     api_key: str | None = None
     url: str | None = None
 
 
-class JackettSettingsSchema(BaseModel):
+class JackettSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     api_key: str | None = None
     url: str | None = None
     indexers: list[str] | None = None
 
 
-class NativeIndexerSettingsSchema(BaseModel):
+class NativeIndexerSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     max_concurrent_searches: int | None = None
 
 
-class CloudflareSettingsSchema(BaseModel):
+class CloudflareSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     browser_path: str | None = None
     cookie_ttl_seconds: int | None = None
@@ -190,41 +204,41 @@ class CloudflareSettingsSchema(BaseModel):
     solve_timeout_seconds: int | None = None
 
 
-class TitleScoringRuleSchema(BaseModel):
+class TitleScoringRuleSchema(SettingsSectionSchema):
     name: str
     keywords: list[str]
     score_modifier: int = 0
     enabled: bool = True
 
 
-class IndexerFlagScoringRuleSchema(BaseModel):
+class IndexerFlagScoringRuleSchema(SettingsSectionSchema):
     name: str
     flags: list[str]
     score_modifier: int = 0
     enabled: bool = True
 
 
-class QualityOptionSchema(BaseModel):
+class QualityOptionSchema(SettingsSectionSchema):
     name: str
     keywords: list[str]
     score_modifier: int = 0
     enabled: bool = True
 
 
-class CodecOptionSchema(BaseModel):
+class CodecOptionSchema(SettingsSectionSchema):
     name: str
     keywords: list[str]
     score_modifier: int = 0
     enabled: bool = True
 
 
-class ScoringRuleSetSchema(BaseModel):
+class ScoringRuleSetSchema(SettingsSectionSchema):
     name: str
     libraries: list[str] = []
     rule_names: list[str] = []
 
 
-class IndexerSettingsSchema(BaseModel):
+class IndexerSettingsSchema(SettingsSectionSchema):
     timeout_seconds: int | None = None
     prowlarr: ProwlarrSettingsSchema | None = None
     jackett: JackettSettingsSchema | None = None
@@ -245,15 +259,15 @@ class IndexerSettingsSchema(BaseModel):
 
 
 # --- Metadata ---
-class TvmazeSettingsSchema(BaseModel):
+class TvmazeSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
 
 
-class CinemetaSettingsSchema(BaseModel):
+class CinemetaSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
 
 
-class NativeMetadataSettingsSchema(BaseModel):
+class NativeMetadataSettingsSchema(SettingsSectionSchema):
     tvmaze: TvmazeSettingsSchema | None = None
     cinemeta: CinemetaSettingsSchema | None = None
 
@@ -271,19 +285,19 @@ class NativeMetadataSettingsSchema(BaseModel):
         return data
 
 
-class TmdbSettingsSchema(BaseModel):
+class TmdbSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     api_key: str | None = None
     primary_languages: list[str] | None = None
     default_language: str | None = None
 
 
-class TvdbSettingsSchema(BaseModel):
+class TvdbSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     api_key: str | None = None
 
 
-class MetadataSettingsSchema(BaseModel):
+class MetadataSettingsSchema(SettingsSectionSchema):
     desired_languages: list[str] | None = None
     check_interval_hours: int | None = None
     failure_backoff_hours: int | None = None
@@ -293,17 +307,17 @@ class MetadataSettingsSchema(BaseModel):
 
 
 # --- Requests ---
-class SeerrSettingsSchema(BaseModel):
+class SeerrSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     url: str | None = None
     api_key: str | None = None
 
 
-class NativeRequestsSettingsSchema(BaseModel):
+class NativeRequestsSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
 
 
-class RequestsSettingsSchema(BaseModel):
+class RequestsSettingsSchema(SettingsSectionSchema):
     auto_approve_users: bool | None = None
     fulfill_interval_hours: int | None = None
     native: NativeRequestsSettingsSchema | None = None
@@ -326,18 +340,18 @@ class RequestsSettingsSchema(BaseModel):
 
 
 # --- Subtitles ---
-class NativeSubtitleSettingsSchema(BaseModel):
+class NativeSubtitleSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     scan_interval_hours: int | None = None
 
 
-class BazarrSettingsSchema(BaseModel):
+class BazarrSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     url: str | None = None
     api_key: str | None = None
 
 
-class SubtitleSettingsSchema(BaseModel):
+class SubtitleSettingsSchema(SettingsSectionSchema):
     desired_languages: list[str] | None = None
     native: NativeSubtitleSettingsSchema | None = None
     bazarr: BazarrSettingsSchema | None = None
@@ -363,7 +377,7 @@ class SubtitleSettingsSchema(BaseModel):
 
 
 # --- Updates ---
-class UpdateSettingsSchema(BaseModel):
+class UpdateSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     repo: str | None = None
     check_interval_hours: int | None = None
@@ -377,7 +391,7 @@ class UpdateSettingsSchema(BaseModel):
 
 
 # --- Imports ---
-class ImportsSettingsSchema(BaseModel):
+class ImportsSettingsSchema(SettingsSectionSchema):
     provider_search_on_scan: bool | None = None
     provider_search_max_results: int | None = None
     auto_import_on_scan: bool | None = None
@@ -387,7 +401,7 @@ class ImportsSettingsSchema(BaseModel):
 
 
 # --- Top-level ---
-class SystemSettingsUpdate(BaseModel):
+class SystemSettingsUpdate(SettingsSectionSchema):
     """Partial update — only include sections/fields you want to override."""
 
     misc: MiscSettingsSchema | None = None

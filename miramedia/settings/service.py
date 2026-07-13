@@ -12,9 +12,22 @@ from miramedia.config import MiraMediaConfig
 
 log = logging.getLogger(__name__)
 
-# Serializes the transient swap-out of the MiraMediaConfig singleton when reading TOML
-# defaults so two settings requests can't race and leak a duplicate instance.
-_singleton_swap_lock = threading.Lock()
+# Serializes live singleton section replacement during settings apply/swap.
+_live_apply_lock = threading.Lock()
+
+SETTINGS_SECTIONS = (
+    "misc",
+    "auth",
+    "notifications",
+    "torrents",
+    "indexers",
+    "metadata",
+    "requests",
+    "subtitles",
+    "updates",
+    "cloudflare",
+    "imports",
+)
 
 
 def deep_merge(base: dict, overrides: dict) -> dict:
@@ -53,6 +66,29 @@ def diff_against_defaults(incoming: dict, defaults: dict) -> dict:
     return result
 
 
+def _materialize_explicit_nulls_inplace(patch: dict, baseline: dict) -> None:
+    """Replace explicit null leaves/sections with true TOML baseline values."""
+    for key, value in list(patch.items()):
+        base_value = baseline.get(key)
+        if value is None:
+            if key in baseline:
+                patch[key] = copy.deepcopy(base_value)
+            else:
+                del patch[key]
+        elif isinstance(value, dict) and isinstance(base_value, dict):
+            _materialize_explicit_nulls_inplace(value, base_value)
+
+
+def compute_mutation_overrides(prior_db_overrides: dict, incoming_patch: dict) -> dict:
+    """Derive persisted overrides from true TOML baseline plus authoritative DB state."""
+    toml_defaults = get_toml_defaults()
+    resolved_patch = copy.deepcopy(incoming_patch)
+    _materialize_explicit_nulls_inplace(resolved_patch, toml_defaults)
+    authoritative_prior = deep_merge(copy.deepcopy(toml_defaults), prior_db_overrides)
+    desired = deep_merge(copy.deepcopy(authoritative_prior), resolved_patch)
+    return diff_against_defaults(desired, toml_defaults)
+
+
 REDACTED_FIELDS = {
     "auth": {"token_secret"},
 }
@@ -65,29 +101,11 @@ DEPRECATED_FIELDS: set[tuple[str, ...]] = {
 
 
 def get_effective_config(overrides: dict) -> dict:
-    """Load config from TOML and merge DB overrides on top."""
-    config = MiraMediaConfig()
-    # Sections we expose (excluding database)
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
-    result = {}
-    for section in sections:
-        section_config = getattr(config, section)
-        section_dict = _config_to_dict(section_config)
-        if section in overrides:
-            section_dict = deep_merge(section_dict, overrides[section])
-        # Remove sensitive fields
+    """Build effective settings from one TOML+DB snapshot, not the live singleton."""
+    isolated = build_isolated_config(overrides)
+    result: dict = {}
+    for section in SETTINGS_SECTIONS:
+        section_dict = _config_to_dict(getattr(isolated, section))
         for field in REDACTED_FIELDS.get(section, set()):
             section_dict.pop(field, None)
         result[section] = section_dict
@@ -211,20 +229,8 @@ def get_settings_schema() -> list[dict]:
 
 
 def get_toml_defaults() -> dict:
-    """Return TOML-only defaults (no DB overrides applied) for the UI to show 'Default: ...' tooltips.
-
-    Builds a transient fresh instance to bypass the singleton's already-applied overrides.
-    """
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
+    """Return TOML-only defaults (no DB overrides applied) for the UI to show 'Default: ...' tooltips."""
+    fresh = MiraMediaConfig.load_isolated()
 
     sections = [
         "misc",
@@ -274,30 +280,63 @@ def _serialize_values(d: Any) -> Any:  # noqa: ANN401 — recurses over arbitrar
     return d
 
 
+def compute_clear_override_path(overrides: dict, path: list[str]) -> dict:
+    """Return overrides after removing one dotted path (pure, no persistence)."""
+    if not path:
+        return copy.deepcopy(overrides)
+    result = copy.deepcopy(overrides)
+    node: Any = result
+    stack: list[tuple[dict, str]] = []
+    for key in path[:-1]:
+        if not isinstance(node, dict) or key not in node:
+            return result
+        stack.append((node, key))
+        node = node[key]
+    if not isinstance(node, dict) or path[-1] not in node:
+        return result
+    del node[path[-1]]
+    for parent, key in reversed(stack):
+        if isinstance(parent[key], dict) and not parent[key]:
+            del parent[key]
+    return result
+
+
+def build_isolated_config(overrides: dict | None = None) -> MiraMediaConfig:
+    """Build a complete config snapshot from TOML + overrides without mutating live state."""
+    from miramedia.settings.validation import build_merged_validated_config
+
+    return build_merged_validated_config(overrides)
+
+
+def apply_live_config_from_overrides(overrides: dict) -> None:
+    """Atomically replace live singleton sections from a prospective snapshot."""
+    isolated = build_isolated_config(overrides)
+    with _live_apply_lock:
+        live = MiraMediaConfig()
+        for section in SETTINGS_SECTIONS:
+            source = getattr(isolated, section)
+            if hasattr(source, "model_copy"):
+                setattr(live, section, source.model_copy(deep=True))
+            else:
+                setattr(live, section, copy.deepcopy(source))
+    from miramedia.auth.users import apply_mutable_transport_settings
+
+    apply_mutable_transport_settings()
+
+
 def revert_field_to_toml_default(path: list[str]) -> None:
     """Reset a single dotted-path field on the in-memory singleton back to its TOML default.
 
-    Builds a transient fresh instance to read the TOML default, then setattrs on the real
-    singleton so external references (e.g. ``cfg.torrents``) remain valid.
+    Reads the default from an isolated TOML load, then setattrs on the live singleton so
+    external references (e.g. ``cfg.torrents``) remain valid.
     """
     if not path:
         return
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-
-    if saved_instance is None:
-        return
+    fresh = MiraMediaConfig.load_isolated()
+    live = MiraMediaConfig()
 
     fresh_node: Any = fresh
-    real_node: Any = saved_instance
+    real_node: Any = live
     for key in path[:-1]:
         if not hasattr(fresh_node, key) or not hasattr(real_node, key):
             return

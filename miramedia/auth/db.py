@@ -8,7 +8,7 @@ from fastapi_users.db import (
     SQLAlchemyBaseUserTableUUID,
     SQLAlchemyUserDatabase,
 )
-from sqlalchemy import DateTime, String
+from sqlalchemy import DateTime, Index, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -16,6 +16,16 @@ from miramedia.database import Base, get_session
 
 
 class OAuthAccount(SQLAlchemyBaseOAuthAccountTableUUID, Base):
+    __table_args__ = (
+        Index("ix_oauth_account_user_id", "user_id"),
+        Index(
+            "uq_oauth_account_oauth_name_account_id",
+            "oauth_name",
+            "account_id",
+            unique=True,
+        ),
+    )
+
     access_token: Mapped[str] = mapped_column(String(length=4096), nullable=False)
     refresh_token: Mapped[str | None] = mapped_column(
         String(length=4096), nullable=True

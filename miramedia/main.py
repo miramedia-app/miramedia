@@ -42,6 +42,7 @@ from miramedia.auth.router import (
 from miramedia.auth.router import (
     users_router as custom_users_router,
 )
+from miramedia.auth.runtime import OAuthRuntimeMiddleware
 from miramedia.auth.schemas import UserCreate, UserRead, UserUpdate
 from miramedia.auth.users import (
     bearer_auth_backend,
@@ -91,15 +92,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         warm_cloudflare_bypass,
     )
 
-    configure_threadpool()
-    event_bridge_started = await start_persistence()
-    start_library_watcher()
-    schedule_import_queue_warmup()
-    native_client = await start_native_torrent_client()
-    warm_cloudflare_bypass()
-
     scheduler_ctx = SchedulerContext()
+    native_client = None
     try:
+        configure_threadpool()
+        await start_persistence()
+        start_library_watcher()
+        schedule_import_queue_warmup()
+        native_client = await start_native_torrent_client()
+        warm_cloudflare_bypass()
+
         if is_scheduler_disabled():
             log.info(
                 "MIRAMEDIA_SCHEDULER_DISABLED=true — taskiq brokers, receivers, "
@@ -122,7 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             await start_scheduler_workers(app, scheduler_ctx)
             yield
     finally:
-        await shutdown_startup(scheduler_ctx, native_client, event_bridge_started)
+        await shutdown_startup(scheduler_ctx, native_client)
 
 
 # Swagger UI / ReDoc are replaced by the embedded Scalar API reference in the
@@ -161,6 +163,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
+app.add_middleware(OAuthRuntimeMiddleware)
 
 
 @app.middleware("http")
@@ -285,9 +288,7 @@ api_app.include_router(
     tags=["users"],
 )
 api_app.include_router(auth_metadata_router)
-
-if get_openid_router():
-    api_app.include_router(get_openid_router(), tags=["openid"], prefix="/auth/oauth")
+api_app.include_router(get_openid_router(), tags=["openid"], prefix="/auth/oauth")
 
 api_app.include_router(shows_router.router)
 api_app.include_router(shows_router.episodes_router)
