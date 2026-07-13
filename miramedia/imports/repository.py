@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import enum
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.imports.models import (
@@ -17,6 +19,75 @@ from miramedia.imports.models import (
 from miramedia.imports.schemas import ScanRunState, ScanRunStatus
 
 _SINGLETON_ID = "current"
+
+CLAIM_SCAN_CACHE_ROW_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'import_error' - 'claim_token')
+    || jsonb_build_object(
+        'status', 'queued',
+        'queued_at', :queued_at,
+        'claim_token', :claim_token
+    )
+WHERE directory = :directory
+  AND payload->>'status' IN ('pending', 'failed')
+  AND payload->>'media_type_hint' = :media_type
+RETURNING directory
+"""
+
+COMPENSATE_SCAN_CACHE_CLAIM_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token')
+    || jsonb_build_object('status', 'failed', 'import_error', :error)
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'claim_token' = :claim_token
+RETURNING directory
+"""
+
+COMPLETE_MANUAL_SCAN_IMPORT_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token')
+    || jsonb_build_object(
+        'status', 'imported',
+        'imported_name', :imported_name,
+        'imported_media_id', :imported_media_id,
+        'imported_media_type', :imported_media_type
+    )
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'claim_token' = :claim_token
+RETURNING directory
+"""
+
+FAIL_MANUAL_SCAN_IMPORT_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token')
+    || jsonb_build_object('status', 'failed', 'import_error', :error)
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'claim_token' = :claim_token
+RETURNING directory
+"""
+
+RESET_IMPORT_BATCH_IF_IDLE_SQL = """
+UPDATE import_batch SET total = 0
+WHERE id = :id AND total <> 0 AND NOT EXISTS (
+    SELECT 1 FROM scan_result_cache
+    WHERE payload->>'status' = 'queued'
+)
+"""
+
+
+class ScanClaimResult(enum.Enum):
+    claimed = "claimed"
+    not_found = "not_found"
+    not_eligible = "not_eligible"
+
+
+@dataclass(frozen=True)
+class ScanClaimOutcome:
+    result: ScanClaimResult
+    claim_token: str | None = None
 
 
 def _queued_before(queued_at: str | None, cutoff: datetime) -> bool:
@@ -65,6 +136,18 @@ class ImportsRepository:
 
         schedule_import_queue_rebuild()
 
+    async def get_scan_cache_entry(self, directory: str) -> dict | None:
+        """Exact-key lookup for one scan-cache row."""
+        result = await self.db.execute(
+            select(ScanResultCache.directory, ScanResultCache.payload).where(
+                ScanResultCache.directory == directory
+            )
+        )
+        row = result.first()
+        if row is None:
+            return None
+        return {"directory": row.directory, **row.payload}
+
     async def list_scan_cache(self) -> list[dict]:
         stmt = select(ScanResultCache.payload, ScanResultCache.directory)
         result = await self.db.execute(stmt)
@@ -89,10 +172,8 @@ class ImportsRepository:
 
     # ---- import batch progress counter ------------------------------------
 
-    async def bump_import_batch_total(self, n: int = 1) -> None:
-        """Atomically add ``n`` to the live batch total (the M in "N/M").
-
-        Upsert so a fresh DB without the seeded singleton row still works."""
+    async def _bump_import_batch_total_in_tx(self, n: int = 1) -> None:
+        """Add ``n`` to the live batch total without committing."""
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         stmt = pg_insert(ImportBatch.__table__).values(id=_SINGLETON_ID, total=n)
@@ -101,24 +182,36 @@ class ImportsRepository:
             set_={"total": ImportBatch.total + n},
         )
         await self.db.execute(stmt)
+
+    async def bump_import_batch_total(self, n: int = 1) -> None:
+        """Atomically add ``n`` to the live batch total (the M in "N/M").
+
+        Upsert so a fresh DB without the seeded singleton row still works."""
+        await self._bump_import_batch_total_in_tx(n)
         await self.db.commit()
+
+    async def _decrement_import_batch_total_in_tx(self, n: int = 1) -> None:
+        from sqlalchemy import text
+
+        await self.db.execute(
+            text(
+                "UPDATE import_batch SET total = GREATEST(total - :n, 0) WHERE id = :id"
+            ),
+            {"id": _SINGLETON_ID, "n": n},
+        )
+
+    async def _reset_import_batch_if_idle_in_tx(self) -> None:
+        await self.db.execute(
+            text(RESET_IMPORT_BATCH_IF_IDLE_SQL),
+            {"id": _SINGLETON_ID},
+        )
 
     async def reset_import_batch_if_idle(self) -> None:
         """Zero the batch total once no scan row is still queued — the batch is
         over. Single atomic statement so concurrent worker completions race
         safely (idempotent) and a mid-flight dispatch keeps a queued row alive,
         preventing a premature reset."""
-        from sqlalchemy import text
-
-        await self.db.execute(
-            text(
-                "UPDATE import_batch SET total = 0 "
-                "WHERE id = :id AND total <> 0 AND NOT EXISTS ("
-                "SELECT 1 FROM scan_result_cache "
-                "WHERE payload->>'status' = 'queued')"
-            ),
-            {"id": _SINGLETON_ID},
-        )
+        await self._reset_import_batch_if_idle_in_tx()
         await self.db.commit()
 
     async def get_import_batch_total(self) -> int:
@@ -177,31 +270,143 @@ class ImportsRepository:
         schedule_import_queue_rebuild()
         return reclaimed
 
-    async def mark_scan_cache_queued(self, directory: str) -> bool:
-        """Mark a cached scan row as queued for import. The imports page hides
-        the Import button while a row is in this state to prevent double-clicks
-        and double-dispatches; the worker flips it to imported/failed when the
-        background task completes."""
-        result = await self.db.execute(
-            select(ScanResultCache).where(ScanResultCache.directory == directory)
-        )
-        row = result.scalar_one_or_none()
-        if row is None:
-            return False
-        payload = dict(row.payload)
-        payload["status"] = "queued"
-        payload.pop("import_error", None)
-        # Stamp dispatch time so a periodic sweep can reclaim this row if its
-        # worker dies mid-import and never reaches a terminal state.
-        payload["queued_at"] = datetime.now(UTC).isoformat()
-        row.payload = payload
-        await self.db.commit()
-        # New row entering the worker lane → grow the live batch total (M).
-        await self.bump_import_batch_total(1)
+    async def claim_scan_cache_row(
+        self, directory: str, *, media_type: str
+    ) -> ScanClaimOutcome:
+        """Atomically claim one cached scan row for background import.
+
+        Eligible rows transition ``pending``/``failed`` -> ``queued`` in a
+        single conditional UPDATE matching directory, retryable status, and
+        ``media_type_hint``. A fresh ``claim_token`` is stored with the row.
+        The batch counter grows in the same transaction.
+        """
+        queued_at = datetime.now(UTC).isoformat()
+        claim_token = str(uuid.uuid4())
+        try:
+            result = await self.db.execute(
+                text(CLAIM_SCAN_CACHE_ROW_SQL),
+                {
+                    "directory": directory,
+                    "queued_at": queued_at,
+                    "media_type": media_type,
+                    "claim_token": claim_token,
+                },
+            )
+            if result.first() is None:
+                await self.db.rollback()
+                exists = await self.db.scalar(
+                    select(ScanResultCache.directory).where(
+                        ScanResultCache.directory == directory
+                    )
+                )
+                if exists is None:
+                    return ScanClaimOutcome(ScanClaimResult.not_found)
+                return ScanClaimOutcome(ScanClaimResult.not_eligible)
+
+            await self._bump_import_batch_total_in_tx(1)
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return ScanClaimOutcome(ScanClaimResult.claimed, claim_token=claim_token)
+
+    async def compensate_scan_cache_claim(
+        self, directory: str, *, claim_token: str, error: str
+    ) -> bool:
+        """Undo a queued claim when broker dispatch fails.
+
+        Flips this exact row from ``queued`` to retryable ``failed`` when the
+        claim token matches, decrements the batch total, and zeros the batch
+        counter when no queued rows remain — all in one transaction.
+        """
+        try:
+            result = await self.db.execute(
+                text(COMPENSATE_SCAN_CACHE_CLAIM_SQL),
+                {
+                    "directory": directory,
+                    "claim_token": claim_token,
+                    "error": error,
+                },
+            )
+            if result.first() is None:
+                await self.db.rollback()
+                return False
+            await self._decrement_import_batch_total_in_tx(1)
+            await self._reset_import_batch_if_idle_in_tx()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
         from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
 
         schedule_import_queue_rebuild()
         return True
+
+    async def complete_manual_scan_import(
+        self,
+        directory: str,
+        *,
+        claim_token: str,
+        imported_name: str | None = None,
+        imported_media_id: str | None = None,
+        imported_media_type: str | None = None,
+    ) -> bool:
+        """Terminal imported write for a manual resolve, CAS on claim token."""
+        result = await self.db.execute(
+            text(COMPLETE_MANUAL_SCAN_IMPORT_SQL),
+            {
+                "directory": directory,
+                "claim_token": claim_token,
+                "imported_name": imported_name,
+                "imported_media_id": imported_media_id,
+                "imported_media_type": imported_media_type,
+            },
+        )
+        if result.first() is None:
+            await self.db.rollback()
+            return False
+        await self.db.commit()
+        await self.reset_import_batch_if_idle()
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return True
+
+    async def fail_manual_scan_import(
+        self, directory: str, *, claim_token: str, error: str | None = None
+    ) -> bool:
+        """Terminal failed write for a manual resolve, CAS on claim token."""
+        result = await self.db.execute(
+            text(FAIL_MANUAL_SCAN_IMPORT_SQL),
+            {
+                "directory": directory,
+                "claim_token": claim_token,
+                "error": error,
+            },
+        )
+        if result.first() is None:
+            await self.db.rollback()
+            return False
+        await self.db.commit()
+        await self.reset_import_batch_if_idle()
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return True
+
+    async def mark_scan_cache_queued(self, directory: str) -> bool:
+        """Deprecated alias for :meth:`claim_scan_cache_row`."""
+        row = await self.get_scan_cache_entry(directory)
+        media_type = (row or {}).get("media_type_hint")
+        if not isinstance(media_type, str):
+            return False
+        outcome = await self.claim_scan_cache_row(directory, media_type=media_type)
+        return outcome.result is ScanClaimResult.claimed
 
     async def mark_scan_cache_imported(
         self,
