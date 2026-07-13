@@ -14,7 +14,15 @@ from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
 from miramedia.torrents.schemas import Torrent, TorrentStatus
-from miramedia.torrents.utils import get_torrent_hash
+from miramedia.torrents.utils import (
+    _application_control_dir_paths,
+    _configured_torrent_roots,
+    _is_safe_deletion_target,
+    exact_save_dirs_for_title,
+    get_torrent_hash,
+    torrent_dir_under_root,
+    torrent_sidecar_under_root,
+)
 
 if TYPE_CHECKING:
     from miramedia.torrents.utils import TorrentFile
@@ -86,10 +94,10 @@ class NativeDownloadClient(AbstractDownloadClient):
         directly to ``torrent_directory`` and no move is performed.
         """
         misc = MiraMediaConfig().misc
-        completed = misc.effective_completed_path / title
+        completed = torrent_dir_under_root(misc.effective_completed_path, title)
         incomplete_root = (misc.incomplete_torrent_path or "").strip()
         if incomplete_root:
-            return Path(incomplete_root) / title, completed
+            return torrent_dir_under_root(Path(incomplete_root), title), completed
         return completed, completed
 
     async def reconcile_resume_data(self) -> int:
@@ -301,8 +309,8 @@ class NativeDownloadClient(AbstractDownloadClient):
         return None
 
     def download_torrent(self, indexer_result: IndexerQueryResult) -> Torrent:
-        torrent_hash = get_torrent_hash(torrent=indexer_result)
         initial_path, _completed_path = self._resolve_paths(indexer_result.title)
+        torrent_hash = get_torrent_hash(torrent=indexer_result)
         save_path = str(initial_path)
         initial_path.mkdir(parents=True, exist_ok=True)
 
@@ -314,9 +322,9 @@ class NativeDownloadClient(AbstractDownloadClient):
             params.save_path = save_path
         else:
             # For .torrent file URLs, the file should already be downloaded by get_torrent_hash
-            torrent_file_path = (
-                MiraMediaConfig().misc.effective_completed_path
-                / f"{indexer_result.title}.torrent"
+            torrent_file_path = torrent_sidecar_under_root(
+                MiraMediaConfig().misc.effective_completed_path,
+                indexer_result.title,
             )
             if torrent_file_path.exists():
                 info = libtorrent.torrent_info(str(torrent_file_path))
@@ -363,96 +371,55 @@ class NativeDownloadClient(AbstractDownloadClient):
         handle = self._get_handle_by_hash(torrent.hash)
         if handle is None:
             log.warning(f"Torrent not found in native client: {torrent.hash}")
-            # Still sweep on-disk leftovers — libtorrent may have lost its
-            # resume data on a restart while the files persist on disk.
-            if delete_data:
-                self._sweep_leftover_dirs(torrent)
             resume_file = self._resume_data_dir / f"{torrent.hash}.fastresume"
             if resume_file.exists():
                 resume_file.unlink()
             return
-
-        # Snapshot the on-disk locations before handing the torrent to
-        # libtorrent for removal — once removed the handle's status is gone
-        # and we can't compute the residual directories anymore.
-        leftover_dirs: list[Path] = []
-        if delete_data:
-            try:
-                name = handle.status().name
-            except Exception:
-                name = torrent.title
-            cfg = MiraMediaConfig().misc
-            if name:
-                completed_root = cfg.effective_completed_path
-                incomplete_root = (
-                    Path(cfg.incomplete_torrent_path)
-                    if cfg.incomplete_torrent_path
-                    else None
-                )
-                for root in (completed_root, incomplete_root):
-                    if root is None:
-                        continue
-                    candidate = root / name
-                    if candidate.exists():
-                        leftover_dirs.append(candidate)
 
         if delete_data:
             self._session.remove_torrent(handle, libtorrent.options_t.delete_files)
         else:
             self._session.remove_torrent(handle)
 
-        # Remove resume data. ``missing_ok`` (no exists()-then-unlink) — the
-        # periodic resume-save sweep can delete this file between our check and
-        # the unlink (TOCTOU), and a stray FileNotFoundError here aborts the
-        # whole cleanup_after_import path, stranding the torrent.
         resume_file = self._resume_data_dir / f"{torrent.hash}.fastresume"
         resume_file.unlink(missing_ok=True)
 
-        # libtorrent.delete_files removes file data but leaves empty parent
-        # directories behind — and won't touch the incomplete-side directory
-        # at all once the files have moved to the completed path. Sweep the
-        # leftover dirs so the torrents tree doesn't accumulate empties.
         if delete_data:
-            self._sweep_leftover_dirs(torrent, known_dirs=leftover_dirs)
+            self._try_rmdir_empty_save_dirs(torrent)
 
         log.info(f"Removed torrent from native client: {torrent.title}")
 
-    def _sweep_leftover_dirs(
-        self, torrent: Torrent, known_dirs: list[Path] | None = None
-    ) -> None:
-        """Best-effort rmtree of stale torrent dirs.
+    def _try_rmdir_empty_save_dirs(self, torrent: Torrent) -> None:
+        """Remove only empty exact save dirs after libtorrent deleted payload files.
 
-        Used after libtorrent has either removed the torrent (``known_dirs``
-        populated by the caller from the handle status) or when the handle
-        is already gone (post-restart orphan; fall back to fuzzy-resolving
-        from ``torrent.title`` via ``get_torrent_filepath``).
+        Title/hash alone does not prove payload ownership — never ``rmtree()``
+        torrent data directories. Without a live handle libtorrent already
+        skipped payload deletion, so this is a no-op on orphaned rows.
         """
-        import shutil
-
-        from miramedia.torrents.utils import get_torrent_filepath
-
-        dirs: list[Path] = list(known_dirs or [])
         cfg = MiraMediaConfig().misc
-        # Always consider the fuzzy-resolved completed-side dir in case the
-        # libtorrent handle is gone or named differently than the indexer
-        # title says.
-        try:
-            fuzzy = get_torrent_filepath(torrent)
-            if fuzzy.exists() and fuzzy not in dirs:
-                dirs.append(fuzzy)
-        except Exception:
-            log.debug("Fuzzy torrent dir resolution failed", exc_info=True)
-        # And the incomplete-side dir under the torrent's title.
-        if cfg.incomplete_torrent_path:
-            incomplete = Path(cfg.incomplete_torrent_path) / torrent.title
-            if incomplete.exists() and incomplete not in dirs:
-                dirs.append(incomplete)
-        for leftover in dirs:
+        roots = _configured_torrent_roots(cfg)
+        forbidden = _application_control_dir_paths(cfg)
+        for path in exact_save_dirs_for_title(torrent.title):
+            if not _is_safe_deletion_target(path, roots, forbidden=forbidden):
+                log.warning(
+                    "Refusing to remove torrent save dir outside configured roots: %s",
+                    path,
+                )
+                continue
             try:
-                shutil.rmtree(leftover, ignore_errors=True)
-                log.info("Removed leftover torrent dir %s", leftover)
-            except Exception:
-                log.exception("Failed to remove leftover torrent dir %s", leftover)
+                if not path.is_dir():
+                    continue
+                if any(path.iterdir()):
+                    log.debug("Skipping non-empty torrent save dir %s", path)
+                    continue
+                path.rmdir()
+                log.info("Removed empty torrent save dir %s", path)
+            except OSError:
+                log.debug(
+                    "Could not remove torrent save dir %s",
+                    path,
+                    exc_info=True,
+                )
 
     def get_torrent_status(
         self, torrent: Torrent
