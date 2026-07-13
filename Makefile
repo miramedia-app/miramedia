@@ -113,9 +113,12 @@ audit:
 # CI parity minus OpenAPI/api.d.ts drift checks (those are PR-only in ci.yml).
 check: lint format-check ty test tsc
 
-# Type-check the Next.js frontend
+# Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
+# collections + Next type declarations, and nothing here runs `next build`, so
+# `pnpm run typecheck` generates them exactly once first. Use
+# `pnpm run typecheck:generated` in a path that has already generated.
 tsc:
-	@cd web && pnpm exec tsgo --noEmit
+	@cd web && pnpm run typecheck
 
 # `next build` runs fumadocs-mdx's createMDX and Next's typegen intrinsically —
 # no separate generation step, or Fumadocs runs twice.

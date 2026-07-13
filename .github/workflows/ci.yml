@@ -89,8 +89,10 @@ jobs:
       # must NOT do this — `next build` generates them itself.
       - name: Generate types (fumadocs source + next typegen)
         run: pnpm run generate
+      # Already generated above, so use the bare typecheck (`pnpm run typecheck`
+      # would generate a second time).
       - name: Typecheck
-        run: pnpm exec tsgo --noEmit
+        run: pnpm run typecheck:generated
 
   # Regenerate the OpenAPI spec + client types on main and commit them if they
   # drift, so the Pages docs site (which renders the committed web/public/openapi.json)
