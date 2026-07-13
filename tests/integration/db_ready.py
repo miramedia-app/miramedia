@@ -41,8 +41,12 @@ async def wait_for_database_ready(
     last_error: Exception | None = None
 
     while monotonic() < deadline:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            break
         try:
-            await probe()
+            async with asyncio.timeout(remaining):
+                await probe()
         except Exception as exc:
             last_error = exc
         else:

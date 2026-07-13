@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 
@@ -87,3 +88,41 @@ def test_polling_uses_capped_backoff_not_busy_spin() -> None:
 
     assert attempts["n"] == 3
     assert sleep_delays == [0.05, 0.1]
+
+
+def test_hung_probe_is_cancelled_at_deadline_without_leaked_task() -> None:
+    probe_started = asyncio.Event()
+    probe_cancelled = asyncio.Event()
+    deadline_s = 0.12
+
+    async def never_returning_probe() -> None:
+        probe_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            probe_cancelled.set()
+            raise
+
+    async def run_test() -> None:
+        with pytest.raises(DatabaseReadyTimeoutError) as exc_info:
+            await wait_for_database_ready(
+                never_returning_probe,
+                timeout_s=deadline_s,
+                initial_backoff_s=0.01,
+                max_backoff_s=0.01,
+            )
+
+        assert isinstance(exc_info.value.last_error, TimeoutError)
+        assert probe_started.is_set()
+        assert probe_cancelled.is_set()
+        leaked = [
+            pending
+            for pending in asyncio.all_tasks()
+            if pending is not asyncio.current_task() and not pending.done()
+        ]
+        assert leaked == []
+
+    start = time.perf_counter()
+    _run(run_test())
+    elapsed = time.perf_counter() - start
+    assert deadline_s <= elapsed < deadline_s + 0.2
