@@ -21,8 +21,8 @@ const FeaturesContext = React.createContext<Features>(DEFAULT_FEATURES);
 export function FeaturesProvider({ children }: { children: React.ReactNode }) {
   const { data } = useQuery({
     queryKey: ["features"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/features");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/features", { signal });
       return (data ?? DEFAULT_FEATURES) as Features;
     },
     staleTime: 10 * 60 * 1000,

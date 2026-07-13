@@ -5,8 +5,6 @@ import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
-  AlertOctagon,
-  Check,
   EllipsisVertical,
   FolderInput,
   LoaderCircle,
@@ -15,13 +13,13 @@ import {
   RotateCcw,
   ScanLine,
   Trash2,
-  X,
 } from "lucide-react";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
-import { getTorrentStatusString, qualityToString } from "@/lib/utils";
+import { IntegritySection } from "@/components/imports/integrity-section";
+import { getTorrentStatusString } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -34,19 +32,8 @@ import { MatchConfidencePill } from "@/components/match-confidence-pill";
 import { DataList } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
 import { useEventStream } from "@/hooks/use-event-stream";
-import { useUser } from "@/components/providers/user-provider";
-import {
-  BUCKET_ORDER,
-  KIND_LABELS,
-  KIND_ORDER,
-  bucketOf,
-  buildImportItems,
-  corruptRowId,
-  isCorrupt,
-  isMedia,
-  isTorrent,
-} from "@/lib/imports";
-import type { CorruptImport, ImportItem, ScanImport, TorrentImport } from "@/lib/imports";
+import { BUCKET_ORDER, KIND_LABELS, KIND_ORDER, bucketOf, isMedia, isTorrent } from "@/lib/imports";
+import type { ImportItem, ScanImport, TorrentImport } from "@/lib/imports";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
 import type { components } from "@/lib/api/api";
@@ -99,14 +86,9 @@ function rankedChoices(r: ScanImport["result"]): RankedChoice[] {
 
 export default function ImportsPage() {
   const qc = useQueryClient();
-  const { user } = useUser();
   const searchParams = useSearchParams();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(searchParams.get("f")), [searchParams]);
   const [busyId, setBusyId] = React.useState<string | null>(null);
-  // Optimistically-removed corrupt rows: the action endpoints clear the
-  // mismatch stamp but the list refetch lags the fast POST — hide the row
-  // immediately and let the refetch reconcile.
-  const [removedCorrupt, setRemovedCorrupt] = React.useState<Set<string>>(() => new Set());
   const [mapDialogTorrent, setMapDialogTorrent] = React.useState<{
     id: string;
     title: string;
@@ -148,7 +130,7 @@ export default function ImportsPage() {
 
   const listQuery = useQuery({
     queryKey: [...qk.imports.list(apiTab), "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const PAGE = 200; // server cap (le=200)
       const items: ImportItem[] = [];
       let offset = 0;
@@ -158,6 +140,7 @@ export default function ImportsPage() {
       for (let i = 0; i < 20; i++) {
         const { data, error } = await apiClient.GET("/api/v1/imports", {
           params: { query: { tab: apiTab, offset, limit: PAGE } },
+          signal,
         });
         if (error) throw error;
         const page = (data?.items ?? []) as ImportItem[];
@@ -173,8 +156,8 @@ export default function ImportsPage() {
 
   const scanStatusQuery = useQuery<ScanRunStatus>({
     queryKey: [...qk.imports.scan(), "status"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status", { signal });
       if (error) throw error;
       return data!;
     },
@@ -189,8 +172,8 @@ export default function ImportsPage() {
   // backstop while a batch is in flight in case the stream drops.
   const countsQuery = useQuery({
     queryKey: [...qk.imports.counts()],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/counts");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/counts", { signal });
       if (error) throw error;
       return data;
     },
@@ -199,21 +182,6 @@ export default function ImportsPage() {
   });
   const importing = countsQuery.data?.importing ?? 0;
   const importTotal = countsQuery.data?.import_total ?? 0;
-
-  // Integrity-audit mismatches (bit-rot) — folded into the list as "Corrupt" rows.
-  // The endpoint is superuser-only, so gate the request on loaded user state:
-  // while the user query is in flight `user` is null and this stays disabled,
-  // which keeps ordinary users from ever provoking a 403.
-  const canSeeIntegrity = user?.is_superuser === true;
-  const mismatchesQuery = useQuery({
-    queryKey: qk.imports.integrity(),
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches");
-      if (error) throw error;
-      return data ?? [];
-    },
-    enabled: canSeeIntegrity,
-  });
 
   React.useEffect(() => {
     if (importing > 0 && importTotal > 0) {
@@ -273,88 +241,8 @@ export default function ImportsPage() {
     },
   });
 
-  // `canSeeIntegrity` gates the merge itself, not just the request: a disabled
-  // query still serves its last successful data, so an ordinary user logging in
-  // after an admin in the same SPA must not inherit the admin's corruption rows.
-  const items: ImportItem[] = React.useMemo(
-    () =>
-      buildImportItems({
-        listItems: listQuery.data?.items ?? [],
-        mismatches: mismatchesQuery.data ?? [],
-        canSeeIntegrity,
-        removedCorrupt,
-      }),
-    [listQuery.data, mismatchesQuery.data, canSeeIntegrity, removedCorrupt],
-  );
-  // Mismatch loading/error only counts while authorized. A failing mismatch fetch
-  // is reported separately from the list error, so corruption trouble never
-  // blanks the scan/torrent rows that loaded fine.
-  const isLoading =
-    listQuery.isLoading ||
-    listQuery.isFetching ||
-    (canSeeIntegrity && (mismatchesQuery.isLoading || mismatchesQuery.isFetching));
-  const integrityFailed = canSeeIntegrity && mismatchesQuery.isError;
-
-  // Authorization dropped (logout, demotion, or a slow `users/me` resolving to a
-  // non-superuser): cancel any in-flight privileged request, evict its cached
-  // payload, and drop optimistic corrupt-row state so nothing survives to be
-  // rendered to the next account.
-  React.useEffect(() => {
-    if (canSeeIntegrity) return;
-    void qc.cancelQueries({ queryKey: qk.imports.integrity() });
-    qc.removeQueries({ queryKey: qk.imports.integrity() });
-    setRemovedCorrupt((prev) => (prev.size === 0 ? prev : new Set()));
-  }, [canSeeIntegrity, qc]);
-
-  // Prune the optimistic-removed set once the server no longer returns those
-  // rows, so a genuinely re-flagged file can reappear later.
-  React.useEffect(() => {
-    setRemovedCorrupt((prev) => {
-      if (prev.size === 0) return prev;
-      const present = new Set((mismatchesQuery.data ?? []).map(corruptRowId));
-      const next = new Set<string>();
-      for (const k of prev) if (present.has(k)) next.add(k);
-      return next.size === prev.size ? prev : next;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mismatchesQuery.data]);
-
-  async function resolveCorrupt(item: CorruptImport, action: "rebaseline" | "dismiss") {
-    // Defence in depth: the controls are already hidden for non-superusers, but
-    // never let a stale render or a mid-flight demotion fire a privileged POST.
-    if (!canSeeIntegrity) return;
-    const m = item.mismatch;
-    const msg =
-      action === "rebaseline"
-        ? `Accept the current file for "${m.media_title}"? Its checksum will be re-baselined from disk on the next audit.`
-        : `Dismiss the mismatch for "${m.media_title}"? The original checksum is kept and re-verified on the next audit.`;
-    if (!confirm(msg)) return;
-    setBusyId(item.id);
-    try {
-      const path = { media_type: m.media_type, file_id: m.file_id };
-      const { error } =
-        action === "rebaseline"
-          ? await apiClient.POST("/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline", {
-              params: { path },
-            })
-          : await apiClient.POST("/api/v1/torrents/integrity/{media_type}/{file_id}/dismiss", {
-              params: { path },
-            });
-      if (error) throw new Error("action failed");
-      toast.success(
-        action === "rebaseline"
-          ? `Accepted current file for "${m.media_title}".`
-          : `Dismissed mismatch for "${m.media_title}".`,
-      );
-      setRemovedCorrupt((prev) => new Set(prev).add(item.id));
-      void qc.invalidateQueries({ queryKey: qk.imports.counts() });
-      void mismatchesQuery.refetch();
-    } catch {
-      toast.error("Action failed.");
-    } finally {
-      setBusyId(null);
-    }
-  }
+  const items: ImportItem[] = React.useMemo(() => listQuery.data?.items ?? [], [listQuery.data]);
+  const isLoading = listQuery.isLoading || listQuery.isFetching;
 
   // Drop the optimistic "queued" flag once the server-side scan row has caught
   // up (status is no longer "pending") or the row has left the list — from then
@@ -483,8 +371,8 @@ export default function ImportsPage() {
   }
 
   async function ignoreItem(item: ImportItem) {
-    // Media (torrent-independent Done) and corrupt rows are read-only — no ignore.
-    if (isMedia(item) || isCorrupt(item)) return;
+    // Media rows (torrent-independent Done) are read-only — no ignore.
+    if (isMedia(item)) return;
     const isTor = isTorrent(item);
     const label = isTor ? item.entry.torrent_title : item.result.detected_name;
     const msg = isTor
@@ -612,18 +500,6 @@ export default function ImportsPage() {
         header: "Source",
         width: "minmax(240px,2fr)",
         render: (it) => {
-          if (isCorrupt(it)) {
-            const p = it.mismatch.path;
-            const name = p?.split("/").filter(Boolean).pop() ?? "—";
-            return (
-              <span
-                className="truncate pr-3 font-mono text-xs text-muted-foreground"
-                title={p ?? undefined}
-              >
-                {name}
-              </span>
-            );
-          }
           // Imported (cleaned-up) rows have no live source dir; show the
           // original torrent release name preserved in torrent_history.
           if (isMedia(it) && it.torrent_title) {
@@ -654,19 +530,6 @@ export default function ImportsPage() {
         header: "Destination",
         width: "minmax(240px,2fr)",
         render: (it) => {
-          if (isCorrupt(it)) {
-            const m = it.mismatch;
-            return (
-              <span className="truncate pr-3 text-sm">
-                {m.media_title}
-                {m.episode ? (
-                  <span className="ml-1.5 font-mono text-xs text-muted-foreground">
-                    {m.episode}
-                  </span>
-                ) : null}
-              </span>
-            );
-          }
           if (isTorrent(it)) {
             const m = it.entry.media;
             return (
@@ -737,11 +600,7 @@ export default function ImportsPage() {
         id: "kind",
         header: "Type",
         width: "92px",
-        render: (it) => (
-          <TypePill>
-            {it.kind === "corrupt" ? "File" : it.kind === "scan" ? "Scan" : "Torrent"}
-          </TypePill>
-        ),
+        render: (it) => <TypePill>{it.kind === "scan" ? "Scan" : "Torrent"}</TypePill>,
       },
       {
         id: "progress",
@@ -749,15 +608,6 @@ export default function ImportsPage() {
         width: "84px",
         hideBelow: "md",
         render: (it) => {
-          if (isCorrupt(it)) {
-            const m = it.mismatch;
-            return (
-              <div className="flex flex-wrap items-center gap-1">
-                <MetaPill className="uppercase">{qualityToString(m.quality)}</MetaPill>
-                {m.variant_tag ? <MetaPill className="font-mono">{m.variant_tag}</MetaPill> : null}
-              </div>
-            );
-          }
           if (isTorrent(it) || isMedia(it)) {
             const p = isTorrent(it) ? it.entry.progress : it.progress;
             return (
@@ -789,13 +639,6 @@ export default function ImportsPage() {
         width: "112px",
         hideBelow: "md",
         render: (it) => {
-          if (isCorrupt(it)) {
-            return (
-              <div className="flex flex-wrap items-center gap-1">
-                <StatusPill status="corrupt" title={it.mismatch.import_error} />
-              </div>
-            );
-          }
           if (isTorrent(it)) {
             const p = it.entry.progress;
             // Reflect IMPORT outcome, not just the download state — a finished
@@ -885,40 +728,6 @@ export default function ImportsPage() {
   const renderRowActions = React.useCallback(
     (it: ImportItem) => {
       const busy = busyId === it.id;
-      if (isCorrupt(it)) {
-        // Corrupt rows only exist for superusers; render no privileged controls
-        // if authorization is gone but a row is still being painted.
-        if (!canSeeIntegrity) return null;
-        return (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void resolveCorrupt(it, "rebaseline")}
-              title="Re-baseline the checksum from the file on disk next audit"
-            >
-              {busy ? (
-                <LoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Check className="mr-1 h-3.5 w-3.5" />
-              )}
-              Accept current
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              className="text-muted-foreground"
-              disabled={busy}
-              onClick={() => void resolveCorrupt(it, "dismiss")}
-              title="Keep the original checksum; re-verify next audit"
-            >
-              <X className="mr-1 h-3.5 w-3.5" />
-              Dismiss
-            </Button>
-          </>
-        );
-      }
       if (isMedia(it)) return null;
       if (isTorrent(it)) {
         return (
@@ -1051,7 +860,7 @@ export default function ImportsPage() {
       );
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busyId, stagedByScan, queuedScanIds, effectiveChoiceFor, canSeeIntegrity],
+    [busyId, stagedByScan, queuedScanIds, effectiveChoiceFor],
   );
 
   const facets = React.useMemo<FacetDef<ImportItem>[]>(
@@ -1059,11 +868,9 @@ export default function ImportsPage() {
       {
         id: "bucket",
         label: "Status",
-        // Corruption facets only exist where corruption rows can exist.
         options: [
           { value: "Review", label: "Review" },
           { value: "Retry", label: "Retry" },
-          ...(canSeeIntegrity ? [{ value: "Corrupt", label: "Corrupt" }] : []),
           { value: "Done", label: "Done" },
         ],
         predicate: (it, values, op) => {
@@ -1074,17 +881,14 @@ export default function ImportsPage() {
       {
         id: "kind",
         label: "Type",
-        options: KIND_ORDER.filter((kind) => canSeeIntegrity || kind !== "corrupt").map((kind) => ({
-          value: kind,
-          label: KIND_LABELS[kind],
-        })),
+        options: KIND_ORDER.map((kind) => ({ value: kind, label: KIND_LABELS[kind] })),
         predicate: (it, values, op) => {
           const hit = values.includes(it.kind);
           return op === "excludes" ? !hit : hit;
         },
       },
     ],
-    [canSeeIntegrity],
+    [],
   );
 
   return (
@@ -1093,27 +897,7 @@ export default function ImportsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Imports" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        {integrityFailed && (
-          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
-            <div className="flex items-center gap-2">
-              <AlertOctagon className="h-4 w-4 text-destructive" />
-              <span>Corruption data could not be loaded. Other imports are unaffected.</span>
-            </div>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void mismatchesQuery.refetch()}
-              disabled={mismatchesQuery.isFetching}
-            >
-              {mismatchesQuery.isFetching ? (
-                <LoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="mr-1 h-3.5 w-3.5" />
-              )}
-              Retry
-            </Button>
-          </div>
-        )}
+        <IntegritySection />
         <DataList<ImportItem>
           data={items}
           getId={(it) => it.id}
@@ -1121,12 +905,6 @@ export default function ImportsPage() {
           pageSize={50}
           searchPlaceholder="Search imports…"
           searchMatch={(it, q) => {
-            if (isCorrupt(it)) {
-              return (
-                it.mismatch.media_title.toLowerCase().includes(q) ||
-                (it.mismatch.path ?? "").toLowerCase().includes(q)
-              );
-            }
             if (isTorrent(it)) {
               return (
                 it.entry.torrent_title.toLowerCase().includes(q) ||
@@ -1187,24 +965,6 @@ export default function ImportsPage() {
           }
           bulkActions={bulkActions}
           expandedContent={(it) => {
-            if (isCorrupt(it)) {
-              const m = it.mismatch;
-              return (
-                <div className="flex flex-col gap-1 bg-black/30 px-4 py-3 text-xs text-muted-foreground">
-                  {m.path ? (
-                    <span className="truncate font-mono" title={m.path}>
-                      {m.path}
-                    </span>
-                  ) : null}
-                  <span className="truncate" title={m.import_error}>
-                    {m.import_error}
-                  </span>
-                  <span>
-                    Detected {m.detected_at ? new Date(m.detected_at).toLocaleString() : "—"}
-                  </span>
-                </div>
-              );
-            }
             if (isTorrent(it) || isMedia(it)) {
               const files = isTorrent(it) ? it.entry.files : it.files;
               if (files.length === 0) return null;

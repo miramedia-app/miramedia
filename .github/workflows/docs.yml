@@ -42,8 +42,8 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      - name: Generate types (fumadocs source + next typegen)
-        run: pnpm run generate
+      # No separate generation step: the `build` script generates first, then
+      # compiles (exactly one MDX run).
       - name: Build static export
         run: pnpm build
       - name: Land root on the docs

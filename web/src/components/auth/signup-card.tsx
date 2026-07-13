@@ -11,9 +11,11 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { LoadingBar } from "@/components/loading-bar";
 import apiClient from "@/lib/api/client";
+import { useQueryClient } from "@tanstack/react-query";
 import { handleOauth } from "@/lib/auth";
 
 export function SignupCard({ oauthProviderNames }: { oauthProviderNames: string[] }) {
+  const qc = useQueryClient();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
@@ -128,7 +130,7 @@ export function SignupCard({ oauthProviderNames }: { oauthProviderNames: string[
             <Button
               className="mt-2 w-full"
               variant="outline"
-              onClick={() => handleOauth((m) => toast.error(m))}
+              onClick={() => void handleOauth(qc, (m) => toast.error(m))}
             >
               Login with {name}
             </Button>
