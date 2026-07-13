@@ -12,6 +12,7 @@
 | Typecheck (backend) | `make ty` |
 | Typecheck (frontend) | `make tsc` |
 | Frontend bootstrap | `make frontend-bootstrap` |
+| Frontend generate (canonical) | `make frontend-generate` (= `cd web && pnpm run generate`) |
 | OpenAPI regen | `make openapi` (backend must be importable; writes `web/src/lib/api/api.d.ts`) |
 | Dev stack up | `make up` (docker-compose.dev.yaml; `make dev` for watch mode) |
 
@@ -45,8 +46,9 @@ Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/con
 
 - **libtorrent wheel**: cp313 only — CI pins `UV_PYTHON=3.13`; newer interpreters break the install.
 - **Fresh-clone frontend**: `pnpm install --frozen-lockfile` alone is not enough. pnpm 10 blocks
-  postinstall scripts, so run manually before typechecking or building:
-  `pnpm exec fumadocs-mdx && pnpm exec next typegen`
+  postinstall scripts, so generation must be explicit before typechecking or building.
+  One canonical command, defined in `web/package.json` and used by Make, Docker and CI:
+  `cd web && pnpm run generate` (or `make frontend-generate`; `make frontend-build` runs it for you).
 - **ty config**: lives in `pyproject.toml` under `[tool.ty]`. Don't bulk-suppress diagnostics in
   new code — fix real bugs, configure stub noise specifically.
 - **YAML folded scalars**: `#` inside a YAML folded/literal block is NOT a comment — it is literal

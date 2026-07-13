@@ -45,6 +45,7 @@ htmlcov
 # Node / frontend artifacts (frontend stage installs from package.json fresh)
 web/node_modules
 web/.next
+web/.source
 web/out
 web/.turbo
 web/dist

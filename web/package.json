@@ -16,6 +16,7 @@
     "typecheck": "tsgo --noEmit",
     "format": "oxfmt",
     "openapi": "openapi-typescript http://localhost:8001/openapi.json --root-types --root-types-no-schema-prefix -o src/lib/api/api.d.ts",
+    "generate": "fumadocs-mdx && next typegen",
     "docs:gen": "fumadocs-mdx"
   },
   "dependencies": {

@@ -37,5 +37,8 @@ export const qk = {
         : (["imports", "list"] as const),
     counts: () => ["imports", "counts"] as const,
     scan: () => ["imports", "scan"] as const,
+    // Integrity-audit mismatches. Namespaced under "imports" so `refreshAll`
+    // (which invalidates `imports.all`) also refreshes corruption rows.
+    integrity: () => ["imports", "integrity", "mismatches"] as const,
   },
 } as const;

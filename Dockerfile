@@ -7,6 +7,12 @@ RUN pnpm install --frozen-lockfile
 
 COPY web/ ./
 
+# Same one generation command as `make frontend-generate` (web/package.json
+# "generate"): the app imports the generated Fumadocs collections (.source) and
+# Next type declarations, both gitignored, so the image must generate them rather
+# than inherit them. pnpm 10 blocks postinstall scripts, so this cannot be implicit.
+RUN pnpm run generate
+
 ARG VERSION
 ARG BASE_PATH=""
 RUN env PUBLIC_VERSION=${VERSION} PUBLIC_API_URL=${BASE_PATH} BASE_PATH=${BASE_PATH} pnpm build

@@ -29,10 +29,12 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 import { UserDetails } from "./user-details";
+import { useQueryClient } from "@tanstack/react-query";
 import { handleLogout } from "@/lib/auth";
 
 export function NavUser() {
   const router = useRouter();
+  const qc = useQueryClient();
   const sidebar = useSidebar();
   const { resolvedTheme, setTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
@@ -103,7 +105,7 @@ export function NavUser() {
               <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => handleLogout((p) => router.push(p))}>
+            <DropdownMenuItem onClick={() => handleLogout(qc, (p) => router.push(p))}>
               <LogOut />
               Log Out
             </DropdownMenuItem>
