@@ -88,11 +88,17 @@ format-check:
 ty:
 	@uv run --python 3.13 ty check miramedia
 
-# Canonical frontend generation step. `web/src` imports the Fumadocs collections
+# Canonical frontend generation, for workflows that need the generated artifacts
+# WITHOUT running a build: `web/src` imports the Fumadocs collections
 # (`collections/*` -> `web/.source`) and Next's generated type declarations, both
-# of which are gitignored — so every build path must generate them first.
-# The command itself lives in web/package.json ("generate") so the Makefile and
-# the Dockerfile share one definition; extend that script, not this target.
+# gitignored, so a bare `tsgo --noEmit` on a fresh clone would fail without this.
+#
+# Do NOT wrap this around `pnpm build` — the build script generates on its own
+# (see web/package.json). Both scripts run `fumadocs-mdx` explicitly and then set
+# _FUMADOCS_MDX=1, which is Fumadocs' own guard sentinel: it suppresses the
+# fire-and-forget re-init inside createMDX, whose write is NOT awaited and races
+# the compile on a clean tree ("Can't resolve 'collections/server'"). Net effect:
+# exactly one MDX run per path, deterministically ordered before compilation.
 # Assumes dependencies are already installed (see frontend-bootstrap).
 frontend-generate:
 	@cd web && pnpm run generate
@@ -109,11 +115,16 @@ audit:
 # CI parity minus OpenAPI/api.d.ts drift checks (those are PR-only in ci.yml).
 check: lint format-check ty test tsc
 
-# Type-check the Next.js frontend
+# Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
+# collections + Next type declarations, and nothing here runs `next build`, so
+# `pnpm run typecheck` generates them exactly once first. Use
+# `pnpm run typecheck:generated` in a path that has already generated.
 tsc:
-	@cd web && pnpm exec tsgo --noEmit
+	@cd web && pnpm run typecheck
 
-frontend-build: frontend-generate
+# The `build` script is self-sufficient: it generates, then compiles. Do not add
+# a generation step here — it would just run Fumadocs twice.
+frontend-build:
 	@cd web && pnpm build
 
 # Run the backend test suite on the host (no docker needed).

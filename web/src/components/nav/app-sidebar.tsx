@@ -50,8 +50,8 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
 
   const { data: runtimeVersionData } = useQuery({
     queryKey: ["system", "version"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/version");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/version", { signal });
       return data ?? null;
     },
     staleTime: 60 * 60 * 1000,

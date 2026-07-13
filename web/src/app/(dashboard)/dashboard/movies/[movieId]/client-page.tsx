@@ -101,8 +101,9 @@ export default function MovieDetailClientPage() {
   const bundleTorrents = bundleQuery.data?.movie.torrents;
   const torrentsQuery = useQuery({
     queryKey: ["movie", movieId, "torrents", "live"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data, error } = await apiClient.GET("/api/v1/movies/{movie_id}/torrents", {
+        signal,
         params: { path: { movie_id: movieId! } },
       });
       if (error) throw error;

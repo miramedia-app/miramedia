@@ -78,8 +78,8 @@ export default function IndexersPage() {
 
   const sitesQuery = useQuery({
     queryKey: ["indexers", "sites"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/indexers/sites");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/indexers/sites", { signal });
       return (data ?? []) as unknown as Site[];
     },
   });

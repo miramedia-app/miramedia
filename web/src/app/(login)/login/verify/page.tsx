@@ -1,15 +1,13 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { UserCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { handleLogout } from "@/lib/auth";
 
 export default function VerifyPage() {
-  const router = useRouter();
   const qc = useQueryClient();
-  const onLogout = () => handleLogout(qc, (p) => router.push(p));
+  const onLogout = () => void handleLogout(qc);
   return (
     <>
       <div className="absolute top-4 right-4">

@@ -54,16 +54,24 @@ type Props = (EpisodeMode | ShowMode | MovieMode) & TriggerOpts;
 
 type SearchResult = { downloaded: string[]; count: number };
 
-async function loadEpisodeStatus(episodeId: string): Promise<SubtitleStatus | null> {
+async function loadEpisodeStatus(
+  episodeId: string,
+  signal?: AbortSignal,
+): Promise<SubtitleStatus | null> {
   const { data } = await apiClient.GET("/api/v1/subtitles/episodes/{episode_id}/status", {
     params: { path: { episode_id: episodeId } },
+    signal,
   });
   return data ?? null;
 }
 
-async function loadMovieStatus(movieId: string): Promise<SubtitleStatus | null> {
+async function loadMovieStatus(
+  movieId: string,
+  signal?: AbortSignal,
+): Promise<SubtitleStatus | null> {
   const { data } = await apiClient.GET("/api/v1/subtitles/movies/{movie_id}/status", {
     params: { path: { movie_id: movieId } },
+    signal,
   });
   return data ?? null;
 }
@@ -71,12 +79,14 @@ async function loadMovieStatus(movieId: string): Promise<SubtitleStatus | null> 
 async function loadShowStatus(
   showId: string,
   seasonNumber?: number,
+  signal?: AbortSignal,
 ): Promise<EpisodeSubtitleStatus[]> {
   const { data } = await apiClient.GET("/api/v1/subtitles/shows/{show_id}/status", {
     params: {
       path: { show_id: showId },
       query: seasonNumber !== undefined ? { season_number: seasonNumber } : {},
     },
+    signal,
   });
   return data?.episodes ?? [];
 }
@@ -123,9 +133,9 @@ export function SubtitleSearchDialog(props: Props) {
         : props.mode === "movie"
           ? ["subtitles", "movie", props.movieId]
           : ["subtitles", "noop"],
-    queryFn: async () => {
-      if (props.mode === "episode") return await loadEpisodeStatus(props.episodeId);
-      if (props.mode === "movie") return await loadMovieStatus(props.movieId);
+    queryFn: async ({ signal }) => {
+      if (props.mode === "episode") return await loadEpisodeStatus(props.episodeId, signal);
+      if (props.mode === "movie") return await loadMovieStatus(props.movieId, signal);
       return null;
     },
     enabled: open && props.mode !== "show",
@@ -137,9 +147,9 @@ export function SubtitleSearchDialog(props: Props) {
       props.mode === "show"
         ? ["subtitles", "show", props.showId, props.seasonNumber ?? "all"]
         : ["subtitles", "noop"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       if (props.mode !== "show") return [];
-      return await loadShowStatus(props.showId, props.seasonNumber);
+      return await loadShowStatus(props.showId, props.seasonNumber, signal);
     },
     enabled: open && props.mode === "show",
     staleTime: 30 * 1000,

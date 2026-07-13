@@ -10,9 +10,9 @@ export type MediaKind = "show" | "movie";
 export function useLibraries(mediaType: MediaKind) {
   return useQuery({
     queryKey: ["libraries", mediaType],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const path = mediaType === "show" ? "/api/v1/shows/libraries" : "/api/v1/movies/libraries";
-      const { data } = await apiClient.GET(path);
+      const { data } = await apiClient.GET(path, { signal });
       return (data ?? []) as LibraryItem[];
     },
     staleTime: 5 * 60 * 1000,

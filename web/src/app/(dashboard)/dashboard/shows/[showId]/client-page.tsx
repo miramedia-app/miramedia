@@ -148,8 +148,9 @@ export default function ShowDetailClientPage() {
   const bundleTorrents = bundleQuery.data?.torrents;
   const torrentsQuery = useQuery({
     queryKey: ["show", showId, "torrents", "live"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data, error } = await apiClient.GET("/api/v1/shows/{show_id}/torrents", {
+        signal,
         params: { path: { show_id: showId! } },
       });
       if (error) throw error;
@@ -209,8 +210,9 @@ export default function ShowDetailClientPage() {
   const seasonFileQueries = useQueries({
     queries: expandedSeasonIds.map((seasonId) => ({
       queryKey: ["season-files", seasonId],
-      queryFn: async () => {
+      queryFn: async ({ signal }) => {
         const { data } = await apiClient.GET("/api/v1/seasons/{season_id}/files", {
+          signal,
           params: { path: { season_id: seasonId } },
         });
         return (data ?? []) as EpisodeFile[];

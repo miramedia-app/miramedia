@@ -15,8 +15,10 @@ type QualityCodecData = {
 export function useQualityCodecOptions() {
   return useQuery({
     queryKey: ["system", "settings"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/settings", {});
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/settings", {
+        signal,
+      });
       return data;
     },
     staleTime: 5 * 60 * 1000,
