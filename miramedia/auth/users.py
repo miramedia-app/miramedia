@@ -122,9 +122,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_request_verify(
         self, user: User, token: str, request: Request | None = None
     ) -> None:
-        log.info(
-            f"Verification requested for user {user.id}. Verification token: {token}"
-        )
+        log.info(f"Verification requested for user {user.id}")
 
     @override
     async def on_after_verify(self, user: User, request: Request | None = None) -> None:
