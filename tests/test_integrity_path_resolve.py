@@ -157,3 +157,70 @@ def test_scan_directory_retains_one_candidate_per_prefix_with_variant_noise(
 
     assert len(matches) == 1
     assert matches[prefix].name == sorted(variants)[0]
+
+
+def test_scan_directory_overlapping_prefixes_each_get_lexicographic_best(
+    tmp_path: Path,
+) -> None:
+    season_dir = tmp_path / "Season 01"
+    season_dir.mkdir()
+    broad = "Shared."
+    narrow = "Shared.StemA."
+    (season_dir / "Shared.proper.mkv").write_bytes(b"a")
+    (season_dir / "Shared.StemA.web-dl.mkv").write_bytes(b"b")
+    (season_dir / "Shared.StemA.remux.mkv").write_bytes(b"c")
+
+    matches = scan_directory_for_stem_prefixes(season_dir, frozenset({broad, narrow}))
+
+    assert matches[broad].name == "Shared.StemA.remux.mkv"
+    assert matches[narrow].name == "Shared.StemA.remux.mkv"
+
+
+def test_scan_directory_does_not_materialize_directory_listing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    season_dir = tmp_path / "Season 01"
+    season_dir.mkdir()
+    prefix = "Stream.S01E01.1080p."
+    (season_dir / f"{prefix}target.mkv").write_bytes(b"x")
+
+    class _StreamingEntries:
+        def __init__(self, entries: list[Path]) -> None:
+            self._entries = entries
+            self.max_live = 0
+            self._live = 0
+
+        def __iter__(self):
+            self._live = 0
+            for entry in self._entries:
+                self._live += 1
+                self.max_live = max(self.max_live, self._live)
+                yield entry
+                self._live -= 1
+
+    noise = [season_dir / f"noise-{i:04d}.mkv" for i in range(500)]
+    for path in noise:
+        path.write_bytes(b"n")
+    target = season_dir / f"{prefix}target.mkv"
+    entries = [*noise, target]
+
+    streaming = _StreamingEntries(entries)
+    original_iterdir = Path.iterdir
+
+    def _patched_iterdir(self: Path):
+        if self == season_dir:
+            return iter(streaming)
+        return original_iterdir(self)
+
+    def _fail_sorted(*_args, **_kwargs):
+        msg = "directory listing must not be sorted or materialized"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(Path, "iterdir", _patched_iterdir)
+    monkeypatch.setattr("builtins.sorted", _fail_sorted)
+
+    matches = scan_directory_for_stem_prefixes(season_dir, frozenset({prefix}))
+
+    assert matches == {prefix: target}
+    assert streaming.max_live == 1

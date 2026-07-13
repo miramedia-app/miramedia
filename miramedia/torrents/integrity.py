@@ -222,18 +222,18 @@ def scan_directory_for_stem_prefixes(
         return {}
     best: dict[str, Path] = {}
     try:
-        entries = sorted(
-            (entry for entry in directory.iterdir() if entry.is_file()),
-            key=lambda entry: entry.name,
-        )
-        for entry in entries:
+        for entry in directory.iterdir():
+            if not entry.is_file():
+                continue
             if entry.suffix.lower() not in _VIDEO_SUFFIXES:
                 continue
             name = entry.name
             for prefix in stem_prefixes:
-                if name.startswith(prefix) and prefix not in best:
+                if not name.startswith(prefix):
+                    continue
+                current = best.get(prefix)
+                if current is None or name < current.name:
                     best[prefix] = entry
-                    break
     except OSError:
         return {}
     return best

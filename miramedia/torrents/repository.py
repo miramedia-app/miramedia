@@ -708,11 +708,18 @@ class TorrentRepository:
             .limit(limit)
             .cte("mismatch_page")
         )
-        stmt = select(
-            total_cte.c.total,
-            page_cte.c.type_sort,
-            page_cte.c.file_id,
-        ).select_from(total_cte.outerjoin(page_cte, true()))
+        stmt = (
+            select(
+                total_cte.c.total,
+                page_cte.c.type_sort,
+                page_cte.c.file_id,
+            )
+            .select_from(total_cte.outerjoin(page_cte, true()))
+            .order_by(
+                page_cte.c.type_sort.asc().nulls_last(),
+                page_cte.c.file_id.asc().nulls_last(),
+            )
+        )
         rows = (await self.db.execute(stmt)).all()
         if not rows:
             return Sha1MismatchPage(keys=[], total=0)
