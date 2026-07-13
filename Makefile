@@ -13,7 +13,8 @@ APP_SVC ?= api
 FRONTEND_SVC ?= web
 
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
-	lint format format-check ty test check audit frontend-bootstrap tsc frontend-build
+	lint format format-check ty test check audit frontend-bootstrap frontend-generate \
+	tsc frontend-build
 
 help:
 	@echo "Usage:"
@@ -30,7 +31,9 @@ help:
 	@echo "  make test                   # Run the backend test suite on the host (no docker needed)"
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
 	@echo "  make check                  # lint + format-check + ty + test + tsc (CI parity minus OpenAPI drift)"
-	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + fumadocs-mdx + next typegen)"
+	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
+	@echo "  make frontend-generate      # Generate web build prerequisites (fumadocs-mdx + next typegen)"
+	@echo "  make frontend-build         # Generate prerequisites, then build the static export"
 	@echo "  make tsc                    # Type-check the Next.js frontend"
 
 # Core lifecycle
@@ -85,8 +88,17 @@ format-check:
 ty:
 	@uv run --python 3.13 ty check miramedia
 
+# Canonical frontend generation step. `web/src` imports the Fumadocs collections
+# (`collections/*` -> `web/.source`) and Next's generated type declarations, both
+# of which are gitignored — so every build path must generate them first. Extend
+# this target rather than adding one-off generation commands elsewhere.
+# Assumes dependencies are already installed (see frontend-bootstrap).
+frontend-generate:
+	@cd web && pnpm exec fumadocs-mdx && pnpm exec next typegen
+
 frontend-bootstrap:
-	@cd web && pnpm install --frozen-lockfile && pnpm exec fumadocs-mdx && pnpm exec next typegen
+	@cd web && pnpm install --frozen-lockfile
+	@$(MAKE) frontend-generate
 
 # Scan production Python deps for known vulnerabilities (CI parity).
 audit:
@@ -100,7 +112,7 @@ check: lint format-check ty test tsc
 tsc:
 	@cd web && pnpm exec tsgo --noEmit
 
-frontend-build:
+frontend-build: frontend-generate
 	@cd web && pnpm build
 
 # Run the backend test suite on the host (no docker needed).

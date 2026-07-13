@@ -7,6 +7,12 @@ RUN pnpm install --frozen-lockfile
 
 COPY web/ ./
 
+# Same prerequisites as `make frontend-generate`: the app imports the generated
+# Fumadocs collections (.source) and Next type declarations, and both are
+# gitignored, so the image must generate them rather than inherit them from the
+# build context. pnpm 10 blocks postinstall scripts, so this cannot be implicit.
+RUN pnpm exec fumadocs-mdx && pnpm exec next typegen
+
 ARG VERSION
 ARG BASE_PATH=""
 RUN env PUBLIC_VERSION=${VERSION} PUBLIC_API_URL=${BASE_PATH} BASE_PATH=${BASE_PATH} pnpm build
