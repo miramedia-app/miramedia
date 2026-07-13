@@ -135,10 +135,12 @@ export function IntegritySection() {
           : `Dismissed mismatch for "${m.media_title}".`,
       );
       setRemoved((prev) => new Set(prev).add(rowId));
-      // Refresh the page we are on plus the import views whose counts include it.
-      // If that leaves this (non-zero) page empty, the step-back effect lands us
-      // on the previous one.
-      void qc.invalidateQueries({ queryKey: qk.imports.integrity(offset, INTEGRITY_PAGE_SIZE) });
+      // Invalidate the whole integrity prefix, not just the active page: removing
+      // a row shifts every later offset, so a cached page 2 would otherwise stay
+      // "fresh" and paginate into stale rows. The active page refetches; inactive
+      // pages are marked stale and refetch when navigated to. If that leaves this
+      // (non-zero) page empty, the step-back effect lands us on the previous one.
+      void qc.invalidateQueries({ queryKey: qk.imports.integrity() });
       void qc.invalidateQueries({ queryKey: qk.imports.list() });
       void qc.invalidateQueries({ queryKey: qk.imports.counts() });
     } catch {
