@@ -88,11 +88,15 @@ format-check:
 ty:
 	@uv run --python 3.13 ty check miramedia
 
-# Canonical frontend generation step. `web/src` imports the Fumadocs collections
+# Canonical frontend generation step, for workflows that need the generated
+# artifacts WITHOUT running a build: `web/src` imports the Fumadocs collections
 # (`collections/*` -> `web/.source`) and Next's generated type declarations, both
-# of which are gitignored — so every build path must generate them first.
-# The command itself lives in web/package.json ("generate") so the Makefile and
-# the Dockerfile share one definition; extend that script, not this target.
+# gitignored, so a bare `tsgo --noEmit` on a fresh clone would fail without this.
+#
+# Do NOT chain this before `pnpm build`: next.config.ts wraps the config in
+# fumadocs-mdx's `createMDX`, so `next build` generates `.source` itself. Calling
+# both makes Fumadocs run twice per build. The command lives in web/package.json
+# ("generate") so Make and CI share one definition.
 # Assumes dependencies are already installed (see frontend-bootstrap).
 frontend-generate:
 	@cd web && pnpm run generate
@@ -113,7 +117,9 @@ check: lint format-check ty test tsc
 tsc:
 	@cd web && pnpm exec tsgo --noEmit
 
-frontend-build: frontend-generate
+# `next build` runs fumadocs-mdx's createMDX and Next's typegen intrinsically —
+# no separate generation step, or Fumadocs runs twice.
+frontend-build:
 	@cd web && pnpm build
 
 # Run the backend test suite on the host (no docker needed).

@@ -7,14 +7,12 @@ RUN pnpm install --frozen-lockfile
 
 COPY web/ ./
 
-# Same one generation command as `make frontend-generate` (web/package.json
-# "generate"): the app imports the generated Fumadocs collections (.source) and
-# Next type declarations, both gitignored, so the image must generate them rather
-# than inherit them. pnpm 10 blocks postinstall scripts, so this cannot be implicit.
-RUN pnpm run generate
-
 ARG VERSION
 ARG BASE_PATH=""
+# `next build` generates the Fumadocs collections (.source, via createMDX in
+# next.config.ts) and Next's type declarations itself, so no pre-build generation
+# step: adding one would just run Fumadocs twice. Both artifacts are gitignored
+# and .dockerignore'd, so they are always produced in-image, never inherited.
 RUN env PUBLIC_VERSION=${VERSION} PUBLIC_API_URL=${BASE_PATH} BASE_PATH=${BASE_PATH} pnpm build
 RUN node - <<'NODE'
 const { brotliCompressSync, gzipSync, constants } = require('node:zlib');
