@@ -35,55 +35,28 @@ import { DataList } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
 import { useEventStream } from "@/hooks/use-event-stream";
 import { useUser } from "@/components/providers/user-provider";
+import {
+  BUCKET_ORDER,
+  KIND_LABELS,
+  KIND_ORDER,
+  bucketOf,
+  buildImportItems,
+  corruptRowId,
+  isCorrupt,
+  isMedia,
+  isTorrent,
+} from "@/lib/imports";
+import type { CorruptImport, ImportItem, ScanImport, TorrentImport } from "@/lib/imports";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
 import type { components } from "@/lib/api/api";
 
-type TorrentImport = components["schemas"]["TorrentImportItem"];
-type ScanImport = components["schemas"]["ScanImportItem"];
-type MediaImport = components["schemas"]["MediaImportItem"];
-type IntegrityMismatch = components["schemas"]["IntegrityMismatch"];
-/** Integrity-audit mismatch (bit-rot) folded into the imports list as a row. */
-type CorruptImport = { kind: "corrupt"; id: string; mismatch: IntegrityMismatch };
-type ImportItem = TorrentImport | ScanImport | MediaImport | CorruptImport;
 type ScanCandidate = components["schemas"]["ScanCandidate"];
 type ScanProviderCandidate = components["schemas"]["ScanProviderCandidate"];
 type ScanRunStatus = components["schemas"]["ScanRunStatus"];
 
 const TRAILING_SLASHES = /\/+$/;
 type ImportTabApi = "all" | "review" | "retry" | "done";
-
-const BUCKET_ORDER: Record<string, number> = {
-  Review: 0,
-  Retry: 1,
-  Corrupt: 2,
-  Done: 3,
-};
-
-/**
- * The single kind vocabulary shared by grouping, facets and counts. Typed as an
- * exhaustive `Record` over `ImportItem["kind"]`, so adding a server kind fails
- * the typecheck here instead of silently falling into the "Downloads" bucket.
- */
-const KIND_LABELS: Record<ImportItem["kind"], string> = {
-  torrent: "Downloads",
-  scan: "Scans",
-  media: "Imported",
-  corrupt: "Corrupt",
-};
-
-const KIND_ORDER: ImportItem["kind"][] = ["torrent", "scan", "media", "corrupt"];
-
-function bucketOf(it: ImportItem): "Review" | "Retry" | "Corrupt" | "Done" {
-  if (it.kind === "corrupt") return "Corrupt";
-  if (it.kind === "scan") return it.result.status === "imported" ? "Done" : "Review";
-  if (it.kind === "media") return "Done";
-  const p = it.entry.progress;
-  if ((p.failed ?? 0) > 0 || (p.ambiguous ?? 0) > 0) return "Review";
-  if (p.imported >= p.total && p.total > 0) return "Done";
-  if (it.backoff_seconds != null) return "Retry";
-  return "Review";
-}
 
 /** Map search-bar Status facet (URL ``f`` param) to the imports API tab. */
 function apiTabFromBucketFilter(filterParam: string | null): ImportTabApi {
@@ -99,18 +72,6 @@ function apiTabFromBucketFilter(filterParam: string | null): ImportTabApi {
     return "all";
   }
   return "all";
-}
-
-function isTorrent(item: ImportItem): item is TorrentImport {
-  return item.kind === "torrent";
-}
-
-function isMedia(item: ImportItem): item is MediaImport {
-  return item.kind === "media";
-}
-
-function isCorrupt(item: ImportItem): item is CorruptImport {
-  return item.kind === "corrupt";
 }
 
 type RankedChoice =
@@ -243,7 +204,7 @@ export default function ImportsPage() {
   // The endpoint is superuser-only, so gate the request on loaded user state:
   // while the user query is in flight `user` is null and this stays disabled,
   // which keeps ordinary users from ever provoking a 403.
-  const canSeeIntegrity = Boolean(user?.is_superuser);
+  const canSeeIntegrity = user?.is_superuser === true;
   const mismatchesQuery = useQuery({
     queryKey: qk.imports.integrity(),
     queryFn: async () => {
@@ -312,37 +273,45 @@ export default function ImportsPage() {
     },
   });
 
-  const items: ImportItem[] = React.useMemo(() => {
-    const corrupt: CorruptImport[] = (mismatchesQuery.data ?? [])
-      .map(
-        (m): CorruptImport => ({
-          kind: "corrupt",
-          id: `corrupt:${m.media_type}:${m.file_id}`,
-          mismatch: m,
-        }),
-      )
-      .filter((c) => !removedCorrupt.has(c.id));
-    return [...(listQuery.data?.items ?? []), ...corrupt];
-  }, [listQuery.data, mismatchesQuery.data, removedCorrupt]);
-  // A disabled query never reports `isLoading`/`isFetching`, so this stays false
-  // for ordinary users. A failing mismatch fetch is reported separately instead
-  // of being folded into the list error, so corruption trouble never blanks the
-  // scan/torrent rows that loaded fine.
+  // `canSeeIntegrity` gates the merge itself, not just the request: a disabled
+  // query still serves its last successful data, so an ordinary user logging in
+  // after an admin in the same SPA must not inherit the admin's corruption rows.
+  const items: ImportItem[] = React.useMemo(
+    () =>
+      buildImportItems({
+        listItems: listQuery.data?.items ?? [],
+        mismatches: mismatchesQuery.data ?? [],
+        canSeeIntegrity,
+        removedCorrupt,
+      }),
+    [listQuery.data, mismatchesQuery.data, canSeeIntegrity, removedCorrupt],
+  );
+  // Mismatch loading/error only counts while authorized. A failing mismatch fetch
+  // is reported separately from the list error, so corruption trouble never
+  // blanks the scan/torrent rows that loaded fine.
   const isLoading =
     listQuery.isLoading ||
     listQuery.isFetching ||
-    mismatchesQuery.isLoading ||
-    mismatchesQuery.isFetching;
+    (canSeeIntegrity && (mismatchesQuery.isLoading || mismatchesQuery.isFetching));
   const integrityFailed = canSeeIntegrity && mismatchesQuery.isError;
+
+  // Authorization dropped (logout, demotion, or a slow `users/me` resolving to a
+  // non-superuser): cancel any in-flight privileged request, evict its cached
+  // payload, and drop optimistic corrupt-row state so nothing survives to be
+  // rendered to the next account.
+  React.useEffect(() => {
+    if (canSeeIntegrity) return;
+    void qc.cancelQueries({ queryKey: qk.imports.integrity() });
+    qc.removeQueries({ queryKey: qk.imports.integrity() });
+    setRemovedCorrupt((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [canSeeIntegrity, qc]);
 
   // Prune the optimistic-removed set once the server no longer returns those
   // rows, so a genuinely re-flagged file can reappear later.
   React.useEffect(() => {
     setRemovedCorrupt((prev) => {
       if (prev.size === 0) return prev;
-      const present = new Set(
-        (mismatchesQuery.data ?? []).map((m) => `corrupt:${m.media_type}:${m.file_id}`),
-      );
+      const present = new Set((mismatchesQuery.data ?? []).map(corruptRowId));
       const next = new Set<string>();
       for (const k of prev) if (present.has(k)) next.add(k);
       return next.size === prev.size ? prev : next;
@@ -351,6 +320,9 @@ export default function ImportsPage() {
   }, [mismatchesQuery.data]);
 
   async function resolveCorrupt(item: CorruptImport, action: "rebaseline" | "dismiss") {
+    // Defence in depth: the controls are already hidden for non-superusers, but
+    // never let a stale render or a mid-flight demotion fire a privileged POST.
+    if (!canSeeIntegrity) return;
     const m = item.mismatch;
     const msg =
       action === "rebaseline"
@@ -914,6 +886,9 @@ export default function ImportsPage() {
     (it: ImportItem) => {
       const busy = busyId === it.id;
       if (isCorrupt(it)) {
+        // Corrupt rows only exist for superusers; render no privileged controls
+        // if authorization is gone but a row is still being painted.
+        if (!canSeeIntegrity) return null;
         return (
           <>
             <Button
@@ -1076,7 +1051,7 @@ export default function ImportsPage() {
       );
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busyId, stagedByScan, queuedScanIds, effectiveChoiceFor],
+    [busyId, stagedByScan, queuedScanIds, effectiveChoiceFor, canSeeIntegrity],
   );
 
   const facets = React.useMemo<FacetDef<ImportItem>[]>(
@@ -1084,10 +1059,11 @@ export default function ImportsPage() {
       {
         id: "bucket",
         label: "Status",
+        // Corruption facets only exist where corruption rows can exist.
         options: [
           { value: "Review", label: "Review" },
           { value: "Retry", label: "Retry" },
-          { value: "Corrupt", label: "Corrupt" },
+          ...(canSeeIntegrity ? [{ value: "Corrupt", label: "Corrupt" }] : []),
           { value: "Done", label: "Done" },
         ],
         predicate: (it, values, op) => {
@@ -1098,14 +1074,17 @@ export default function ImportsPage() {
       {
         id: "kind",
         label: "Type",
-        options: KIND_ORDER.map((kind) => ({ value: kind, label: KIND_LABELS[kind] })),
+        options: KIND_ORDER.filter((kind) => canSeeIntegrity || kind !== "corrupt").map((kind) => ({
+          value: kind,
+          label: KIND_LABELS[kind],
+        })),
         predicate: (it, values, op) => {
           const hit = values.includes(it.kind);
           return op === "excludes" ? !hit : hit;
         },
       },
     ],
-    [],
+    [canSeeIntegrity],
   );
 
   return (
