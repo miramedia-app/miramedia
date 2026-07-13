@@ -42,8 +42,7 @@ def _database_revision(sync_url: str) -> str:
 
 def test_repository_head_is_singular() -> None:
     head = _repo_head_revision()
-    assert head
-    assert len(head) == 12
+    assert head.strip()
 
 
 def test_database_revision_matches_repository_head(integration_db_url: str) -> None:

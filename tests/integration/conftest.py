@@ -22,6 +22,10 @@ from tests.integration._db_url import (
     assert_safe_integration_database,
     integration_database_url,
 )
+from tests.integration.db_ready import (
+    DatabaseReadyTimeoutError,
+    wait_for_database_ready,
+)
 
 _alembic_ready = False
 
@@ -78,20 +82,26 @@ def _run_alembic_upgrade(sync_url: str) -> None:
         pytest.fail(msg)
 
 
-async def _assert_database_ready(url: str) -> None:
-    """Single connection check — CI/service health must have Postgres up already."""
+async def _probe_database_connection(url: str) -> None:
     engine = create_async_engine(url, poolclass=NullPool)
     try:
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
-    except Exception as exc:
-        detail = (
-            "PostgreSQL connection check failed — set MIRAMEDIA_TEST_DATABASE_URL "
-            f"to a reachable disposable database: {exc}"
-        )
-        pytest.fail(detail)
     finally:
         await engine.dispose()
+
+
+async def _assert_database_ready(url: str) -> None:
+    try:
+        await wait_for_database_ready(lambda: _probe_database_connection(url))
+    except DatabaseReadyTimeoutError as exc:
+        detail = (
+            "PostgreSQL connection check failed — set MIRAMEDIA_TEST_DATABASE_URL "
+            "to a reachable disposable database"
+        )
+        if exc.last_error is not None:
+            pytest.fail(f"{detail}: {exc.last_error}")
+        pytest.fail(detail)
 
 
 async def _truncate_application_tables(engine: AsyncEngine) -> None:
