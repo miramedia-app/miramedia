@@ -59,7 +59,9 @@ def test_format_matrix_documents_retained_and_unsupported() -> None:
     assert RETAINED_ARCHIVE_FORMATS == frozenset(
         {"zip", "tar", "tar.gz", "tar.bz2", "gzip", "bzip2"}
     )
-    assert UNSUPPORTED_ARCHIVE_FORMATS == frozenset({"rar", "7z", "freearc"})
+    assert UNSUPPORTED_ARCHIVE_FORMATS == frozenset(
+        {"rar", "7z", "freearc", "tar.xz", "zip64"},
+    )
     assert is_archive_mime("application/vnd.rar")
     assert is_archive_mime("application/zip")
 
@@ -243,7 +245,7 @@ def test_tar_rejects_hardlink_member(tmp_path: Path) -> None:
         info.linkname = "real.mkv"
         tf.addfile(info)
 
-    with pytest.raises(ArchiveExtractionError, match="link entry"):
+    with pytest.raises(ArchiveExtractionError, match="unsupported tar entry type"):
         extract_archive_to_directory(archive, dest)
 
     assert list(dest.iterdir()) == []
@@ -258,7 +260,7 @@ def test_tar_rejects_device_member(tmp_path: Path) -> None:
         info.type = tarfile.CHRTYPE
         tf.addfile(info)
 
-    with pytest.raises(ArchiveExtractionError, match="non-regular entry"):
+    with pytest.raises(ArchiveExtractionError, match="unsupported tar entry type"):
         extract_archive_to_directory(archive, dest)
 
     assert list(dest.iterdir()) == []
@@ -301,7 +303,7 @@ def test_promotion_rejects_symlink_destination_parent(tmp_path: Path) -> None:
     keeper = real_dir / "keeper.mkv"
     keeper.write_bytes(b"keep-me")
 
-    with pytest.raises(ArchiveExtractionError, match="symlink"):
+    with pytest.raises(ArchiveExtractionError, match="promotion parent"):
         extract_archive_to_directory(archive, root)
 
     assert keeper.read_bytes() == b"keep-me"
@@ -444,20 +446,25 @@ def test_promotion_mid_failure_rolls_back(tmp_path: Path) -> None:
         {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
     )
 
-    from miramedia.imports import archive_extraction as mod
+    from miramedia.imports import archive_promotion as promo
 
-    real_atomic = mod._atomic_promote_file
+    real_atomic = promo._atomic_link_at
     calls = {"count": 0}
 
-    def _flaky_atomic(src: Path, dst: Path) -> mod._PromotedIdentity:
+    def _flaky_atomic(
+        src_parent_fd: int,
+        src_name: str,
+        dst_parent_fd: int,
+        dst_name: str,
+    ) -> promo._PromotedArtifact:
         calls["count"] += 1
         if calls["count"] == 2:
             msg = "simulated promotion failure"
             raise OSError(msg)
-        return real_atomic(src, dst)
+        return real_atomic(src_parent_fd, src_name, dst_parent_fd, dst_name)
 
     with (
-        patch.object(mod, "_atomic_promote_file", side_effect=_flaky_atomic),
+        patch.object(promo, "_atomic_link_at", side_effect=_flaky_atomic),
         pytest.raises(ArchiveExtractionError, match="promotion failed"),
     ):
         extract_archive_to_directory(archive, dest)
@@ -477,19 +484,24 @@ def test_promotion_toctou_collision_preserves_existing_and_rolls_back(
         {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
     )
 
-    from miramedia.imports import archive_extraction as mod
+    from miramedia.imports import archive_promotion as promo
 
-    real_atomic = mod._atomic_promote_file
+    real_atomic = promo._atomic_link_at
     calls = {"count": 0}
 
-    def _race_atomic(src: Path, dst: Path) -> mod._PromotedIdentity:
+    def _race_atomic(
+        src_parent_fd: int,
+        src_name: str,
+        dst_parent_fd: int,
+        dst_name: str,
+    ) -> promo._PromotedArtifact:
         calls["count"] += 1
         if calls["count"] == 2:
-            dst.write_bytes(b"raced-in")
-        return real_atomic(src, dst)
+            (dest / "second.mkv").write_bytes(b"raced-in")
+        return real_atomic(src_parent_fd, src_name, dst_parent_fd, dst_name)
 
     with (
-        patch.object(mod, "_atomic_promote_file", side_effect=_race_atomic),
+        patch.object(promo, "_atomic_link_at", side_effect=_race_atomic),
         pytest.raises(ArchiveExtractionError, match="already exists"),
     ):
         extract_archive_to_directory(archive, dest)
@@ -515,27 +527,31 @@ def test_promotion_unlink_failure_rolls_back_linked_destination(
 
     created: list[Path] = []
     real_create = mod._create_staging_dir
-    real_unlink = Path.unlink
 
     def _track(parent: Path) -> Path:
         staging = real_create(parent)
         created.append(staging)
         return staging
 
+    real_unlink = os.unlink
+    staging_unlinks = {"second": 0}
+
     def _fail_second_staging_unlink(
-        self: Path, *args: object, **kwargs: object
+        name: str,
+        *args: object,
+        **kwargs: object,
     ) -> None:
-        if self.name == "second.mkv" and any(
-            ".mm-extract" in part for part in self.parts
-        ):
-            msg = "simulated staging unlink failure"
-            raise OSError(msg)
-        real_unlink(self, *args, **kwargs)
+        if name == "second.mkv" and kwargs.get("dir_fd") is not None:
+            staging_unlinks["second"] += 1
+            if staging_unlinks["second"] == 1:
+                msg = "simulated staging unlink failure"
+                raise OSError(msg)
+        real_unlink(name, *args, **kwargs)
 
     with (
         patch.object(mod, "_create_staging_dir", side_effect=_track),
-        patch.object(Path, "unlink", _fail_second_staging_unlink),
-        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+        patch.object(os, "unlink", _fail_second_staging_unlink),
+        pytest.raises(ArchiveExtractionError, match="staged source"),
     ):
         extract_archive_to_directory(archive, dest)
 
@@ -555,27 +571,28 @@ def test_rollback_skips_destination_replaced_during_failure(tmp_path: Path) -> N
         {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
     )
 
-    real_unlink = Path.unlink
+    real_unlink = os.unlink
+    staging_unlinks = {"second": 0}
 
     def _race_then_fail_second_staging_unlink(
-        self: Path,
+        name: str,
         *args: object,
         **kwargs: object,
     ) -> None:
-        if self.name == "second.mkv" and any(
-            ".mm-extract" in part for part in self.parts
-        ):
-            first = dest / "first.mkv"
-            if first.exists():
-                first.unlink()
-            first.write_bytes(b"post-promotion-replacement")
-            msg = "simulated staging unlink failure"
-            raise OSError(msg)
-        real_unlink(self, *args, **kwargs)
+        if name == "second.mkv" and kwargs.get("dir_fd") is not None:
+            staging_unlinks["second"] += 1
+            if staging_unlinks["second"] == 1:
+                first = dest / "first.mkv"
+                if first.exists():
+                    first.unlink()
+                first.write_bytes(b"post-promotion-replacement")
+                msg = "simulated staging unlink failure"
+                raise OSError(msg)
+        real_unlink(name, *args, **kwargs)
 
     with (
-        patch.object(Path, "unlink", _race_then_fail_second_staging_unlink),
-        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+        patch.object(os, "unlink", _race_then_fail_second_staging_unlink),
+        pytest.raises(ArchiveExtractionError, match="staged source"),
     ):
         extract_archive_to_directory(archive, dest)
 
@@ -597,27 +614,30 @@ def test_rollback_skips_symlink_replacement_with_matching_target_identity(
         {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
     )
 
-    real_unlink = Path.unlink
+    real_unlink = os.unlink
+    staging_unlinks = {"second": 0}
 
     def _replace_first_with_symlink_then_fail(
-        self: Path,
+        name: str,
         *args: object,
         **kwargs: object,
     ) -> None:
-        if self.name == "second.mkv" and any(
-            ".mm-extract" in part for part in self.parts
-        ):
-            promoted = dest / "first.mkv"
-            os.link(promoted, outside_target)
-            promoted.unlink()
-            promoted.symlink_to(outside_target)
-            msg = "simulated staging unlink failure"
-            raise OSError(msg)
-        real_unlink(self, *args, **kwargs)
+        if name == "second.mkv" and kwargs.get("dir_fd") is not None:
+            staging_unlinks["second"] += 1
+            if staging_unlinks["second"] == 1:
+                promoted = dest / "first.mkv"
+                if outside_target.exists():
+                    outside_target.unlink()
+                os.link(promoted, outside_target)
+                promoted.unlink()
+                promoted.symlink_to(outside_target)
+                msg = "simulated staging unlink failure"
+                raise OSError(msg)
+        real_unlink(name, *args, **kwargs)
 
     with (
-        patch.object(Path, "unlink", _replace_first_with_symlink_then_fail),
-        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+        patch.object(os, "unlink", _replace_first_with_symlink_then_fail),
+        pytest.raises(ArchiveExtractionError, match="staged source"),
     ):
         extract_archive_to_directory(archive, dest)
 
@@ -627,9 +647,7 @@ def test_rollback_skips_symlink_replacement_with_matching_target_identity(
     assert not (dest / "second.mkv").exists()
 
 
-def test_source_identity_capture_failure_leaves_no_destination(
-    tmp_path: Path,
-) -> None:
+def test_post_link_identity_failure_leaves_no_destination(tmp_path: Path) -> None:
     archive = tmp_path / "release.zip"
     dest = tmp_path / "import"
     dest.mkdir()
@@ -638,26 +656,24 @@ def test_source_identity_capture_failure_leaves_no_destination(
         {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
     )
 
-    from miramedia.imports import archive_extraction as mod
+    calls = {"count": 0}
+    real_stat = os.stat
 
-    real_identity = mod._promotion_identity
-
-    def _fail_second_source_identity(
-        src: Path,
-        dst: Path,
-    ) -> mod._PromotedIdentity:
-        if src.name == "second.mkv":
-            msg = "simulated source identity capture failure"
-            raise OSError(msg)
-        return real_identity(src, dst)
+    def _fail_second_identity_capture(
+        path: str,
+        *args: object,
+        **kwargs: object,
+    ) -> os.stat_result:
+        if kwargs.get("dir_fd") is not None and path == "second.mkv":
+            calls["count"] += 1
+            if calls["count"] == 1:
+                msg = "simulated identity capture failure"
+                raise OSError(msg)
+        return real_stat(path, *args, **kwargs)
 
     with (
-        patch.object(
-            mod,
-            "_promotion_identity",
-            side_effect=_fail_second_source_identity,
-        ),
-        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+        patch.object(os, "stat", _fail_second_identity_capture),
+        pytest.raises(ArchiveExtractionError, match="identity capture"),
     ):
         extract_archive_to_directory(archive, dest)
 
