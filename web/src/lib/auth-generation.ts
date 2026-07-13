@@ -70,7 +70,15 @@ export function createAuthCoordinator(): AuthCoordinator {
       // Advance synchronously, before any await, so peers racing us in this tick
       // see an active flight (or a stale token) and take the branches above.
       const exitToken = ++generation;
-      const flight: Promise<void> = Promise.resolve(handler(exitToken))
+      // Defer the handler into a microtask so the flight is constructed and
+      // published to `exitFlight` BEFORE the handler can run. Calling it eagerly
+      // (e.g. `Promise.resolve(handler(t))`) evaluates it as an argument, while
+      // `exitFlight` is still null — so a synchronous throw would escape this
+      // function (instead of rejecting the flight) leaving the generation already
+      // advanced with no active flight, and a handler that synchronously reports
+      // another 401 would open a second exit. Both let a second handler run.
+      const flight: Promise<void> = Promise.resolve()
+        .then(() => handler(exitToken))
         .then(() => {})
         .finally(() => {
           // Rule 2: retire only if this exact wrapped promise is still the
