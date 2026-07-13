@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  Check,
   EllipsisVertical,
   FolderInput,
   LoaderCircle,
@@ -13,12 +14,13 @@ import {
   RotateCcw,
   ScanLine,
   Trash2,
+  X,
 } from "lucide-react";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
-import { getTorrentStatusString } from "@/lib/utils";
+import { getTorrentStatusString, qualityToString } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,7 +29,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ManualMapDialog } from "@/components/imports/manual-map-dialog";
-import { CorruptedFilesPanel } from "@/components/imports/corrupted-files-panel";
 import { MatchConfidencePill } from "@/components/match-confidence-pill";
 import { DataList } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
@@ -39,7 +40,10 @@ import type { components } from "@/lib/api/api";
 type TorrentImport = components["schemas"]["TorrentImportItem"];
 type ScanImport = components["schemas"]["ScanImportItem"];
 type MediaImport = components["schemas"]["MediaImportItem"];
-type ImportItem = TorrentImport | ScanImport | MediaImport;
+type IntegrityMismatch = components["schemas"]["IntegrityMismatch"];
+/** Integrity-audit mismatch (bit-rot) folded into the imports list as a row. */
+type CorruptImport = { kind: "corrupt"; id: string; mismatch: IntegrityMismatch };
+type ImportItem = TorrentImport | ScanImport | MediaImport | CorruptImport;
 type ScanCandidate = components["schemas"]["ScanCandidate"];
 type ScanProviderCandidate = components["schemas"]["ScanProviderCandidate"];
 type ScanRunStatus = components["schemas"]["ScanRunStatus"];
@@ -50,10 +54,12 @@ type ImportTabApi = "all" | "review" | "retry" | "done";
 const BUCKET_ORDER: Record<string, number> = {
   Review: 0,
   Retry: 1,
-  Done: 2,
+  Corrupt: 2,
+  Done: 3,
 };
 
-function bucketOf(it: ImportItem): "Review" | "Retry" | "Done" {
+function bucketOf(it: ImportItem): "Review" | "Retry" | "Corrupt" | "Done" {
+  if (it.kind === "corrupt") return "Corrupt";
   if (it.kind === "scan") return it.result.status === "imported" ? "Done" : "Review";
   if (it.kind === "media") return "Done";
   const p = it.entry.progress;
@@ -87,6 +93,10 @@ function isMedia(item: ImportItem): item is MediaImport {
   return item.kind === "media";
 }
 
+function isCorrupt(item: ImportItem): item is CorruptImport {
+  return item.kind === "corrupt";
+}
+
 type RankedChoice =
   | { kind: "candidate"; data: ScanCandidate; confidence: number }
   | { kind: "provider"; data: ScanProviderCandidate; confidence: number };
@@ -114,8 +124,11 @@ export default function ImportsPage() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(searchParams.get("f")), [searchParams]);
-  const [view, setView] = React.useState<"imports" | "corrupted">("imports");
   const [busyId, setBusyId] = React.useState<string | null>(null);
+  // Optimistically-removed corrupt rows: the action endpoints clear the
+  // mismatch stamp but the list refetch lags the fast POST — hide the row
+  // immediately and let the refetch reconcile.
+  const [removedCorrupt, setRemovedCorrupt] = React.useState<Set<string>>(() => new Set());
   const [mapDialogTorrent, setMapDialogTorrent] = React.useState<{
     id: string;
     title: string;
@@ -208,7 +221,16 @@ export default function ImportsPage() {
   });
   const importing = countsQuery.data?.importing ?? 0;
   const importTotal = countsQuery.data?.import_total ?? 0;
-  const corruptedCount = countsQuery.data?.corrupted ?? 0;
+
+  // Integrity-audit mismatches (bit-rot) — folded into the list as "Corrupt" rows.
+  const mismatchesQuery = useQuery({
+    queryKey: ["imports", "integrity", "mismatches"],
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches");
+      if (error) throw error;
+      return data ?? [];
+    },
+  });
 
   React.useEffect(() => {
     if (importing > 0 && importTotal > 0) {
@@ -268,8 +290,68 @@ export default function ImportsPage() {
     },
   });
 
-  const items: ImportItem[] = listQuery.data?.items ?? [];
+  const items: ImportItem[] = React.useMemo(() => {
+    const corrupt: CorruptImport[] = (mismatchesQuery.data ?? [])
+      .map(
+        (m): CorruptImport => ({
+          kind: "corrupt",
+          id: `corrupt:${m.media_type}:${m.file_id}`,
+          mismatch: m,
+        }),
+      )
+      .filter((c) => !removedCorrupt.has(c.id));
+    return [...(listQuery.data?.items ?? []), ...corrupt];
+  }, [listQuery.data, mismatchesQuery.data, removedCorrupt]);
   const isLoading = listQuery.isLoading || listQuery.isFetching;
+
+  // Prune the optimistic-removed set once the server no longer returns those
+  // rows, so a genuinely re-flagged file can reappear later.
+  React.useEffect(() => {
+    setRemovedCorrupt((prev) => {
+      if (prev.size === 0) return prev;
+      const present = new Set(
+        (mismatchesQuery.data ?? []).map((m) => `corrupt:${m.media_type}:${m.file_id}`),
+      );
+      const next = new Set<string>();
+      for (const k of prev) if (present.has(k)) next.add(k);
+      return next.size === prev.size ? prev : next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mismatchesQuery.data]);
+
+  async function resolveCorrupt(item: CorruptImport, action: "rebaseline" | "dismiss") {
+    const m = item.mismatch;
+    const msg =
+      action === "rebaseline"
+        ? `Accept the current file for "${m.media_title}"? Its checksum will be re-baselined from disk on the next audit.`
+        : `Dismiss the mismatch for "${m.media_title}"? The original checksum is kept and re-verified on the next audit.`;
+    if (!confirm(msg)) return;
+    setBusyId(item.id);
+    try {
+      const path = { media_type: m.media_type, file_id: m.file_id };
+      const { error } =
+        action === "rebaseline"
+          ? await apiClient.POST("/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline", {
+              params: { path },
+            })
+          : await apiClient.POST("/api/v1/torrents/integrity/{media_type}/{file_id}/dismiss", {
+              params: { path },
+            });
+      if (error) throw new Error("action failed");
+      toast.success(
+        action === "rebaseline"
+          ? `Accepted current file for "${m.media_title}".`
+          : `Dismissed mismatch for "${m.media_title}".`,
+      );
+      setRemovedCorrupt((prev) => new Set(prev).add(item.id));
+      void qc.invalidateQueries({ queryKey: qk.imports.counts() });
+      void mismatchesQuery.refetch();
+    } catch {
+      toast.error("Action failed.");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   // Drop the optimistic "queued" flag once the server-side scan row has caught
   // up (status is no longer "pending") or the row has left the list — from then
@@ -398,8 +480,8 @@ export default function ImportsPage() {
   }
 
   async function ignoreItem(item: ImportItem) {
-    // Media (torrent-independent Done) entries are read-only — no ignore.
-    if (isMedia(item)) return;
+    // Media (torrent-independent Done) and corrupt rows are read-only — no ignore.
+    if (isMedia(item) || isCorrupt(item)) return;
     const isTor = isTorrent(item);
     const label = isTor ? item.entry.torrent_title : item.result.detected_name;
     const msg = isTor
@@ -527,6 +609,18 @@ export default function ImportsPage() {
         header: "Source",
         width: "minmax(240px,2fr)",
         render: (it) => {
+          if (isCorrupt(it)) {
+            const p = it.mismatch.path;
+            const name = p?.split("/").filter(Boolean).pop() ?? "—";
+            return (
+              <span
+                className="truncate pr-3 font-mono text-xs text-muted-foreground"
+                title={p ?? undefined}
+              >
+                {name}
+              </span>
+            );
+          }
           // Imported (cleaned-up) rows have no live source dir; show the
           // original torrent release name preserved in torrent_history.
           if (isMedia(it) && it.torrent_title) {
@@ -557,6 +651,19 @@ export default function ImportsPage() {
         header: "Destination",
         width: "minmax(240px,2fr)",
         render: (it) => {
+          if (isCorrupt(it)) {
+            const m = it.mismatch;
+            return (
+              <span className="truncate pr-3 text-sm">
+                {m.media_title}
+                {m.episode ? (
+                  <span className="ml-1.5 font-mono text-xs text-muted-foreground">
+                    {m.episode}
+                  </span>
+                ) : null}
+              </span>
+            );
+          }
           if (isTorrent(it)) {
             const m = it.entry.media;
             return (
@@ -627,7 +734,11 @@ export default function ImportsPage() {
         id: "kind",
         header: "Type",
         width: "92px",
-        render: (it) => <TypePill>{it.kind === "scan" ? "Scan" : "Torrent"}</TypePill>,
+        render: (it) => (
+          <TypePill>
+            {it.kind === "corrupt" ? "File" : it.kind === "scan" ? "Scan" : "Torrent"}
+          </TypePill>
+        ),
       },
       {
         id: "progress",
@@ -635,6 +746,15 @@ export default function ImportsPage() {
         width: "84px",
         hideBelow: "md",
         render: (it) => {
+          if (isCorrupt(it)) {
+            const m = it.mismatch;
+            return (
+              <div className="flex flex-wrap items-center gap-1">
+                <MetaPill className="uppercase">{qualityToString(m.quality)}</MetaPill>
+                {m.variant_tag ? <MetaPill className="font-mono">{m.variant_tag}</MetaPill> : null}
+              </div>
+            );
+          }
           if (isTorrent(it) || isMedia(it)) {
             const p = isTorrent(it) ? it.entry.progress : it.progress;
             return (
@@ -666,6 +786,13 @@ export default function ImportsPage() {
         width: "112px",
         hideBelow: "md",
         render: (it) => {
+          if (isCorrupt(it)) {
+            return (
+              <div className="flex flex-wrap items-center gap-1">
+                <StatusPill status="corrupt" title={it.mismatch.import_error} />
+              </div>
+            );
+          }
           if (isTorrent(it)) {
             const p = it.entry.progress;
             // Reflect IMPORT outcome, not just the download state — a finished
@@ -754,6 +881,37 @@ export default function ImportsPage() {
   const renderRowActions = React.useCallback(
     (it: ImportItem) => {
       const busy = busyId === it.id;
+      if (isCorrupt(it)) {
+        return (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void resolveCorrupt(it, "rebaseline")}
+              title="Re-baseline the checksum from the file on disk next audit"
+            >
+              {busy ? (
+                <LoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="mr-1 h-3.5 w-3.5" />
+              )}
+              Accept current
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground"
+              disabled={busy}
+              onClick={() => void resolveCorrupt(it, "dismiss")}
+              title="Keep the original checksum; re-verify next audit"
+            >
+              <X className="mr-1 h-3.5 w-3.5" />
+              Dismiss
+            </Button>
+          </>
+        );
+      }
       if (isMedia(it)) return null;
       if (isTorrent(it)) {
         return (
@@ -897,6 +1055,7 @@ export default function ImportsPage() {
         options: [
           { value: "Review", label: "Review" },
           { value: "Retry", label: "Retry" },
+          { value: "Corrupt", label: "Corrupt" },
           { value: "Done", label: "Done" },
         ],
         predicate: (it, values, op) => {
@@ -911,6 +1070,7 @@ export default function ImportsPage() {
           { value: "torrent", label: "Download" },
           { value: "media", label: "Imported" },
           { value: "scan", label: "Scan" },
+          { value: "corrupt", label: "Corrupt" },
         ],
         predicate: (it, values, op) => {
           const hit = values.includes(it.kind);
@@ -927,183 +1087,167 @@ export default function ImportsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Imports" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <div className="flex items-center gap-1 border-b border-border/60">
-          <button
-            type="button"
-            onClick={() => setView("imports")}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
-              view === "imports"
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Imports
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("corrupted")}
-            className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
-              view === "corrupted"
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Corrupted
-            {corruptedCount > 0 ? (
-              <MetaPill className="tabular-nums">{corruptedCount}</MetaPill>
-            ) : null}
-          </button>
-        </div>
-        {view === "corrupted" ? (
-          <CorruptedFilesPanel />
-        ) : (
-          <>
-            <DataList<ImportItem>
-              data={items}
-              getId={(it) => it.id}
-              columns={columns}
-              pageSize={50}
-              searchPlaceholder="Search imports…"
-              searchMatch={(it, q) => {
-                if (isTorrent(it)) {
-                  return (
-                    it.entry.torrent_title.toLowerCase().includes(q) ||
-                    (it.entry.media?.media_name ?? "").toLowerCase().includes(q)
-                  );
-                }
-                if (isMedia(it)) {
-                  return (
-                    it.media_name.toLowerCase().includes(q) ||
-                    it.torrent_title.toLowerCase().includes(q)
-                  );
-                }
-                return (
-                  it.result.detected_name.toLowerCase().includes(q) ||
-                  it.result.directory.toLowerCase().includes(q)
-                );
-              }}
-              loading={isLoading && items.length === 0}
-              density="rich"
-              groupings={groupings}
-              defaultGroupId="bucket"
-              collapseStorageKey="imports"
-              facets={facets}
-              emptyIcon={<FolderInput />}
-              emptyTitle="No imports yet"
-              emptyDescription="Run a scan to surface library candidates."
-              toolbarTrailing={
-                <>
-                  <Button
-                    size="default"
-                    variant="outline"
-                    className="text-xs"
-                    onClick={() => void triggerScan()}
-                    disabled={scanState === "running"}
-                  >
-                    {scanState === "running" ? (
-                      <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <ScanLine className="mr-1 h-4 w-4" />
-                    )}
-                    Scan
-                  </Button>
-                  <Button
-                    size="default"
-                    variant="outline"
-                    className="text-xs"
-                    onClick={refreshAll}
-                    disabled={isLoading}
-                  >
-                    {isLoading ? (
-                      <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-1 h-4 w-4" />
-                    )}
-                    Refresh
-                  </Button>
-                </>
-              }
-              bulkActions={bulkActions}
-              expandedContent={(it) => {
-                if (isTorrent(it) || isMedia(it)) {
-                  const files = isTorrent(it) ? it.entry.files : it.files;
-                  if (files.length === 0) return null;
-                  return (
-                    <div className="bg-black/30 p-2">
-                      <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
-                        {files.map((file, i) => (
-                          <div
-                            key={`${file.media_label}-${i}`}
-                            className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
-                          >
-                            <StatusPill
-                              status={file.import_status}
-                              label={file.import_status.startsWith("failed") ? "Failed" : undefined}
-                              className="shrink-0"
-                            />
-                            <span className="shrink-0 font-mono">{file.media_label}</span>
-                            {file.variant && (
-                              <span className="shrink-0 font-mono text-muted-foreground">
-                                · {file.variant}
-                              </span>
-                            )}
-                            {file.import_error && (
-                              <span
-                                className="ml-auto truncate text-red-500"
-                                title={file.import_error}
-                              >
-                                {file.import_error}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                }
-                const r = it.result;
-                const sfiles = r.files ?? [];
-                if (sfiles.length === 0) {
-                  return (
-                    <div className="flex items-center justify-center bg-black/30 px-4 py-8 text-center text-xs text-muted-foreground">
-                      No files listed — re-run the scan to refresh.
-                    </div>
-                  );
-                }
-                const scanFileStatus =
-                  r.status === "failed"
-                    ? "failed"
-                    : r.status === "imported"
-                      ? "imported"
-                      : "pending";
-                return (
-                  <div className="bg-black/30 p-2">
-                    <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
-                      {sfiles.map((f, i) => (
-                        <div
-                          key={`${f.relative_path}-${i}`}
-                          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
-                        >
-                          <StatusPill
-                            status={scanFileStatus}
-                            className="h-5 shrink-0 px-1.5 text-[10px]"
-                          />
-                          <span className="truncate font-mono" title={f.relative_path}>
-                            {f.relative_path}
+        <DataList<ImportItem>
+          data={items}
+          getId={(it) => it.id}
+          columns={columns}
+          pageSize={50}
+          searchPlaceholder="Search imports…"
+          searchMatch={(it, q) => {
+            if (isCorrupt(it)) {
+              return (
+                it.mismatch.media_title.toLowerCase().includes(q) ||
+                (it.mismatch.path ?? "").toLowerCase().includes(q)
+              );
+            }
+            if (isTorrent(it)) {
+              return (
+                it.entry.torrent_title.toLowerCase().includes(q) ||
+                (it.entry.media?.media_name ?? "").toLowerCase().includes(q)
+              );
+            }
+            if (isMedia(it)) {
+              return (
+                it.media_name.toLowerCase().includes(q) ||
+                it.torrent_title.toLowerCase().includes(q)
+              );
+            }
+            return (
+              it.result.detected_name.toLowerCase().includes(q) ||
+              it.result.directory.toLowerCase().includes(q)
+            );
+          }}
+          loading={isLoading && items.length === 0}
+          density="rich"
+          groupings={groupings}
+          defaultGroupId="bucket"
+          collapseStorageKey="imports"
+          facets={facets}
+          emptyIcon={<FolderInput />}
+          emptyTitle="No imports yet"
+          emptyDescription="Run a scan to surface library candidates."
+          toolbarTrailing={
+            <>
+              <Button
+                size="default"
+                variant="outline"
+                className="text-xs"
+                onClick={() => void triggerScan()}
+                disabled={scanState === "running"}
+              >
+                {scanState === "running" ? (
+                  <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <ScanLine className="mr-1 h-4 w-4" />
+                )}
+                Scan
+              </Button>
+              <Button
+                size="default"
+                variant="outline"
+                className="text-xs"
+                onClick={refreshAll}
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-1 h-4 w-4" />
+                )}
+                Refresh
+              </Button>
+            </>
+          }
+          bulkActions={bulkActions}
+          expandedContent={(it) => {
+            if (isCorrupt(it)) {
+              const m = it.mismatch;
+              return (
+                <div className="flex flex-col gap-1 bg-black/30 px-4 py-3 text-xs text-muted-foreground">
+                  {m.path ? (
+                    <span className="truncate font-mono" title={m.path}>
+                      {m.path}
+                    </span>
+                  ) : null}
+                  <span className="truncate" title={m.import_error}>
+                    {m.import_error}
+                  </span>
+                  <span>
+                    Detected {m.detected_at ? new Date(m.detected_at).toLocaleString() : "—"}
+                  </span>
+                </div>
+              );
+            }
+            if (isTorrent(it) || isMedia(it)) {
+              const files = isTorrent(it) ? it.entry.files : it.files;
+              if (files.length === 0) return null;
+              return (
+                <div className="bg-black/30 p-2">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
+                    {files.map((file, i) => (
+                      <div
+                        key={`${file.media_label}-${i}`}
+                        className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
+                      >
+                        <StatusPill
+                          status={file.import_status}
+                          label={file.import_status.startsWith("failed") ? "Failed" : undefined}
+                          className="shrink-0"
+                        />
+                        <span className="shrink-0 font-mono">{file.media_label}</span>
+                        {file.variant && (
+                          <span className="shrink-0 font-mono text-muted-foreground">
+                            · {file.variant}
                           </span>
-                          <TypePill className="ml-auto h-5 shrink-0 px-1.5 text-[10px] uppercase">
-                            {f.is_video ? "video" : "file"}
-                          </TypePill>
-                        </div>
-                      ))}
-                    </div>
+                        )}
+                        {file.import_error && (
+                          <span className="ml-auto truncate text-red-500" title={file.import_error}>
+                            {file.import_error}
+                          </span>
+                        )}
+                      </div>
+                    ))}
                   </div>
-                );
-              }}
-              rowActions={renderRowActions}
-            />
-          </>
-        )}
+                </div>
+              );
+            }
+            const r = it.result;
+            const sfiles = r.files ?? [];
+            if (sfiles.length === 0) {
+              return (
+                <div className="flex items-center justify-center bg-black/30 px-4 py-8 text-center text-xs text-muted-foreground">
+                  No files listed — re-run the scan to refresh.
+                </div>
+              );
+            }
+            const scanFileStatus =
+              r.status === "failed" ? "failed" : r.status === "imported" ? "imported" : "pending";
+            return (
+              <div className="bg-black/30 p-2">
+                <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
+                  {sfiles.map((f, i) => (
+                    <div
+                      key={`${f.relative_path}-${i}`}
+                      className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
+                    >
+                      <StatusPill
+                        status={scanFileStatus}
+                        className="h-5 shrink-0 px-1.5 text-[10px]"
+                      />
+                      <span className="truncate font-mono" title={f.relative_path}>
+                        {f.relative_path}
+                      </span>
+                      <TypePill className="ml-auto h-5 shrink-0 px-1.5 text-[10px] uppercase">
+                        {f.is_video ? "video" : "file"}
+                      </TypePill>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          }}
+          rowActions={renderRowActions}
+        />
       </main>
 
       {mapDialogTorrent && (

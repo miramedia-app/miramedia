@@ -854,18 +854,6 @@ class ShowRepository:
             for episode_id, episode_number, season_number, show_id, show_name in rows
         }
 
-    async def count_sha1_mismatch_files(self) -> int:
-        """Count imported episode files with a SHA1 mismatch error stamp."""
-        stmt = (
-            select(func.count())
-            .select_from(EpisodeFile)
-            .where(
-                EpisodeFile.import_status == ImportOutcome.imported,
-                EpisodeFile.import_error.like("sha1 mismatch%"),
-            )
-        )
-        return int((await self.db.execute(stmt)).scalar_one())
-
     async def clear_file_integrity_state(
         self, file_id: UUID, *, reset_sha1: bool
     ) -> bool:

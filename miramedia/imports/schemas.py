@@ -207,9 +207,6 @@ class ImportCounts(BaseModel):
     # + durable, so the denominator survives a refresh. Done (N) = total -
     # importing.
     import_total: int = 0
-    # Imported files whose integrity audit stamped a SHA1 mismatch (still
-    # import_status=imported — surfaced via /torrents/integrity/mismatches).
-    corrupted: int = 0
 
 
 # --- Resolve / ignore ---

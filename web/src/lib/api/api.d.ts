@@ -3488,11 +3488,6 @@ export interface components {
              * @default 0
              */
             import_total: number;
-            /**
-             * Corrupted
-             * @default 0
-             */
-            corrupted: number;
         };
         /**
          * ImportFileDetail

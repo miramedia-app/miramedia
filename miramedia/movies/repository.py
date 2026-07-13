@@ -658,18 +658,6 @@ class MovieRepository:
         rows = (await self.db.execute(stmt)).all()
         return {MovieId(movie_id): name for movie_id, name in rows}
 
-    async def count_sha1_mismatch_files(self) -> int:
-        """Count imported movie files with a SHA1 mismatch error stamp."""
-        stmt = (
-            select(func.count())
-            .select_from(MovieFile)
-            .where(
-                MovieFile.import_status == ImportOutcome.imported,
-                MovieFile.import_error.like("sha1 mismatch%"),
-            )
-        )
-        return int((await self.db.execute(stmt)).scalar_one())
-
     async def clear_file_integrity_state(
         self, file_id: UUID, *, reset_sha1: bool
     ) -> bool:

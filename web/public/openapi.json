@@ -10780,11 +10780,6 @@
             "type": "integer",
             "title": "Import Total",
             "default": 0
-          },
-          "corrupted": {
-            "type": "integer",
-            "title": "Corrupted",
-            "default": 0
           }
         },
         "type": "object",

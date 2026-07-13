@@ -1,4 +1,4 @@
-"""DB-free tests for SHA1 integrity-mismatch API + ImportCounts.corrupted."""
+"""DB-free tests for the SHA1 integrity-mismatch API."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from miramedia.exceptions import NotFoundError
 from miramedia.file_status import ImportOutcome
-from miramedia.imports.schemas import ImportCounts
 from miramedia.movies.schemas import MovieFile
 from miramedia.shows.schemas import EpisodeFile
 from miramedia.torrents.schemas import IntegrityMismatch, MediaType, Quality
@@ -45,9 +44,6 @@ class _IntegrityShowRepo(FakeShowRepository):
             and (f.import_error or "").startswith("sha1 mismatch")
         ]
 
-    async def count_sha1_mismatch_files(self) -> int:
-        return len(await self.list_sha1_mismatch_files())
-
     async def clear_file_integrity_state(
         self, file_id: uuid.UUID, *, reset_sha1: bool
     ) -> bool:
@@ -69,9 +65,6 @@ class _IntegrityMovieRepo(FakeMovieRepository):
             if f.import_status == ImportOutcome.imported
             and (f.import_error or "").startswith("sha1 mismatch")
         ]
-
-    async def count_sha1_mismatch_files(self) -> int:
-        return len(await self.list_sha1_mismatch_files())
 
     async def clear_file_integrity_state(
         self, file_id: uuid.UUID, *, reset_sha1: bool
@@ -347,42 +340,6 @@ def test_rebaseline_unknown_id_raises_not_found() -> None:
                 movie_service=_movie_service(_IntegrityMovieRepo(), {}),
             )
         )
-
-
-def test_import_counts_include_corrupted() -> None:
-    show = make_show()
-    episode = show.seasons[0].episodes[0]
-    show_repo = _IntegrityShowRepo()
-    show_repo.add_show(show)
-    fid = uuid.uuid4()
-    show_repo.episode_files[fid] = EpisodeFile(
-        id=fid,
-        episode_id=episode.id,
-        quality=Quality.hd,
-        torrent_id=None,
-        import_status=ImportOutcome.imported,
-        import_error="sha1 mismatch (expected a…, got b…)",
-        sha1="abc",
-    )
-
-    movie_repo = _IntegrityMovieRepo()
-    movie = make_movie()
-    movie_repo.add_movie(movie)
-    mid = uuid.uuid4()
-    movie_repo.movie_files[mid] = MovieFile(
-        id=mid,
-        movie_id=movie.id,
-        quality=Quality.hd,
-        import_status=ImportOutcome.imported,
-        import_error="sha1 mismatch (expected a…, got b…)",
-        sha1="def",
-    )
-
-    corrupted = _run(show_repo.count_sha1_mismatch_files()) + _run(
-        movie_repo.count_sha1_mismatch_files()
-    )
-    counts = ImportCounts(corrupted=corrupted)
-    assert counts.corrupted == 2
 
 
 @contextmanager

@@ -154,10 +154,6 @@ class ImportsService:
         db = self.repository.db
         await self._ensure_queue_populated(db)
         by_tab = await count_queue_by_tab(db)
-        corrupted = (
-            await self.show_service.show_repository.count_sha1_mismatch_files()
-            + await self.movie_service.movie_repository.count_sha1_mismatch_files()
-        )
         return ImportCounts(
             review=by_tab.get(ImportTab.review.value, 0),
             retry=by_tab.get(ImportTab.retry.value, 0),
@@ -165,7 +161,6 @@ class ImportsService:
             all=by_tab.get(ImportTab.all.value, 0),
             importing=await self.repository.count_queued_scans(),
             import_total=await self.repository.get_import_batch_total(),
-            corrupted=corrupted,
         )
 
     async def _collect_items(self) -> list[TorrentImportItem | ScanImportItem]:
