@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +15,7 @@ from miramedia.imports.archive_extraction import (
     extract_archive_to_directory,
 )
 from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
-from tests.archive_test_helpers import container_paths
+from tests.archive_test_helpers import container_paths, payload_file
 
 
 def _write_zip(path: Path, entries: dict[str, bytes]) -> None:
@@ -58,6 +59,7 @@ def test_parent_swap_after_bind_before_staging_write_stays_contained(
         extraction._extract_to_staging(archive, staging, "zip")
     finally:
         staging.close()
+        os.close(parent_fd)
 
     assert keeper.read_bytes() == b"safe"
     assert not (outside / "clip.mkv").exists()
@@ -90,6 +92,7 @@ def test_parent_swap_after_staging_before_first_write_stays_contained(
         extraction._extract_to_staging(archive, staging, "zip")
     finally:
         staging.close()
+        os.close(parent_fd)
 
     assert keeper.read_bytes() == b"safe"
     assert not (outside / "clip.mkv").exists()
@@ -123,15 +126,13 @@ def test_parent_swap_during_first_write_via_full_pipeline_leaves_outside_clean(
         with real_open(staging_fd, entry_name) as fd:
             yield fd
 
-    with (
-        patch.object(staging_io, "open_entry_for_write", side_effect=_swap_wrapper),
-        pytest.raises(ArchiveExtractionError),
-    ):
+    with patch.object(staging_io, "open_entry_for_write", side_effect=_swap_wrapper):
         extract_archive_to_directory(archive, dest)
 
     assert keeper.read_bytes() == b"safe"
     assert not (outside / "clip.mkv").exists()
-    assert container_paths(dest) == []
+    hidden_dest = parent.with_name("parent-hidden") / "import"
+    assert payload_file(hidden_dest, "clip.mkv").read_bytes() == b"payload"
 
 
 def test_failed_extract_cleans_only_owned_staging_after_parent_swap(

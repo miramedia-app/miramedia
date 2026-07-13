@@ -26,13 +26,15 @@ import ntpath
 import os
 import re
 import secrets
-import stat
 import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
 
 if TYPE_CHECKING:
-    from miramedia.imports.archive_publication import BoundStagingDirectory
+    from miramedia.imports.archive_publication import (
+        BoundImportDestination,
+        BoundStagingDirectory,
+    )
 
 log = logging.getLogger(__name__)
 
@@ -152,20 +154,6 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
         msg = f"archive does not exist: {archive}"
         raise ArchiveExtractionError(msg)
     destination_dir = Path(destination_dir)
-    if destination_dir.is_symlink():
-        msg = f"destination must not be a symlink: {destination_dir}"
-        raise ArchiveExtractionError(msg)
-    try:
-        destination_stat = os.lstat(destination_dir)
-    except OSError as exc:
-        msg = f"destination is not accessible: {destination_dir}"
-        raise ArchiveExtractionError(msg) from exc
-    if stat.S_ISLNK(destination_stat.st_mode):
-        msg = f"destination must not be a symlink: {destination_dir}"
-        raise ArchiveExtractionError(msg)
-    if not stat.S_ISDIR(destination_stat.st_mode):
-        msg = f"destination is not a directory: {destination_dir}"
-        raise ArchiveExtractionError(msg)
 
     classification = classify_archive(archive)
     if classification is None:
@@ -175,12 +163,12 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
         raise _unsupported_format_error(classification.format)
 
     staging: BoundStagingDirectory | None = None
+    destination: BoundImportDestination | None = None
     primary_error: BaseException | None = None
     published = False
-    parent_fd: int | None = None
     try:
         from miramedia.imports.archive_publication import (
-            bind_directory,
+            open_bound_import_destination,
             publish_staging_tree,
         )
         from miramedia.imports.archive_staging_io import (
@@ -189,17 +177,11 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
         )
 
         require_descriptor_staging_supported()
-        parent_path = destination_dir.parent
-        parent_fd = bind_directory(parent_path)
-        staging = _create_staging_dir(parent_fd)
-        parent_fd = None
+        destination = open_bound_import_destination(destination_dir)
+        staging = _create_staging_dir(destination.parent_fd)
         _extract_to_staging(archive, staging, classification.format)
         collect_validated_regular_files(staging.fd)
-        container_path = publish_staging_tree(
-            staging,
-            destination_dir,
-            destination_stat=destination_stat,
-        )
+        container_path = publish_staging_tree(staging, destination)
         published = True
     except Exception as exc:
         primary_error = exc
@@ -210,18 +192,20 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     else:
         return container_path
     finally:
-        if parent_fd is not None:
-            os.close(parent_fd)
         if staging is not None:
             if published:
                 staging.close()
             else:
                 _cleanup_staging(staging, primary_error=primary_error)
+        if destination is not None:
+            destination.close()
 
 
 def _create_staging_dir(parent_fd: int) -> BoundStagingDirectory:
     from miramedia.imports.archive_publication import (
         BoundStagingDirectory,
+        assert_matching_directory_stat,
+        directory_fd_is_empty,
         quarantine_owned_directory,
     )
     from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
@@ -280,6 +264,51 @@ def _create_staging_dir(parent_fd: int) -> BoundStagingDirectory:
         msg = "failed to bind staging directory"
         raise ArchiveExtractionError(msg) from exc
     staging_stat = os.fstat(staging_fd)
+    try:
+        assert_matching_directory_stat(
+            staging_stat,
+            created_stat,
+            "staging directory",
+        )
+    except ArchiveExtractionError as exc:
+        os.close(staging_fd)
+        log.warning(
+            "Staging directory %s identity mismatch after open; leaving it in place",
+            staging_name,
+        )
+        msg = "staging directory identity mismatch"
+        raise ArchiveExtractionError(msg) from exc
+    if not directory_fd_is_empty(staging_fd):
+        os.close(staging_fd)
+        try:
+            current = os.stat(
+                staging_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError:
+            log.warning(
+                "Staging directory %s is not empty and could not be re-stat",
+                staging_name,
+            )
+        else:
+            if (
+                current.st_dev == created_stat.st_dev
+                and current.st_ino == created_stat.st_ino
+            ):
+                quarantine_owned_directory(
+                    parent_fd,
+                    staging_name,
+                    created_stat,
+                    allow_recursive_cleanup=True,
+                )
+            else:
+                log.warning(
+                    "Nonempty staging replacement %s left in place",
+                    staging_name,
+                )
+        msg = "staging directory is not empty"
+        raise ArchiveExtractionError(msg)
     return BoundStagingDirectory(
         name=staging_name,
         parent_fd=parent_fd,

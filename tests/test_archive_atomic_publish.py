@@ -19,6 +19,7 @@ from miramedia.imports.archive_publication import (
     _READ_CHUNK_SIZE,
     PRIVATE_BUILD_PREFIX,
     QUARANTINE_PREFIX,
+    bind_directory,
     canonical_tree_digest,
     container_name_for_digest,
 )
@@ -405,11 +406,9 @@ def test_staging_directory_replacement_before_publish_rejected(
 
     def _swap_directory_at_publish(
         staging: publication.BoundStagingDirectory,
-        destination_dir: Path,
-        *,
-        destination_stat: os.stat_result,
+        destination: publication.BoundImportDestination,
     ) -> Path:
-        parent = destination_dir.parent
+        parent = destination.destination_path.parent
         staging_path = parent / staging.name
         replacement = parent / "replacement"
         replacement.mkdir()
@@ -418,7 +417,7 @@ def test_staging_directory_replacement_before_publish_rejected(
             child.unlink()
         staging_path.rmdir()
         replacement.rename(staging_path)
-        return real_publish(staging, destination_dir, destination_stat=destination_stat)
+        return real_publish(staging, destination)
 
     with (
         patch.object(
@@ -707,3 +706,79 @@ def canonical_tree_digest_from_path(payload_root: Path) -> str:
         return canonical_tree_digest(fd)
     finally:
         os.close(fd)
+
+
+def test_staging_open_identity_mismatch_leaves_replacement(tmp_path: Path) -> None:
+    from miramedia.imports import archive_extraction as extraction
+    from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    parent_fd = bind_directory(parent)
+    replacement = parent / f"{STAGING_DIR_PREFIX}replacement"
+    replacement.mkdir()
+    (replacement / "marker").write_bytes(b"safe")
+    real_open = os.open
+    staging_names: list[str] = []
+
+    def _swap_on_staging_open(path: str, flags: int, /, **kwargs: object) -> int:
+        if (
+            isinstance(path, str)
+            and path.startswith(STAGING_DIR_PREFIX)
+            and flags & os.O_DIRECTORY
+            and kwargs.get("dir_fd") == parent_fd
+        ):
+            staging_names.append(path)
+            replacement.rename(parent / path)
+            msg = "simulated staging bind failure"
+            raise OSError(errno.ENOENT, msg)
+        return real_open(path, flags, **kwargs)
+
+    try:
+        with (
+            patch.object(os, "open", side_effect=_swap_on_staging_open),
+            pytest.raises(ArchiveExtractionError, match="bind staging directory"),
+        ):
+            extraction._create_staging_dir(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+    assert staging_names
+    assert (parent / staging_names[0] / "marker").read_bytes() == b"safe"
+
+
+def test_private_source_swap_before_rename_rejected(tmp_path: Path) -> None:
+    from miramedia.imports import archive_publication as publication
+
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"clip.mkv": b"good"})
+    real_rename = publication.atomic_rename_noreplace
+
+    def _swap_before_rename(
+        src_parent_fd: int,
+        src_name: str,
+        dst_parent_fd: int,
+        dst_name: str,
+    ) -> None:
+        real_rename(src_parent_fd, src_name, dst_parent_fd, dst_name)
+        published = dest / dst_name
+        hidden = dest / f"{dst_name}-hidden"
+        published.rename(hidden)
+        replacement = dest.parent / "replacement"
+        replacement.mkdir()
+        (replacement / "evil.mkv").write_bytes(b"evil")
+        replacement.rename(published)
+
+    with (
+        patch.object(
+            publication,
+            "atomic_rename_noreplace",
+            side_effect=_swap_before_rename,
+        ),
+        pytest.raises(ArchiveExtractionError, match="identity mismatch"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []

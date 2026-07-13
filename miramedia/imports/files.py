@@ -19,6 +19,7 @@ from miramedia.imports.archive_extraction import (
     classify_archive,
     extract_archive_to_directory,
 )
+from miramedia.imports.archive_publication import list_importable_files
 from miramedia.torrents.parsing import (
     is_sample_or_extra,
     is_subtitle_file,
@@ -320,10 +321,10 @@ def get_files_for_import(
     log.info(f"Importing files from directory {directory}")
     search_directory = directory
 
-    all_files: list[Path] = list_files_recursively(path=search_directory)
+    all_files: list[Path] = list_importable_files(search_directory)
     log.debug("Found %d files in the directory", len(all_files))
     extract_archives(all_files)
-    all_files = list_files_recursively(path=search_directory)
+    all_files = list_importable_files(search_directory)
 
     video_files: list[Path] = []
     subtitle_files: list[Path] = []

@@ -7,6 +7,7 @@ from pathlib import Path
 from miramedia.imports.archive_publication import (
     ARCHIVE_CONTAINER_PREFIX,
     PAYLOAD_DIR_NAME,
+    is_complete_archive_container,
 )
 
 
@@ -26,4 +27,8 @@ def payload_file(destination: Path, *parts: str) -> Path:
 
 
 def container_paths(destination: Path) -> list[Path]:
-    return sorted(destination.glob(f"{ARCHIVE_CONTAINER_PREFIX}*"))
+    return sorted(
+        path
+        for path in destination.glob(f"{ARCHIVE_CONTAINER_PREFIX}*")
+        if path.is_dir() and is_complete_archive_container(path)
+    )

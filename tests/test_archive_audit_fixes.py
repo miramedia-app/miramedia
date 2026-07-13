@@ -35,7 +35,7 @@ def test_destination_symlink_rejected_before_publication(tmp_path: Path) -> None
     archive = tmp_path / "release.zip"
     _write_zip(archive, {"clip.mkv": b"x"})
 
-    with pytest.raises(ArchiveExtractionError, match="symlink"):
+    with pytest.raises(ArchiveExtractionError, match="redirected during bind"):
         extract_archive_to_directory(archive, root)
 
     assert container_paths(real) == []

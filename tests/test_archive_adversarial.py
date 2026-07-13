@@ -5,7 +5,6 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
-import os
 import struct
 import tarfile
 import zipfile
@@ -171,7 +170,9 @@ def test_compressed_tar_rejects_oversize_first_member_before_write(
     assert container_paths(dest) == []
 
 
-def test_publication_parent_symlink_swap_blocks_root_open(tmp_path: Path) -> None:
+def test_bound_destination_survives_destination_path_swap_at_publish(
+    tmp_path: Path,
+) -> None:
     archive = tmp_path / "release.zip"
     root = tmp_path / "import"
     outside = tmp_path / "outside"
@@ -187,30 +188,23 @@ def test_publication_parent_symlink_swap_blocks_root_open(tmp_path: Path) -> Non
 
     def _swap_destination_then_publish(
         staging: publication.BoundStagingDirectory,
-        destination_dir: Path,
-        *,
-        destination_stat: os.stat_result,
+        destination: publication.BoundImportDestination,
     ) -> Path:
-        root.rmdir()
+        hidden = root.with_name("import-hidden")
+        root.rename(hidden)
         root.symlink_to(outside)
-        return real_publish(
-            staging,
-            destination_dir,
-            destination_stat=destination_stat,
-        )
+        return real_publish(staging, destination)
 
-    with (
-        patch.object(
-            publication,
-            "publish_staging_tree",
-            side_effect=_swap_destination_then_publish,
-        ),
-        pytest.raises(ArchiveExtractionError, match="redirected"),
+    with patch.object(
+        publication,
+        "publish_staging_tree",
+        side_effect=_swap_destination_then_publish,
     ):
         extract_archive_to_directory(archive, root)
 
     assert outside_file.read_bytes() == b"outside"
-    assert container_paths(root) == []
+    hidden_root = root.with_name("import-hidden")
+    assert payload_file(hidden_root, "clip.mkv").read_bytes() == b"new-bytes"
 
 
 @pytest.mark.parametrize(
