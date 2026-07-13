@@ -356,7 +356,6 @@ async def resolve_import_task(body_json: dict) -> None:
         ImportsRepository,
         ScanWorkerBeginResult,
     )
-    from miramedia.imports.scan_lease import ScanWorkerLease, ScanWorkerLeaseHeartbeat
     from miramedia.imports.schemas import ResolveImportTaskPayload
     from miramedia.imports.service import ImportsService
     from miramedia.indexers.repository import IndexerRepository
@@ -438,16 +437,9 @@ async def resolve_import_task(body_json: dict) -> None:
                     )
                     return
                 worker_began = True
-                lease = ScanWorkerLease(
-                    directory=body.id,
-                    claim_token=payload.scan_claim_token,
-                    media_type=body.media_type.value,
-                    worker_started_at=began.worker_started_at,
+                result = await service.resolve_manual_scan(
+                    body, claim_token=payload.scan_claim_token
                 )
-                async with ScanWorkerLeaseHeartbeat(lease):
-                    result = await service.resolve_manual_scan(
-                        body, claim_token=payload.scan_claim_token
-                    )
             else:
                 result = await service.resolve(body)
             log.info(

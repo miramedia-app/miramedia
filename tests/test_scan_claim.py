@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Self
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,8 +29,8 @@ from miramedia.imports.repository import (
 
 PREFIX = "/api/v1/imports"
 
-# Plan 084 owns true concurrent PostgreSQL claim races; this lane verifies SQL
-# parameters, result sequencing, duplicate/ABA token behavior, and compensation.
+# Plan 084 owns true concurrent PostgreSQL claim/reclaim races; this lane
+# verifies SQL parameters, pre-start reclaim only, and compensation.
 
 
 class _FakeResult:
@@ -87,7 +87,8 @@ def test_terminal_sql_requires_worker_started_marker() -> None:
 
     assert "worker_started_at' IS NOT NULL" in COMPLETE_MANUAL_SCAN_IMPORT_SQL
     assert "worker_started_at' IS NOT NULL" in FAIL_MANUAL_SCAN_IMPORT_SQL
-    assert "claim_token" in RECLAIM_STALE_QUEUED_IMPORT_SQL
+    assert "worker_started_at' IS NULL" in RECLAIM_STALE_QUEUED_IMPORT_SQL
+    assert "expected_claim_token IS NULL" in RECLAIM_STALE_QUEUED_IMPORT_SQL
 
 
 def test_claim_success_bumps_batch_in_same_commit() -> None:
@@ -436,22 +437,9 @@ def test_duplicate_scan_task_deliveries_invoke_service_once() -> None:
     async def _session():
         yield MagicMock()
 
-    class _NoopHeartbeat:
-        def __init__(self, *_args: object, **_kwargs: object) -> None:
-            pass
-
-        async def __aenter__(self) -> Self:
-            return self
-
-        async def __aexit__(self, *_exc: object) -> None:
-            return None
-
     async def _run() -> None:
         with (
             patch("miramedia.database.background_session", _session),
-            patch(
-                "miramedia.imports.scan_lease.ScanWorkerLeaseHeartbeat", _NoopHeartbeat
-            ),
             patch(
                 "miramedia.torrents.service.TorrentService",
                 return_value=MagicMock(),

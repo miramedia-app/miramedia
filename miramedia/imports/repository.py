@@ -20,6 +20,9 @@ from miramedia.imports.schemas import ScanRunState, ScanRunStatus
 
 _SINGLETON_ID = "current"
 
+# Grace window before an unstarted queued row may be automatically reclaimed.
+STALE_QUEUED_IMPORT_GRACE = timedelta(minutes=30)
+
 CLAIM_SCAN_CACHE_ROW_SQL = """
 UPDATE scan_result_cache
 SET payload = (payload - 'import_error' - 'claim_token' - 'worker_started_at')
@@ -45,24 +48,26 @@ WHERE directory = :directory
 RETURNING directory
 """
 
-HEARTBEAT_MANUAL_SCAN_WORKER_SQL = """
-UPDATE scan_result_cache
-SET payload = payload || jsonb_build_object('worker_started_at', :worker_started_at)
-WHERE directory = :directory
-  AND payload->>'status' = 'queued'
-  AND payload->>'media_type_hint' = :media_type
-  AND payload->>'claim_token' = :claim_token
-  AND payload->>'worker_started_at' = :expected_worker_started_at
-RETURNING directory
-"""
-
 SELECT_QUEUED_IMPORT_SNAPSHOT_SQL = """
 SELECT directory,
        payload->>'claim_token' AS claim_token,
-       payload->>'queued_at' AS queued_at,
-       payload->>'worker_started_at' AS worker_started_at
+       payload->>'queued_at' AS queued_at
 FROM scan_result_cache
 WHERE payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NULL
+"""
+
+STAMP_LEGACY_QUEUED_AT_SQL = """
+UPDATE scan_result_cache
+SET payload = payload || jsonb_build_object('queued_at', :queued_at)
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NULL
+  AND (
+    (:expected_queued_at IS NULL AND payload->>'queued_at' IS NULL)
+    OR payload->>'queued_at' = :expected_queued_at
+  )
+RETURNING directory
 """
 
 RECLAIM_STALE_QUEUED_IMPORT_SQL = """
@@ -71,14 +76,11 @@ SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
     || jsonb_build_object('status', 'failed', 'import_error', :error)
 WHERE directory = :directory
   AND payload->>'status' = 'queued'
-  AND payload->>'claim_token' = :claim_token
+  AND payload->>'worker_started_at' IS NULL
+  AND payload->>'queued_at' = :expected_queued_at
   AND (
-    (:expected_queued_at IS NULL AND payload->>'queued_at' IS NULL)
-    OR payload->>'queued_at' = :expected_queued_at
-  )
-  AND (
-    (:expected_worker_started_at IS NULL AND payload->>'worker_started_at' IS NULL)
-    OR payload->>'worker_started_at' = :expected_worker_started_at
+    (:expected_claim_token IS NULL AND payload->>'claim_token' IS NULL)
+    OR payload->>'claim_token' = :expected_claim_token
   )
 RETURNING directory
 """
@@ -159,42 +161,25 @@ class ScanWorkerBeginOutcome:
     worker_started_at: str | None = None
 
 
-@dataclass(frozen=True)
-class QueuedImportSnapshot:
-    directory: str
-    claim_token: str | None
-    queued_at: str | None
-    worker_started_at: str | None
-
-
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _worker_started_before(worker_started_at: str | None, cutoff: datetime) -> bool:
-    """True when ``worker_started_at`` is older than ``cutoff``."""
-    if not worker_started_at:
-        return True
+def _queued_at_valid(queued_at: str | None) -> bool:
+    if not queued_at:
+        return False
     try:
-        ts = datetime.fromisoformat(worker_started_at)
+        datetime.fromisoformat(queued_at)
     except ValueError:
-        return True
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=UTC)
-    return ts < cutoff
+        return False
+    return True
 
 
 def _queued_before(queued_at: str | None, cutoff: datetime) -> bool:
-    """True if a row's ``queued_at`` is older than ``cutoff`` (so it's stale).
-
-    A missing or unparseable timestamp is treated as stale — a queued row with
-    no usable dispatch time has nothing keeping it alive, so reclaim it."""
-    if not queued_at:
-        return True
-    try:
-        ts = datetime.fromisoformat(queued_at)
-    except ValueError:
-        return True
+    """True if a parseable ``queued_at`` is older than ``cutoff``."""
+    if not _queued_at_valid(queued_at):
+        return False
+    ts = datetime.fromisoformat(queued_at)  # type: ignore[arg-type]
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
     return ts < cutoff
@@ -312,57 +297,53 @@ class ImportsRepository:
         return int((await self.db.scalar(select(ImportBatch.total))) or 0)
 
     async def reclaim_stale_queued_imports(self, *, older_than: timedelta) -> int:
-        """Recover queued scan rows whose dispatch or worker lease expired.
+        """Recover dispatched-but-not-started queued rows only.
 
-        Snapshots only the lease fields, decides candidates against
-        ``older_than``, then reclaims each row with a conditional UPDATE so a
-        concurrent worker-begin or heartbeat refresh causes a lost CAS (0 rows)
-        instead of clobbering a live import. Batch idle reset runs in the same
-        transaction as all successful reclaims; any error rolls back atomically.
+        Automatic reclaim never touches rows after ``begin_manual_scan_worker``
+        succeeds — filesystem mutation may still be running and cannot be fenced
+        cooperatively. Legacy rows with missing/invalid ``queued_at`` are stamped
+        once, then become eligible only after the normal grace interval.
         """
         cutoff = _utc_now() - older_than
         snapshot_result = await self.db.execute(text(SELECT_QUEUED_IMPORT_SNAPSHOT_SQL))
-        candidates: list[QueuedImportSnapshot] = []
-        for row in snapshot_result:
-            started_at = row.worker_started_at
-            queued_at = row.queued_at
-            if started_at:
-                if not _worker_started_before(started_at, cutoff):
-                    continue
-            elif not _queued_before(queued_at, cutoff):
-                continue
-            claim_token = row.claim_token
-            if not claim_token:
-                continue
-            candidates.append(
-                QueuedImportSnapshot(
-                    directory=row.directory,
-                    claim_token=claim_token,
-                    queued_at=queued_at,
-                    worker_started_at=started_at,
-                )
-            )
-        if not candidates:
-            return 0
 
+        stamped = 0
         reclaimed = 0
         try:
-            for candidate in candidates:
+            for row in snapshot_result:
+                queued_at = row.queued_at
+                if not _queued_at_valid(queued_at):
+                    result = await self.db.execute(
+                        text(STAMP_LEGACY_QUEUED_AT_SQL),
+                        {
+                            "directory": row.directory,
+                            "queued_at": _utc_now().isoformat(),
+                            "expected_queued_at": queued_at,
+                        },
+                    )
+                    if result.first() is not None:
+                        stamped += 1
+                    continue
+
+                if not _queued_before(queued_at, cutoff):
+                    continue
+
                 result = await self.db.execute(
                     text(RECLAIM_STALE_QUEUED_IMPORT_SQL),
                     {
-                        "directory": candidate.directory,
-                        "claim_token": candidate.claim_token,
-                        "expected_queued_at": candidate.queued_at,
-                        "expected_worker_started_at": candidate.worker_started_at,
+                        "directory": row.directory,
+                        "expected_claim_token": row.claim_token,
+                        "expected_queued_at": queued_at,
                         "error": _STALE_RECLAIM_ERROR,
                     },
                 )
                 if result.first() is not None:
                     reclaimed += 1
-            if reclaimed == 0:
+
+            if reclaimed == 0 and stamped == 0:
                 return 0
-            await self._reset_import_batch_if_idle_in_tx()
+            if reclaimed > 0:
+                await self._reset_import_batch_if_idle_in_tx()
             await self.db.commit()
         except Exception:
             await self.db.rollback()
@@ -487,32 +468,6 @@ class ImportsRepository:
         ):
             return ScanWorkerBeginOutcome(ScanWorkerBeginResult.duplicate)
         return ScanWorkerBeginOutcome(ScanWorkerBeginResult.stale)
-
-    async def heartbeat_manual_scan_worker(
-        self,
-        directory: str,
-        *,
-        claim_token: str,
-        media_type: str,
-        expected_worker_started_at: str,
-        worker_started_at: str,
-    ) -> bool:
-        """Refresh the worker lease when the row still matches the snapshot."""
-        result = await self.db.execute(
-            text(HEARTBEAT_MANUAL_SCAN_WORKER_SQL),
-            {
-                "directory": directory,
-                "claim_token": claim_token,
-                "media_type": media_type,
-                "expected_worker_started_at": expected_worker_started_at,
-                "worker_started_at": worker_started_at,
-            },
-        )
-        if result.first() is None:
-            await self.db.rollback()
-            return False
-        await self.db.commit()
-        return True
 
     async def complete_manual_scan_import(
         self,
