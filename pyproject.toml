@@ -113,6 +113,9 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Path", "taskiq.TaskiqDepen
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "postgresql: tests that require MIRAMEDIA_TEST_DATABASE_URL disposable PostgreSQL",
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Indexer sites and the generic metadata backend implement a shared abstract

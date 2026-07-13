@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -14,6 +13,11 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text
 
 from tests.oauth_test_helpers import KEY_A, KEY_B
+from tests.pg_disposable import (
+    assert_temporary_schema_name,
+    new_temporary_schema_name,
+    require_disposable_database_url,
+)
 
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
@@ -21,10 +25,8 @@ _MIGRATION_PATH = (
     / "versions"
     / "f3a4b5c6d7e8_normalize_oauth_provider_names.py"
 )
-_PG_TEST_URL = os.getenv(
-    "MIRAMEDIA_PG_TEST_URL",
-    "postgresql+psycopg://miramedia:miramedia@127.0.0.1:5433/miramedia",
-)
+_SCHEMA_PREFIX = "oauth_migration_test"
+pytestmark = pytest.mark.postgresql
 
 
 def _load_migration():
@@ -39,13 +41,15 @@ def _load_migration():
 
 
 def _pg_engine():
-    try:
-        engine = create_engine(_PG_TEST_URL, pool_pre_ping=True)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-    except Exception as exc:
-        pytest.skip(f"PostgreSQL not available at {_PG_TEST_URL}: {exc}")
+    url = require_disposable_database_url()
+    engine = create_engine(url, pool_pre_ping=True)
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
     return engine
+
+
+def _set_search_path(conn, schema: str) -> None:
+    conn.execute(text(f'SET search_path TO "{schema}"'))
 
 
 def _run_migration(conn, migration, *, direction: str) -> None:
@@ -58,8 +62,6 @@ def _run_migration(conn, migration, *, direction: str) -> None:
 
 
 def _create_oauth_tables(conn) -> None:
-    conn.execute(text("DROP TABLE IF EXISTS oauth_account CASCADE"))
-    conn.execute(text('DROP TABLE IF EXISTS "user" CASCADE'))
     conn.execute(
         text(
             """
@@ -152,14 +154,20 @@ def _fetch_accounts(conn) -> list[dict[str, Any]]:
 def pg_oauth_schema():
     engine = _pg_engine()
     migration = _load_migration()
+    schema = new_temporary_schema_name(prefix=_SCHEMA_PREFIX)
     conn = engine.connect()
-    trans = conn.begin()
+    conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+    _set_search_path(conn, schema)
     _create_oauth_tables(conn)
+    conn.commit()
     try:
-        yield conn, migration, engine
+        yield conn, migration, engine, schema
     finally:
-        trans.rollback()
         conn.close()
+        with engine.connect() as cleanup:
+            assert_temporary_schema_name(schema, prefix=_SCHEMA_PREFIX)
+            cleanup.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+            cleanup.commit()
         engine.dispose()
 
 
@@ -173,12 +181,16 @@ def test_migration_contains_uuid_safe_dedupe_and_exact_pair_preflight() -> None:
     assert "uq_oauth_account_oauth_name_account_id" in source
     assert 'canonical="oidc"' not in source
     assert "rename_remaining_legacy_rows" not in source
+    assert "DROP TABLE IF EXISTS oauth_account" not in source
 
 
 def test_migration_sql_plans_on_postgresql_without_min_uuid() -> None:
     migration = _load_migration()
     engine = _pg_engine()
+    schema = new_temporary_schema_name(prefix=_SCHEMA_PREFIX)
     with engine.connect() as conn:
+        conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+        _set_search_path(conn, schema)
         _create_oauth_tables(conn)
         conn.commit()
         ctx = MigrationContext.configure(connection=conn)
@@ -186,14 +198,17 @@ def test_migration_sql_plans_on_postgresql_without_min_uuid() -> None:
             migration.assert_no_cross_user_provider_account_conflicts(conn)
             migration.delete_duplicate_rows_same_user(conn)
             migration.ensure_unique_oauth_name_account_id(conn)
-        conn.rollback()
+    with engine.connect() as cleanup:
+        assert_temporary_schema_name(schema, prefix=_SCHEMA_PREFIX)
+        cleanup.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        cleanup.commit()
     engine.dispose()
 
 
 def test_upgrade_dedupes_exact_pair_same_user_deterministically(
     pg_oauth_schema,
 ) -> None:
-    conn, migration, _engine = pg_oauth_schema
+    conn, migration, _engine, _schema = pg_oauth_schema
     user_id = uuid.uuid4()
     keep_id = uuid.UUID("00000000-0000-4000-8000-000000000001")
     drop_id = uuid.UUID("00000000-0000-4000-8000-000000000002")
@@ -224,7 +239,7 @@ def test_upgrade_dedupes_exact_pair_same_user_deterministically(
 def test_upgrade_allows_same_account_id_across_provider_namespaces(
     pg_oauth_schema,
 ) -> None:
-    conn, migration, _engine = pg_oauth_schema
+    conn, migration, _engine, _schema = pg_oauth_schema
     user_id = uuid.uuid4()
     _insert_user(conn, user_id)
     _insert_oauth(
@@ -250,7 +265,7 @@ def test_upgrade_allows_same_account_id_across_provider_namespaces(
 
 
 def test_upgrade_fails_closed_on_cross_user_exact_pair(pg_oauth_schema) -> None:
-    conn, migration, _engine = pg_oauth_schema
+    conn, migration, _engine, _schema = pg_oauth_schema
     user_a = uuid.uuid4()
     user_b = uuid.uuid4()
     _insert_user(conn, user_a)
@@ -281,7 +296,7 @@ def test_upgrade_fails_closed_on_cross_user_exact_pair(pg_oauth_schema) -> None:
 
 
 def test_upgrade_preserves_legacy_display_name_keys(pg_oauth_schema) -> None:
-    conn, migration, _engine = pg_oauth_schema
+    conn, migration, _engine, _schema = pg_oauth_schema
     user_id = uuid.uuid4()
     _insert_user(conn, user_id)
     _insert_oauth(
@@ -300,7 +315,7 @@ def test_upgrade_preserves_legacy_display_name_keys(pg_oauth_schema) -> None:
 
 
 def test_upgrade_is_idempotent_and_enforces_unique_index(pg_oauth_schema) -> None:
-    conn, migration, _engine = pg_oauth_schema
+    conn, migration, _engine, _schema = pg_oauth_schema
     user_id = uuid.uuid4()
     _insert_user(conn, user_id)
     _insert_oauth(
@@ -334,7 +349,7 @@ def test_upgrade_is_idempotent_and_enforces_unique_index(pg_oauth_schema) -> Non
 
 
 def test_downgrade_drops_unique_index(pg_oauth_schema) -> None:
-    conn, migration, _engine = pg_oauth_schema
+    conn, migration, _engine, _schema = pg_oauth_schema
     user_id = uuid.uuid4()
     _insert_user(conn, user_id)
     _insert_oauth(

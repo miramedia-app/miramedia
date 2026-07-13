@@ -608,17 +608,18 @@ async def shutdown_startup(
             await wait_event.wait()
             continue
 
-        failed = False
+        shutdown_succeeded = False
         try:
             failed = await _shutdown_startup_impl(ctx, native_client)
+            shutdown_succeeded = not failed
         finally:
             finished = ctx._shutdown_finished
             async with ctx._shutdown_lock:
                 ctx._shutdown_in_progress = False
-                if not failed:
+                if shutdown_succeeded:
                     ctx._shutdown_complete = True
                 if finished is not None:
                     finished.set()
 
-        if not failed:
+        if shutdown_succeeded:
             return

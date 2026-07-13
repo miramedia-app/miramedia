@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
+import pytest
+
 import miramedia.settings.reload as settings_reload
 import miramedia.startup as startup
 
@@ -103,5 +105,72 @@ def test_concurrent_shutdown_for_same_context_stops_subscriber_once() -> None:
             release.set()
             await asyncio.gather(first, second)
         assert stop_calls == 1
+
+    asyncio.run(run())
+
+
+def test_cancelled_shutdown_leaves_context_retryable() -> None:
+    calls = 0
+
+    async def flaky_shutdown(
+        _ctx: startup.SchedulerContext,
+        _native_client: object,
+    ) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise asyncio.CancelledError
+        return False
+
+    async def run() -> None:
+        ctx = startup.SchedulerContext()
+        with patch.object(startup, "_shutdown_startup_impl", flaky_shutdown):
+            first = asyncio.create_task(startup.shutdown_startup(ctx, None))
+            await asyncio.sleep(0)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert ctx._shutdown_complete is False
+
+            await startup.shutdown_startup(ctx, None)
+
+        assert calls == 2
+        assert ctx._shutdown_complete is True
+
+    asyncio.run(run())
+
+
+def test_cancelled_shutdown_allows_waiting_caller_to_finish_cleanup() -> None:
+    calls = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_shutdown(
+        _ctx: startup.SchedulerContext,
+        _native_client: object,
+    ) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+            raise asyncio.CancelledError
+        return False
+
+    async def run() -> None:
+        ctx = startup.SchedulerContext()
+        with patch.object(startup, "_shutdown_startup_impl", gated_shutdown):
+            first = asyncio.create_task(startup.shutdown_startup(ctx, None))
+            await entered.wait()
+            second = asyncio.create_task(startup.shutdown_startup(ctx, None))
+            release.set()
+
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            await second
+
+        assert calls == 2
+        assert ctx._shutdown_complete is True
 
     asyncio.run(run())
