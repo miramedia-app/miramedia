@@ -228,18 +228,13 @@ async def detect_finished_downloads_task() -> None:
     from miramedia.torrents.schemas import TorrentStatus
 
     async with bg_torrent_service() as svc:
-        torrents = await svc.torrent_repository.get_all_torrents()
-        active = [
-            t
-            for t in torrents
-            if t.status in (TorrentStatus.downloading, TorrentStatus.unknown)
-        ]
-        if not active:
+        torrents = await svc.torrent_repository.get_active_torrents()
+        if not torrents:
             return
         # Release the DB connection before the per-torrent client RPC fan-out
         # so the session never sits idle-in-transaction across external I/O.
         await release_session_before_external_io(svc.torrent_repository.db)
-        live = await svc._fetch_live_torrent_statuses(active)
+        live = await svc._fetch_live_torrent_statuses(torrents)
         newly_finished = any(t.status == TorrentStatus.finished for t in live)
 
     if newly_finished:

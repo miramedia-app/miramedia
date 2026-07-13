@@ -317,6 +317,15 @@ class FakeTorrentRepository:
     async def get_all_torrents(self) -> list[Torrent]:
         return list(self.torrents.values())
 
+    async def get_active_torrents(self) -> list[Torrent]:
+        from miramedia.torrents.repository import ACTIVE_TORRENT_STATUSES
+
+        return [
+            torrent
+            for torrent in self.torrents.values()
+            if torrent.status in ACTIVE_TORRENT_STATUSES
+        ]
+
 
 def _season_for_episode(repo: FakeShowRepository, episode_id: EpisodeId) -> Season:
     for season in repo.seasons.values():
