@@ -7,30 +7,26 @@ containment, regular-file policy, and resource limits before promotion.
 Format policy
 -------------
 
-Retained (stdlib extractors with preflight metadata + bounded streaming writes):
+Retained (bounded stdlib parsers only):
 
 - zip, tar, tar.gz, tar.bz2, gzip, bzip2
 
-Unsupported (fail closed — external extractors cannot prove limits before I/O):
+Unsupported (fail closed):
 
-- rar, 7z, freearc
+- rar, 7z, freearc and common aliases
+- tar.xz (no bounded xz tar parser; explicit migration decision)
+- zip64 (not safely preflighted)
 """
 
 from __future__ import annotations
 
-import bz2
-import gzip
 import logging
-import os
 import re
 import shutil
 import stat
-import tarfile
 import tempfile
-import zipfile
-from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
-from typing import Literal, NamedTuple, Protocol
+from typing import Protocol
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +67,14 @@ _RESERVED_WINDOWS_NAMES = frozenset(
 RETAINED_ARCHIVE_FORMATS = frozenset(
     {"zip", "tar", "tar.gz", "tar.bz2", "gzip", "bzip2"},
 )
-UNSUPPORTED_ARCHIVE_FORMATS = frozenset({"rar", "7z", "freearc"})
+UNSUPPORTED_ARCHIVE_FORMATS = frozenset(
+    {"rar", "7z", "freearc", "tar.xz", "zip64"},
+)
+
+_RAR_EXTENSIONS = (".rar", ".cbr", ".rev")
+_7Z_EXTENSIONS = (".7z", ".cb7")
+_FREARC_EXTENSIONS = (".arc",)
+_TAR_XZ_EXTENSIONS = (".tar.xz", ".txz")
 
 _ARCHIVE_MIME_TYPES = frozenset(
     {
@@ -79,6 +82,7 @@ _ARCHIVE_MIME_TYPES = frozenset(
         "application/x-zip-compressed",
         "application/x-compressed",
         "application/vnd.rar",
+        "application/x-rar-compressed",
         "application/x-7z-compressed",
         "application/x-freearc",
         "application/x-bzip",
@@ -86,6 +90,7 @@ _ARCHIVE_MIME_TYPES = frozenset(
         "application/gzip",
         "application/x-gzip",
         "application/x-tar",
+        "application/x-xz",
     }
 )
 
@@ -94,22 +99,32 @@ class ArchiveExtractionError(Exception):
     """Raised when an archive cannot be extracted safely."""
 
 
-class _PromotedIdentity(NamedTuple):
-    path: Path
-    st_ino: int
-    st_dev: int
-
-
 class _ExpandedByteBudget:
-    def __init__(self, limit: int = MAX_EXPANDED_BYTES) -> None:
-        self._limit = limit
+    def __init__(self, limit: int | None = None) -> None:
+        self._limit = MAX_EXPANDED_BYTES if limit is None else limit
         self.total = 0
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @property
+    def remaining(self) -> int:
+        return self._limit - self.total
 
     def consume(self, nbytes: int) -> None:
         self.total += nbytes
         if self.total > self._limit:
             msg = f"archive exceeds expanded-byte limit ({self._limit})"
             raise ArchiveExtractionError(msg)
+
+
+class _Readable(Protocol):
+    def read(self, size: int = -1, /) -> bytes: ...
+
+
+class _Writable(Protocol):
+    def write(self, data: bytes, /) -> int: ...
 
 
 def is_archive_mime(mime: str | None) -> bool:
@@ -133,9 +148,14 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> None:
         archive_format = _detect_format(archive)
         _extract_to_staging(archive, staging, archive_format)
         files = _collect_validated_regular_files(staging)
-        _promote_files(files, staging, destination_dir)
+        from miramedia.imports.archive_promotion import promote_files
+
+        promote_files(files, staging, destination_dir)
     except Exception as exc:
         primary_error = exc
+        if not isinstance(exc, ArchiveExtractionError):
+            msg = f"archive extraction failed: {exc}"
+            raise ArchiveExtractionError(msg) from exc
         raise
     finally:
         _cleanup_staging(staging, primary_error=primary_error)
@@ -143,9 +163,7 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> None:
 
 def _create_staging_dir(parent: Path) -> Path:
     parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(
-        tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent)),
-    )
+    staging = Path(tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent)))
     staging.chmod(STAGING_DIR_MODE)
     return staging
 
@@ -172,6 +190,8 @@ def _cleanup_staging(
 
 def _detect_format(archive: Path) -> str:
     name = archive.name.lower()
+    if name.endswith(_TAR_XZ_EXTENSIONS):
+        return "tar.xz"
     if name.endswith((".tar.gz", ".tgz")):
         return "tar.gz"
     if name.endswith((".tar.bz2", ".tbz2")):
@@ -180,25 +200,31 @@ def _detect_format(archive: Path) -> str:
         return "tar"
     if name.endswith(".zip"):
         return "zip"
-    if name.endswith(".rar"):
+    if name.endswith(_RAR_EXTENSIONS):
         return "rar"
-    if name.endswith(".7z"):
+    if name.endswith(_7Z_EXTENSIONS):
         return "7z"
-    if name.endswith(".arc"):
+    if name.endswith(_FREARC_EXTENSIONS):
         return "freearc"
-    if name.endswith(".gz") and not name.endswith(".tar.gz"):
+    if name.endswith(".gz"):
         return "gzip"
-    if name.endswith(".bz2") and not name.endswith(".tar.bz2"):
+    if name.endswith(".bz2"):
         return "bzip2"
 
-    mime = _guess_mime(archive)
+    mime, encoding = _guess_mime_encoding(archive)
+    if encoding in {"gzip", "x-gzip"} and not name.endswith(".tar.gz"):
+        return "gzip"
+    if encoding in {"bzip2", "x-bzip2"} and not name.endswith(".tar.bz2"):
+        return "bzip2"
+    if encoding == "xz":
+        return "tar.xz"
     if mime in {
         "application/zip",
         "application/x-zip-compressed",
         "application/x-compressed",
     }:
         return "zip"
-    if mime == "application/vnd.rar":
+    if mime in {"application/vnd.rar", "application/x-rar-compressed"}:
         return "rar"
     if mime == "application/x-7z-compressed":
         return "7z"
@@ -210,15 +236,18 @@ def _detect_format(archive: Path) -> str:
         return "gzip"
     if mime == "application/x-tar":
         return "tar"
+    if mime == "application/x-xz":
+        return "tar.xz"
 
     msg = f"unsupported archive format: {archive.name}"
     raise ArchiveExtractionError(msg)
 
 
-def _guess_mime(archive: Path) -> str | None:
+def _guess_mime_encoding(archive: Path) -> tuple[str | None, str | None]:
     import mimetypes
 
-    return mimetypes.guess_type(archive)[0]
+    mime, encoding = mimetypes.guess_type(archive)
+    return mime, encoding
 
 
 def _unsupported_format_error(archive_format: str) -> ArchiveExtractionError:
@@ -232,37 +261,49 @@ def _unsupported_format_error(archive_format: str) -> ArchiveExtractionError:
 def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> None:
     if archive_format in UNSUPPORTED_ARCHIVE_FORMATS:
         raise _unsupported_format_error(archive_format)
-    if archive_format in RETAINED_ARCHIVE_FORMATS:
-        _extract_with_stdlib(archive, staging, archive_format)
-        return
-    msg = f"unsupported archive format: {archive_format}"
-    raise ArchiveExtractionError(msg)
+    if archive_format not in RETAINED_ARCHIVE_FORMATS:
+        msg = f"unsupported archive format: {archive_format}"
+        raise ArchiveExtractionError(msg)
+    from miramedia.imports import archive_parsers as parsers
 
-
-def _extract_with_stdlib(archive: Path, staging: Path, archive_format: str) -> None:
+    budget = _ExpandedByteBudget()
     if archive_format == "zip":
-        _extract_zip(archive, staging)
+        parsers.extract_zip_archive(archive, staging, budget)
     elif archive_format == "tar":
-        _extract_tar(archive, staging, mode="r:")
+        parsers.extract_tar_archive(archive, staging, budget, compression=None)
     elif archive_format == "tar.gz":
-        _extract_tar(archive, staging, mode="r:gz")
+        parsers.extract_tar_archive(archive, staging, budget, compression="gz")
     elif archive_format == "tar.bz2":
-        _extract_tar(archive, staging, mode="r:bz2")
+        parsers.extract_tar_archive(archive, staging, budget, compression="bz2")
     elif archive_format == "gzip":
-        _extract_gzip(archive, staging)
+        parsers.extract_gzip_archive(
+            archive,
+            staging,
+            budget,
+            out_name=_gzip_output_name(archive),
+        )
     elif archive_format == "bzip2":
-        _extract_bzip2(archive, staging)
+        parsers.extract_bzip2_archive(
+            archive,
+            staging,
+            budget,
+            out_name=_bzip2_output_name(archive),
+        )
     else:
-        msg = f"unsupported stdlib format: {archive_format}"
+        msg = f"unsupported archive format: {archive_format}"
         raise ArchiveExtractionError(msg)
 
 
-class _Readable(Protocol):
-    def read(self, size: int = -1, /) -> bytes: ...
+def _gzip_output_name(archive: Path) -> str:
+    if archive.name.lower().endswith(".gz"):
+        return archive.name[:-3]
+    return f"{archive.name}.out"
 
 
-class _Writable(Protocol):
-    def write(self, data: bytes, /) -> int: ...
+def _bzip2_output_name(archive: Path) -> str:
+    if archive.name.lower().endswith(".bz2"):
+        return archive.name[:-4]
+    return f"{archive.name}.out"
 
 
 def _copy_stream_bounded(
@@ -277,113 +318,6 @@ def _copy_stream_bounded(
             return
         budget.consume(len(chunk))
         dst.write(chunk)
-
-
-def _extract_zip(archive: Path, staging: Path) -> None:
-    budget = _ExpandedByteBudget()
-    with zipfile.ZipFile(archive) as zf:
-        infos = zf.infolist()
-        _validate_zip_metadata(infos)
-        for info in infos:
-            if info.is_dir():
-                continue
-            rel = _safe_relative_path(staging, info.filename)
-            rel.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(info, "r") as src, rel.open("wb") as dst:
-                _copy_stream_bounded(src, dst, budget=budget)
-
-
-def _extract_tar(
-    archive: Path,
-    staging: Path,
-    *,
-    mode: Literal["r:", "r:gz", "r:bz2"],
-) -> None:
-    budget = _ExpandedByteBudget()
-    with tarfile.open(archive, mode) as tf:
-        members = tf.getmembers()
-        _validate_tar_metadata(members)
-        extract_filter = getattr(tarfile, "data_filter", None)
-        for member in members:
-            if member.isdir():
-                _safe_relative_path(staging, member.name).mkdir(
-                    parents=True, exist_ok=True
-                )
-                continue
-            if extract_filter is not None:
-                safe = extract_filter(member, staging)
-            else:
-                safe = member
-            rel = _safe_relative_path(staging, safe.name)
-            rel.parent.mkdir(parents=True, exist_ok=True)
-            src = tf.extractfile(safe)
-            if src is None:
-                msg = f"failed to read tar member: {safe.name}"
-                raise ArchiveExtractionError(msg)
-            with src, rel.open("wb") as dst:
-                _copy_stream_bounded(src, dst, budget=budget)
-
-
-def _extract_gzip(archive: Path, staging: Path) -> None:
-    out_name = (
-        archive.name[:-3]
-        if archive.name.lower().endswith(".gz")
-        else f"{archive.name}.out"
-    )
-    _validate_entry_name(out_name)
-    _enforce_entry_count(1)
-    rel = _safe_relative_path(staging, out_name)
-    rel.parent.mkdir(parents=True, exist_ok=True)
-    budget = _ExpandedByteBudget()
-    with gzip.open(archive, "rb") as src, rel.open("wb") as dst:
-        _copy_stream_bounded(src, dst, budget=budget)
-
-
-def _extract_bzip2(archive: Path, staging: Path) -> None:
-    out_name = (
-        archive.name[:-4]
-        if archive.name.lower().endswith(".bz2")
-        else f"{archive.name}.out"
-    )
-    _validate_entry_name(out_name)
-    _enforce_entry_count(1)
-    rel = _safe_relative_path(staging, out_name)
-    rel.parent.mkdir(parents=True, exist_ok=True)
-    budget = _ExpandedByteBudget()
-    with bz2.open(archive, "rb") as src, rel.open("wb") as dst:
-        _copy_stream_bounded(src, dst, budget=budget)
-
-
-def _validate_zip_metadata(infos: Iterable[zipfile.ZipInfo]) -> None:
-    file_count = 0
-    total_bytes = 0
-    for info in infos:
-        if info.is_dir():
-            continue
-        _validate_entry_name(info.filename)
-        if stat.S_IFMT(info.external_attr >> 16) == stat.S_IFLNK:
-            msg = f"archive contains symlink entry: {info.filename}"
-            raise ArchiveExtractionError(msg)
-        file_count += 1
-        total_bytes += info.file_size
-        _enforce_limits(file_count, total_bytes)
-
-
-def _validate_tar_metadata(members: Iterable[tarfile.TarInfo]) -> None:
-    file_count = 0
-    total_bytes = 0
-    for member in members:
-        _validate_entry_name(member.name)
-        if member.issym() or member.islnk():
-            msg = f"archive contains link entry: {member.name}"
-            raise ArchiveExtractionError(msg)
-        if member.isdev() or member.isfifo():
-            msg = f"archive contains non-regular entry: {member.name}"
-            raise ArchiveExtractionError(msg)
-        if member.isfile():
-            file_count += 1
-            total_bytes += member.size
-            _enforce_limits(file_count, total_bytes)
 
 
 def _validate_entry_name(name: str) -> None:
@@ -454,18 +388,6 @@ def _assert_contained(path: Path, root: Path) -> None:
         raise ArchiveExtractionError(msg) from exc
 
 
-def _assert_no_symlink_components(path: Path, root: Path) -> None:
-    current = path
-    while current != root:
-        if current.is_symlink():
-            msg = f"symlink in destination path: {current}"
-            raise ArchiveExtractionError(msg)
-        parent = current.parent
-        if parent == current:
-            break
-        current = parent
-
-
 def _collect_validated_regular_files(staging: Path) -> list[Path]:
     staging_root = staging.resolve()
     files: list[Path] = []
@@ -474,8 +396,9 @@ def _collect_validated_regular_files(staging: Path) -> list[Path]:
     for path in sorted(staging_root.rglob("*")):
         try:
             lstat = path.lstat()
-        except OSError:
-            continue
+        except OSError as exc:
+            msg = f"failed to inspect extracted entry: {path}"
+            raise ArchiveExtractionError(msg) from exc
         if stat.S_ISLNK(lstat.st_mode):
             msg = f"extracted symlink is not allowed: {path}"
             raise ArchiveExtractionError(msg)
@@ -487,146 +410,9 @@ def _collect_validated_regular_files(staging: Path) -> list[Path]:
         if lstat.st_nlink > 1:
             msg = f"extracted hardlink is not allowed: {path}"
             raise ArchiveExtractionError(msg)
-        contained = _assert_contained_return(path, staging_root)
+        _assert_contained(path, staging_root)
         file_count += 1
         total_bytes += lstat.st_size
         _enforce_limits(file_count, total_bytes)
-        files.append(contained)
+        files.append(path)
     return files
-
-
-def _assert_contained_return(path: Path, root: Path) -> Path:
-    _assert_contained(path, root)
-    return path
-
-
-def _preflight_promotion(
-    files: Iterable[Path],
-    staging: Path,
-    destination_dir: Path,
-) -> list[tuple[Path, Path]]:
-    staging_root = staging.resolve()
-    destination_root = destination_dir.resolve()
-    plan: list[tuple[Path, Path]] = []
-    seen_destinations: set[Path] = set()
-
-    for src in files:
-        rel = src.relative_to(staging_root)
-        dst = destination_root / rel
-        _assert_contained(dst, destination_root)
-        _assert_no_symlink_components(dst.parent, destination_root)
-        if dst in seen_destinations:
-            msg = f"duplicate promotion destination: {dst}"
-            raise ArchiveExtractionError(msg)
-        seen_destinations.add(dst)
-        if dst.exists():
-            msg = f"destination file already exists: {dst}"
-            raise ArchiveExtractionError(msg)
-        parent = dst.parent
-        if parent.exists():
-            if parent.is_symlink() or not parent.is_dir():
-                msg = f"promotion parent is not a directory: {parent}"
-                raise ArchiveExtractionError(msg)
-        plan.append((src, dst))
-
-    return plan
-
-
-def _promote_files(files: Iterable[Path], staging: Path, destination_dir: Path) -> None:
-    destination_root = destination_dir.resolve()
-    plan = _preflight_promotion(files, staging, destination_dir)
-    promoted_files: list[_PromotedIdentity] = []
-    created_dirs: list[Path] = []
-
-    try:
-        for src, dst in plan:
-            created_dirs.extend(_create_parent_dirs(dst.parent, destination_root))
-            promoted_files.append(_atomic_promote_file(src, dst))
-    except (ArchiveExtractionError, OSError) as exc:
-        _rollback_promotion(promoted_files, created_dirs, destination_root)
-        if isinstance(exc, ArchiveExtractionError):
-            raise
-        msg = f"promotion failed: {exc}"
-        raise ArchiveExtractionError(msg) from exc
-
-
-def _atomic_promote_file(src: Path, dst: Path) -> _PromotedIdentity:
-    identity = _promotion_identity(src, dst)
-    try:
-        os.link(src, dst)
-    except FileExistsError as exc:
-        msg = f"destination file already exists: {dst}"
-        raise ArchiveExtractionError(msg) from exc
-    try:
-        src.unlink()
-    except OSError:
-        _unlink_if_owned(identity)
-        raise
-    return identity
-
-
-def _promotion_identity(src: Path, dst: Path) -> _PromotedIdentity:
-    stat_result = src.lstat()
-    if not stat.S_ISREG(stat_result.st_mode):
-        msg = f"staging source is not a regular file: {src}"
-        raise ArchiveExtractionError(msg)
-    return _PromotedIdentity(dst, stat_result.st_ino, stat_result.st_dev)
-
-
-def _unlink_if_owned(identity: _PromotedIdentity) -> None:
-    try:
-        current = identity.path.lstat()
-    except OSError:
-        return
-    if stat.S_ISLNK(current.st_mode):
-        return
-    if current.st_ino == identity.st_ino and current.st_dev == identity.st_dev:
-        identity.path.unlink()
-
-
-def _create_parent_dirs(leaf: Path, destination_root: Path) -> list[Path]:
-    created: list[Path] = []
-    for directory in _missing_parent_dirs(leaf, destination_root):
-        _assert_no_symlink_components(directory, destination_root)
-        if directory.exists():
-            if directory.is_symlink() or not directory.is_dir():
-                msg = f"promotion parent is not a directory: {directory}"
-                raise ArchiveExtractionError(msg)
-            continue
-        directory.mkdir()
-        created.append(directory)
-    return created
-
-
-def _missing_parent_dirs(start: Path, stop: Path) -> Iterator[Path]:
-    needed: list[Path] = []
-    current = start
-    while current != stop and not current.exists():
-        needed.append(current)
-        if current.parent == current:
-            break
-        current = current.parent
-    yield from reversed(needed)
-
-
-def _rollback_promotion(
-    promoted_files: list[_PromotedIdentity],
-    created_dirs: list[Path],
-    destination_root: Path,
-) -> None:
-    for identity in reversed(promoted_files):
-        _unlink_if_owned(identity)
-    for directory in sorted(created_dirs, key=lambda p: len(p.parts), reverse=True):
-        if (
-            directory.exists()
-            and directory.is_dir()
-            and directory != destination_root
-            and not any(directory.iterdir())
-        ):
-            try:
-                directory.rmdir()
-            except OSError:
-                log.warning(
-                    "Failed to remove promotion directory during rollback: %s",
-                    directory,
-                )
