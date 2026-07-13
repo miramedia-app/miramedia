@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
@@ -13,7 +14,6 @@ from pydantic import BaseModel, Field
 from miramedia.auth.runtime import (
     AuthRuntimeActivationError,
     AuthRuntimeGeneration,
-    commit_auth_runtime_generation,
     prepare_auth_runtime_for_overrides,
 )
 from miramedia.auth.users import SuperuserDep, current_superuser
@@ -22,17 +22,20 @@ from miramedia.movies.cleanup import cleanup_stale_movie_preferences
 from miramedia.settings.dependencies import settings_repository_dep
 from miramedia.settings.integration_tests import HANDLERS as TEST_HANDLERS
 from miramedia.settings.integration_tests import IntegrationTestResult
+from miramedia.settings.mutation import (
+    SettingsMutationError,
+    commit_validated_settings_mutation,
+)
 from miramedia.settings.schemas import SystemSettingsRead, SystemSettingsUpdate
 from miramedia.settings.service import (
+    SETTINGS_SECTIONS,
     _config_to_dict,
-    _singleton_swap_lock,
-    apply_overrides_to_config,
+    compute_clear_override_path,
     deep_merge,
     diff_against_defaults,
     get_effective_config,
     get_settings_schema,
     get_toml_defaults,
-    revert_field_to_toml_default,
     strip_none,
 )
 from miramedia.shows.cleanup import cleanup_stale_show_preferences
@@ -43,26 +46,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _reload_config_sections_from_toml() -> None:
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-    if saved_instance is not None:
-        for section in _ALLOWED_SECTIONS:
-            try:
-                setattr(saved_instance, section, getattr(fresh, section))
-            except Exception:
-                log.exception("Failed to reset section %s on singleton", section)
-
-
-async def _validate_auth_runtime_for_overrides(
+async def _stage_auth_runtime(
     merged_overrides: dict,
 ) -> AuthRuntimeGeneration:
     try:
@@ -74,8 +58,25 @@ async def _validate_auth_runtime_for_overrides(
         ) from exc
 
 
-def _commit_validated_auth_runtime(prospective: AuthRuntimeGeneration) -> None:
-    commit_auth_runtime_generation(prospective)
+async def _commit_settings_mutation(
+    merged_overrides: dict,
+    *,
+    prior_overrides: dict,
+    persist_overrides: Callable[[dict], Awaitable[object]],
+) -> None:
+    prospective = await _stage_auth_runtime(merged_overrides)
+    try:
+        await commit_validated_settings_mutation(
+            merged_overrides,
+            prospective,
+            persist_overrides=persist_overrides,
+            prior_overrides=prior_overrides,
+        )
+    except SettingsMutationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(exc),
+        ) from exc
 
 
 router = APIRouter(
@@ -188,30 +189,19 @@ async def update_system_settings(
     # Diff against TOML defaults so only real changes are stored as overrides
     # Use json_mode so enum/Path serialization matches the incoming data
     config = MiraMediaConfig()
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
     toml_defaults = {
-        s: _config_to_dict(getattr(config, s), json_mode=True) for s in sections
+        s: _config_to_dict(getattr(config, s), json_mode=True)
+        for s in SETTINGS_SECTIONS
     }
     new_overrides = diff_against_defaults(new_overrides, toml_defaults)
 
     existing_overrides = await repo.get_overrides()
     merged_overrides = deep_merge(existing_overrides, new_overrides)
-    prospective = await _validate_auth_runtime_for_overrides(merged_overrides)
-    await repo.save_overrides(merged_overrides)
-    apply_overrides_to_config(MiraMediaConfig(), merged_overrides)
-    _commit_validated_auth_runtime(prospective)
+    await _commit_settings_mutation(
+        merged_overrides,
+        prior_overrides=existing_overrides,
+        persist_overrides=repo.save_overrides,
+    )
 
     # Clear per-show/movie overrides that reference now-disabled options
     await _cleanup_stale_media_preferences(repo.db)
@@ -233,11 +223,13 @@ async def reset_system_settings(
     repo: settings_repository_dep,
 ) -> None:
     """Reset all system settings to TOML defaults (removes all DB overrides)."""
+    prior_overrides = await repo.get_overrides()
     merged_overrides: dict = {}
-    prospective = await _validate_auth_runtime_for_overrides(merged_overrides)
-    await repo.reset_overrides()
-    _reload_config_sections_from_toml()
-    _commit_validated_auth_runtime(prospective)
+    await _commit_settings_mutation(
+        merged_overrides,
+        prior_overrides=prior_overrides,
+        persist_overrides=repo.save_overrides,
+    )
 
     await _cleanup_stale_media_preferences(repo.db)
 
@@ -298,11 +290,12 @@ async def import_settings(
         existing = await repo.get_overrides()
         merged = deep_merge(existing, incoming)
 
-    prospective = await _validate_auth_runtime_for_overrides(merged)
-    await repo.save_overrides(merged)
-    _reload_config_sections_from_toml()
-    apply_overrides_to_config(MiraMediaConfig(), merged)
-    _commit_validated_auth_runtime(prospective)
+    prior_overrides = await repo.get_overrides()
+    await _commit_settings_mutation(
+        merged,
+        prior_overrides=prior_overrides,
+        persist_overrides=repo.save_overrides,
+    )
 
     await _cleanup_stale_media_preferences(repo.db)
 
@@ -332,11 +325,13 @@ async def clear_override_path(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid section: {body.path[0]}",
         )
-    updated_overrides = await repo.clear_override_path(body.path)
-    prospective = await _validate_auth_runtime_for_overrides(updated_overrides)
-    revert_field_to_toml_default(body.path)
-    apply_overrides_to_config(MiraMediaConfig(), updated_overrides)
-    _commit_validated_auth_runtime(prospective)
+    prior_overrides = await repo.get_overrides()
+    updated_overrides = compute_clear_override_path(prior_overrides, body.path)
+    await _commit_settings_mutation(
+        updated_overrides,
+        prior_overrides=prior_overrides,
+        persist_overrides=repo.save_overrides,
+    )
 
     await _cleanup_stale_media_preferences(repo.db)
 

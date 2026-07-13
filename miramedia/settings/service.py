@@ -16,6 +16,20 @@ log = logging.getLogger(__name__)
 # defaults so two settings requests can't race and leak a duplicate instance.
 _singleton_swap_lock = threading.Lock()
 
+SETTINGS_SECTIONS = (
+    "misc",
+    "auth",
+    "notifications",
+    "torrents",
+    "indexers",
+    "metadata",
+    "requests",
+    "subtitles",
+    "updates",
+    "cloudflare",
+    "imports",
+)
+
 
 def deep_merge(base: dict, overrides: dict) -> dict:
     """Deep merge overrides into base dict. Overrides win for leaf values."""
@@ -272,6 +286,57 @@ def _serialize_values(d: Any) -> Any:  # noqa: ANN401 — recurses over arbitrar
     if not isinstance(d, (str, int, float, bool)):
         return str(d)
     return d
+
+
+def compute_clear_override_path(overrides: dict, path: list[str]) -> dict:
+    """Return overrides after removing one dotted path (pure, no persistence)."""
+    if not path:
+        return copy.deepcopy(overrides)
+    result = copy.deepcopy(overrides)
+    node: Any = result
+    stack: list[tuple[dict, str]] = []
+    for key in path[:-1]:
+        if not isinstance(node, dict) or key not in node:
+            return result
+        stack.append((node, key))
+        node = node[key]
+    if not isinstance(node, dict) or path[-1] not in node:
+        return result
+    del node[path[-1]]
+    for parent, key in reversed(stack):
+        if isinstance(parent[key], dict) and not parent[key]:
+            del parent[key]
+    return result
+
+
+def build_isolated_config(overrides: dict | None = None) -> MiraMediaConfig:
+    """Build a complete config snapshot from TOML + overrides without mutating live state."""
+    with _singleton_swap_lock:
+        saved_instance = MiraMediaConfig._instance
+        saved_initialized = MiraMediaConfig._initialized
+        MiraMediaConfig._instance = None
+        MiraMediaConfig._initialized = False
+        try:
+            isolated = MiraMediaConfig()
+            if overrides:
+                apply_overrides_to_config(isolated, overrides)
+            return isolated
+        finally:
+            MiraMediaConfig._instance = saved_instance
+            MiraMediaConfig._initialized = saved_initialized
+
+
+def apply_live_config_from_overrides(overrides: dict) -> None:
+    """Atomically replace live singleton sections from a prospective snapshot."""
+    isolated = build_isolated_config(overrides)
+    with _singleton_swap_lock:
+        live = MiraMediaConfig()
+        for section in SETTINGS_SECTIONS:
+            source = getattr(isolated, section)
+            if hasattr(source, "model_copy"):
+                setattr(live, section, source.model_copy(deep=True))
+            else:
+                setattr(live, section, copy.deepcopy(source))
 
 
 def revert_field_to_toml_default(path: list[str]) -> None:

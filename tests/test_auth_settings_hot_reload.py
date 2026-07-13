@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import types
 import uuid
 from collections.abc import Generator
@@ -35,13 +36,13 @@ pytestmark = pytest.mark.usefixtures("fake_openid")
 
 @pytest.fixture(autouse=True)
 def _reset_auth_state() -> Generator[None]:
-    from miramedia.settings.router import _reload_config_sections_from_toml
+    from miramedia.settings.service import apply_live_config_from_overrides
 
     reset_auth_runtime_for_tests()
-    _reload_config_sections_from_toml()
+    apply_live_config_from_overrides({})
     yield
     reset_auth_runtime_for_tests()
-    _reload_config_sections_from_toml()
+    apply_live_config_from_overrides({})
 
 
 @pytest.fixture
@@ -370,3 +371,229 @@ def test_override_clear_updates_runtime_metadata() -> None:
         assert (
             client.get(OIDC_AUTHORIZE_PATH, follow_redirects=False).status_code == 503
         )
+
+
+def _capture_runtime_state() -> dict[str, Any]:
+    from miramedia.auth.users import openid_cookie_transport
+
+    return {
+        "generation_id": auth_runtime_store.get_active().generation_id,
+        "metadata": auth_runtime_store.get_active().provider_name,
+        "cookie_secure": openid_cookie_transport.cookie_secure,
+    }
+
+
+def test_clear_staging_failure_leaves_state_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from miramedia.settings.service import compute_clear_override_path
+
+    def _openid_reject_empty_client_id(**kwargs: object) -> MagicMock:
+        if not kwargs.get("client_id"):
+            msg = "OIDC client_id required when enabled"
+            raise RuntimeError(msg)
+        client = MagicMock()
+        client.client_id = kwargs.get("client_id")
+        client.get_authorization_url = AsyncMock(
+            return_value="https://idp.example/authorize"
+        )
+        return client
+
+    monkeypatch.setattr(
+        "miramedia.auth.runtime.OpenID",
+        _openid_reject_empty_client_id,
+    )
+
+    repo = FakeSettingsRepository()
+    with settings_client(repo=repo) as (client, fake_repo):
+        assert (
+            client.put(
+                SETTINGS_PREFIX,
+                json=_oidc_payload(enabled=True, name="BeforeClear"),
+            ).status_code
+            == 200
+        )
+        before_overrides = copy.deepcopy(fake_repo.overrides)
+        before_runtime = _capture_runtime_state()
+        save_calls_before = len(fake_repo.save_calls)
+
+        response = client.post(
+            f"{SETTINGS_PREFIX}/override/clear",
+            json={"path": ["auth", "openid_connect", "client_id"]},
+        )
+        assert response.status_code == 400
+        assert (
+            "Failed to configure OpenID Connect provider" in response.json()["detail"]
+        )
+        assert fake_repo.overrides == before_overrides
+        assert len(fake_repo.save_calls) == save_calls_before
+        assert _capture_runtime_state() == before_runtime
+        assert client.get(METADATA_PATH).json()["oauth_providers"] == ["BeforeClear"]
+
+    prospective = compute_clear_override_path(
+        before_overrides, ["auth", "openid_connect", "client_id"]
+    )
+    assert "client_id" not in prospective.get("auth", {}).get("openid_connect", {})
+
+
+def test_put_persist_failure_rolls_back_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeSettingsRepository()
+
+    async def _boom_save(_overrides: dict) -> dict:
+        msg = "db write failed"
+        raise RuntimeError(msg)
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        monkeypatch.setattr(fake_repo, "save_overrides", _boom_save)
+        before_runtime = _capture_runtime_state()
+        response = client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(enabled=True, name="ShouldNotStick"),
+        )
+        assert response.status_code == 500
+        assert fake_repo.overrides == {}
+        assert _capture_runtime_state() == before_runtime
+        assert client.get(METADATA_PATH).json()["oauth_providers"] == []
+
+
+def test_reset_apply_failure_rolls_back_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from miramedia.settings import service as settings_service
+
+    repo = FakeSettingsRepository()
+    original_apply = settings_service.apply_live_config_from_overrides
+    calls = 0
+
+    def _flaky_apply(overrides: dict) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            msg = "apply failed"
+            raise RuntimeError(msg)
+        original_apply(overrides)
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        assert (
+            client.put(
+                SETTINGS_PREFIX,
+                json=_oidc_payload(enabled=True, name="ResetGuard"),
+            ).status_code
+            == 200
+        )
+        before_overrides = copy.deepcopy(fake_repo.overrides)
+        before_runtime = _capture_runtime_state()
+
+        monkeypatch.setattr(
+            "miramedia.settings.mutation.apply_live_config_from_overrides",
+            _flaky_apply,
+        )
+        response = client.delete(SETTINGS_PREFIX)
+        assert response.status_code == 500
+        assert fake_repo.overrides == before_overrides
+        assert _capture_runtime_state() == before_runtime
+        assert client.get(METADATA_PATH).json()["oauth_providers"] == ["ResetGuard"]
+
+
+def test_import_runtime_activation_failure_rolls_back_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from miramedia.auth.runtime import commit_auth_runtime_generation as original_commit
+
+    repo = FakeSettingsRepository(overrides={"misc": {"development": True}})
+    calls = 0
+
+    def _flaky_commit(prospective: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            msg = "swap failed"
+            raise RuntimeError(msg)
+        return original_commit(prospective)
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        before_overrides = copy.deepcopy(fake_repo.overrides)
+        before_runtime = _capture_runtime_state()
+
+        monkeypatch.setattr(
+            "miramedia.settings.mutation.commit_auth_runtime_generation",
+            _flaky_commit,
+        )
+        response = client.post(
+            f"{SETTINGS_PREFIX}/import",
+            json={
+                "mode": "merge",
+                "overrides": _oidc_payload(enabled=True, name="ImportFail"),
+            },
+        )
+        assert response.status_code == 500
+        assert fake_repo.overrides == before_overrides
+        assert _capture_runtime_state() == before_runtime
+
+
+def test_authorize_uses_request_generation_under_concurrent_swap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    created: list[MagicMock] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _blocking_factory(**kwargs: object) -> MagicMock:
+        client = MagicMock()
+        client.client_id = kwargs.get("client_id")
+        client.name = kwargs.get("name", "Provider")
+
+        async def _slow_authorize(*_args: object, **_kwargs: object) -> str:
+            entered.set()
+            assert release.wait(timeout=2)
+            return f"https://idp.example/{client.client_id}"
+
+        client.get_authorization_url = _slow_authorize
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("miramedia.auth.runtime.OpenID", _blocking_factory)
+
+    with settings_client() as (client, _repo):
+        assert (
+            client.put(
+                SETTINGS_PREFIX,
+                json=_oidc_payload(enabled=True, name="GenA", client_id="client-a"),
+            ).status_code
+            == 200
+        )
+
+        authorize_response: dict[str, Any] = {}
+        error: list[BaseException] = []
+
+        def _call_authorize() -> None:
+            try:
+                authorize_response["response"] = client.get(
+                    OIDC_AUTHORIZE_PATH,
+                    follow_redirects=False,
+                )
+            except BaseException as exc:
+                error.append(exc)
+
+        thread = threading.Thread(target=_call_authorize)
+        thread.start()
+        assert entered.wait(timeout=2)
+
+        swap = client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(enabled=True, name="GenB", client_id="client-b"),
+        )
+        assert swap.status_code == 200
+        release.set()
+        thread.join(timeout=3)
+        assert not error
+
+        response = authorize_response["response"]
+        assert response.status_code == 200
+        assert response.json()["authorization_url"] == "https://idp.example/client-a"
+        assert created[0].client_id == "client-a"
+        assert client.get(METADATA_PATH).json()["oauth_providers"] == ["GenB"]

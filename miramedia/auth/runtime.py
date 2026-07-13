@@ -19,7 +19,7 @@ from starlette.responses import Response
 
 from miramedia.auth.config import AuthConfig, OpenIdConfig
 from miramedia.config import MiraMediaConfig
-from miramedia.settings.service import _singleton_swap_lock, apply_overrides_to_config
+from miramedia.settings.service import build_isolated_config
 
 log = logging.getLogger(__name__)
 
@@ -66,6 +66,11 @@ class AuthRuntimeStore:
             self._active = activated
             return activated
 
+    def restore(self, generation: AuthRuntimeGeneration) -> AuthRuntimeGeneration:
+        with self._lock:
+            self._active = generation
+            return self._active
+
     def reset_for_tests(self) -> AuthRuntimeGeneration:
         with self._lock:
             self._next_id = 1
@@ -87,19 +92,7 @@ def get_live_auth_config() -> AuthConfig:
 
 def preview_auth_config(overrides: dict) -> AuthConfig:
     """Build prospective auth settings without mutating the live singleton."""
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            preview = MiraMediaConfig()
-            if overrides:
-                apply_overrides_to_config(preview, overrides)
-            return preview.auth
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
+    return build_isolated_config(overrides).auth
 
 
 def _build_openid_client_sync(oidc: OpenIdConfig) -> OpenID:
@@ -182,9 +175,10 @@ def current_oauth_runtime_generation() -> AuthRuntimeGeneration:
 @contextlib.asynccontextmanager
 async def oauth_runtime_request_scope() -> AsyncIterator[AuthRuntimeGeneration]:
     """Bind one immutable runtime generation for the current async context."""
-    token = _oauth_runtime_ctx.set(auth_runtime_store.get_active())
+    captured = auth_runtime_store.get_active()
+    token = _oauth_runtime_ctx.set(captured)
     try:
-        yield auth_runtime_store.get_active()
+        yield captured
     finally:
         _oauth_runtime_ctx.reset(token)
 

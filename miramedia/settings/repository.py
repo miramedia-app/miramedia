@@ -3,6 +3,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.settings.models import SystemConfigOverride
+from miramedia.settings.service import compute_clear_override_path
 
 log = logging.getLogger(__name__)
 
@@ -160,24 +161,7 @@ class SettingsRepository:
             await self.db.commit()
 
     async def clear_override_path(self, path: list[str]) -> dict:
-        """Remove a single override at the given dotted path. Returns updated overrides.
-
-        Prunes empty parent dicts left after removal so the diff stays minimal.
-        """
-        if not path:
-            return await self.get_overrides()
+        """Remove a single override at the given dotted path and persist."""
         overrides = await self.get_overrides()
-        node = overrides
-        stack: list[tuple[dict, str]] = []
-        for key in path[:-1]:
-            if not isinstance(node, dict) or key not in node:
-                return overrides
-            stack.append((node, key))
-            node = node[key]
-        if not isinstance(node, dict) or path[-1] not in node:
-            return overrides
-        del node[path[-1]]
-        for parent, key in reversed(stack):
-            if isinstance(parent[key], dict) and not parent[key]:
-                del parent[key]
-        return await self.save_overrides(overrides)
+        updated = compute_clear_override_path(overrides, path)
+        return await self.save_overrides(updated)

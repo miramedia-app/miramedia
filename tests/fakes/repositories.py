@@ -486,6 +486,8 @@ class FakeSettingsRepository:
     async def save_overrides(self, overrides: dict) -> dict:
         self.save_calls.append(copy.deepcopy(overrides))
         self.overrides = copy.deepcopy(overrides)
+        if not overrides:
+            self.reset_called = True
         return self.overrides
 
     async def reset_overrides(self) -> None:
@@ -493,22 +495,8 @@ class FakeSettingsRepository:
         self.overrides = {}
 
     async def clear_override_path(self, path: list[str]) -> dict:
+        from miramedia.settings.service import compute_clear_override_path
+
         self.clear_path_calls.append(list(path))
-        if not path:
-            return await self.get_overrides()
-        overrides = await self.get_overrides()
-        node = overrides
-        stack: list[tuple[dict, str]] = []
-        for key in path[:-1]:
-            if not isinstance(node, dict) or key not in node:
-                return overrides
-            stack.append((node, key))
-            node = node[key]
-        if not isinstance(node, dict) or path[-1] not in node:
-            return overrides
-        del node[path[-1]]
-        for parent, key in reversed(stack):
-            if isinstance(parent[key], dict) and not parent[key]:
-                del parent[key]
-        self.overrides = overrides
-        return overrides
+        updated = compute_clear_override_path(self.overrides, path)
+        return await self.save_overrides(updated)

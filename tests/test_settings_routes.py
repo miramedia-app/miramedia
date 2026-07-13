@@ -149,7 +149,7 @@ def test_post_settings_override_clear() -> None:
             json={"path": ["misc", "development"]},
         )
     assert response.status_code == 200
-    assert fake_repo.clear_path_calls == [["misc", "development"]]
+    assert fake_repo.save_calls
     assert "development" not in fake_repo.overrides.get("misc", {})
 
 

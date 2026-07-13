@@ -388,6 +388,10 @@ openid_cookie_transport = RedirectingCookieTransport(
 def apply_mutable_transport_settings() -> None:
     """Refresh cookie transport flags from the live config singleton."""
     secure = _cookie_secure()
+    restore_mutable_transport_settings(secure)
+
+
+def restore_mutable_transport_settings(secure: bool) -> None:
     cookie_transport.cookie_secure = secure
     openid_cookie_transport.cookie_secure = secure
 
