@@ -627,7 +627,9 @@ def test_rollback_skips_symlink_replacement_with_matching_target_identity(
     assert not (dest / "second.mkv").exists()
 
 
-def test_identity_record_failure_cleans_linked_destination(tmp_path: Path) -> None:
+def test_source_identity_capture_failure_leaves_no_destination(
+    tmp_path: Path,
+) -> None:
     archive = tmp_path / "release.zip"
     dest = tmp_path / "import"
     dest.mkdir()
@@ -638,16 +640,23 @@ def test_identity_record_failure_cleans_linked_destination(tmp_path: Path) -> No
 
     from miramedia.imports import archive_extraction as mod
 
-    real_identity = mod._promoted_identity
+    real_identity = mod._promotion_identity
 
-    def _fail_second_identity(path: Path) -> mod._PromotedIdentity:
-        if path.name == "second.mkv":
-            msg = "simulated identity record failure"
+    def _fail_second_source_identity(
+        src: Path,
+        dst: Path,
+    ) -> mod._PromotedIdentity:
+        if src.name == "second.mkv":
+            msg = "simulated source identity capture failure"
             raise OSError(msg)
-        return real_identity(path)
+        return real_identity(src, dst)
 
     with (
-        patch.object(mod, "_promoted_identity", side_effect=_fail_second_identity),
+        patch.object(
+            mod,
+            "_promotion_identity",
+            side_effect=_fail_second_source_identity,
+        ),
         pytest.raises(ArchiveExtractionError, match="promotion failed"),
     ):
         extract_archive_to_directory(archive, dest)

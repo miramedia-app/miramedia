@@ -551,16 +551,12 @@ def _promote_files(files: Iterable[Path], staging: Path, destination_dir: Path) 
 
 
 def _atomic_promote_file(src: Path, dst: Path) -> _PromotedIdentity:
+    identity = _promotion_identity(src, dst)
     try:
         os.link(src, dst)
     except FileExistsError as exc:
         msg = f"destination file already exists: {dst}"
         raise ArchiveExtractionError(msg) from exc
-    try:
-        identity = _promoted_identity(dst)
-    except OSError:
-        _unlink_fresh_link(dst)
-        raise
     try:
         src.unlink()
     except OSError:
@@ -569,16 +565,12 @@ def _atomic_promote_file(src: Path, dst: Path) -> _PromotedIdentity:
     return identity
 
 
-def _promoted_identity(path: Path) -> _PromotedIdentity:
-    stat_result = path.lstat()
-    return _PromotedIdentity(path, stat_result.st_ino, stat_result.st_dev)
-
-
-def _unlink_fresh_link(path: Path) -> None:
-    try:
-        path.unlink()
-    except OSError:
-        log.warning("Failed to remove freshly linked destination: %s", path)
+def _promotion_identity(src: Path, dst: Path) -> _PromotedIdentity:
+    stat_result = src.lstat()
+    if not stat.S_ISREG(stat_result.st_mode):
+        msg = f"staging source is not a regular file: {src}"
+        raise ArchiveExtractionError(msg)
+    return _PromotedIdentity(dst, stat_result.st_ino, stat_result.st_dev)
 
 
 def _unlink_if_owned(identity: _PromotedIdentity) -> None:
