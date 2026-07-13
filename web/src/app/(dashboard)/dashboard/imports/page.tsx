@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  AlertOctagon,
   Check,
   EllipsisVertical,
   FolderInput,
@@ -33,6 +34,7 @@ import { MatchConfidencePill } from "@/components/match-confidence-pill";
 import { DataList } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
 import { useEventStream } from "@/hooks/use-event-stream";
+import { useUser } from "@/components/providers/user-provider";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
 import type { components } from "@/lib/api/api";
@@ -57,6 +59,20 @@ const BUCKET_ORDER: Record<string, number> = {
   Corrupt: 2,
   Done: 3,
 };
+
+/**
+ * The single kind vocabulary shared by grouping, facets and counts. Typed as an
+ * exhaustive `Record` over `ImportItem["kind"]`, so adding a server kind fails
+ * the typecheck here instead of silently falling into the "Downloads" bucket.
+ */
+const KIND_LABELS: Record<ImportItem["kind"], string> = {
+  torrent: "Downloads",
+  scan: "Scans",
+  media: "Imported",
+  corrupt: "Corrupt",
+};
+
+const KIND_ORDER: ImportItem["kind"][] = ["torrent", "scan", "media", "corrupt"];
 
 function bucketOf(it: ImportItem): "Review" | "Retry" | "Corrupt" | "Done" {
   if (it.kind === "corrupt") return "Corrupt";
@@ -122,6 +138,7 @@ function rankedChoices(r: ScanImport["result"]): RankedChoice[] {
 
 export default function ImportsPage() {
   const qc = useQueryClient();
+  const { user } = useUser();
   const searchParams = useSearchParams();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(searchParams.get("f")), [searchParams]);
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -223,13 +240,18 @@ export default function ImportsPage() {
   const importTotal = countsQuery.data?.import_total ?? 0;
 
   // Integrity-audit mismatches (bit-rot) — folded into the list as "Corrupt" rows.
+  // The endpoint is superuser-only, so gate the request on loaded user state:
+  // while the user query is in flight `user` is null and this stays disabled,
+  // which keeps ordinary users from ever provoking a 403.
+  const canSeeIntegrity = Boolean(user?.is_superuser);
   const mismatchesQuery = useQuery({
-    queryKey: ["imports", "integrity", "mismatches"],
+    queryKey: qk.imports.integrity(),
     queryFn: async () => {
       const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches");
       if (error) throw error;
       return data ?? [];
     },
+    enabled: canSeeIntegrity,
   });
 
   React.useEffect(() => {
@@ -302,7 +324,16 @@ export default function ImportsPage() {
       .filter((c) => !removedCorrupt.has(c.id));
     return [...(listQuery.data?.items ?? []), ...corrupt];
   }, [listQuery.data, mismatchesQuery.data, removedCorrupt]);
-  const isLoading = listQuery.isLoading || listQuery.isFetching;
+  // A disabled query never reports `isLoading`/`isFetching`, so this stays false
+  // for ordinary users. A failing mismatch fetch is reported separately instead
+  // of being folded into the list error, so corruption trouble never blanks the
+  // scan/torrent rows that loaded fine.
+  const isLoading =
+    listQuery.isLoading ||
+    listQuery.isFetching ||
+    mismatchesQuery.isLoading ||
+    mismatchesQuery.isFetching;
+  const integrityFailed = canSeeIntegrity && mismatchesQuery.isError;
 
   // Prune the optimistic-removed set once the server no longer returns those
   // rows, so a genuinely re-flagged file can reappear later.
@@ -869,10 +900,11 @@ export default function ImportsPage() {
       {
         id: "kind",
         label: "Type",
-        getGroup: (it) =>
-          it.kind === "scan"
-            ? { key: "scan", label: "Scans" }
-            : { key: "torrent", label: "Torrents" },
+        getGroup: (it) => ({
+          key: it.kind,
+          label: KIND_LABELS[it.kind],
+          sortOrder: KIND_ORDER.indexOf(it.kind),
+        }),
       },
     ],
     [],
@@ -1066,12 +1098,7 @@ export default function ImportsPage() {
       {
         id: "kind",
         label: "Type",
-        options: [
-          { value: "torrent", label: "Download" },
-          { value: "media", label: "Imported" },
-          { value: "scan", label: "Scan" },
-          { value: "corrupt", label: "Corrupt" },
-        ],
+        options: KIND_ORDER.map((kind) => ({ value: kind, label: KIND_LABELS[kind] })),
         predicate: (it, values, op) => {
           const hit = values.includes(it.kind);
           return op === "excludes" ? !hit : hit;
@@ -1087,6 +1114,27 @@ export default function ImportsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Imports" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
+        {integrityFailed && (
+          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <div className="flex items-center gap-2">
+              <AlertOctagon className="h-4 w-4 text-destructive" />
+              <span>Corruption data could not be loaded. Other imports are unaffected.</span>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void mismatchesQuery.refetch()}
+              disabled={mismatchesQuery.isFetching}
+            >
+              {mismatchesQuery.isFetching ? (
+                <LoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1 h-3.5 w-3.5" />
+              )}
+              Retry
+            </Button>
+          </div>
+        )}
         <DataList<ImportItem>
           data={items}
           getId={(it) => it.id}
