@@ -170,6 +170,88 @@ def test_cancelled_shutdown_allows_waiting_caller_to_finish_cleanup() -> None:
                 await first
             await second
 
+            assert calls == 1
+            assert ctx._shutdown_complete is False
+
+            await startup.shutdown_startup(ctx, None)
+
+            assert calls == 2
+            assert ctx._shutdown_complete is True
+
+    asyncio.run(run())
+
+
+def test_permanent_shutdown_failure_runs_one_pass_and_returns() -> None:
+    calls = 0
+
+    async def always_failing_shutdown(
+        _ctx: startup.SchedulerContext,
+        _native_client: object,
+    ) -> bool:
+        nonlocal calls
+        calls += 1
+        return True
+
+    async def run() -> None:
+        ctx = startup.SchedulerContext()
+        with patch.object(startup, "_shutdown_startup_impl", always_failing_shutdown):
+            await startup.shutdown_startup(ctx, None)
+
+        assert calls == 1
+        assert ctx._shutdown_complete is False
+
+    asyncio.run(run())
+
+
+def test_failed_shutdown_waiter_does_not_trigger_second_pass() -> None:
+    calls = 0
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_failing_shutdown(
+        _ctx: startup.SchedulerContext,
+        _native_client: object,
+    ) -> bool:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return True
+
+    async def run() -> None:
+        ctx = startup.SchedulerContext()
+        with patch.object(startup, "_shutdown_startup_impl", gated_failing_shutdown):
+            owner = asyncio.create_task(startup.shutdown_startup(ctx, None))
+            await entered.wait()
+            waiter = asyncio.create_task(startup.shutdown_startup(ctx, None))
+            release.set()
+            await asyncio.gather(owner, waiter)
+
+        assert calls == 1
+        assert ctx._shutdown_complete is False
+
+    asyncio.run(run())
+
+
+def test_later_shutdown_retries_after_failed_pass() -> None:
+    calls = 0
+
+    async def recoverable_shutdown(
+        _ctx: startup.SchedulerContext,
+        _native_client: object,
+    ) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls == 1
+
+    async def run() -> None:
+        ctx = startup.SchedulerContext()
+        with patch.object(startup, "_shutdown_startup_impl", recoverable_shutdown):
+            await startup.shutdown_startup(ctx, None)
+            assert ctx._shutdown_complete is False
+
+            await startup.shutdown_startup(ctx, None)
+
         assert calls == 2
         assert ctx._shutdown_complete is True
 

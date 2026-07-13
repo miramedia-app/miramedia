@@ -592,34 +592,30 @@ async def shutdown_startup(
     native_client: NativeDownloadClient | None,
 ) -> None:
     """Tear down one lifespan's startup acquisitions."""
-    while True:
-        wait_event: asyncio.Event | None
-        async with ctx._shutdown_lock:
-            if ctx._shutdown_complete:
-                return
-            if ctx._shutdown_in_progress:
-                wait_event = ctx._shutdown_finished
-            else:
-                ctx._shutdown_in_progress = True
-                ctx._shutdown_finished = asyncio.Event()
-                wait_event = None
-
-        if wait_event is not None:
-            await wait_event.wait()
-            continue
-
-        shutdown_succeeded = False
-        try:
-            failed = await _shutdown_startup_impl(ctx, native_client)
-            shutdown_succeeded = not failed
-        finally:
-            finished = ctx._shutdown_finished
-            async with ctx._shutdown_lock:
-                ctx._shutdown_in_progress = False
-                if shutdown_succeeded:
-                    ctx._shutdown_complete = True
-                if finished is not None:
-                    finished.set()
-
-        if shutdown_succeeded:
+    wait_event: asyncio.Event | None
+    async with ctx._shutdown_lock:
+        if ctx._shutdown_complete:
             return
+        if ctx._shutdown_in_progress:
+            wait_event = ctx._shutdown_finished
+        else:
+            ctx._shutdown_in_progress = True
+            ctx._shutdown_finished = asyncio.Event()
+            wait_event = None
+
+    if wait_event is not None:
+        await wait_event.wait()
+        return
+
+    shutdown_succeeded = False
+    try:
+        failed = await _shutdown_startup_impl(ctx, native_client)
+        shutdown_succeeded = not failed
+    finally:
+        finished = ctx._shutdown_finished
+        async with ctx._shutdown_lock:
+            ctx._shutdown_in_progress = False
+            if shutdown_succeeded:
+                ctx._shutdown_complete = True
+            if finished is not None:
+                finished.set()
