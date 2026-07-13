@@ -1,50 +1,48 @@
 /**
- * Auth-generation coordinator.
+ * Auth-generation coordinator + auth-transition state.
  *
  * The SPA keeps one QueryClient and one cookie jar across logins, so auth exits
- * (401 / session expiry) race with auth entries (login). Two failure modes:
+ * (401 / session expiry) race with auth entries (login / OAuth). Failure modes:
  *
- *  - A burst of concurrent requests all 401 at once and each one clears the
- *    cache and pushes `/login`.
- *  - A slow request issued by the *previous* account 401s only after the next
- *    account has already logged in — and its handler then clears the new user's
- *    cache and bounces them to `/login`.
+ *  - A burst of concurrent requests all 401 and each one clears + redirects.
+ *  - A slow request from the *previous* account 401s only after the next account
+ *    logged in, then clears the new user's cache and bounces them to /login.
  *
- * Both are fixed by generations. Every request is tagged with the generation it
- * was sent under. A 401 may only start an exit if its tag is still current; the
- * first such 401 synchronously advances the generation (invalidating every
- * in-flight peer) and installs a single shared exit promise that later arrivals
- * await instead of duplicating. Any auth entry (login, logout, OAuth) likewise
- * advances the generation and awaits the older exit flight, so stale work can
- * never finish on top of a fresh session.
+ * Rules, kept deliberately mechanical:
  *
- * This module holds no React or network dependency: `createAuthCoordinator` is a
- * deterministic factory, unit-testable by driving `beginTransition` /
- * `reportUnauthorized` by hand.
+ *  1. While ANY exit flight is active, `reportUnauthorized` joins that exact
+ *     flight — no second handler, no further generation advance, whatever token
+ *     it carries. One exit at a time, always.
+ *  2. The active flight is stored as the same wrapped promise it hands out, and
+ *     retired only if that identity still matches.
+ *  3. An entry transition advances the generation first (so responses in flight
+ *     are already stale and cannot affect the credential POST that follows) and
+ *     then drains every prior exit flight before it completes.
+ *
+ * No React, no network: `createAuthCoordinator` is deterministic and unit-testable
+ * by driving `reportUnauthorized` / `beginTransition` against a deferred handler.
  */
 
-/** Opaque generation stamp. An exit is only allowed to redirect while current. */
+/** Opaque generation stamp. An exit may only redirect while its token is live. */
 export type AuthGeneration = number;
 
 export type UnauthorizedHandler = (token: AuthGeneration) => Promise<void> | void;
 
 export type AuthCoordinator = {
-  /** The generation new requests should be tagged with. */
   current(): AuthGeneration;
-  /** True while `token` is still the live generation (no newer transition won). */
   isCurrent(token: AuthGeneration): boolean;
-  /** Install the handler that performs the actual cache reset + redirect. */
   setUnauthorizedHandler(fn: UnauthorizedHandler): void;
+  /** True while an exit handler is in flight. */
+  isExiting(): boolean;
   /**
    * Report a 401 for a request tagged `token`. Returns the exit flight to await.
-   * Stale tokens never start an exit; they join the flight already in progress
-   * (or resolve immediately if it has finished).
+   * Joins the active flight if there is one; otherwise only a current token may
+   * open a new one.
    */
   reportUnauthorized(token: AuthGeneration): Promise<void>;
   /**
-   * Begin an auth entry (login / logout / OAuth). Advances the generation so any
-   * in-flight exit is invalidated, then resolves once older exit work has
-   * settled — callers reset the cache and navigate only after awaiting this.
+   * Begin an auth entry (login / logout / OAuth). Advances the generation, then
+   * resolves once all prior exit work has settled.
    */
   beginTransition(): Promise<AuthGeneration>;
 };
@@ -54,52 +52,95 @@ export function createAuthCoordinator(): AuthCoordinator {
   let handler: UnauthorizedHandler = () => {};
   let exitFlight: Promise<void> | null = null;
 
-  function settleExit(promise: Promise<void>): Promise<void> {
-    exitFlight = promise.finally(() => {
-      // Only retire the flight if no newer one replaced it.
-      if (exitFlight === promise) exitFlight = null;
-    });
-    return exitFlight;
-  }
-
   return {
     current: () => generation,
     isCurrent: (token) => token === generation,
+    isExiting: () => exitFlight !== null,
     setUnauthorizedHandler(fn) {
       handler = fn;
     },
     reportUnauthorized(token) {
-      // Stale 401: the session already moved on (a peer 401 won, or the user has
-      // since logged in). Never clear or redirect on its behalf.
-      if (token !== generation) return exitFlight ?? Promise.resolve();
-      // Advance synchronously, before any await, so peers racing us in the same
-      // tick see a stale token and fall into the branch above.
+      // Rule 1: one exit at a time. Anything arriving while an exit is running
+      // joins it — it must not advance the generation or run a second handler.
+      if (exitFlight) return exitFlight;
+      // No exit active: only a 401 that still speaks for the live session may
+      // open one. A stale token here answers a request from a session we have
+      // already left, so it is dropped.
+      if (token !== generation) return Promise.resolve();
+      // Advance synchronously, before any await, so peers racing us in this tick
+      // see an active flight (or a stale token) and take the branches above.
       const exitToken = ++generation;
-      return settleExit(Promise.resolve(handler(exitToken)).then(() => {}));
+      const flight: Promise<void> = Promise.resolve(handler(exitToken))
+        .then(() => {})
+        .finally(() => {
+          // Rule 2: retire only if this exact wrapped promise is still the
+          // active one.
+          if (exitFlight === flight) exitFlight = null;
+        });
+      exitFlight = flight;
+      return flight;
     },
     async beginTransition() {
-      const previous = exitFlight;
-      // Invalidate any exit in progress: its token is no longer current, so its
-      // redirect is skipped even if it is only part-way through its cache reset.
+      // Rule 3: advance first — any response still in flight is now stale and
+      // cannot open an exit against the session we are about to establish.
       const token = ++generation;
-      // Let that older exit finish its work before we reset and navigate,
-      // otherwise it could clear the cache we are about to populate.
-      if (previous) await previous.catch(() => {});
+      // Then drain. Loop: a flight that was already pending when we advanced may
+      // still be replaced by its own `finally`, and we must not return early.
+      while (exitFlight) {
+        const pending = exitFlight;
+        await pending.catch(() => {});
+        if (exitFlight === pending) break;
+      }
       return token;
     },
   };
 }
 
 /**
- * The coordinator the API middleware and the auth screens share.
+ * Auth-transition state, subscribed by UserProvider and the dashboard auth gate.
  *
- * Pinned to `globalThis` so HMR-driven module re-evaluation in dev doesn't swap
- * in a fresh coordinator (resetting the handler to a noop and the generation to
- * 0) while requests tagged by the old one are still in flight.
+ * `QueryClient.clear()` does not blank the *active* QueryObserver results already
+ * held by mounted components: if navigation throws or stalls, UserProvider would
+ * keep exposing the old `is_superuser: true` and the privileged integrity UI would
+ * stay painted. So a transition flips this flag BEFORE any cancel/clear/navigate,
+ * and nothing resets it — the tree stays blank until a new document initializes.
+ */
+type Listener = () => void;
+
+export function createAuthTransitionStore() {
+  let transitioning = false;
+  const listeners = new Set<Listener>();
+  return {
+    /** Enter the blanked state. Never automatically undone; a new document ends it. */
+    begin() {
+      if (transitioning) return;
+      transitioning = true;
+      for (const l of listeners) l();
+    },
+    isTransitioning: () => transitioning,
+    subscribe(l: Listener) {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+  };
+}
+
+export type AuthTransitionStore = ReturnType<typeof createAuthTransitionStore>;
+
+/**
+ * Shared instances, pinned to `globalThis` so HMR-driven module re-evaluation in
+ * dev doesn't swap in a fresh coordinator (resetting the handler to a noop and
+ * the generation to 0) while requests tagged by the old one are still in flight.
  */
 const COORDINATOR_KEY = Symbol.for("mm.auth.coordinator");
-type CoordinatorHolder = { [COORDINATOR_KEY]?: AuthCoordinator };
-const holder = globalThis as unknown as CoordinatorHolder;
+const TRANSITION_KEY = Symbol.for("mm.auth.transition");
+type Holder = {
+  [COORDINATOR_KEY]?: AuthCoordinator;
+  [TRANSITION_KEY]?: AuthTransitionStore;
+};
+const holder = globalThis as unknown as Holder;
 holder[COORDINATOR_KEY] ??= createAuthCoordinator();
+holder[TRANSITION_KEY] ??= createAuthTransitionStore();
 
 export const authCoordinator: AuthCoordinator = holder[COORDINATOR_KEY];
+export const authTransition: AuthTransitionStore = holder[TRANSITION_KEY];

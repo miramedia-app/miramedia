@@ -3,7 +3,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import apiClient from "@/lib/api/client";
-import { authCoordinator } from "@/lib/auth-generation";
+import { authCoordinator, authTransition } from "@/lib/auth-generation";
 
 /**
  * Drop every cached response at an auth boundary.
@@ -14,14 +14,15 @@ import { authCoordinator } from "@/lib/auth-generation";
  * briefly inherits the old identity — including `is_superuser` — and can trip
  * privileged, superuser-only requests.
  *
- * Every auth transition must call this: explicit logout, an automatic 401 /
- * session-expiry redirect, and a successful credential login. Cancel first so an
- * in-flight privileged request cannot resolve into the cache after the clear.
+ * Cancel first: queries pass TanStack's `signal` through to fetch, so this aborts
+ * in transport. Cancellation must never block the clear, hence the `finally`.
+ *
+ * NOTE: `clear()` empties the cache but does NOT blank the results already held
+ * by mounted QueryObservers — see `beginAuthTransition`, which blanks the tree
+ * first. Never call this on its own at an auth boundary.
  */
 export async function resetAuthCache(queryClient: QueryClient) {
   try {
-    // Queries pass TanStack's `signal` through to fetch, so this aborts transport
-    // where supported. Cancellation itself must never block the clear.
     await queryClient.cancelQueries();
   } finally {
     queryClient.clear();
@@ -29,25 +30,50 @@ export async function resetAuthCache(queryClient: QueryClient) {
 }
 
 /**
- * Start an auth transition: invalidate any in-flight 401 exit, wait for it to
- * finish, then drop the previous account's cached state.
+ * Begin an auth transition: blank the authenticated tree, advance the auth
+ * generation, drain any in-flight 401 exit, then drop the previous account's
+ * cached state.
  *
- * Returns the new generation. Callers navigate only after awaiting this, so an
- * older unauthorized handler can neither clear the incoming session's cache nor
- * beat it in router order.
+ * Order matters. `authTransition.begin()` comes first and is never undone: a
+ * mounted `useQuery` keeps serving its last observed result even after
+ * `clear()`, so if navigation then throws or stalls, `UserProvider` would still
+ * report the old `is_superuser: true` and the privileged UI would stay painted.
+ * Blanking is what actually makes the old identity unobservable; the cache clear
+ * and the navigation are follow-through.
  */
 export async function beginAuthTransition(queryClient: QueryClient) {
+  authTransition.begin();
   const token = await authCoordinator.beginTransition();
   await resetAuthCache(queryClient);
   return token;
 }
 
 /**
- * Log out, then reset shared state before leaving the page.
+ * Leave the SPA via a full document load.
  *
- * Nested-finally: neither a failed logout POST (offline, proxy error) nor a
- * failed cancellation may skip the cache clear or the redirect — a half-exited
- * session is exactly when a stale identity is most dangerous.
+ * A client-side `router.push` keeps the JS context — and every live
+ * QueryObserver — alive. Replacing the document is the only way to guarantee no
+ * observer from the previous session survives. `replace` (not `assign`) so the
+ * dead session is not reachable via Back.
+ *
+ * If `location` is stubbed or throws, fall back to the router; the tree stays
+ * blank either way because the transition flag is never cleared.
+ */
+export function hardNavigate(path: string, fallback?: (path: string) => void) {
+  try {
+    window.location.replace(path);
+  } catch {
+    fallback?.(path);
+  }
+}
+
+/**
+ * Log out: blank, clear, then leave via a full document load.
+ *
+ * Nested `finally` — a logout POST that throws (offline, proxy error) and a
+ * cancellation that throws must both still blank the tree, clear the cache, and
+ * navigate. A half-exited session is exactly when a stale identity is most
+ * dangerous.
  */
 export async function handleLogout(queryClient: QueryClient, redirect: (path: string) => void) {
   try {
@@ -56,16 +82,16 @@ export async function handleLogout(queryClient: QueryClient, redirect: (path: st
     try {
       await beginAuthTransition(queryClient);
     } finally {
-      redirect("/login");
+      hardNavigate("/login", redirect);
     }
   }
 }
 
 /**
- * OAuth is an auth boundary too: it hands the tab to the provider and the
- * browser may restore this page from the bfcache on the way back. Reset before
- * assigning `location.href`, or a restored page can still be holding the
- * previous account's identity and privileged data.
+ * OAuth is an auth boundary too: it hands the tab to the provider, and the
+ * browser may restore this page from the bfcache on the way back. Transition
+ * before assigning `location.href`, or a restored page can still hold — and
+ * render — the previous account's identity and privileged data.
  */
 export async function handleOauth(queryClient: QueryClient, toastError: (msg: string) => void) {
   const { error, data } = await apiClient.GET("/api/v1/auth/oauth/authorize", {
