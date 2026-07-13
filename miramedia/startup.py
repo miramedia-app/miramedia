@@ -135,6 +135,10 @@ async def start_persistence() -> bool:
         await cleanup_stale_movie_preferences(db, config)
         await db.commit()
 
+    from miramedia.auth.runtime import initialize_auth_runtime
+
+    await initialize_auth_runtime()
+
     # config.misc.development is now final (config.toml + any DB override).
     # Force DEBUG end-to-end so the toggle actually surfaces debug logs —
     # otherwise the root logger stays at MIRAMEDIA_LOG_LEVEL (INFO) and drops

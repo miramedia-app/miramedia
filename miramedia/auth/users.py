@@ -17,7 +17,6 @@ from fastapi_users.authentication import (
     JWTStrategy,
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
-from httpx_oauth.clients.openid import OpenID
 from sqlalchemy import func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import make_transient
@@ -25,25 +24,15 @@ from starlette import status
 
 import miramedia.notifications.utils
 from miramedia.auth.db import OAuthAccount, User, get_user_db
+from miramedia.auth.runtime import get_live_auth_config
 from miramedia.auth.schemas import UserCreate, UserUpdate
 from miramedia.config import MiraMediaConfig
 from miramedia.database import get_session
 
 log = logging.getLogger(__name__)
 
-config = MiraMediaConfig().auth
-SECRET = config.token_secret
-
-openid_client: OpenID | None = None
-if config.openid_connect.enabled:
-    log.info(f"Configured OIDC provider: {config.openid_connect.name}")
-    openid_client = OpenID(
-        base_scopes=["openid", "email", "profile"],
-        client_id=config.openid_connect.client_id,
-        client_secret=config.openid_connect.client_secret,
-        name=config.openid_connect.name,
-        openid_configuration_endpoint=config.openid_connect.configuration_endpoint,
-    )
+# Restart-only: token signing secrets are captured at process start.
+SECRET = MiraMediaConfig().auth.token_secret
 
 
 class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
@@ -72,7 +61,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         self, user: User, request: Request | None = None
     ) -> None:
         log.info(f"User {user.id} has registered.")
-        if user.email in config.admin_emails:
+        if user.email in get_live_auth_config().admin_emails:
             updated_user = UserUpdate(is_superuser=True, is_verified=True)
             await self.update(user=user, user_update=updated_user)
 
@@ -83,7 +72,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         link = f"{MiraMediaConfig().misc.frontend_url}web/login/reset-password?token={token}"
         log.info(f"User {user.id} requested a password reset.")
 
-        if not config.email_password_resets:
+        if not get_live_auth_config().email_password_resets:
             # No email channel is configured, so the log is deliberately the
             # only delivery mechanism for the reset link. WARNING level keeps
             # it visible; the token grants a one-time password reset.
@@ -394,6 +383,14 @@ cookie_transport = _LiveLifetimeCookieTransport(
 openid_cookie_transport = RedirectingCookieTransport(
     cookie_samesite="lax", cookie_secure=_cookie_secure()
 )
+
+
+def apply_mutable_transport_settings() -> None:
+    """Refresh cookie transport flags from the live config singleton."""
+    secure = _cookie_secure()
+    cookie_transport.cookie_secure = secure
+    openid_cookie_transport.cookie_secure = secure
+
 
 bearer_auth_backend = AuthenticationBackend(
     name="jwt",

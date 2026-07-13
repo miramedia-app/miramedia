@@ -10,6 +10,12 @@ from typing import TYPE_CHECKING, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from miramedia.auth.runtime import (
+    AuthRuntimeActivationError,
+    AuthRuntimeGeneration,
+    commit_auth_runtime_generation,
+    prepare_auth_runtime_for_overrides,
+)
 from miramedia.auth.users import SuperuserDep, current_superuser
 from miramedia.config import MiraMediaConfig
 from miramedia.movies.cleanup import cleanup_stale_movie_preferences
@@ -35,6 +41,42 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
+
+
+def _reload_config_sections_from_toml() -> None:
+    with _singleton_swap_lock:
+        saved_instance = MiraMediaConfig._instance
+        saved_initialized = MiraMediaConfig._initialized
+        MiraMediaConfig._instance = None
+        MiraMediaConfig._initialized = False
+        try:
+            fresh = MiraMediaConfig()
+        finally:
+            MiraMediaConfig._instance = saved_instance
+            MiraMediaConfig._initialized = saved_initialized
+    if saved_instance is not None:
+        for section in _ALLOWED_SECTIONS:
+            try:
+                setattr(saved_instance, section, getattr(fresh, section))
+            except Exception:
+                log.exception("Failed to reset section %s on singleton", section)
+
+
+async def _validate_auth_runtime_for_overrides(
+    merged_overrides: dict,
+) -> AuthRuntimeGeneration:
+    try:
+        return await prepare_auth_runtime_for_overrides(merged_overrides)
+    except AuthRuntimeActivationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+
+
+def _commit_validated_auth_runtime(prospective: AuthRuntimeGeneration) -> None:
+    commit_auth_runtime_generation(prospective)
+
 
 router = APIRouter(
     prefix="/system",
@@ -166,10 +208,10 @@ async def update_system_settings(
 
     existing_overrides = await repo.get_overrides()
     merged_overrides = deep_merge(existing_overrides, new_overrides)
+    prospective = await _validate_auth_runtime_for_overrides(merged_overrides)
     await repo.save_overrides(merged_overrides)
-
-    # Apply overrides to the in-memory config singleton immediately
     apply_overrides_to_config(MiraMediaConfig(), merged_overrides)
+    _commit_validated_auth_runtime(prospective)
 
     # Clear per-show/movie overrides that reference now-disabled options
     await _cleanup_stale_media_preferences(repo.db)
@@ -191,25 +233,11 @@ async def reset_system_settings(
     repo: settings_repository_dep,
 ) -> None:
     """Reset all system settings to TOML defaults (removes all DB overrides)."""
+    merged_overrides: dict = {}
+    prospective = await _validate_auth_runtime_for_overrides(merged_overrides)
     await repo.reset_overrides()
-
-    # Reset singleton fields back to TOML defaults section-by-section
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-    if saved_instance is not None:
-        for section in _ALLOWED_SECTIONS:
-            try:
-                setattr(saved_instance, section, getattr(fresh, section))
-            except Exception:
-                log.exception("Failed to reset section %s on singleton", section)
+    _reload_config_sections_from_toml()
+    _commit_validated_auth_runtime(prospective)
 
     await _cleanup_stale_media_preferences(repo.db)
 
@@ -270,27 +298,11 @@ async def import_settings(
         existing = await repo.get_overrides()
         merged = deep_merge(existing, incoming)
 
+    prospective = await _validate_auth_runtime_for_overrides(merged)
     await repo.save_overrides(merged)
-
-    # Reload TOML defaults onto the singleton then re-apply, mirroring the reset flow,
-    # so removed-via-replace fields revert and added-via-merge fields take effect now.
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-    if saved_instance is not None:
-        for section in _ALLOWED_SECTIONS:
-            try:
-                setattr(saved_instance, section, getattr(fresh, section))
-            except Exception:
-                log.exception("Failed to reset section %s on singleton", section)
+    _reload_config_sections_from_toml()
     apply_overrides_to_config(MiraMediaConfig(), merged)
+    _commit_validated_auth_runtime(prospective)
 
     await _cleanup_stale_media_preferences(repo.db)
 
@@ -321,8 +333,10 @@ async def clear_override_path(
             detail=f"Invalid section: {body.path[0]}",
         )
     updated_overrides = await repo.clear_override_path(body.path)
+    prospective = await _validate_auth_runtime_for_overrides(updated_overrides)
     revert_field_to_toml_default(body.path)
     apply_overrides_to_config(MiraMediaConfig(), updated_overrides)
+    _commit_validated_auth_runtime(prospective)
 
     await _cleanup_stale_media_preferences(repo.db)
 

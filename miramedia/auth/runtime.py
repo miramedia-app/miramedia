@@ -1,0 +1,261 @@
+"""Auth runtime lifecycle: staged OIDC activation, atomic swaps, request snapshots."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import threading
+from collections.abc import AsyncIterator
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from typing import Literal
+
+from fastapi import HTTPException, Request, status
+from httpx_oauth.clients.openid import OpenID
+from httpx_oauth.oauth2 import BaseOAuth2, OAuth2Token
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
+
+from miramedia.auth.config import AuthConfig, OpenIdConfig
+from miramedia.config import MiraMediaConfig
+from miramedia.settings.service import _singleton_swap_lock, apply_overrides_to_config
+
+log = logging.getLogger(__name__)
+
+OAUTH_ROUTE_NAME = "oidc"
+_oauth_runtime_ctx: ContextVar[AuthRuntimeGeneration | None] = ContextVar(
+    "auth_oidc_runtime_generation", default=None
+)
+
+
+class AuthRuntimeActivationError(Exception):
+    """Prospective auth runtime could not be built or activated."""
+
+
+@dataclass(frozen=True, slots=True)
+class AuthRuntimeGeneration:
+    """Immutable OIDC runtime generation swapped atomically."""
+
+    generation_id: int
+    oidc_enabled: bool
+    provider_name: str
+    client: OpenID | None = None
+
+
+class AuthRuntimeStore:
+    """Thread-safe holder for the active OIDC runtime generation."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._next_id = 1
+        self._active = AuthRuntimeGeneration(
+            generation_id=0,
+            oidc_enabled=False,
+            provider_name="",
+            client=None,
+        )
+
+    def get_active(self) -> AuthRuntimeGeneration:
+        return self._active
+
+    def swap(self, prospective: AuthRuntimeGeneration) -> AuthRuntimeGeneration:
+        with self._lock:
+            activated = replace(prospective, generation_id=self._next_id)
+            self._next_id += 1
+            self._active = activated
+            return activated
+
+    def reset_for_tests(self) -> AuthRuntimeGeneration:
+        with self._lock:
+            self._next_id = 1
+            self._active = AuthRuntimeGeneration(
+                generation_id=0,
+                oidc_enabled=False,
+                provider_name="",
+                client=None,
+            )
+            return self._active
+
+
+auth_runtime_store = AuthRuntimeStore()
+
+
+def get_live_auth_config() -> AuthConfig:
+    return MiraMediaConfig().auth
+
+
+def preview_auth_config(overrides: dict) -> AuthConfig:
+    """Build prospective auth settings without mutating the live singleton."""
+    with _singleton_swap_lock:
+        saved_instance = MiraMediaConfig._instance
+        saved_initialized = MiraMediaConfig._initialized
+        MiraMediaConfig._instance = None
+        MiraMediaConfig._initialized = False
+        try:
+            preview = MiraMediaConfig()
+            if overrides:
+                apply_overrides_to_config(preview, overrides)
+            return preview.auth
+        finally:
+            MiraMediaConfig._instance = saved_instance
+            MiraMediaConfig._initialized = saved_initialized
+
+
+def _build_openid_client_sync(oidc: OpenIdConfig) -> OpenID:
+    log.info("Configured OIDC provider: %s", oidc.name)
+    return OpenID(
+        base_scopes=["openid", "email", "profile"],
+        client_id=oidc.client_id,
+        client_secret=oidc.client_secret,
+        name=oidc.name,
+        openid_configuration_endpoint=oidc.configuration_endpoint,
+    )
+
+
+async def build_auth_runtime_generation(
+    auth_config: AuthConfig,
+) -> AuthRuntimeGeneration:
+    """Validate/build a prospective OIDC runtime off the async event loop."""
+    oidc = auth_config.openid_connect
+    if not oidc.enabled:
+        return AuthRuntimeGeneration(
+            generation_id=0,
+            oidc_enabled=False,
+            provider_name="",
+            client=None,
+        )
+    try:
+        client = await asyncio.to_thread(_build_openid_client_sync, oidc)
+    except Exception as exc:
+        msg = f"Failed to configure OpenID Connect provider: {exc}"
+        raise AuthRuntimeActivationError(msg) from exc
+    return AuthRuntimeGeneration(
+        generation_id=0,
+        oidc_enabled=True,
+        provider_name=oidc.name,
+        client=client,
+    )
+
+
+async def prepare_auth_runtime_for_overrides(
+    overrides: dict,
+) -> AuthRuntimeGeneration:
+    """Stage a runtime generation from prospective overrides before persistence."""
+    auth_config = preview_auth_config(overrides)
+    return await build_auth_runtime_generation(auth_config)
+
+
+def commit_auth_runtime_generation(
+    prospective: AuthRuntimeGeneration,
+) -> AuthRuntimeGeneration:
+    """Atomically activate a pre-validated runtime generation."""
+    activated = auth_runtime_store.swap(prospective)
+    from miramedia.auth.users import apply_mutable_transport_settings
+
+    apply_mutable_transport_settings()
+    return activated
+
+
+async def initialize_auth_runtime() -> AuthRuntimeGeneration:
+    """Initialize/refresh auth runtime from the live config singleton."""
+    prospective = await build_auth_runtime_generation(get_live_auth_config())
+    return commit_auth_runtime_generation(prospective)
+
+
+async def activate_auth_runtime_for_overrides(
+    overrides: dict,
+) -> AuthRuntimeGeneration:
+    """Stage, then commit OIDC runtime for the given effective overrides."""
+    prospective = await prepare_auth_runtime_for_overrides(overrides)
+    return commit_auth_runtime_generation(prospective)
+
+
+def current_oauth_runtime_generation() -> AuthRuntimeGeneration:
+    """Return the request-scoped generation, else the active store generation."""
+    bound = _oauth_runtime_ctx.get()
+    if bound is not None:
+        return bound
+    return auth_runtime_store.get_active()
+
+
+@contextlib.asynccontextmanager
+async def oauth_runtime_request_scope() -> AsyncIterator[AuthRuntimeGeneration]:
+    """Bind one immutable runtime generation for the current async context."""
+    token = _oauth_runtime_ctx.set(auth_runtime_store.get_active())
+    try:
+        yield auth_runtime_store.get_active()
+    finally:
+        _oauth_runtime_ctx.reset(token)
+
+
+class OAuthRuntimeMiddleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        async with oauth_runtime_request_scope():
+            return await call_next(request)
+
+
+class DynamicOAuthClient(BaseOAuth2[OAuth2Token]):
+    """Stable OAuth boundary mounted once; delegates to the request generation."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            client_id="disabled",
+            client_secret="disabled",  # noqa: S106
+            authorize_endpoint="https://disabled.invalid/authorize",
+            access_token_endpoint="https://disabled.invalid/token",  # noqa: S106
+            name=OAUTH_ROUTE_NAME,
+        )
+
+    def _require_client(self) -> OpenID:
+        generation = current_oauth_runtime_generation()
+        if not generation.oidc_enabled or generation.client is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OpenID Connect is not enabled",
+            )
+        return generation.client
+
+    async def get_authorization_url(
+        self,
+        redirect_uri: str,
+        state: str | None = None,
+        scope: list[str] | None = None,
+        code_challenge: str | None = None,
+        code_challenge_method: Literal["plain", "S256"] | None = None,
+        extras_params: OAuth2Token | None = None,
+    ) -> str:
+        return await self._require_client().get_authorization_url(
+            redirect_uri,
+            state,
+            scope,
+            code_challenge,
+            code_challenge_method,
+            extras_params,
+        )
+
+    async def get_access_token(
+        self,
+        code: str,
+        redirect_uri: str,
+        code_verifier: str | None = None,
+    ) -> OAuth2Token:
+        return await self._require_client().get_access_token(
+            code, redirect_uri, code_verifier
+        )
+
+    async def get_id_email(self, token: str) -> tuple[str, str | None]:
+        return await self._require_client().get_id_email(token)
+
+    async def get_profile(self, token: str) -> dict[str, object]:
+        return await self._require_client().get_profile(token)
+
+
+dynamic_oauth_client = DynamicOAuthClient()
+
+
+def reset_auth_runtime_for_tests() -> AuthRuntimeGeneration:
+    """Restore disabled runtime generation (tests only)."""
+    return auth_runtime_store.reset_for_tests()

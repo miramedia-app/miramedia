@@ -42,6 +42,7 @@ from miramedia.auth.router import (
 from miramedia.auth.router import (
     users_router as custom_users_router,
 )
+from miramedia.auth.runtime import OAuthRuntimeMiddleware
 from miramedia.auth.schemas import UserCreate, UserRead, UserUpdate
 from miramedia.auth.users import (
     bearer_auth_backend,
@@ -161,6 +162,7 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
+app.add_middleware(OAuthRuntimeMiddleware)
 
 
 @app.middleware("http")
@@ -285,9 +287,7 @@ api_app.include_router(
     tags=["users"],
 )
 api_app.include_router(auth_metadata_router)
-
-if get_openid_router():
-    api_app.include_router(get_openid_router(), tags=["openid"], prefix="/auth/oauth")
+api_app.include_router(get_openid_router(), tags=["openid"], prefix="/auth/oauth")
 
 api_app.include_router(shows_router.router)
 api_app.include_router(shows_router.episodes_router)
