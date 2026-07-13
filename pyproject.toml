@@ -111,9 +111,14 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Path", "taskiq.TaskiqDepen
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --ignore=tests/integration"
+markers = [
+    "integration: PostgreSQL integration tests (require MIRAMEDIA_TEST_DATABASE_URL)",
+]
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/migration_head_audit.py" = ["INP001"]
+"tests/integration/**" = ["S607", "TRY300"]
 # Indexer sites and the generic metadata backend implement a shared abstract
 # interface; some sites/backends legitimately ignore interface parameters
 # (e.g. a movies-only site ignores season_number). The unused-argument is

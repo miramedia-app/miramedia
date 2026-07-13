@@ -1,0 +1,168 @@
+"""PostgreSQL integration test harness."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+from collections.abc import Callable, Iterator
+
+import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import NullPool
+
+from tests.integration._db_url import (
+    alembic_sync_url,
+    assert_safe_integration_database,
+    integration_database_url,
+)
+
+_alembic_ready = False
+
+
+@pytest.fixture(scope="session")
+def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
+
+
+@pytest.fixture(scope="session")
+def run_async(event_loop: asyncio.AbstractEventLoop) -> Callable:
+    def _run(coro):
+        return event_loop.run_until_complete(coro)
+
+    return _run
+
+
+def _run_alembic_upgrade(sync_url: str) -> None:
+    env = {**os.environ, "DATABASE_URL": sync_url}
+    proc = subprocess.run(
+        ["uv", "run", "--python", "3.13", "alembic", "upgrade", "head"],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    if proc.returncode != 0:
+        msg = (
+            "alembic upgrade head failed\n"
+            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
+        )
+        pytest.fail(msg)
+
+
+async def _wait_for_database(url: str) -> None:
+    """Poll with immediate async yields until PostgreSQL accepts connections."""
+    last_error: Exception | None = None
+    for _ in range(300):
+        engine = create_async_engine(url, poolclass=NullPool)
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+        except Exception as exc:
+            last_error = exc
+            await asyncio.sleep(0)
+        else:
+            return
+        finally:
+            await engine.dispose()
+    msg = f"PostgreSQL not ready: {last_error}"
+    pytest.fail(msg)
+
+
+async def _truncate_application_tables(engine: AsyncEngine) -> None:
+    async with engine.begin() as conn:
+        result = await conn.execute(
+            text(
+                """
+                SELECT tablename
+                FROM pg_tables
+                WHERE schemaname = 'public'
+                  AND tablename <> 'alembic_version'
+                ORDER BY tablename
+                """
+            )
+        )
+        tables = [row[0] for row in result]
+        if not tables:
+            return
+        quoted = ", ".join(f'"{name}"' for name in tables)
+        await conn.execute(text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE"))
+
+
+@pytest.fixture(scope="session")
+def integration_db_url() -> str:
+    url = integration_database_url()
+    assert_safe_integration_database(url)
+    return url
+
+
+@pytest.fixture(scope="session")
+def integration_engine(
+    integration_db_url: str, run_async: Callable
+) -> Iterator[AsyncEngine]:
+    global _alembic_ready
+    run_async(_wait_for_database(integration_db_url))
+    if not _alembic_ready:
+        _run_alembic_upgrade(alembic_sync_url(integration_db_url))
+        _alembic_ready = True
+    engine = create_async_engine(integration_db_url, poolclass=NullPool)
+    yield engine
+    run_async(engine.dispose())
+
+
+@pytest.fixture(scope="session")
+def session_factory(
+    integration_engine: AsyncEngine,
+) -> async_sessionmaker[AsyncSession]:
+    return async_sessionmaker(
+        integration_engine,
+        expire_on_commit=False,
+        autoflush=False,
+        autocommit=False,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_queue_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "miramedia.imports.queue_hooks.schedule_import_queue_rebuild",
+        lambda: None,
+    )
+
+
+@pytest.fixture(autouse=True)
+def clean_database(
+    integration_engine: AsyncEngine, run_async: Callable
+) -> Iterator[None]:
+    run_async(_truncate_application_tables(integration_engine))
+    yield
+    run_async(_truncate_application_tables(integration_engine))
+
+
+@pytest.fixture
+def db(
+    session_factory: async_sessionmaker[AsyncSession], run_async: Callable
+) -> Iterator[AsyncSession]:
+    session = session_factory()
+    yield session
+    run_async(session.close())
+
+
+@pytest.fixture
+def make_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> Callable[[], AsyncSession]:
+    """Return a new independent session (caller must close/commit)."""
+
+    def _factory() -> AsyncSession:
+        return session_factory()
+
+    return _factory
