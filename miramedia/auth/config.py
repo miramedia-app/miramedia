@@ -10,6 +10,17 @@ log = logging.getLogger(__name__)
 PLACEHOLDER_TOKEN_SECRET = "CHANGE_ME_GENERATE_RANDOM_STRING"  # noqa: S105 -- known placeholder, not a secret
 
 
+def _ephemeral_token_secret() -> str:
+    log.warning(
+        "auth.token_secret is not configured — using an ephemeral random "
+        "secret for this process. Sessions will not survive restarts and "
+        "multiple replicas will not share sessions. Generate a persistent "
+        "one with: openssl rand -hex 32 — then set [auth] token_secret in "
+        "config.toml."
+    )
+    return secrets.token_hex()
+
+
 class OpenIdConfig(BaseSettings):
     client_id: str = ""
     client_secret: str = ""
@@ -21,7 +32,7 @@ class OpenIdConfig(BaseSettings):
 class AuthConfig(BaseSettings):
     # to get a signing key run:
     # openssl rand -hex 32
-    token_secret: str = Field(default_factory=secrets.token_hex)
+    token_secret: str = Field(default_factory=_ephemeral_token_secret)
     session_lifetime: int = 60 * 60 * 24
     admin_emails: list[str] = []
     email_password_resets: bool = False

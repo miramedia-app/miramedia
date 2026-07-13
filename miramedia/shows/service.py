@@ -1914,7 +1914,6 @@ class ShowService(MediaService[Show, ShowId]):
             )
             episode = await self.get_episode(episode_file.episode_id)
 
-            anime_absolute = getattr(episode, "absolute_number", None)
             matched_video = next(
                 (
                     f
@@ -1923,7 +1922,6 @@ class ShowService(MediaService[Show, ShowId]):
                         f.name,
                         season=season.number,
                         episode=episode.number,
-                        anime_absolute=anime_absolute,
                     )
                 ),
                 None,
@@ -2339,7 +2337,6 @@ class ShowService(MediaService[Show, ShowId]):
                         show.name,
                     )
                     continue
-                anime_absolute = getattr(episode, "absolute_number", None)
                 matched_videos = [
                     f
                     for f in video_files
@@ -2347,7 +2344,6 @@ class ShowService(MediaService[Show, ShowId]):
                         f.name,
                         season=season.number,
                         episode=episode.number,
-                        anime_absolute=anime_absolute,
                     )
                 ]
                 # Season 0 specials: title-overlap fallback when no S00E00 marker.

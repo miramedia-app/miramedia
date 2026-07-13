@@ -1,0 +1,14 @@
+{
+  "id": 1396,
+  "name": "Breaking Bad",
+  "overview": "A high school chemistry teacher.",
+  "first_air_date": "2008-01-20",
+  "status": "Ended",
+  "original_language": "en",
+  "vote_average": 8.9,
+  "genres": [{"id": 18, "name": "Drama"}, {"id": 80, "name": "Crime"}],
+  "seasons": [
+    {"season_number": 0, "name": "Specials"},
+    {"season_number": 1, "name": "Season 1"}
+  ]
+}

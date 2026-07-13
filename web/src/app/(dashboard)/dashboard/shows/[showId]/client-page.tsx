@@ -493,16 +493,27 @@ export default function ShowDetailClientPage() {
     if (!allSelectedEpisodes.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
+      const results = await Promise.all(
         allSelectedEpisodes.map((id) =>
           apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
             params: { path: { episode_id: id }, query: { skipped } },
           }),
         ),
       );
-      toast.success(skipped ? "Episodes marked as skipped" : "Episodes marked as wanted");
+      const failed = results.filter((r) => r.error).length;
+      const ok = results.length - failed;
+      if (ok > 0) {
+        toast.success(
+          skipped
+            ? `${ok} episode${ok === 1 ? "" : "s"} marked as skipped`
+            : `${ok} episode${ok === 1 ? "" : "s"} marked as wanted`,
+        );
+      }
+      if (failed > 0) {
+        toast.error(`${failed} episode${failed === 1 ? "" : "s"} could not be updated.`);
+      }
       await invalidateAll();
-      deselectAll();
+      if (failed === 0) deselectAll();
     } finally {
       setBulkWorking(false);
     }

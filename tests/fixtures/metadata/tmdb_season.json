@@ -1,0 +1,15 @@
+{
+  "season_number": 1,
+  "episodes": [
+    {
+      "name": "Pilot",
+      "episode_number": 1,
+      "air_date": "2008-01-20"
+    },
+    {
+      "name": "Cat's in the Bag...",
+      "episode_number": 2,
+      "air_date": null
+    }
+  ]
+}

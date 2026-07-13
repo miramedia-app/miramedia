@@ -1,0 +1,11 @@
+{
+  "success": true,
+  "data": [
+    {
+      "movieId": 4242,
+      "title": "Test Movie",
+      "type": "movie",
+      "releaseYear": 2020
+    }
+  ]
+}

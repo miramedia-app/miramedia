@@ -1266,7 +1266,7 @@ wheels = [
 
 [[package]]
 name = "miramedia"
-version = "1.0.7"
+version = "1.0.8"
 source = { virtual = "." }
 dependencies = [
     { name = "alembic" },

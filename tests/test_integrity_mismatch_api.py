@@ -169,6 +169,111 @@ def test_list_integrity_mismatches_maps_show_and_movie_shape() -> None:
     assert movie_row.variant_tag == ""
 
 
+def test_list_integrity_mismatches_batches_lookups() -> None:
+    """N mismatch rows must not issue O(N) title lookups."""
+    show_a = make_show(name="Severance", season_number=1, episode_number=1)
+    show_b = make_show(name="The Bear", season_number=2, episode_number=3)
+    show_repo = _IntegrityShowRepo()
+    show_repo.add_show(show_a)
+    show_repo.add_show(show_b)
+    detected = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+
+    path_by_id: dict[uuid.UUID, Path | None] = {}
+    for show, quality, variant in (
+        (show_a, Quality.fullhd, "remux"),
+        (show_a, Quality.hd, ""),
+        (show_b, Quality.uhd, "web"),
+    ):
+        episode = show.seasons[0].episodes[0]
+        ep_file = EpisodeFile(
+            id=uuid.uuid4(),
+            episode_id=episode.id,
+            quality=quality,
+            torrent_id=None,
+            variant=variant,
+            import_status=ImportOutcome.imported,
+            import_error="sha1 mismatch (expected a…, got b…)",
+            last_attempt_at=detected,
+            sha1="abc",
+        )
+        show_repo.episode_files[ep_file.id] = ep_file
+        path_by_id[ep_file.id] = Path(f"/lib/{show.name}-{quality}.mkv")
+
+    movie = make_movie(name="Dune")
+    movie_repo = _IntegrityMovieRepo()
+    movie_repo.add_movie(movie)
+    movie_file = MovieFile(
+        id=uuid.uuid4(),
+        movie_id=movie.id,
+        quality=Quality.uhd,
+        variant="",
+        import_status=ImportOutcome.imported,
+        import_error="sha1 mismatch (expected a…, got b…)",
+        last_attempt_at=detected,
+        sha1="def",
+    )
+    movie_repo.movie_files[movie_file.id] = movie_file
+
+    # Wrap per-row lookups to prove they are unused for title resolution.
+    show_repo.get_episode_calls = 0
+    show_repo.get_season_calls = 0
+    show_repo.get_show_calls = 0
+    movie_repo.get_movie_calls = 0
+
+    original_get_episode = show_repo.get_episode
+    original_get_season = show_repo.get_season_by_episode
+    original_get_show = show_repo.get_show_by_id
+    original_get_movie = movie_repo.get_movie_by_id
+
+    async def counting_get_episode(*, episode_id):
+        show_repo.get_episode_calls += 1
+        return await original_get_episode(episode_id=episode_id)
+
+    async def counting_get_season(*, episode_id):
+        show_repo.get_season_calls += 1
+        return await original_get_season(episode_id=episode_id)
+
+    async def counting_get_show(*, show_id):
+        show_repo.get_show_calls += 1
+        return await original_get_show(show_id=show_id)
+
+    async def counting_get_movie(*, movie_id):
+        movie_repo.get_movie_calls += 1
+        return await original_get_movie(movie_id=movie_id)
+
+    show_repo.get_episode = counting_get_episode  # type: ignore[method-assign]
+    show_repo.get_season_by_episode = counting_get_season  # type: ignore[method-assign]
+    show_repo.get_show_by_id = counting_get_show  # type: ignore[method-assign]
+    movie_repo.get_movie_by_id = counting_get_movie  # type: ignore[method-assign]
+
+    svc = TorrentService(torrent_repository=FakeTorrentRepository())  # type: ignore[arg-type]
+    rows = _run(
+        svc.list_integrity_mismatches(
+            show_service=_show_service(show_repo, path_by_id),
+            movie_service=_movie_service(
+                movie_repo, {movie_file.id: Path("/lib/Dune.mkv")}
+            ),
+        )
+    )
+
+    assert len(rows) == 4
+    show_rows = [r for r in rows if r.media_type == "show"]
+    movie_rows = [r for r in rows if r.media_type == "movie"]
+    assert len(show_rows) == 3
+    assert len(movie_rows) == 1
+    assert {r.media_title for r in show_rows} == {"Severance", "The Bear"}
+    assert movie_rows[0].media_title == "Dune"
+    assert movie_rows[0].path == "/lib/Dune.mkv"
+
+    # One batch each for shows + movies; no per-row title lookups.
+    assert getattr(show_repo, "context_batch_calls", 0) == 1
+    assert getattr(movie_repo, "name_batch_calls", 0) == 1
+    assert show_repo.get_episode_calls == 0
+    assert show_repo.get_season_calls == 0
+    assert show_repo.get_show_calls == 0
+    assert movie_repo.get_movie_calls == 0
+
+
 def test_rebaseline_nulls_sha1_and_error_dismiss_keeps_sha1() -> None:
     show = make_show()
     episode = show.seasons[0].episodes[0]

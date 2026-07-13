@@ -3,6 +3,7 @@
 from tests.fakes.db import FakeDb, RecordingSession
 from tests.fakes.repositories import (
     FakeMovieRepository,
+    FakeRequestRepository,
     FakeSettingsRepository,
     FakeShowRepository,
     FakeTorrentRepository,
@@ -17,6 +18,7 @@ from tests.fakes.services import (
 __all__ = [
     "FakeDb",
     "FakeMovieRepository",
+    "FakeRequestRepository",
     "FakeSettingsRepository",
     "FakeShowRepository",
     "FakeTorrentRepository",

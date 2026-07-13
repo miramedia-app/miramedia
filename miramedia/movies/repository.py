@@ -648,6 +648,16 @@ class MovieRepository:
         rows = (await self.db.execute(stmt)).scalars().all()
         return [MovieFileSchema.model_validate(r) for r in rows]
 
+    async def get_movie_names_by_ids(
+        self, movie_ids: list[MovieId]
+    ) -> dict[MovieId, str]:
+        """Batch-load movie titles for integrity-mismatch listing."""
+        if not movie_ids:
+            return {}
+        stmt = select(Movie.id, Movie.name).where(Movie.id.in_(movie_ids))
+        rows = (await self.db.execute(stmt)).all()
+        return {MovieId(movie_id): name for movie_id, name in rows}
+
     async def count_sha1_mismatch_files(self) -> int:
         """Count imported movie files with a SHA1 mismatch error stamp."""
         stmt = (

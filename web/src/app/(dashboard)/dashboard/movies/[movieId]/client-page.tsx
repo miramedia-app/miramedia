@@ -81,22 +81,47 @@ export default function MovieDetailClientPage() {
   const { user } = useUser();
   const isSuperuser = !!user?.is_superuser;
 
+  // The detail bundle is heavy (movie + files + subtitles + torrents). It must
+  // NOT poll on an interval. It refetches on invalidation / SSE only; a
+  // staleTime keeps it from re-running on remount churn.
   const bundleQuery = useQuery({
     ...movieDetailBundleQueryOptions(movieId!),
     enabled: !!movieId,
-    refetchInterval: (query) => {
-      const torrents = query.state.data?.movie.torrents ?? [];
-      const hasActive = torrents.some((t) => getTorrentStatusString(t.status) === "Downloading");
-      return hasActive ? 5000 : false;
-    },
-    refetchIntervalInBackground: false,
+    staleTime: 30 * 1000,
   });
 
   const movie = bundleQuery.data?.movie;
   const movieFiles = React.useMemo(() => bundleQuery.data?.files ?? [], [bundleQuery.data]);
   const subtitleFiles = React.useMemo(() => bundleQuery.data?.subtitles ?? [], [bundleQuery.data]);
 
-  const torrents = React.useMemo<RichTorrent[]>(() => movie?.torrents ?? [], [movie]);
+  // Live torrent progress comes from a lightweight torrents-only query that
+  // polls at 5s ONLY while a download is active. This avoids re-running the
+  // heavy bundle for progress updates. Defined inline so media-queries.ts is
+  // not touched. Seeded from the bundle so the table renders immediately.
+  const bundleTorrents = bundleQuery.data?.movie.torrents;
+  const torrentsQuery = useQuery({
+    queryKey: ["movie", movieId, "torrents", "live"],
+    queryFn: async () => {
+      const { data, error } = await apiClient.GET("/api/v1/movies/{movie_id}/torrents", {
+        params: { path: { movie_id: movieId! } },
+      });
+      if (error) throw error;
+      return (data ?? []) as RichTorrent[];
+    },
+    enabled: !!movieId && bundleTorrents !== undefined,
+    initialData: bundleTorrents,
+    refetchInterval: (q) => {
+      const list = q.state.data ?? [];
+      const hasActive = list.some((t) => getTorrentStatusString(t.status) === "Downloading");
+      return hasActive ? 5000 : false;
+    },
+    refetchIntervalInBackground: false,
+  });
+
+  const torrents = React.useMemo(
+    () => torrentsQuery.data ?? bundleTorrents ?? [],
+    [torrentsQuery.data, bundleTorrents],
+  );
 
   // ── File / subtitle rows ────────────────────────────────────────────────
   const fileRows = React.useMemo<FileRow[]>(() => {

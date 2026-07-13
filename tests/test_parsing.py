@@ -1,15 +1,6 @@
 """Characterization tests for miramedia/torrents/parsing.py.
 
 All expected values are frozen from observed runtime behaviour.
-
-NOTES (observed while characterising):
-- guessit (current version) does NOT populate ``absolute_episode`` for standard
-  anime filenames like ``[Group] Show - 13 [1080p].mkv``; it puts the episode
-  number in ``episode`` and leaves ``absolute_episode`` absent.  The
-  ``anime_absolute`` code path in ``match_episode_file`` therefore never fires
-  for real guessit output — it requires a caller to have pre-populated
-  ``parse_release(...).absolute_episode`` through a different mechanism.
-  The tests document this actual behaviour (always-False for anime_absolute).
 """
 
 from pathlib import Path
@@ -99,21 +90,9 @@ def test_match_episode_file_wrong_season() -> None:
     assert match_episode_file("Show.S02E01.mkv", 1, 1) is False
 
 
-def test_match_episode_file_anime_absolute_is_false_with_current_guessit() -> None:
-    # guessit does NOT populate absolute_episode for standard anime filenames;
-    # the anime_absolute code path never fires.  This test documents that
-    # match_episode_file returns False in this scenario.
-    assert (
-        match_episode_file("[Group] Show - 13 [1080p].mkv", 1, 13, anime_absolute=13)
-        is False
-    )
-
-
-def test_match_episode_file_anime_absolute_wrong_number() -> None:
-    assert (
-        match_episode_file("[Group] Show - 14 [1080p].mkv", 1, 13, anime_absolute=13)
-        is False
-    )
+def test_match_episode_file_bare_anime_number_without_marker() -> None:
+    # Without SxxExx / NxNN markers, absolute-only anime filenames do not match.
+    assert match_episode_file("[Group] Show - 13 [1080p].mkv", 1, 13) is False
 
 
 # ---------------------------------------------------------------------------

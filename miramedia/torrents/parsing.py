@@ -358,22 +358,16 @@ def normalize_source(source: str | list[str] | None) -> str:
     return _normalize_token(source, _SOURCE_NORMALIZE)
 
 
-def match_episode_file(
-    filename: str, season: int, episode: int, *, anime_absolute: int | None = None
-) -> bool:
+def match_episode_file(filename: str, season: int, episode: int) -> bool:
     """Decide whether a file belongs to (season, episode).
 
-    Accepts S01E01, 1x01, "Season 1 Episode 1", and anime absolute numbering
-    when ``anime_absolute`` is provided. Falls back to direct regex when
-    guessit can't decide so we still match aggressive group-tagged anime
-    releases.
+    Accepts S01E01, 1x01, and "Season 1 Episode 1". Falls back to direct
+    regex when guessit can't decide so we still match aggressive group-tagged
+    anime releases.
     """
     info = parse_release(filename)
 
     if season in info.seasons and episode in info.episodes:
-        return True
-
-    if anime_absolute is not None and info.absolute_episode == anime_absolute:
         return True
 
     # Fallback: explicit S##E## or ##x## even when guessit's "type" defaults

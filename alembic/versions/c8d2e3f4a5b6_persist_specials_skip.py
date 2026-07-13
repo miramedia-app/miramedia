@@ -29,13 +29,24 @@ depends_on: str | Sequence[str] | None = None
 
 
 def _specials_enabled() -> bool:
-    """Read the live ``download_specials`` setting; default off on any error."""
+    """Read the live ``download_specials`` setting.
+
+    This backfill's data effect depends on app config. If config cannot be
+    loaded, abort the migration loudly rather than silently taking the
+    destructive branch (marking all specials skipped is irreversible —
+    ``downgrade()`` is a no-op).
+    """
     try:
         from miramedia.config import MiraMediaConfig
 
         return bool(MiraMediaConfig().misc.download_specials)
-    except Exception:
-        return False
+    except Exception as exc:
+        raise RuntimeError(
+            "persist-specials-skip migration could not load app config to "
+            "read misc.download_specials. Fix the config (or set "
+            "MIRAMEDIA_MISC__DOWNLOAD_SPECIALS explicitly) and re-run "
+            "'alembic upgrade head'."
+        ) from exc
 
 
 def upgrade() -> None:

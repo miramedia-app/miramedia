@@ -48,7 +48,6 @@ import type {
 import { useUser } from "@/components/providers/user-provider";
 import { useEventStream } from "@/hooks/use-event-stream";
 import apiClient from "@/lib/api/client";
-import { MediaPagination } from "@/components/media-pagination";
 import { qk } from "@/lib/query-keys";
 import {
   getTorrentQualityString,
@@ -81,42 +80,35 @@ const STATUS_ORDER: Record<string, number> = {
   Finished: 4,
 };
 
-const TORRENT_PAGE_SIZES = [20, 50, 100, 200];
-
 export default function TorrentsPage() {
   const { user } = useUser();
   const router = useRouter();
   const qc = useQueryClient();
-  const [currentPage, setCurrentPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(50);
-
   const torrentsQuery = useQuery({
-    queryKey: [...qk.torrents.list(), currentPage, pageSize],
+    queryKey: [...qk.torrents.list(), "all"],
     queryFn: async () => {
-      const listRes = await apiClient.GET("/api/v1/torrents", {
-        params: {
-          query: {
-            limit: pageSize,
-            offset: (currentPage - 1) * pageSize,
-          },
-        },
-      });
-      if (listRes.error) throw listRes.error;
-      const fallbackTotal = listRes.data?.length ?? 0;
-      const total = Number(listRes.response?.headers?.get("x-total-count") ?? fallbackTotal);
-      return {
-        items: (listRes.data ?? []) as RichTorrent[],
-        total,
-      };
+      const PAGE = 500; // server cap (le=500)
+      const items: RichTorrent[] = [];
+      let offset = 0;
+      let total = 0;
+      // Hard ceiling: 20 pages (10k rows). The torrent table is active-only;
+      // hitting this means something is wrong — bail with what we have.
+      for (let i = 0; i < 20; i++) {
+        const listRes = await apiClient.GET("/api/v1/torrents", {
+          params: { query: { limit: PAGE, offset } },
+        });
+        if (listRes.error) throw listRes.error;
+        const page = (listRes.data ?? []) as RichTorrent[];
+        items.push(...page);
+        total = Number(listRes.response?.headers?.get("x-total-count") ?? items.length);
+        offset += page.length;
+        if (page.length < PAGE || items.length >= total) break;
+      }
+      return { items, total };
     },
     placeholderData: (prev) => prev,
     // SSE drives near-realtime invalidation; polling stays as a backstop in
-    // case the event stream drops without reconnecting in time. The backstop
-    // must be page-independent: deriving `hasActive` from the current page's
-    // items would silently disable polling while active downloads live on
-    // other pages, leaving the viewed page stale if SSE has dropped. A flat
-    // interval keeps the open page fresh regardless of which page the active
-    // downloads are on; SSE remains the primary low-latency mechanism.
+    // case the event stream drops without reconnecting in time.
     refetchInterval: 60000,
     refetchIntervalInBackground: false,
   });
@@ -167,7 +159,6 @@ export default function TorrentsPage() {
   });
 
   const torrents = torrentsQuery.data?.items ?? [];
-  const totalTorrents = torrentsQuery.data?.total ?? 0;
 
   const [deleteDialogTorrent, setDeleteDialogTorrent] = React.useState<RichTorrent | null>(null);
   const [blockHash, setBlockHash] = React.useState(false);
@@ -604,7 +595,7 @@ export default function TorrentsPage() {
           data={torrents}
           getId={(t) => t.id!}
           columns={columns}
-          pageSize={0}
+          pageSize={50}
           searchPlaceholder="Search or filter torrents…"
           searchMatch={(t, q) =>
             t.title.toLowerCase().includes(q) ||
@@ -624,18 +615,6 @@ export default function TorrentsPage() {
           emptyDescription="Search a show or movie to start downloading."
           toolbarTrailing={user?.is_superuser ? <AddTorrentDialog /> : null}
           rowActions={renderRowActions}
-        />
-        <MediaPagination
-          page={currentPage}
-          totalPages={Math.max(1, Math.ceil(totalTorrents / pageSize))}
-          onPageChange={setCurrentPage}
-          total={totalTorrents}
-          pageSize={pageSize}
-          pageSizeOptions={TORRENT_PAGE_SIZES}
-          onPageSizeChange={(next) => {
-            setPageSize(next);
-            setCurrentPage(1);
-          }}
         />
       </main>
 

@@ -14,6 +14,8 @@ services:
     image: postgres:17-alpine
     container_name: miramedia-postgres
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     shm_size: 256mb
     volumes:
       - ./res/postgres:/var/lib/postgresql/data
@@ -66,6 +68,8 @@ services:
     restart: unless-stopped
     # tini reaps reparented Chrome helper processes from the cloudflare bypass.
     init: true
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "8001:8000"
       - "6891:6891"
@@ -116,6 +120,8 @@ services:
     image: node:24-alpine
     container_name: miramedia-web
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     working_dir: /app
     command: sh -c "corepack enable && pnpm install && pnpm dev --hostname 0.0.0.0 --port 5173"
     ports:
@@ -162,6 +168,8 @@ services:
     volumes:
       - ./res/prowlarr:/config
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "9696:9696"
     healthcheck:
@@ -185,6 +193,8 @@ services:
       - 6881:6881
       - 6881:6881/udp
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - ./res/torrents:/download
       - ./res/qbittorrent:/config
@@ -210,6 +220,8 @@ services:
     ports:
       - 9117:9117
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9117/ >/dev/null 2>&1 || exit 1"]
       interval: 30s

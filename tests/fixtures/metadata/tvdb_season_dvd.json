@@ -1,0 +1,12 @@
+{
+  "id": 1002,
+  "number": 1,
+  "type": {"id": 2, "name": "DVD Order"},
+  "episodes": [
+    {
+      "number": 1,
+      "name": "Pilot (DVD)",
+      "aired": "2008-01-20"
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "meta": {
+    "id": "tt0903747",
+    "name": "Breaking Bad",
+    "description": "A high school chemistry teacher.",
+    "year": "2008–2013",
+    "status": "Ended",
+    "imdbRating": "9.5",
+    "genres": ["Crime", "Drama", "Thriller"],
+    "cast": ["Bryan Cranston", "Aaron Paul"],
+    "videos": [
+      {
+        "season": 0,
+        "number": 1,
+        "name": "Behind the Scenes",
+        "released": "2009-02-17T00:00:00.000Z"
+      },
+      {
+        "season": 1,
+        "episode": 1,
+        "name": "Pilot",
+        "firstAired": "2008-01-20"
+      },
+      {
+        "season": 1,
+        "number": 2,
+        "name": "Cat's in the Bag...",
+        "released": "2008-01-27T00:00:00.000Z"
+      }
+    ]
+  }
+}

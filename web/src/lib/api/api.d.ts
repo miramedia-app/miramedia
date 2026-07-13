@@ -1758,6 +1758,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/movies/{movie_id}/torrents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get A Movies Torrents
+         * @description Get torrents associated with a specific movie.
+         */
+        get: operations["get_a_movies_torrents_api_v1_movies__movie_id__torrents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/movies/{movie_id}/files/{file_id}": {
         parameters: {
             query?: never;
@@ -9092,6 +9112,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicMovieFile"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_a_movies_torrents_api_v1_movies__movie_id__torrents_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The ID of the movie */
+                movie_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RichTorrent"][];
                 };
             };
             /** @description Validation Error */
