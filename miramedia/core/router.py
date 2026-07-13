@@ -22,6 +22,8 @@ config = MiraMediaConfig()
 router = APIRouter()
 
 _VARIANT_WIDTHS = (200, 300, 400, 600, 800)
+# Deliberately never removed: key space is bounded (poster files x clamped
+# widths), and eager pop reintroduces a duplicate-generation race for queued waiters.
 _variant_locks: dict[tuple[str, int], asyncio.Lock] = {}
 
 _EXPECTED_ALEMBIC_HEAD: str | None = None
@@ -303,11 +305,8 @@ def _generate_poster_variant(file_path: Path, width: int) -> Path | None:
 async def _poster_variant_async(file_path: Path, width: int) -> Path | None:
     key = (str(file_path), width)
     lock = _variant_locks.setdefault(key, asyncio.Lock())
-    try:
-        async with lock:
-            fresh = _fresh_poster_variant(file_path, width)
-            if fresh is not None:
-                return fresh
-            return await asyncio.to_thread(_generate_poster_variant, file_path, width)
-    finally:
-        _variant_locks.pop(key, None)
+    async with lock:
+        fresh = _fresh_poster_variant(file_path, width)
+        if fresh is not None:
+            return fresh
+        return await asyncio.to_thread(_generate_poster_variant, file_path, width)

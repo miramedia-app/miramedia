@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.7"
+    "version": "1.0.8"
   },
   "paths": {
     "/api/v1/health": {
@@ -5811,6 +5811,64 @@
                     "$ref": "#/components/schemas/PublicMovieFile"
                   },
                   "title": "Response Get Movie Files By Movie Id Api V1 Movies  Movie Id  Files Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/movies/{movie_id}/torrents": {
+      "get": {
+        "tags": [
+          "movies"
+        ],
+        "summary": "Get A Movies Torrents",
+        "description": "Get torrents associated with a specific movie.",
+        "operationId": "get_a_movies_torrents_api_v1_movies__movie_id__torrents_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "movie_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The ID of the movie",
+              "title": "Movie Id"
+            },
+            "description": "The ID of the movie"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RichTorrent"
+                  },
+                  "title": "Response Get A Movies Torrents Api V1 Movies  Movie Id  Torrents Get"
                 }
               }
             }

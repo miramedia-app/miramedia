@@ -88,7 +88,7 @@ dbname = "miramedia"
 [auth]
 email_password_resets = false # if true, you also need to set up SMTP (notifications.smtp_config)
 
-token_secret = "CHANGE_ME_GENERATE_RANDOM_STRING" # generate a random string with "openssl rand -hex 32", e.g. here https://www.cryptool.org/en/cto/openssl/
+token_secret = "CHANGE_ME_GENERATE_RANDOM_STRING" # generate a random string with "openssl rand -hex 32", e.g. here https://www.cryptool.org/en/cto/openssl/ — leave unset for an ephemeral per-boot secret (sessions won't survive restarts)
 session_lifetime = 86400  # this is how long you will be logged in after logging in, in seconds
 # cookie_secure = true  # default: auto — true when frontend_url is https
 

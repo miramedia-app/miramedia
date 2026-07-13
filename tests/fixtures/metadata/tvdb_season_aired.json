@@ -1,0 +1,17 @@
+{
+  "id": 1001,
+  "number": 1,
+  "type": {"id": 1, "name": "Aired Order"},
+  "episodes": [
+    {
+      "number": 1,
+      "name": "Pilot",
+      "aired": "2008-01-20"
+    },
+    {
+      "number": 2,
+      "name": "Cat's in the Bag...",
+      "aired": "2008-01-27"
+    }
+  ]
+}

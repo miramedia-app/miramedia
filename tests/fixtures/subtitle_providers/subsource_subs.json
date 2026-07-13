@@ -1,0 +1,10 @@
+{
+  "success": true,
+  "data": [
+    {
+      "subtitleId": 777,
+      "releaseInfo": ["Test.Movie.2020.1080p.BluRay"],
+      "hearingImpaired": false
+    }
+  ]
+}

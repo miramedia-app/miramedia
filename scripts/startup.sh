@@ -17,23 +17,32 @@ if [ ! -d "$CONFIG_DIR" ]; then
     mkdir -p "$CONFIG_DIR"
 fi
 
+generate_secret() {
+    openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n'
+}
+
 # Copy example config if config.toml doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
     echo "Config file not found. Copying example config to: $CONFIG_FILE"
     if [ -f "$EXAMPLE_CONFIG" ]; then
         cp "$EXAMPLE_CONFIG" "$CONFIG_FILE"
-        GENERATED_SECRET=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')
-        sed -i "s/CHANGE_ME_GENERATE_RANDOM_STRING/${GENERATED_SECRET}/" "$CONFIG_FILE"
+        sed -i "s/CHANGE_ME_GENERATE_RANDOM_STRING/$(generate_secret)/" "$CONFIG_FILE"
         echo "Generated a random auth token_secret."
         echo "Example config copied successfully!"
         echo "Please edit $CONFIG_FILE to configure MiraMedia for your environment."
-        echo "Important: Make sure to change the token_secret value!"
     else
         echo "ERROR: Example config file not found at $EXAMPLE_CONFIG"
         exit 1
     fi
 else
     echo "Config file found at: $CONFIG_FILE"
+    # A config carried over from before token_secret was validated (or one the
+    # user copied by hand from the example) still holds the placeholder, which
+    # is now a fatal config error. Replace it in place rather than crash-loop.
+    if grep -q "CHANGE_ME_GENERATE_RANDOM_STRING" "$CONFIG_FILE"; then
+        sed -i "s/CHANGE_ME_GENERATE_RANDOM_STRING/$(generate_secret)/" "$CONFIG_FILE"
+        echo "auth.token_secret was still the placeholder — generated a random one."
+    fi
 fi
 
 # check if running as root, if yes, fix permissions

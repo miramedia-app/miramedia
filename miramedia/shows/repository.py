@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import NamedTuple
 from typing import cast as typing_cast
 from uuid import UUID
 
@@ -28,6 +29,15 @@ from miramedia.shows.schemas import Show as ShowSchema
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
+
+
+class EpisodeIntegrityContext(NamedTuple):
+    """Narrow episode/season/show fields for integrity-mismatch listing."""
+
+    episode_number: int
+    season_number: int
+    show_id: ShowId
+    show_name: str
 
 
 def _full_show_eager_loads() -> tuple[ExecutableOption, ...]:
@@ -814,6 +824,35 @@ class ShowRepository:
         )
         rows = (await self.db.execute(stmt)).unique().scalars().all()
         return [EpisodeFileSchema.model_validate(r) for r in rows]
+
+    async def batch_episodes_with_context(
+        self, episode_ids: list[EpisodeId]
+    ) -> dict[EpisodeId, EpisodeIntegrityContext]:
+        """Batch-load episode number + season number + show name for mismatch rows."""
+        if not episode_ids:
+            return {}
+        stmt = (
+            select(
+                Episode.id,
+                Episode.number,
+                Season.number,
+                Season.show_id,
+                Show.name,
+            )
+            .join(Season, Episode.season_id == Season.id)
+            .join(Show, Season.show_id == Show.id)
+            .where(Episode.id.in_(episode_ids))
+        )
+        rows = (await self.db.execute(stmt)).all()
+        return {
+            EpisodeId(episode_id): EpisodeIntegrityContext(
+                episode_number=int(episode_number),
+                season_number=int(season_number),
+                show_id=ShowId(show_id),
+                show_name=show_name,
+            )
+            for episode_id, episode_number, season_number, show_id, show_name in rows
+        }
 
     async def count_sha1_mismatch_files(self) -> int:
         """Count imported episode files with a SHA1 mismatch error stamp."""

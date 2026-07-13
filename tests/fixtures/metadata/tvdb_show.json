@@ -1,0 +1,16 @@
+{
+  "id": 81189,
+  "name": "Breaking Bad",
+  "overview": "A chemistry teacher turns to crime.",
+  "year": "2008",
+  "remoteIds": [
+    {"id": "tt0903747", "type": 2},
+    {"id": "1396", "type": 1}
+  ],
+  "genres": [{"id": 1, "name": "Drama"}, {"id": 2, "name": "Crime"}],
+  "characters": [{"name": "Bryan Cranston"}, {"name": "Aaron Paul"}],
+  "seasons": [
+    {"id": 1001},
+    {"id": 1002}
+  ]
+}

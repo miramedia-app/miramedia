@@ -31,7 +31,6 @@ import { CorruptedFilesPanel } from "@/components/imports/corrupted-files-panel"
 import { MatchConfidencePill } from "@/components/match-confidence-pill";
 import { DataList } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
-import { MediaPagination } from "@/components/media-pagination";
 import { useEventStream } from "@/hooks/use-event-stream";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
@@ -46,7 +45,6 @@ type ScanProviderCandidate = components["schemas"]["ScanProviderCandidate"];
 type ScanRunStatus = components["schemas"]["ScanRunStatus"];
 
 const TRAILING_SLASHES = /\/+$/;
-const IMPORT_PAGE_SIZES = [20, 50, 100, 200];
 type ImportTabApi = "all" | "review" | "retry" | "done";
 
 const BUCKET_ORDER: Record<string, number> = {
@@ -117,8 +115,6 @@ export default function ImportsPage() {
   const searchParams = useSearchParams();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(searchParams.get("f")), [searchParams]);
   const [view, setView] = React.useState<"imports" | "corrupted">("imports");
-  const [currentPage, setCurrentPage] = React.useState(1);
-  const [pageSize, setPageSize] = React.useState(50);
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [mapDialogTorrent, setMapDialogTorrent] = React.useState<{
     id: string;
@@ -160,19 +156,26 @@ export default function ImportsPage() {
   }, []);
 
   const listQuery = useQuery({
-    queryKey: [...qk.imports.list(apiTab, currentPage, pageSize)],
+    queryKey: [...qk.imports.list(apiTab), "all"],
     queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports", {
-        params: {
-          query: {
-            tab: apiTab,
-            offset: (currentPage - 1) * pageSize,
-            limit: pageSize,
-          },
-        },
-      });
-      if (error) throw error;
-      return data;
+      const PAGE = 200; // server cap (le=200)
+      const items: ImportItem[] = [];
+      let offset = 0;
+      let total = 0;
+      // Hard ceiling: 20 pages (4k rows). The queue is tab-bucketed; hitting
+      // this means something is wrong — bail with what we have.
+      for (let i = 0; i < 20; i++) {
+        const { data, error } = await apiClient.GET("/api/v1/imports", {
+          params: { query: { tab: apiTab, offset, limit: PAGE } },
+        });
+        if (error) throw error;
+        const page = (data?.items ?? []) as ImportItem[];
+        items.push(...page);
+        total = data?.total ?? items.length;
+        offset += page.length;
+        if (page.length < PAGE || items.length >= total) break;
+      }
+      return { items, total };
     },
     placeholderData: (prev) => prev,
   });
@@ -265,18 +268,12 @@ export default function ImportsPage() {
     },
   });
 
-  const items: ImportItem[] = (listQuery.data?.items ?? []) as ImportItem[];
-  const totalImports = listQuery.data?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(totalImports / pageSize));
+  const items: ImportItem[] = listQuery.data?.items ?? [];
   const isLoading = listQuery.isLoading || listQuery.isFetching;
 
-  React.useEffect(() => {
-    if (currentPage > totalPages) setCurrentPage(totalPages);
-  }, [currentPage, totalPages]);
-
   // Drop the optimistic "queued" flag once the server-side scan row has caught
-  // up (status is no longer "pending") or the row has left the current page —
-  // from then on the real ``result.status`` drives the UI.
+  // up (status is no longer "pending") or the row has left the list — from then
+  // on the real ``result.status`` drives the UI.
   React.useEffect(() => {
     setQueuedScanIds((prev) => {
       if (prev.size === 0) return prev;
@@ -291,9 +288,6 @@ export default function ImportsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listQuery.data]);
 
-  React.useEffect(() => {
-    setCurrentPage(1);
-  }, [apiTab]);
   const scanState = scanStatusQuery.data?.state ?? "idle";
 
   React.useEffect(() => {
@@ -968,7 +962,7 @@ export default function ImportsPage() {
               data={items}
               getId={(it) => it.id}
               columns={columns}
-              pageSize={0}
+              pageSize={50}
               searchPlaceholder="Search imports…"
               searchMatch={(it, q) => {
                 if (isTorrent(it)) {
@@ -1107,18 +1101,6 @@ export default function ImportsPage() {
                 );
               }}
               rowActions={renderRowActions}
-            />
-            <MediaPagination
-              page={currentPage}
-              totalPages={totalPages}
-              onPageChange={setCurrentPage}
-              total={totalImports}
-              pageSize={pageSize}
-              pageSizeOptions={IMPORT_PAGE_SIZES}
-              onPageSizeChange={(next) => {
-                setPageSize(next);
-                setCurrentPage(1);
-              }}
             />
           </>
         )}

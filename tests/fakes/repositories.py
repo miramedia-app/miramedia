@@ -9,6 +9,12 @@ from uuid import UUID
 
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.schemas import Movie, MovieFile, MovieId
+from miramedia.requests.schemas import (
+    MediaRequest,
+    MediaRequestId,
+    RequestSource,
+    RequestStatus,
+)
 from miramedia.shows.schemas import (
     Episode,
     EpisodeFile,
@@ -53,6 +59,38 @@ class FakeShowRepository:
                 return season
         msg = f"season not found for episode {episode_id}"
         raise KeyError(msg)
+
+    async def batch_episodes_with_context(
+        self, episode_ids: list[EpisodeId]
+    ) -> dict[EpisodeId, object]:
+        from miramedia.shows.repository import EpisodeIntegrityContext
+
+        self.context_batch_calls = getattr(self, "context_batch_calls", 0) + 1
+        out: dict[EpisodeId, object] = {}
+        for episode_id in episode_ids:
+            episode = self.episodes.get(episode_id)
+            if episode is None:
+                continue
+            season = next(
+                (
+                    s
+                    for s in self.seasons.values()
+                    if any(ep.id == episode_id for ep in s.episodes)
+                ),
+                None,
+            )
+            if season is None:
+                continue
+            show = self.shows.get(season.show_id)
+            if show is None:
+                continue
+            out[episode_id] = EpisodeIntegrityContext(
+                episode_number=int(episode.number),
+                season_number=int(season.number),
+                show_id=season.show_id,
+                show_name=show.name,
+            )
+        return out
 
     async def get_episode_files_by_season_id(
         self, *, season_id: SeasonId
@@ -149,6 +187,16 @@ class FakeMovieRepository:
 
     async def get_movie_by_id(self, *, movie_id: MovieId) -> Movie | None:
         return self.movies.get(movie_id)
+
+    async def get_movie_names_by_ids(
+        self, movie_ids: list[MovieId]
+    ) -> dict[MovieId, str]:
+        self.name_batch_calls = getattr(self, "name_batch_calls", 0) + 1
+        return {
+            movie_id: self.movies[movie_id].name
+            for movie_id in movie_ids
+            if movie_id in self.movies
+        }
 
     async def get_movie_files_by_movie_id(
         self, *, movie_id: MovieId
@@ -343,6 +391,83 @@ def make_torrent(*, title: str = "Test.Show.S01E01.1080p") -> Torrent:
         quality=Quality.fullhd,
         hash="a" * 40,
     )
+
+
+class FakeRequestRepository:
+    """In-memory stand-in for ``RequestRepository`` Seerr sync surface."""
+
+    def __init__(self) -> None:
+        self.db = FakeDb()
+        self.by_id: dict[MediaRequestId, MediaRequest] = {}
+        self.by_seerr_id: dict[int, MediaRequest] = {}
+        self.upsert_calls: list[MediaRequest] = []
+        self.update_calls: list[tuple[MediaRequestId, dict]] = []
+
+    def seed(self, request: MediaRequest) -> MediaRequest:
+        self.by_id[request.id] = request
+        if request.seerr_request_id is not None:
+            self.by_seerr_id[request.seerr_request_id] = request
+        return request
+
+    async def get_by_seerr_request_id(
+        self, seerr_request_id: int
+    ) -> MediaRequest | None:
+        return self.by_seerr_id.get(seerr_request_id)
+
+    async def upsert_seerr_request(self, request: MediaRequest) -> MediaRequest:
+        self.upsert_calls.append(request)
+        existing = (
+            self.by_seerr_id.get(request.seerr_request_id)
+            if request.seerr_request_id is not None
+            else None
+        )
+        if existing is None:
+            self.by_id[request.id] = request
+            if request.seerr_request_id is not None:
+                self.by_seerr_id[request.seerr_request_id] = request
+            return request
+        updated = existing.model_copy(
+            update={
+                "title": request.title,
+                "imdb_id": request.imdb_id or existing.imdb_id,
+                "external_id": request.external_id or existing.external_id,
+                "status": request.status,
+                "tmdb_id": request.tmdb_id or existing.tmdb_id,
+                "seerr_media_id": request.seerr_media_id,
+                "source": request.source,
+            }
+        )
+        self.by_id[updated.id] = updated
+        if updated.seerr_request_id is not None:
+            self.by_seerr_id[updated.seerr_request_id] = updated
+        return updated
+
+    async def list_native_unsynced(self) -> list[MediaRequest]:
+        return [
+            row
+            for row in self.by_id.values()
+            if row.source == RequestSource.native
+            and row.seerr_request_id is None
+            and row.status in (RequestStatus.pending, RequestStatus.approved)
+        ]
+
+    async def update_request(
+        self, request_id: MediaRequestId, **kwargs: object
+    ) -> MediaRequest:
+        self.update_calls.append((request_id, dict(kwargs)))
+        row = self.by_id[request_id]
+        updated = row.model_copy(update=kwargs)
+        self.by_id[request_id] = updated
+        if updated.seerr_request_id is not None:
+            self.by_seerr_id[updated.seerr_request_id] = updated
+        return updated
+
+    async def save_request(self, request: MediaRequest) -> MediaRequest:
+        self.by_id[request.id] = request
+        return request
+
+    async def get_request(self, request_id: MediaRequestId) -> MediaRequest:
+        return self.by_id[request_id]
 
 
 class FakeSettingsRepository:

@@ -28,6 +28,7 @@ from miramedia.movies.schemas import (
 )
 from miramedia.subtitles.dependencies import subtitle_service_dep
 from miramedia.subtitles.schemas import SubtitleFile
+from miramedia.torrents.schemas import RichTorrent
 
 router = APIRouter(
     prefix="/movies",
@@ -450,6 +451,16 @@ async def get_movie_files_by_movie_id(
     Get files associated with a specific movie.
     """
     return await movie_service.get_public_movie_files(movie=movie)
+
+
+@router.get("/{movie_id}/torrents")
+async def get_a_movies_torrents(
+    movie: movie_dep, movie_service: movie_service_dep
+) -> list[RichTorrent]:
+    """
+    Get torrents associated with a specific movie.
+    """
+    return await movie_service.get_torrents_for_movie(movie=movie)
 
 
 @router.delete(

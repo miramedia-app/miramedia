@@ -1,0 +1,15 @@
+{
+  "status": true,
+  "subtitles": [
+    {
+      "language": "english",
+      "name": "Test.Movie.2020.1080p.srt",
+      "url": "/subtitle/abc123.zip",
+      "subtitlePage": "/subtitle/tt0111161/english/1",
+      "releases": ["Test.Movie.2020.1080p.BluRay"],
+      "hi": false,
+      "season": null,
+      "episode": null
+    }
+  ]
+}

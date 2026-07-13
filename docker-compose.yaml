@@ -16,6 +16,8 @@
 name: miramedia
 
 services:
+  # Starts as root to fix volume ownership, then drops to the app user via gosu
+  # (see scripts/startup.sh).
   api:
     container_name: miramedia
     # Pin to a specific version (e.g. ":v0.2.0") for stable updates instead of ":latest"
@@ -27,6 +29,8 @@ services:
     restart: unless-stopped
     # tini reaps reparented Chrome helper processes from the cloudflare bypass.
     init: true
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "8000:8000"
       # Native libtorrent backend listen port. Must match
@@ -192,3 +196,5 @@ services:
           memory: 1g
         reservations:
           memory: 256m
+    security_opt:
+      - no-new-privileges:true

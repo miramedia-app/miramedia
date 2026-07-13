@@ -548,7 +548,7 @@ function LogsPageInner() {
                   {!isCollapsed && (
                     <DataListSection
                       data={groupItems}
-                      getId={(entry) => entry.id ?? String(Math.random())}
+                      getId={(entry) => entry.id}
                       density="compact"
                       columns={columns}
                       showHeader={false}
@@ -563,7 +563,7 @@ function LogsPageInner() {
         ) : (
           <DataListSection
             data={items}
-            getId={(entry) => entry.id ?? String(Math.random())}
+            getId={(entry) => entry.id}
             density="compact"
             columns={columns}
             expandedContent={renderExpandedContent}

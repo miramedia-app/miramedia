@@ -1838,22 +1838,19 @@ class TorrentService:
         """List imported files whose integrity audit recorded a SHA1 mismatch."""
         out: list[IntegrityMismatch] = []
 
-        for row in await show_service.show_repository.list_sha1_mismatch_files():
+        show_rows = await show_service.show_repository.list_sha1_mismatch_files()
+        episode_context = (
+            await show_service.show_repository.batch_episodes_with_context(
+                [row.episode_id for row in show_rows]
+            )
+        )
+        for row in show_rows:
             media_title = ""
             episode_label: str | None = None
             try:
-                episode = await show_service.show_repository.get_episode(
-                    episode_id=row.episode_id
-                )
-                season = await show_service.show_repository.get_season_by_episode(
-                    episode_id=row.episode_id
-                )
-                show = await show_service.show_repository.get_show_by_id(
-                    show_id=season.show_id
-                )
-                if show is not None:
-                    media_title = show.name
-                episode_label = f"S{season.number:02d}E{episode.number:02d}"
+                ctx = episode_context[row.episode_id]
+                media_title = ctx.show_name
+                episode_label = f"S{ctx.season_number:02d}E{ctx.episode_number:02d}"
             except Exception:
                 log.exception(
                     "Failed to resolve show title for mismatched episode_file %s",
@@ -1874,13 +1871,14 @@ class TorrentService:
                 )
             )
 
-        for row in await movie_service.movie_repository.list_sha1_mismatch_files():
+        movie_rows = await movie_service.movie_repository.list_sha1_mismatch_files()
+        movie_names = await movie_service.movie_repository.get_movie_names_by_ids(
+            [row.movie_id for row in movie_rows]
+        )
+        for row in movie_rows:
             media_title = ""
             try:
-                movie = await movie_service.movie_repository.get_movie_by_id(
-                    movie_id=row.movie_id
-                )
-                media_title = movie.name
+                media_title = movie_names[row.movie_id]
             except Exception:
                 log.exception(
                     "Failed to resolve movie title for mismatched movie_file %s",
