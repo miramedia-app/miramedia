@@ -26,6 +26,26 @@ from tests.integration._db_url import (
 _alembic_ready = False
 
 
+class _TrackedSessions:
+    """Track independent sessions opened via ``make_session`` for teardown."""
+
+    def __init__(self, factory: async_sessionmaker[AsyncSession]) -> None:
+        self._factory = factory
+        self._sessions: list[AsyncSession] = []
+
+    def open(self) -> AsyncSession:
+        session = self._factory()
+        self._sessions.append(session)
+        return session
+
+    async def close_all(self) -> None:
+        for session in self._sessions:
+            if session.in_transaction():
+                await session.rollback()
+            await session.close()
+        self._sessions.clear()
+
+
 @pytest.fixture(scope="session")
 def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
     loop = asyncio.new_event_loop()
@@ -58,23 +78,20 @@ def _run_alembic_upgrade(sync_url: str) -> None:
         pytest.fail(msg)
 
 
-async def _wait_for_database(url: str) -> None:
-    """Poll with immediate async yields until PostgreSQL accepts connections."""
-    last_error: Exception | None = None
-    for _ in range(300):
-        engine = create_async_engine(url, poolclass=NullPool)
-        try:
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-        except Exception as exc:
-            last_error = exc
-            await asyncio.sleep(0)
-        else:
-            return
-        finally:
-            await engine.dispose()
-    msg = f"PostgreSQL not ready: {last_error}"
-    pytest.fail(msg)
+async def _assert_database_ready(url: str) -> None:
+    """Single connection check — CI/service health must have Postgres up already."""
+    engine = create_async_engine(url, poolclass=NullPool)
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        detail = (
+            "PostgreSQL connection check failed — set MIRAMEDIA_TEST_DATABASE_URL "
+            f"to a reachable disposable database: {exc}"
+        )
+        pytest.fail(detail)
+    finally:
+        await engine.dispose()
 
 
 async def _truncate_application_tables(engine: AsyncEngine) -> None:
@@ -109,7 +126,7 @@ def integration_engine(
     integration_db_url: str, run_async: Callable
 ) -> Iterator[AsyncEngine]:
     global _alembic_ready
-    run_async(_wait_for_database(integration_db_url))
+    run_async(_assert_database_ready(integration_db_url))
     if not _alembic_ready:
         _run_alembic_upgrade(alembic_sync_url(integration_db_url))
         _alembic_ready = True
@@ -158,11 +175,18 @@ def db(
 
 @pytest.fixture
 def make_session(
+    session_factory: async_sessionmaker[AsyncSession], run_async: Callable
+) -> Iterator[Callable[[], AsyncSession]]:
+    """Yield a session factory that is rolled back/closed before truncation."""
+
+    tracker = _TrackedSessions(session_factory)
+    yield tracker.open
+    run_async(tracker.close_all())
+
+
+@pytest.fixture
+def tracked_sessions(
     session_factory: async_sessionmaker[AsyncSession],
-) -> Callable[[], AsyncSession]:
-    """Return a new independent session (caller must close/commit)."""
-
-    def _factory() -> AsyncSession:
-        return session_factory()
-
-    return _factory
+) -> _TrackedSessions:
+    """Expose the session registry for harness regression tests."""
+    return _TrackedSessions(session_factory)
