@@ -11,7 +11,7 @@ from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
 from miramedia.torrents.schemas import Torrent, TorrentStatus
-from miramedia.torrents.utils import get_torrent_hash
+from miramedia.torrents.utils import get_torrent_hash, torrent_title_path_component
 
 if TYPE_CHECKING:
     from miramedia.torrents.utils import TorrentFile
@@ -109,6 +109,7 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
         :param indexer_result: The indexer query result of the torrent file to download.
         :return: The torrent object with calculated hash and initial status.
         """
+        torrent_title_path_component(indexer_result.title)
         torrent_hash = get_torrent_hash(torrent=indexer_result)
         answer = None
 
@@ -117,7 +118,7 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
             answer = self.api_client.torrents_add(
                 category="MiraMedia",
                 urls=indexer_result.download_url,
-                save_path=indexer_result.title,
+                save_path=torrent_title_path_component(indexer_result.title),
             )
         finally:
             self.api_client.auth_log_out()
