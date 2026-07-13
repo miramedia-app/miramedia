@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Annotated
 
@@ -39,7 +40,7 @@ async def get_updates(
     force: Annotated[bool, Query()] = False,
 ) -> UpdateInfo:
     try:
-        return svc.get_update_info(force=force)
+        return await asyncio.to_thread(svc.get_update_info, force)
     except Exception as exc:
         log.exception("update check failed")
         raise HTTPException(
@@ -55,7 +56,7 @@ async def get_updates(
 async def trigger_check(svc: update_service_dep) -> UpdateInfo:
     try:
         svc.invalidate_cache()
-        return svc.get_update_info(force=True)
+        return await asyncio.to_thread(svc.get_update_info, True)
     except Exception as exc:
         log.exception("manual update check failed")
         raise HTTPException(

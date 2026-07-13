@@ -173,6 +173,9 @@ class FakeShowRepository:
         episode.episode_files = [*episode.episode_files, episode_file]
         return episode_file
 
+    async def get_episode_file_by_id(self, file_id: UUID) -> EpisodeFile | None:
+        return self.episode_files.get(file_id)
+
 
 class FakeMovieRepository:
     def __init__(self) -> None:
@@ -269,6 +272,9 @@ class FakeMovieRepository:
     async def add_movie_file(self, *, movie_file: MovieFile) -> MovieFile:
         self.movie_files[movie_file.id] = movie_file
         return movie_file
+
+    async def get_movie_file_by_id(self, file_id: UUID) -> MovieFile | None:
+        return self.movie_files.get(file_id)
 
 
 class FakeTorrentRepository:
