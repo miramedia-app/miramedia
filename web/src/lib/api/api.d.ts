@@ -4561,6 +4561,22 @@ export interface components {
             /** Limit */
             limit: number;
         };
+        /**
+         * PaginatedIntegrityMismatches
+         * @description Bounded page of integrity-mismatch rows (shows first, then movies).
+         */
+        PaginatedIntegrityMismatches: {
+            /** Items */
+            items: components["schemas"]["IntegrityMismatch"][];
+            /** Total */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Limit */
+            limit: number;
+            /** Next Offset */
+            next_offset?: number | null;
+        };
         /** PaginatedResponse[ActivityLogRead] */
         PaginatedResponse_ActivityLogRead_: {
             /** Items */
@@ -8108,7 +8124,10 @@ export interface operations {
     };
     list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get: {
         parameters: {
-            query?: never;
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8121,7 +8140,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IntegrityMismatch"][];
+                    "application/json": components["schemas"]["PaginatedIntegrityMismatches"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

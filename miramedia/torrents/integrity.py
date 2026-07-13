@@ -16,18 +16,34 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, and_
 
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.models import MovieFile
+from miramedia.naming import episode_file_stem_candidates, movie_file_stem_candidates
 from miramedia.shows.models import EpisodeFile
+from miramedia.torrents.quality_naming import NameParts
+from miramedia.torrents.schemas import Quality
 
 log = logging.getLogger(__name__)
 
 _MISMATCH_ERROR_PREFIX = "sha1 mismatch%"
+
+# Bounded integrity-mismatch API (Plan 082).
+INTEGRITY_MISMATCH_DEFAULT_LIMIT = 50
+INTEGRITY_MISMATCH_MAX_LIMIT = 100
+
+# Scheduler chunk size for verify_imported_files_task (Plan 082).
+INTEGRITY_AUDIT_CHUNK_SIZE = 100
+
+_VIDEO_SUFFIXES = frozenset(
+    {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".webm", ".ts", ".wmv"}
+)
 
 IntegrityFileModel = type[EpisodeFile | MovieFile]
 
@@ -80,6 +96,76 @@ def integrity_mismatch_action_snapshot_where(
 
 
 _CHUNK = 1024 * 1024  # 1 MiB
+
+
+def list_video_files_in_directory(directory: Path) -> list[Path]:
+    """List video files in ``directory`` (one directory scan)."""
+    if not directory.exists() or not directory.is_dir():
+        return []
+    try:
+        return [
+            p
+            for p in directory.iterdir()
+            if p.is_file() and p.suffix.lower() in _VIDEO_SUFFIXES
+        ]
+    except OSError:
+        return []
+
+
+def resolve_video_path_from_stems(
+    directory: Path,
+    stems: Iterable[str],
+    *,
+    video_files: list[Path] | None = None,
+) -> Path | None:
+    """Return the first video file matching any stem under ``directory``."""
+    files = (
+        video_files
+        if video_files is not None
+        else list_video_files_in_directory(directory)
+    )
+    if not files:
+        return None
+    for stem in stems:
+        prefix = stem + "."
+        for candidate in files:
+            if candidate.name.startswith(prefix):
+                return candidate
+    return None
+
+
+def resolve_episode_file_path_in_memory(
+    *,
+    show: Any,
+    season_number: int,
+    episode_number: int,
+    episode_file: Any,
+    season_dir: Path,
+    video_files: list[Path] | None = None,
+) -> Path | None:
+    """Pure in-memory episode path resolution (same semantics as ShowService)."""
+    stems = episode_file_stem_candidates(
+        show,
+        season_number=season_number,
+        episode_number=episode_number,
+        quality=Quality(episode_file.quality),
+        parts=NameParts.from_row(episode_file),
+    )
+    return resolve_video_path_from_stems(season_dir, stems, video_files=video_files)
+
+
+def resolve_movie_file_path_in_memory(
+    *,
+    movie: Any,
+    movie_file: Any,
+    movie_root: Path,
+    video_files: list[Path] | None = None,
+) -> Path | None:
+    """Pure in-memory movie path resolution (same semantics as MovieService)."""
+    stems = movie_file_stem_candidates(
+        movie, Quality(movie_file.quality), NameParts.from_row(movie_file)
+    )
+    return resolve_video_path_from_stems(movie_root, stems, video_files=video_files)
 
 
 def compute_sha1(path: Path) -> str | None:

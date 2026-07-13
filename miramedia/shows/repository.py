@@ -808,11 +808,26 @@ class ShowRepository:
             log.exception("Failed to set sha1 for episode_file %s", file_id)
             raise
 
-    async def list_sha1_mismatch_files(self) -> list[EpisodeFileSchema]:
+    async def count_sha1_mismatch_files(self) -> int:
+        """Count imported episode files with a SHA1 mismatch stamp."""
+        stmt = (
+            select(func.count())
+            .select_from(EpisodeFile)
+            .where(
+                EpisodeFile.import_status == ImportOutcome.imported,
+                EpisodeFile.import_error.like("sha1 mismatch%"),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def list_sha1_mismatch_files(
+        self, *, offset: int = 0, limit: int
+    ) -> list[EpisodeFileSchema]:
         """Imported episode files whose integrity audit recorded a SHA1 mismatch.
 
         Contract: ``import_error`` prefix ``sha1 mismatch%`` must stay in sync
         with ``verify_imported_files_task`` in ``miramedia/scheduler.py``.
+        Rows are ordered by ``id`` ascending for stable segmented pagination.
         """
         stmt = (
             select(EpisodeFile)
@@ -820,14 +835,22 @@ class ShowRepository:
                 EpisodeFile.import_status == ImportOutcome.imported,
                 EpisodeFile.import_error.like("sha1 mismatch%"),
             )
-            .options(
-                selectinload(EpisodeFile.episode)
-                .selectinload(Episode.season)
-                .selectinload(Season.show),
-            )
+            .order_by(EpisodeFile.id)
+            .offset(offset)
+            .limit(limit)
         )
-        rows = (await self.db.execute(stmt)).unique().scalars().all()
+        rows = (await self.db.execute(stmt)).scalars().all()
         return [EpisodeFileSchema.model_validate(r) for r in rows]
+
+    async def get_shows_by_ids(
+        self, show_ids: list[ShowId]
+    ) -> dict[ShowId, ShowSchema]:
+        """Batch-load shows by primary key for integrity path resolution."""
+        if not show_ids:
+            return {}
+        stmt = select(Show).where(Show.id.in_(show_ids))
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return {ShowId(row.id): ShowSchema.model_validate(row) for row in rows}
 
     async def batch_episodes_with_context(
         self, episode_ids: list[EpisodeId]

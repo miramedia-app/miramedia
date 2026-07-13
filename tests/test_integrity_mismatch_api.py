@@ -19,6 +19,10 @@ from miramedia.exceptions import NotFoundError
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.schemas import MovieFile
 from miramedia.shows.schemas import EpisodeFile
+from miramedia.torrents.integrity import (
+    INTEGRITY_MISMATCH_DEFAULT_LIMIT,
+    INTEGRITY_MISMATCH_MAX_LIMIT,
+)
 from miramedia.torrents.schemas import IntegrityMismatch, MediaType, Quality
 from miramedia.torrents.service import TorrentService
 from tests.fakes.repositories import (
@@ -40,13 +44,35 @@ class _IntegrityShowRepo(FakeShowRepository):
     async def get_episode_file_by_id(self, file_id: uuid.UUID):
         return self.episode_files.get(file_id)
 
-    async def list_sha1_mismatch_files(self) -> list[EpisodeFile]:
-        return [
-            f
-            for f in self.episode_files.values()
-            if f.import_status == ImportOutcome.imported
-            and (f.import_error or "").startswith("sha1 mismatch")
-        ]
+    async def list_sha1_mismatch_files(
+        self, *, offset: int = 0, limit: int
+    ) -> list[EpisodeFile]:
+        rows = sorted(
+            (
+                f
+                for f in self.episode_files.values()
+                if f.import_status == ImportOutcome.imported
+                and (f.import_error or "").startswith("sha1 mismatch")
+            ),
+            key=lambda f: f.id,
+        )
+        return rows[offset : offset + limit]
+
+    async def count_sha1_mismatch_files(self) -> int:
+        return len(
+            [
+                f
+                for f in self.episode_files.values()
+                if f.import_status == ImportOutcome.imported
+                and (f.import_error or "").startswith("sha1 mismatch")
+            ]
+        )
+
+    async def get_shows_by_ids(self, show_ids):
+        from miramedia.shows.schemas import ShowId
+
+        self.shows_by_ids_calls = getattr(self, "shows_by_ids_calls", 0) + 1
+        return {ShowId(sid): self.shows[sid] for sid in show_ids if sid in self.shows}
 
     async def clear_file_integrity_state(
         self,
@@ -78,13 +104,33 @@ class _IntegrityMovieRepo(FakeMovieRepository):
     async def get_movie_file_by_id(self, file_id: uuid.UUID):
         return self.movie_files.get(file_id)
 
-    async def list_sha1_mismatch_files(self) -> list[MovieFile]:
-        return [
-            f
-            for f in self.movie_files.values()
-            if f.import_status == ImportOutcome.imported
-            and (f.import_error or "").startswith("sha1 mismatch")
-        ]
+    async def list_sha1_mismatch_files(
+        self, *, offset: int = 0, limit: int
+    ) -> list[MovieFile]:
+        rows = sorted(
+            (
+                f
+                for f in self.movie_files.values()
+                if f.import_status == ImportOutcome.imported
+                and (f.import_error or "").startswith("sha1 mismatch")
+            ),
+            key=lambda f: f.id,
+        )
+        return rows[offset : offset + limit]
+
+    async def count_sha1_mismatch_files(self) -> int:
+        return len(
+            [
+                f
+                for f in self.movie_files.values()
+                if f.import_status == ImportOutcome.imported
+                and (f.import_error or "").startswith("sha1 mismatch")
+            ]
+        )
+
+    async def get_movies_by_ids(self, movie_ids):
+        self.movies_by_ids_calls = getattr(self, "movies_by_ids_calls", 0) + 1
+        return {mid: self.movies[mid] for mid in movie_ids if mid in self.movies}
 
     async def clear_file_integrity_state(
         self,
@@ -116,8 +162,14 @@ def _show_service(repo: _IntegrityShowRepo, path_by_id: dict[uuid.UUID, Path | N
     async def resolve_episode_file_path(row: EpisodeFile) -> Path | None:
         return path_by_id.get(row.id)
 
+    async def batch_resolve_episode_file_paths(rows, episode_context, shows):
+        del episode_context, shows
+        return {row.id: path_by_id.get(row.id) for row in rows}
+
     return MagicMock(
-        show_repository=repo, resolve_episode_file_path=resolve_episode_file_path
+        show_repository=repo,
+        resolve_episode_file_path=resolve_episode_file_path,
+        batch_resolve_episode_file_paths=batch_resolve_episode_file_paths,
     )
 
 
@@ -125,8 +177,14 @@ def _movie_service(repo: _IntegrityMovieRepo, path_by_id: dict[uuid.UUID, Path |
     async def resolve_movie_file_path(row: MovieFile) -> Path | None:
         return path_by_id.get(row.id)
 
+    async def batch_resolve_movie_file_paths(rows, movies):
+        del movies
+        return {row.id: path_by_id.get(row.id) for row in rows}
+
     return MagicMock(
-        movie_repository=repo, resolve_movie_file_path=resolve_movie_file_path
+        movie_repository=repo,
+        resolve_movie_file_path=resolve_movie_file_path,
+        batch_resolve_movie_file_paths=batch_resolve_movie_file_paths,
     )
 
 
@@ -165,14 +223,17 @@ def test_list_integrity_mismatches_maps_show_and_movie_shape() -> None:
     movie_repo.movie_files[movie_file.id] = movie_file
 
     svc = TorrentService(torrent_repository=FakeTorrentRepository())  # type: ignore[arg-type]
-    rows = _run(
+    page = _run(
         svc.list_integrity_mismatches(
+            offset=0,
+            limit=INTEGRITY_MISMATCH_MAX_LIMIT,
             show_service=_show_service(
                 show_repo, {ep_file.id: Path("/lib/S03E07.mkv")}
             ),
             movie_service=_movie_service(movie_repo, {movie_file.id: None}),
         )
     )
+    rows = page.items
 
     assert len(rows) == 2
     show_row = next(r for r in rows if r.media_type == "show")
@@ -273,14 +334,17 @@ def test_list_integrity_mismatches_batches_lookups() -> None:
     movie_repo.get_movie_by_id = counting_get_movie  # type: ignore[method-assign]
 
     svc = TorrentService(torrent_repository=FakeTorrentRepository())  # type: ignore[arg-type]
-    rows = _run(
+    page = _run(
         svc.list_integrity_mismatches(
+            offset=0,
+            limit=INTEGRITY_MISMATCH_MAX_LIMIT,
             show_service=_show_service(show_repo, path_by_id),
             movie_service=_movie_service(
                 movie_repo, {movie_file.id: Path("/lib/Dune.mkv")}
             ),
         )
     )
+    rows = page.items
 
     assert len(rows) == 4
     show_rows = [r for r in rows if r.media_type == "show"]
@@ -294,6 +358,8 @@ def test_list_integrity_mismatches_batches_lookups() -> None:
     # One batch each for shows + movies; no per-row title lookups.
     assert getattr(show_repo, "context_batch_calls", 0) == 1
     assert getattr(movie_repo, "name_batch_calls", 0) == 1
+    assert getattr(show_repo, "shows_by_ids_calls", 0) == 1
+    assert getattr(movie_repo, "movies_by_ids_calls", 0) == 1
     assert show_repo.get_episode_calls == 0
     assert show_repo.get_season_calls == 0
     assert show_repo.get_show_calls == 0
@@ -451,11 +517,15 @@ def test_list_endpoint_maps_rows() -> None:
         r = client.get(f"{PREFIX}/integrity/mismatches")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert len(body) == 1
-    assert body[0]["media_title"] == "Severance"
-    assert body[0]["episode"] == "S03E07"
-    assert body[0]["variant_tag"] == "remux"
-    assert body[0]["file_id"] == str(fid)
+    assert body["total"] == 1
+    assert body["limit"] == INTEGRITY_MISMATCH_DEFAULT_LIMIT
+    assert body["offset"] == 0
+    assert body["next_offset"] is None
+    assert len(body["items"]) == 1
+    assert body["items"][0]["media_title"] == "Severance"
+    assert body["items"][0]["episode"] == "S03E07"
+    assert body["items"][0]["variant_tag"] == "remux"
+    assert body["items"][0]["file_id"] == str(fid)
 
 
 def test_rebaseline_and_dismiss_endpoints() -> None:
@@ -625,3 +695,131 @@ def test_integrity_requires_superuser() -> None:
     with integrity_client(superuser=False) as (client, _, _):
         r = client.get(f"{PREFIX}/integrity/mismatches")
     assert r.status_code == 403
+
+
+def test_integrity_mismatch_limit_constants() -> None:
+    assert INTEGRITY_MISMATCH_DEFAULT_LIMIT == 50
+    assert INTEGRITY_MISMATCH_MAX_LIMIT == 100
+
+
+def _seed_mismatch_rows(
+    show_repo: _IntegrityShowRepo,
+    movie_repo: _IntegrityMovieRepo,
+    *,
+    show_count: int,
+    movie_count: int,
+) -> None:
+    detected = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+    for i in range(show_count):
+        show = make_show(name=f"Show-{i}", season_number=1, episode_number=i + 1)
+        show_repo.add_show(show)
+        episode = show.seasons[0].episodes[0]
+        fid = uuid.UUID(int=i + 1)
+        show_repo.episode_files[fid] = EpisodeFile(
+            id=fid,
+            episode_id=episode.id,
+            quality=Quality.hd,
+            torrent_id=None,
+            import_status=ImportOutcome.imported,
+            import_error="sha1 mismatch (expected a…, got b…)",
+            last_attempt_at=detected,
+            sha1="abc",
+        )
+    for j in range(movie_count):
+        movie = make_movie(name=f"Movie-{j}")
+        movie_repo.add_movie(movie)
+        mid = uuid.UUID(int=1000 + j + 1)
+        movie_repo.movie_files[mid] = MovieFile(
+            id=mid,
+            movie_id=movie.id,
+            quality=Quality.hd,
+            import_status=ImportOutcome.imported,
+            import_error="sha1 mismatch (expected a…, got b…)",
+            last_attempt_at=detected,
+            sha1="def",
+        )
+
+
+def test_integrity_mismatches_default_limit() -> None:
+    show_repo = _IntegrityShowRepo()
+    movie_repo = _IntegrityMovieRepo()
+    _seed_mismatch_rows(show_repo, movie_repo, show_count=60, movie_count=0)
+    with integrity_client(show_repo=show_repo, movie_repo=movie_repo) as (client, _, _):
+        r = client.get(f"{PREFIX}/integrity/mismatches")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["limit"] == INTEGRITY_MISMATCH_DEFAULT_LIMIT
+    assert len(body["items"]) == INTEGRITY_MISMATCH_DEFAULT_LIMIT
+    assert body["total"] == 60
+    assert body["next_offset"] == INTEGRITY_MISMATCH_DEFAULT_LIMIT
+
+
+def test_integrity_mismatches_custom_limit_and_next_offset() -> None:
+    show_repo = _IntegrityShowRepo()
+    movie_repo = _IntegrityMovieRepo()
+    _seed_mismatch_rows(show_repo, movie_repo, show_count=3, movie_count=2)
+    with integrity_client(show_repo=show_repo, movie_repo=movie_repo) as (client, _, _):
+        r = client.get(
+            f"{PREFIX}/integrity/mismatches", params={"offset": 2, "limit": 3}
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 5
+    assert body["offset"] == 2
+    assert body["limit"] == 3
+    assert len(body["items"]) == 3
+    assert body["items"][0]["media_type"] == "show"
+    assert body["items"][1]["media_type"] == "movie"
+    assert body["items"][2]["media_type"] == "movie"
+    assert body["next_offset"] is None
+
+
+def test_integrity_mismatches_max_limit() -> None:
+    show_repo = _IntegrityShowRepo()
+    movie_repo = _IntegrityMovieRepo()
+    _seed_mismatch_rows(show_repo, movie_repo, show_count=10, movie_count=0)
+    with integrity_client(show_repo=show_repo, movie_repo=movie_repo) as (client, _, _):
+        r = client.get(
+            f"{PREFIX}/integrity/mismatches",
+            params={"limit": INTEGRITY_MISMATCH_MAX_LIMIT},
+        )
+    assert r.status_code == 200, r.text
+    assert len(r.json()["items"]) == 10
+
+
+def test_integrity_mismatches_over_max_limit_rejected() -> None:
+    with integrity_client() as (client, _, _):
+        r = client.get(
+            f"{PREFIX}/integrity/mismatches",
+            params={"limit": INTEGRITY_MISMATCH_MAX_LIMIT + 1},
+        )
+    assert r.status_code == 422
+
+
+def test_integrity_mismatches_empty_page_past_total() -> None:
+    show_repo = _IntegrityShowRepo()
+    movie_repo = _IntegrityMovieRepo()
+    _seed_mismatch_rows(show_repo, movie_repo, show_count=2, movie_count=1)
+    with integrity_client(show_repo=show_repo, movie_repo=movie_repo) as (client, _, _):
+        r = client.get(f"{PREFIX}/integrity/mismatches", params={"offset": 99})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["items"] == []
+    assert body["total"] == 3
+    assert body["next_offset"] is None
+
+
+def test_integrity_mismatches_hard_cap_materializes_at_most_max() -> None:
+    show_repo = _IntegrityShowRepo()
+    movie_repo = _IntegrityMovieRepo()
+    _seed_mismatch_rows(show_repo, movie_repo, show_count=80, movie_count=80)
+    with integrity_client(show_repo=show_repo, movie_repo=movie_repo) as (client, _, _):
+        r = client.get(
+            f"{PREFIX}/integrity/mismatches",
+            params={"limit": INTEGRITY_MISMATCH_MAX_LIMIT},
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 160
+    assert len(body["items"]) == INTEGRITY_MISMATCH_MAX_LIMIT
+    assert body["next_offset"] == INTEGRITY_MISMATCH_MAX_LIMIT

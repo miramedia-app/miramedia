@@ -637,20 +637,50 @@ class MovieRepository:
             log.exception("Failed to set sha1 for movie_file %s", file_id)
             raise
 
-    async def list_sha1_mismatch_files(self) -> list[MovieFileSchema]:
+    async def count_sha1_mismatch_files(self) -> int:
+        """Count imported movie files with a SHA1 mismatch stamp."""
+        stmt = (
+            select(func.count())
+            .select_from(MovieFile)
+            .where(
+                MovieFile.import_status == ImportOutcome.imported,
+                MovieFile.import_error.like("sha1 mismatch%"),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def list_sha1_mismatch_files(
+        self, *, offset: int = 0, limit: int
+    ) -> list[MovieFileSchema]:
         """Imported movie files whose integrity audit recorded a SHA1 mismatch.
 
         Contract: ``import_error`` prefix ``sha1 mismatch%`` must stay in sync
         with ``verify_imported_files_task`` in ``miramedia/scheduler.py``.
         MovieFile has no ORM ``movie`` relationship; title is resolved by the
-        service via ``movie_id``.
+        service via ``movie_id``. Rows are ordered by ``id`` ascending.
         """
-        stmt = select(MovieFile).where(
-            MovieFile.import_status == ImportOutcome.imported,
-            MovieFile.import_error.like("sha1 mismatch%"),
+        stmt = (
+            select(MovieFile)
+            .where(
+                MovieFile.import_status == ImportOutcome.imported,
+                MovieFile.import_error.like("sha1 mismatch%"),
+            )
+            .order_by(MovieFile.id)
+            .offset(offset)
+            .limit(limit)
         )
         rows = (await self.db.execute(stmt)).scalars().all()
         return [MovieFileSchema.model_validate(r) for r in rows]
+
+    async def get_movies_by_ids(
+        self, movie_ids: list[MovieId]
+    ) -> dict[MovieId, MovieSchema]:
+        """Batch-load movies by primary key for integrity path resolution."""
+        if not movie_ids:
+            return {}
+        stmt = select(Movie).where(Movie.id.in_(movie_ids))
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return {MovieId(row.id): MovieSchema.model_validate(row) for row in rows}
 
     async def get_movie_names_by_ids(
         self, movie_ids: list[MovieId]
