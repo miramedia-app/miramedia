@@ -54,5 +54,9 @@ def fake_scheduler_config(
         misc=SimpleNamespace(
             integrity_check_enabled=integrity_check_enabled,
             integrity_check_interval_hours=24,
+            show_libraries=[],
+            movie_libraries=[],
+            show_directory=Path("fake-shows"),
+            movie_directory=Path("fake-movies"),
         ),
     )

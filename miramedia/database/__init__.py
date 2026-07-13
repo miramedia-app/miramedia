@@ -436,6 +436,19 @@ async def release_session_before_external_io(db: AsyncSession) -> None:
         log.exception("Failed to release connection before external I/O")
 
 
+async def release_sessions_before_external_io(
+    *sessions: AsyncSession,
+) -> None:
+    """Release every distinct session before slow external I/O."""
+    seen: set[int] = set()
+    for db in sessions:
+        token = id(db)
+        if token in seen:
+            continue
+        seen.add(token)
+        await release_session_before_external_io(db)
+
+
 @asynccontextmanager
 async def background_session() -> AsyncGenerator[AsyncSession]:
     """Yield a fresh ``SessionLocalBackground`` session.

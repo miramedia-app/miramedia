@@ -109,6 +109,7 @@ from miramedia.shows.schemas import (  # noqa: E402
     Episode,
     EpisodeFile,
     EpisodeId,
+    EpisodeIntegrityContext,
     PublicEpisodeFile,
     PublicSeason,
     PublicShow,
@@ -117,6 +118,9 @@ from miramedia.shows.schemas import (  # noqa: E402
     SeasonNumber,
     Show,
     ShowId,
+)
+from miramedia.torrents.integrity import (  # noqa: E402
+    resolve_episode_file_path_in_memory,
 )
 from miramedia.torrents.mediainfo import analyze_async  # noqa: E402
 from miramedia.torrents.parsing import (  # noqa: E402
@@ -1537,29 +1541,32 @@ class ShowService(MediaService[Show, ShowId]):
         season_dir = self.get_root_season_directory(
             show=show, season_number=season.number
         )
-        if not season_dir.exists():
-            return None
-        stems = episode_file_stem_candidates(
-            show,
+        return resolve_episode_file_path_in_memory(
+            show=show,
             season_number=season.number,
             episode_number=episode.number,
-            quality=episode_file.quality,
-            parts=NameParts.from_row(episode_file),
+            episode_file=episode_file,
+            season_dir=season_dir,
         )
-        for stem in stems:
-            for candidate in files_matching_stem(season_dir, stem):
-                if candidate.suffix.lower() in {
-                    ".mkv",
-                    ".mp4",
-                    ".avi",
-                    ".mov",
-                    ".m4v",
-                    ".webm",
-                    ".ts",
-                    ".wmv",
-                }:
-                    return candidate
-        return None
+
+    async def batch_resolve_episode_file_paths(
+        self,
+        rows: list[EpisodeFile],
+        episode_context: dict[EpisodeId, EpisodeIntegrityContext],
+        shows: dict[ShowId, Show],
+    ) -> dict[UUID, Path | None]:
+        """Resolve on-disk paths for a batch with one directory scan per season."""
+        from miramedia.database import release_session_before_external_io
+        from miramedia.torrents.integrity import (
+            IntegrityPathLayout,
+            batch_resolve_episode_paths_async,
+        )
+
+        await release_session_before_external_io(self.show_repository.db)
+        layout = IntegrityPathLayout.from_config()
+        return await batch_resolve_episode_paths_async(
+            rows, episode_context, shows, layout
+        )
 
     async def import_episode_from_file(
         self,

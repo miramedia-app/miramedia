@@ -26,6 +26,7 @@ from miramedia.shows.schemas import (
     Show,
     ShowId,
 )
+from miramedia.torrents.integrity import Sha1MismatchPage, Sha1MismatchPageKey
 from miramedia.torrents.schemas import Quality, Torrent, TorrentId, TorrentStatus
 from tests.fakes.db import FakeDb
 
@@ -63,7 +64,7 @@ class FakeShowRepository:
     async def batch_episodes_with_context(
         self, episode_ids: list[EpisodeId]
     ) -> dict[EpisodeId, object]:
-        from miramedia.shows.repository import EpisodeIntegrityContext
+        from miramedia.shows.schemas import EpisodeIntegrityContext
 
         self.context_batch_calls = getattr(self, "context_batch_calls", 0) + 1
         out: dict[EpisodeId, object] = {}
@@ -278,7 +279,15 @@ class FakeMovieRepository:
 
 
 class FakeTorrentRepository:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        show_repo: FakeShowRepository | None = None,
+        movie_repo: FakeMovieRepository | None = None,
+    ) -> None:
+        self.show_repo = show_repo
+        self.movie_repo = movie_repo
+        self.db = FakeDb()
         self.torrents: dict[TorrentId, Torrent] = {}
         self.episode_files: dict[TorrentId, list[EpisodeFile]] = {}
         self.movie_files: dict[TorrentId, list[MovieFile]] = {}
@@ -331,6 +340,30 @@ class FakeTorrentRepository:
             for torrent in self.torrents.values()
             if torrent.status in ACTIVE_TORRENT_STATUSES
         ]
+
+    async def paginate_sha1_mismatch_keys(
+        self, *, offset: int, limit: int
+    ) -> Sha1MismatchPage:
+        show_rows: list[EpisodeFile] = []
+        movie_rows: list[MovieFile] = []
+        if self.show_repo is not None and hasattr(
+            self.show_repo, "list_sha1_mismatch_files"
+        ):
+            show_rows = await self.show_repo.list_sha1_mismatch_files(
+                offset=0, limit=10_000
+            )
+        if self.movie_repo is not None and hasattr(
+            self.movie_repo, "list_sha1_mismatch_files"
+        ):
+            movie_rows = await self.movie_repo.list_sha1_mismatch_files(
+                offset=0, limit=10_000
+            )
+        keys = [Sha1MismatchPageKey("show", row.id) for row in show_rows] + [
+            Sha1MismatchPageKey("movie", row.id) for row in movie_rows
+        ]
+        total = len(keys)
+        page = keys[offset : offset + limit]
+        return Sha1MismatchPage(keys=page, total=total)
 
 
 def _season_for_episode(repo: FakeShowRepository, episode_id: EpisodeId) -> Season:

@@ -42,6 +42,10 @@ from miramedia.torrents.dependencies import (
     torrent_repository_dep,
     torrent_service_dep,
 )
+from miramedia.torrents.integrity import (
+    INTEGRITY_MISMATCH_DEFAULT_LIMIT,
+    INTEGRITY_MISMATCH_MAX_LIMIT,
+)
 from miramedia.torrents.quality_naming import NameParts
 from miramedia.torrents.schemas import (
     BulkRetryImportFailure,
@@ -52,12 +56,12 @@ from miramedia.torrents.schemas import (
     ImportStatusCounts,
     ImportStatusFilter,
     IntegrityActionResult,
-    IntegrityMismatch,
     ManualDownloadRequest,
     ManualMapRequest,
     ManualMapResult,
     ManualMapTargetType,
     MediaType,
+    PaginatedIntegrityMismatches,
     PaginatedTorrentImports,
     Quality,
     RetryImportResult,
@@ -757,9 +761,15 @@ async def list_integrity_mismatches(
     service: torrent_service_dep,
     show_service: show_service_dep,
     movie_service: movie_service_dep,
-) -> list[IntegrityMismatch]:
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[
+        int, Query(gt=0, le=INTEGRITY_MISMATCH_MAX_LIMIT)
+    ] = INTEGRITY_MISMATCH_DEFAULT_LIMIT,
+) -> PaginatedIntegrityMismatches:
     """Imported files whose integrity audit recorded a SHA1 mismatch."""
     return await service.list_integrity_mismatches(
+        offset=offset,
+        limit=limit,
         show_service=show_service,
         movie_service=movie_service,
     )

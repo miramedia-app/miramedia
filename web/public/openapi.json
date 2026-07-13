@@ -3814,22 +3814,6 @@
         "summary": "List Integrity Mismatches",
         "description": "Imported files whose integrity audit recorded a SHA1 mismatch.",
         "operationId": "list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/IntegrityMismatch"
-                  },
-                  "type": "array",
-                  "title": "Response List Integrity Mismatches Api V1 Torrents Integrity Mismatches Get"
-                }
-              }
-            }
-          }
-        },
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -3837,7 +3821,54 @@
           {
             "APIKeyCookie": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "exclusiveMinimum": 0,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedIntegrityMismatches"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline": {
@@ -14000,6 +14031,49 @@
           "limit"
         ],
         "title": "PaginatedImports"
+      },
+      "PaginatedIntegrityMismatches": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IntegrityMismatch"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "offset",
+          "limit"
+        ],
+        "title": "PaginatedIntegrityMismatches",
+        "description": "Bounded page of integrity-mismatch rows (shows first, then movies)."
       },
       "PaginatedResponse_ActivityLogRead_": {
         "properties": {
