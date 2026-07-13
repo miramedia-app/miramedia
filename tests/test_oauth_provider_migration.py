@@ -13,6 +13,8 @@ from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text
 
+from tests.oauth_test_helpers import KEY_A, KEY_B
+
 _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
     / "alembic"
@@ -161,13 +163,15 @@ def pg_oauth_schema():
         engine.dispose()
 
 
-def test_migration_contains_uuid_safe_dedupe_and_preflight() -> None:
+def test_migration_contains_uuid_safe_dedupe_and_exact_pair_preflight() -> None:
     source = _MIGRATION_PATH.read_text(encoding="utf-8")
     assert "ROW_NUMBER() OVER" in source
     assert "ORDER BY id::text ASC" in source
     assert "MIN(id)" not in source
-    assert "assert_no_cross_user_account_conflicts" in source
+    assert "assert_no_cross_user_provider_account_conflicts" in source
     assert "uq_oauth_account_oauth_name_account_id" in source
+    assert 'canonical="oidc"' not in source
+    assert "rename_remaining_legacy_rows" not in source
 
 
 def test_migration_sql_plans_on_postgresql_without_min_uuid() -> None:
@@ -178,15 +182,14 @@ def test_migration_sql_plans_on_postgresql_without_min_uuid() -> None:
         conn.commit()
         ctx = MigrationContext.configure(connection=conn)
         with Operations.context(ctx):
-            migration.assert_no_cross_user_account_conflicts(conn)
-            migration.delete_legacy_when_canonical_same_user(conn, canonical="oidc")
-            migration.delete_duplicate_legacy_rows(conn, canonical="oidc")
-            migration.rename_remaining_legacy_rows(conn, canonical="oidc")
+            migration.assert_no_cross_user_provider_account_conflicts(conn)
+            migration.delete_duplicate_rows_same_user(conn)
+            migration.ensure_unique_oauth_name_account_id(conn)
         conn.rollback()
     engine.dispose()
 
 
-def test_upgrade_dedupes_same_user_legacy_aliases_deterministically(
+def test_upgrade_dedupes_exact_pair_same_user_deterministically(
     pg_oauth_schema,
 ) -> None:
     conn, migration, _engine = pg_oauth_schema
@@ -205,7 +208,7 @@ def test_upgrade_dedupes_same_user_legacy_aliases_deterministically(
         conn,
         row_id=drop_id,
         user_id=user_id,
-        oauth_name="LegacyB",
+        oauth_name="LegacyA",
         account_id="acct-1",
     )
 
@@ -214,39 +217,38 @@ def test_upgrade_dedupes_same_user_legacy_aliases_deterministically(
     rows = _fetch_accounts(conn)
     assert len(rows) == 1
     assert rows[0]["id"] == str(keep_id)
-    assert rows[0]["oauth_name"] == "oidc"
+    assert rows[0]["oauth_name"] == "LegacyA"
 
 
-def test_upgrade_dedupes_canonical_and_legacy_same_user(pg_oauth_schema) -> None:
+def test_upgrade_allows_same_account_id_across_provider_namespaces(
+    pg_oauth_schema,
+) -> None:
     conn, migration, _engine = pg_oauth_schema
     user_id = uuid.uuid4()
-    canonical_id = uuid.uuid4()
-    legacy_id = uuid.uuid4()
     _insert_user(conn, user_id)
     _insert_oauth(
         conn,
-        row_id=canonical_id,
+        row_id=uuid.uuid4(),
         user_id=user_id,
-        oauth_name="oidc",
-        account_id="acct-1",
+        oauth_name=KEY_A,
+        account_id="shared-sub",
     )
     _insert_oauth(
         conn,
-        row_id=legacy_id,
+        row_id=uuid.uuid4(),
         user_id=user_id,
-        oauth_name="OldProvider",
-        account_id="acct-1",
+        oauth_name=KEY_B,
+        account_id="shared-sub",
     )
 
     _run_migration(conn, migration, direction="upgrade")
 
     rows = _fetch_accounts(conn)
-    assert len(rows) == 1
-    assert rows[0]["id"] == str(canonical_id)
-    assert rows[0]["oauth_name"] == "oidc"
+    assert len(rows) == 2
+    assert {row["oauth_name"] for row in rows} == {KEY_A, KEY_B}
 
 
-def test_upgrade_fails_closed_on_cross_user_account_id(pg_oauth_schema) -> None:
+def test_upgrade_fails_closed_on_cross_user_exact_pair(pg_oauth_schema) -> None:
     conn, migration, _engine = pg_oauth_schema
     user_a = uuid.uuid4()
     user_b = uuid.uuid4()
@@ -263,55 +265,37 @@ def test_upgrade_fails_closed_on_cross_user_account_id(pg_oauth_schema) -> None:
         conn,
         row_id=uuid.uuid4(),
         user_id=user_b,
-        oauth_name="LegacyB",
+        oauth_name="LegacyA",
         account_id="shared-acct",
     )
 
     savepoint = conn.begin_nested()
-    with pytest.raises(
-        RuntimeError, match="account_id values are bound to multiple users"
-    ):
+    with pytest.raises(RuntimeError, match="oauth_name, account_id"):
         _run_migration(conn, migration, direction="upgrade")
     savepoint.rollback()
 
     rows = _fetch_accounts(conn)
     assert len(rows) == 2
-    assert {row["oauth_name"] for row in rows} == {"LegacyA", "LegacyB"}
+    assert all(row["oauth_name"] == "LegacyA" for row in rows)
 
 
-def test_upgrade_fails_closed_on_canonical_and_legacy_cross_user(
-    pg_oauth_schema,
-) -> None:
+def test_upgrade_preserves_legacy_display_name_keys(pg_oauth_schema) -> None:
     conn, migration, _engine = pg_oauth_schema
-    user_a = uuid.uuid4()
-    user_b = uuid.uuid4()
-    _insert_user(conn, user_a)
-    _insert_user(conn, user_b)
+    user_id = uuid.uuid4()
+    _insert_user(conn, user_id)
     _insert_oauth(
         conn,
         row_id=uuid.uuid4(),
-        user_id=user_a,
-        oauth_name="oidc",
-        account_id="shared-acct",
-    )
-    _insert_oauth(
-        conn,
-        row_id=uuid.uuid4(),
-        user_id=user_b,
+        user_id=user_id,
         oauth_name="OldProvider",
-        account_id="shared-acct",
+        account_id="acct-1",
     )
 
-    savepoint = conn.begin_nested()
-    with pytest.raises(
-        RuntimeError, match="account_id values are bound to multiple users"
-    ):
-        _run_migration(conn, migration, direction="upgrade")
-    savepoint.rollback()
+    _run_migration(conn, migration, direction="upgrade")
 
     rows = _fetch_accounts(conn)
-    assert len(rows) == 2
-    assert {row["oauth_name"] for row in rows} == {"oidc", "OldProvider"}
+    assert len(rows) == 1
+    assert rows[0]["oauth_name"] == "OldProvider"
 
 
 def test_upgrade_is_idempotent_and_enforces_unique_index(pg_oauth_schema) -> None:
@@ -331,7 +315,7 @@ def test_upgrade_is_idempotent_and_enforces_unique_index(pg_oauth_schema) -> Non
 
     rows = _fetch_accounts(conn)
     assert len(rows) == 1
-    assert rows[0]["oauth_name"] == "oidc"
+    assert rows[0]["oauth_name"] == "Legacy"
 
     with pytest.raises(Exception, match=r"unique|duplicate key"):
         conn.execute(
@@ -340,7 +324,7 @@ def test_upgrade_is_idempotent_and_enforces_unique_index(pg_oauth_schema) -> Non
                 INSERT INTO oauth_account (
                     id, user_id, oauth_name, account_id, account_email, access_token
                 ) VALUES (
-                    :id, :user_id, 'oidc', 'acct-1', 'dup@example.com', 'token'
+                    :id, :user_id, 'Legacy', 'acct-1', 'dup@example.com', 'token'
                 )
                 """
             ),

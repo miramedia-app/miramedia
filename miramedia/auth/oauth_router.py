@@ -248,6 +248,7 @@ def get_dynamic_oauth_router(
                     user_manager.user_db,
                     account_id=str(account_id),
                     display_name=generation.provider_name,
+                    provider_key=generation.account_provider_name,
                 )
             except OAuthProviderConflictError as exc:
                 raise HTTPException(

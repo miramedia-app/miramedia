@@ -15,7 +15,7 @@ from miramedia.auth.oauth_provider import (
     plan_legacy_oauth_migration,
     reconcile_legacy_oauth_account,
 )
-from miramedia.auth.runtime import OAUTH_ROUTE_NAME
+from tests.oauth_test_helpers import KEY_DEFAULT
 
 
 def test_plan_legacy_migration_noop_when_canonical_exists() -> None:
@@ -29,19 +29,21 @@ def test_plan_legacy_migration_noop_when_canonical_exists() -> None:
     assert plan.action == "noop"
 
 
-def test_plan_legacy_migration_dedupe_when_canonical_and_legacy_same_user() -> None:
+def test_plan_legacy_migration_dedupe_when_canonical_and_provable_legacy_same_user() -> (
+    None
+):
     user_id = uuid.uuid4()
     plan = plan_legacy_oauth_migration(
         account_id="acct-1",
         display_name="LegacyName",
         canonical_user_id=user_id,
         legacy_user_id=user_id,
-        same_user_legacy_count=1,
+        provable_legacy_count=1,
     )
     assert plan.action == "dedupe"
 
 
-def test_plan_legacy_migration_dedupe_when_canonical_and_mismatched_display_name() -> (
+def test_plan_legacy_migration_noop_when_canonical_has_unprovable_legacy_alias() -> (
     None
 ):
     user_id = uuid.uuid4()
@@ -52,15 +54,30 @@ def test_plan_legacy_migration_dedupe_when_canonical_and_mismatched_display_name
         legacy_user_id=None,
         same_user_legacy_count=1,
     )
-    assert plan.action == "dedupe"
+    assert plan.action == "noop"
 
 
-def test_plan_legacy_migration_rename_when_only_legacy_exists() -> None:
+def test_plan_legacy_migration_manual_when_legacy_aliases_do_not_match_display() -> (
+    None
+):
+    plan = plan_legacy_oauth_migration(
+        account_id="acct-1",
+        display_name="NewDisplay",
+        canonical_user_id=None,
+        legacy_user_id=uuid.uuid4(),
+        same_user_legacy_count=1,
+        provable_legacy_count=0,
+    )
+    assert plan.action == "manual"
+
+
+def test_plan_legacy_migration_rename_when_only_provable_legacy_exists() -> None:
     plan = plan_legacy_oauth_migration(
         account_id="acct-1",
         display_name="LegacyName",
         canonical_user_id=None,
         legacy_user_id=uuid.uuid4(),
+        provable_legacy_count=1,
     )
     assert plan.action == "rename"
     assert plan.legacy_oauth_name == "LegacyName"
@@ -91,7 +108,7 @@ def test_reconcile_legacy_oauth_account_renames_row() -> None:
     user_db = AsyncMock()
 
     async def _lookup(oauth: str, _account_id: str) -> object:
-        if oauth == OAUTH_ROUTE_NAME:
+        if oauth == KEY_DEFAULT:
             raise user_exceptions.UserNotExists()
         return user
 
@@ -104,14 +121,12 @@ def test_reconcile_legacy_oauth_account_renames_row() -> None:
             user_db,
             account_id="acct-1",
             display_name="LegacyName",
+            provider_key=KEY_DEFAULT,
         )
 
     asyncio.run(_run())
     user_db.update_oauth_account.assert_awaited_once()
-    assert (
-        user_db.update_oauth_account.await_args.args[2]["oauth_name"]
-        == OAUTH_ROUTE_NAME
-    )
+    assert user_db.update_oauth_account.await_args.args[2]["oauth_name"] == KEY_DEFAULT
 
 
 def test_reconcile_legacy_oauth_account_dedupes_canonical_and_legacy_same_user() -> (
@@ -121,7 +136,7 @@ def test_reconcile_legacy_oauth_account_dedupes_canonical_and_legacy_same_user()
     canonical = SimpleNamespace(
         id=uuid.uuid4(),
         account_id="acct-1",
-        oauth_name=OAUTH_ROUTE_NAME,
+        oauth_name=KEY_DEFAULT,
         access_token="token",
         account_email="user@example.com",
         expires_at=None,
@@ -148,6 +163,7 @@ def test_reconcile_legacy_oauth_account_dedupes_canonical_and_legacy_same_user()
             user_db,
             account_id="acct-1",
             display_name="LegacyName",
+            provider_key=KEY_DEFAULT,
         )
 
     asyncio.run(_run())
@@ -155,12 +171,12 @@ def test_reconcile_legacy_oauth_account_dedupes_canonical_and_legacy_same_user()
     user_db.session.commit.assert_awaited_once()
 
 
-def test_reconcile_dedupes_legacy_alias_when_display_name_changed() -> None:
+def test_reconcile_leaves_unprovable_legacy_when_display_name_changed() -> None:
     user_id = uuid.uuid4()
     canonical = SimpleNamespace(
         id=uuid.uuid4(),
         account_id="acct-1",
-        oauth_name=OAUTH_ROUTE_NAME,
+        oauth_name=KEY_DEFAULT,
         access_token="token",
         account_email="user@example.com",
         expires_at=None,
@@ -188,11 +204,11 @@ def test_reconcile_dedupes_legacy_alias_when_display_name_changed() -> None:
             user_db,
             account_id="acct-1",
             display_name="NewDisplay",
+            provider_key=KEY_DEFAULT,
         )
 
     asyncio.run(_run())
-    user_db.session.delete.assert_awaited_once_with(legacy)
-    user_db.session.commit.assert_awaited_once()
+    user_db.session.delete.assert_not_awaited()
     user_db.update_oauth_account.assert_not_awaited()
 
 
@@ -201,7 +217,7 @@ def test_reconcile_legacy_oauth_account_fails_closed_on_conflict() -> None:
     legacy_user = SimpleNamespace(id=uuid.uuid4(), oauth_accounts=[])
 
     async def _lookup(oauth: str, _account_id: str) -> object:
-        if oauth == OAUTH_ROUTE_NAME:
+        if oauth == KEY_DEFAULT:
             return canonical_user
         return legacy_user
 
@@ -214,6 +230,7 @@ def test_reconcile_legacy_oauth_account_fails_closed_on_conflict() -> None:
                 user_db,
                 account_id="acct-1",
                 display_name="LegacyName",
+                provider_key=KEY_DEFAULT,
             )
 
     asyncio.run(_run())

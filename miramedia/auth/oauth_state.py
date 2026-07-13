@@ -16,8 +16,8 @@ from fastapi_users.jwt import SecretType
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 
 from miramedia.auth.config import OpenIdConfig, validate_session_lifetime_value
+from miramedia.auth.oauth_identity import validate_provider_key_for_snapshot
 from miramedia.auth.runtime import (
-    OAUTH_ROUTE_NAME,
     AuthRuntimeGeneration,
     _build_openid_client_sync,
 )
@@ -123,8 +123,8 @@ def _validate_snapshot_payload(data: dict[str, Any]) -> OAuthAuthorizeSnapshot:
             data["configuration_endpoint"], "configuration_endpoint"
         )
         provider_name = _nonempty_str(data["provider_name"], "provider_name")
-        account_provider_name = _nonempty_str(
-            data["account_provider_name"], "account_provider_name"
+        account_provider_name = validate_provider_key_for_snapshot(
+            _nonempty_str(data["account_provider_name"], "account_provider_name")
         )
         frontend_url = _nonempty_str(data["frontend_url"], "frontend_url")
         frontend_http_url = _HTTP_URL_ADAPTER.validate_python(frontend_url)
@@ -229,7 +229,7 @@ async def auth_runtime_generation_from_snapshot(
         generation_id=0,
         oidc_enabled=True,
         provider_name=snapshot.provider_name,
-        account_provider_name=snapshot.account_provider_name or OAUTH_ROUTE_NAME,
+        account_provider_name=snapshot.account_provider_name,
         client=client,
         configuration_endpoint=snapshot.configuration_endpoint,
         cookie_secure=snapshot.cookie_secure,

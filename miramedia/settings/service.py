@@ -66,6 +66,14 @@ def diff_against_defaults(incoming: dict, defaults: dict) -> dict:
     return result
 
 
+def compute_mutation_overrides(prior_db_overrides: dict, incoming_patch: dict) -> dict:
+    """Derive persisted overrides from true TOML baseline plus authoritative DB state."""
+    toml_defaults = get_toml_defaults()
+    authoritative_prior = deep_merge(copy.deepcopy(toml_defaults), prior_db_overrides)
+    desired = deep_merge(copy.deepcopy(authoritative_prior), incoming_patch)
+    return diff_against_defaults(desired, toml_defaults)
+
+
 REDACTED_FIELDS = {
     "auth": {"token_secret"},
 }

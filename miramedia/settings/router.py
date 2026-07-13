@@ -31,11 +31,8 @@ from miramedia.settings.mutation import (
 )
 from miramedia.settings.schemas import SystemSettingsRead, SystemSettingsUpdate
 from miramedia.settings.service import (
-    SETTINGS_SECTIONS,
-    _config_to_dict,
     compute_clear_override_path,
-    deep_merge,
-    diff_against_defaults,
+    compute_mutation_overrides,
     get_effective_config,
     get_settings_schema,
     get_toml_defaults,
@@ -203,25 +200,16 @@ async def update_system_settings(
     """
     new_overrides = strip_none(data.model_dump(mode="json"))
     try:
-        new_overrides = validate_incoming_settings_update(new_overrides)
+        incoming_patch = validate_incoming_settings_update(new_overrides)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
-    # Diff against TOML defaults so only real changes are stored as overrides
-    # Use json_mode so enum/Path serialization matches the incoming data
-    config = MiraMediaConfig()
-    toml_defaults = {
-        s: _config_to_dict(getattr(config, s), json_mode=True)
-        for s in SETTINGS_SECTIONS
-    }
-    new_overrides = diff_against_defaults(new_overrides, toml_defaults)
-
     async def _prepare() -> tuple[dict, dict, int]:
         prior_overrides, revision = await repo.get_overrides_with_revision()
         return (
-            deep_merge(prior_overrides, new_overrides),
+            compute_mutation_overrides(prior_overrides, incoming_patch),
             prior_overrides,
             revision,
         )
@@ -328,9 +316,9 @@ async def import_settings(
     async def _prepare() -> tuple[dict, dict, int]:
         existing, revision = await repo.get_overrides_with_revision()
         if incoming_merged is not None:
-            merged = incoming_merged
+            merged = compute_mutation_overrides({}, incoming_merged)
         else:
-            merged = deep_merge(existing, incoming)
+            merged = compute_mutation_overrides(existing, incoming)
         return merged, existing, revision
 
     merged = await _commit_settings_mutation(

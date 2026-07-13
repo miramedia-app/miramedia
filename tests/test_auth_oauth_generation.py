@@ -22,6 +22,13 @@ from miramedia.auth.runtime import (
     dynamic_oauth_client,
 )
 from tests.fakes.repositories import FakeSettingsRepository
+from tests.oauth_test_helpers import (
+    ENDPOINT_A,
+    ENDPOINT_B,
+    KEY_A,
+    KEY_B,
+    KEY_DEFAULT,
+)
 
 SETTINGS_PREFIX = "/api/v1/system/settings"
 OIDC_AUTHORIZE_PATH = "/api/v1/auth/oauth/authorize"
@@ -135,6 +142,7 @@ def _oidc_payload(
     enabled: bool,
     name: str = "ConfiguredProvider",
     client_id: str = "client-a",
+    configuration_endpoint: str = "https://idp.example/.well-known/openid-configuration",
 ) -> dict[str, Any]:
     return {
         "auth": {
@@ -143,7 +151,7 @@ def _oidc_payload(
                 "name": name,
                 "client_id": client_id,
                 "client_secret": "secret",
-                "configuration_endpoint": "https://idp.example/.well-known/openid-configuration",
+                "configuration_endpoint": configuration_endpoint,
             }
         }
     }
@@ -281,7 +289,7 @@ def test_oauth_callback_uses_stable_provider_key_not_display_name(
             follow_redirects=False,
         )
     assert callback.status_code in {200, 204, 302, 307}
-    assert captured == [OAUTH_ROUTE_NAME]
+    assert captured == [KEY_DEFAULT]
     assert dynamic_oauth_client.name == OAUTH_ROUTE_NAME
     assert fake_openid[-1].name == "MyIdentityProvider"
 
@@ -352,8 +360,8 @@ def test_oauth_provider_key_stable_across_display_name_rename(
         )
 
     assert calls == [
-        (OAUTH_ROUTE_NAME, "account-1"),
-        (OAUTH_ROUTE_NAME, "account-1"),
+        (KEY_DEFAULT, "account-1"),
+        (KEY_DEFAULT, "account-1"),
     ]
     assert fake_openid[-1].name == "DisplayNameB"
 
@@ -584,3 +592,125 @@ def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_re
 
     jwt_lifetime = _jwt_lifetime_from_callback_response(callback)
     assert 3590 <= jwt_lifetime <= 3610
+
+
+def test_oauth_callback_uses_authorize_issuer_after_runtime_switches_to_issuer_b(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openid: list[MagicMock],  # noqa: ARG001
+) -> None:
+    from miramedia.auth.users import UserManager
+
+    captured: list[str] = []
+
+    async def _oauth_callback(
+        _self: UserManager,
+        provider: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        captured.append(provider)
+        return types.SimpleNamespace(
+            id=uuid.uuid4(),
+            email="user@example.com",
+            is_active=True,
+        )
+
+    monkeypatch.setattr(UserManager, "oauth_callback", _oauth_callback)
+
+    with settings_client() as (client, _repo):
+        client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(
+                enabled=True,
+                name="IssuerA",
+                configuration_endpoint=ENDPOINT_A,
+            ),
+        )
+        authorize_a = client.get(OIDC_AUTHORIZE_PATH)
+        assert authorize_a.status_code == 200
+        csrf_match = re.search(
+            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
+            authorize_a.headers.get("set-cookie", ""),
+            re.IGNORECASE,
+        )
+        assert csrf_match is not None
+        state_a = parse_qs(urlparse(authorize_a.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+
+        swap = client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(
+                enabled=True,
+                name="IssuerB",
+                configuration_endpoint=ENDPOINT_B,
+            ),
+        )
+        assert swap.status_code == 200
+        assert auth_runtime_store.get_active().account_provider_name == KEY_B
+
+        callback = client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state_a},
+            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+            follow_redirects=False,
+        )
+        assert callback.status_code in {200, 204, 302, 307}
+
+    assert captured == [KEY_A]
+    assert KEY_A != KEY_B
+
+
+def test_invalid_issuer_rejects_activation_without_mutating_prior_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openid: list[MagicMock],  # noqa: ARG001
+) -> None:
+    from miramedia.auth.oauth_identity import (
+        OpenIdIssuerResolutionError,
+        provider_key_from_issuer,
+    )
+    from tests.oauth_test_helpers import (
+        ENDPOINT_A,
+        ENDPOINT_B,
+        ENDPOINT_DEFAULT,
+        ISSUER_DEFAULT,
+    )
+
+    async def _resolve(configuration_endpoint: str) -> str:
+        if "broken.example" in configuration_endpoint:
+            msg = "missing issuer"
+            raise OpenIdIssuerResolutionError(msg)
+        mapping = {
+            ENDPOINT_A: "https://issuer-a.example/",
+            ENDPOINT_B: "https://issuer-b.example/",
+            ENDPOINT_DEFAULT: ISSUER_DEFAULT,
+        }
+        issuer = mapping.get(configuration_endpoint)
+        if issuer is None:
+            msg = "unknown configuration endpoint"
+            raise OpenIdIssuerResolutionError(msg)
+        return provider_key_from_issuer(issuer)
+
+    monkeypatch.setattr(
+        "miramedia.auth.runtime.resolve_openid_provider_key",
+        _resolve,
+    )
+
+    with settings_client() as (client, _repo):
+        good = client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(enabled=True, name="Good"),
+        )
+        assert good.status_code == 200
+        prior_key = auth_runtime_store.get_active().account_provider_name
+
+        bad = client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(
+                enabled=True,
+                name="Bad",
+                configuration_endpoint="https://broken.example/.well-known/openid-configuration",
+            ),
+        )
+        assert bad.status_code == 400
+        assert auth_runtime_store.get_active().account_provider_name == prior_key

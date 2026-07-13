@@ -18,6 +18,10 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from miramedia.auth.config import AuthConfig, OpenIdConfig
+from miramedia.auth.oauth_identity import (
+    OpenIdIssuerResolutionError,
+    resolve_openid_provider_key,
+)
 from miramedia.config import BasicConfig, MiraMediaConfig
 from miramedia.settings.service import build_isolated_config
 
@@ -157,6 +161,11 @@ async def build_auth_runtime_generation(
         )
     try:
         client = await asyncio.to_thread(_build_openid_client_sync, oidc)
+        provider_key = await resolve_openid_provider_key(oidc.configuration_endpoint)
+    except OpenIdIssuerResolutionError as exc:
+        raise AuthRuntimeActivationError() from exc
+    except AuthRuntimeActivationError:
+        raise
     except Exception as exc:
         log.warning(
             "OpenID Connect provider activation failed: %s",
@@ -167,7 +176,7 @@ async def build_auth_runtime_generation(
         generation_id=0,
         oidc_enabled=True,
         provider_name=oidc.name,
-        account_provider_name=OAUTH_ROUTE_NAME,
+        account_provider_name=provider_key,
         client=client,
         configuration_endpoint=oidc.configuration_endpoint,
         cookie_secure=cookie_secure,
