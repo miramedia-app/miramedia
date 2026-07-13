@@ -93,11 +93,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     )
 
     scheduler_ctx = SchedulerContext()
-    event_bridge_started = False
     native_client = None
     try:
         configure_threadpool()
-        event_bridge_started = await start_persistence()
+        await start_persistence()
         start_library_watcher()
         schedule_import_queue_warmup()
         native_client = await start_native_torrent_client()
@@ -125,7 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             await start_scheduler_workers(app, scheduler_ctx)
             yield
     finally:
-        await shutdown_startup(scheduler_ctx, native_client, event_bridge_started)
+        await shutdown_startup(scheduler_ctx, native_client)
 
 
 # Swagger UI / ReDoc are replaced by the embedded Scalar API reference in the

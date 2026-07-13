@@ -25,7 +25,6 @@ def test_shutdown_startup_cancels_outstanding_startup_tasks() -> None:
         await startup.shutdown_startup(
             startup.SchedulerContext(),
             native_client=None,
-            event_bridge_started=False,
         )
 
         assert task.cancelled()
@@ -49,8 +48,8 @@ def test_shutdown_startup_is_idempotent_within_one_context() -> None:
             "stop_settings_revision_subscriber",
             counting_stop,
         ):
-            await startup.shutdown_startup(ctx, None, False)
-            await startup.shutdown_startup(ctx, None, False)
+            await startup.shutdown_startup(ctx, None)
+            await startup.shutdown_startup(ctx, None)
         assert stop_calls == 1
 
     asyncio.run(run())
@@ -71,8 +70,8 @@ def test_two_sequential_contexts_each_shutdown_subscriber() -> None:
             "stop_settings_revision_subscriber",
             counting_stop,
         ):
-            await startup.shutdown_startup(startup.SchedulerContext(), None, False)
-            await startup.shutdown_startup(startup.SchedulerContext(), None, False)
+            await startup.shutdown_startup(startup.SchedulerContext(), None)
+            await startup.shutdown_startup(startup.SchedulerContext(), None)
         assert stop_calls == 2
 
     asyncio.run(run())
@@ -98,9 +97,9 @@ def test_concurrent_shutdown_for_same_context_stops_subscriber_once() -> None:
             "stop_settings_revision_subscriber",
             gated_stop,
         ):
-            first = asyncio.create_task(startup.shutdown_startup(ctx, None, False))
+            first = asyncio.create_task(startup.shutdown_startup(ctx, None))
             await entered.wait()
-            second = asyncio.create_task(startup.shutdown_startup(ctx, None, False))
+            second = asyncio.create_task(startup.shutdown_startup(ctx, None))
             release.set()
             await asyncio.gather(first, second)
         assert stop_calls == 1

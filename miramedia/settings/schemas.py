@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 class SettingsSectionSchema(BaseModel):
@@ -72,6 +72,15 @@ class AuthSettingsSchema(SettingsSectionSchema):
     cookie_secure: bool | None = None
     openid_connect: OpenIdSettingsSchema | None = None
     # admin_emails intentionally omitted — deprecated, manage superusers via the Users page.
+
+    @field_validator("session_lifetime")
+    @classmethod
+    def validate_session_lifetime(cls, value: int | None) -> int | None:
+        from miramedia.auth.config import validate_session_lifetime_value
+
+        if value is None:
+            return None
+        return validate_session_lifetime_value(value)
 
 
 # --- Notifications ---

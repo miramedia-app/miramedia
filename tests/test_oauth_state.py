@@ -15,6 +15,79 @@ from miramedia.auth.oauth_state import (
 from miramedia.auth.runtime import OAUTH_ROUTE_NAME
 
 
+def test_encrypt_decrypt_round_trip_preserves_opaque_credential_whitespace() -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id=" client-id ",
+        client_secret=" secret-with-spaces ",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    secret = "a" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    restored = decrypt_oauth_authorize_snapshot(token, secret)
+    assert restored.client_id == " client-id "
+    assert restored.client_secret == " secret-with-spaces "
+    assert restored == snapshot
+
+
+def test_decrypt_does_not_generate_ephemeral_token_secret(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    secret = "a" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    with caplog.at_level("WARNING"):
+        decrypt_oauth_authorize_snapshot(token, secret)
+    assert "ephemeral random secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("session_lifetime", "accepted"),
+    [
+        (1, True),
+        (60 * 60 * 24 * 366, True),
+        (0, False),
+        (-1, False),
+        (60 * 60 * 24 * 366 + 1, False),
+    ],
+)
+def test_snapshot_session_lifetime_boundaries(
+    session_lifetime: int,
+    accepted: bool,
+) -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=session_lifetime,
+    )
+    secret = "a" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    if accepted:
+        restored = decrypt_oauth_authorize_snapshot(token, secret)
+        assert restored.session_lifetime == session_lifetime
+    else:
+        with pytest.raises(OAuthAuthorizeSnapshotError):
+            decrypt_oauth_authorize_snapshot(token, secret)
+
+
 def test_encrypt_decrypt_round_trip() -> None:
     snapshot = OAuthAuthorizeSnapshot(
         client_id="client-a",

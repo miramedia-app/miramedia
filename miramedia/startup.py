@@ -459,7 +459,6 @@ def _best_effort_sync(
 async def _shutdown_startup_impl(
     ctx: SchedulerContext,
     native_client: NativeDownloadClient | None,
-    event_bridge_started: bool,
 ) -> bool:
     """Run one shutdown pass; return True when any step failed."""
     failures: list[BaseException] = []
@@ -566,18 +565,17 @@ async def _shutdown_startup_impl(
             _release_scheduler_lock(),
         )
 
-    if event_bridge_started:
-        try:
-            from miramedia.events.bus import get_event_bus
+    try:
+        from miramedia.events.bus import get_event_bus
 
-            await _best_effort(
-                "postgres event bridge shutdown",
-                failures,
-                get_event_bus().stop_postgres_bridge(),
-            )
-        except Exception as exc:
-            log.exception("Postgres event bridge shutdown failed")
-            failures.append(exc)
+        await _best_effort(
+            "postgres event bridge shutdown",
+            failures,
+            get_event_bus().stop_postgres_bridge(),
+        )
+    except Exception as exc:
+        log.exception("Postgres event bridge shutdown failed")
+        failures.append(exc)
 
     return bool(failures)
 
@@ -592,7 +590,6 @@ async def _await_cancelled(task: asyncio.Task) -> None:
 async def shutdown_startup(
     ctx: SchedulerContext,
     native_client: NativeDownloadClient | None,
-    event_bridge_started: bool,
 ) -> None:
     """Tear down one lifespan's startup acquisitions."""
     while True:
@@ -613,9 +610,7 @@ async def shutdown_startup(
 
         failed = False
         try:
-            failed = await _shutdown_startup_impl(
-                ctx, native_client, event_bridge_started
-            )
+            failed = await _shutdown_startup_impl(ctx, native_client)
         finally:
             finished = ctx._shutdown_finished
             async with ctx._shutdown_lock:

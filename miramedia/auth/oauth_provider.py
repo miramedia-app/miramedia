@@ -31,14 +31,14 @@ def plan_legacy_oauth_migration(
     canonical_user_id: uuid.UUID | None,
     legacy_user_id: uuid.UUID | None,
     same_user_legacy_count: int = 0,
-    has_canonical_on_same_user: bool = False,
 ) -> LegacyOAuthMigrationPlan:
     """Pure decision for legacy oauth_name migration before oauth_callback."""
-    canonical = OAUTH_ROUTE_NAME
     if canonical_user_id is not None and legacy_user_id is not None:
         if canonical_user_id != legacy_user_id:
             return LegacyOAuthMigrationPlan(action="conflict")
-        if has_canonical_on_same_user and same_user_legacy_count > 0:
+
+    if canonical_user_id is not None:
+        if same_user_legacy_count > 0:
             return LegacyOAuthMigrationPlan(action="dedupe")
         return LegacyOAuthMigrationPlan(action="noop")
 
@@ -46,7 +46,7 @@ def plan_legacy_oauth_migration(
         return LegacyOAuthMigrationPlan(action="noop")
 
     legacy_name = (display_name or "").strip()
-    if not legacy_name or legacy_name == canonical:
+    if not legacy_name or legacy_name == OAUTH_ROUTE_NAME:
         if same_user_legacy_count > 1:
             return LegacyOAuthMigrationPlan(action="dedupe")
         return LegacyOAuthMigrationPlan(action="noop")
@@ -97,7 +97,25 @@ async def reconcile_legacy_oauth_account(
         except user_exceptions.UserNotExists:
             legacy_user = None
 
-    owner = canonical_user or legacy_user
+    if canonical_user is not None:
+        if legacy_user is not None and legacy_user.id != canonical_user.id:
+            msg = f"OAuth account {account_id!r} is bound to multiple users"
+            raise OAuthProviderConflictError(msg)
+        legacy_accounts = _legacy_accounts_for(
+            canonical_user, account_id=account_id, canonical=canonical
+        )
+        if legacy_accounts:
+            for account in legacy_accounts:
+                await user_db.session.delete(account)
+            await user_db.session.commit()
+            log.info(
+                "Removed %d duplicate legacy OAuth row(s) for account %s",
+                len(legacy_accounts),
+                account_id,
+            )
+        return
+
+    owner = legacy_user
     same_user_legacy_count = (
         len(_legacy_accounts_for(owner, account_id=account_id, canonical=canonical))
         if owner is not None
@@ -109,7 +127,6 @@ async def reconcile_legacy_oauth_account(
         canonical_user_id=getattr(canonical_user, "id", None),
         legacy_user_id=getattr(legacy_user, "id", None),
         same_user_legacy_count=same_user_legacy_count,
-        has_canonical_on_same_user=canonical_user is not None,
     )
     if plan.action == "conflict":
         msg = f"OAuth account {account_id!r} is bound to multiple users"
@@ -122,17 +139,6 @@ async def reconcile_legacy_oauth_account(
         owner, account_id=account_id, canonical=canonical
     )
     if not legacy_accounts:
-        return
-
-    if plan.action == "dedupe" and canonical_user is not None:
-        for account in legacy_accounts:
-            await user_db.session.delete(account)
-        await user_db.session.commit()
-        log.info(
-            "Removed %d duplicate legacy OAuth row(s) for account %s",
-            len(legacy_accounts),
-            account_id,
-        )
         return
 
     keep = _pick_canonical_legacy_account(legacy_accounts)

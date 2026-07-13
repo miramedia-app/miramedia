@@ -142,3 +142,38 @@ def test_two_lifespan_cycles_each_shutdown_subscriber() -> None:
         assert stop_calls == 2
 
     asyncio.run(run())
+
+
+def test_lifespan_shutdown_stops_event_bridge_when_persistence_raises() -> None:
+    bridge_stops = 0
+    bridge_started = False
+
+    async def _start_bridge(_dsn: str) -> None:
+        nonlocal bridge_started
+        bridge_started = True
+
+    async def _stop_bridge() -> None:
+        nonlocal bridge_stops
+        bridge_stops += 1
+
+    async def run() -> None:
+        from miramedia.events.bus import EventBus
+        from miramedia.main import app, lifespan
+
+        bus = EventBus()
+        with (
+            patch("miramedia.events.bus.get_event_bus", return_value=bus),
+            patch.object(bus, "start_postgres_bridge", side_effect=_start_bridge),
+            patch.object(bus, "stop_postgres_bridge", side_effect=_stop_bridge),
+            patch.dict("os.environ", {"MIRAMEDIA_SCHEDULER_DISABLED": "true"}),
+        ):
+            async with _patched_persistence(fail_after_subscriber=True):
+                gen = lifespan(app)
+                with pytest.raises(RuntimeError, match="admin bootstrap failed"):
+                    await gen.__aenter__()
+                await gen.__aexit__(None, None, None)
+
+        assert bridge_started is True
+        assert bridge_stops == 1
+
+    asyncio.run(run())

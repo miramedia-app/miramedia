@@ -25,7 +25,6 @@ def test_plan_legacy_migration_noop_when_canonical_exists() -> None:
         display_name="LegacyName",
         canonical_user_id=user_id,
         legacy_user_id=user_id,
-        has_canonical_on_same_user=True,
     )
     assert plan.action == "noop"
 
@@ -38,7 +37,20 @@ def test_plan_legacy_migration_dedupe_when_canonical_and_legacy_same_user() -> N
         canonical_user_id=user_id,
         legacy_user_id=user_id,
         same_user_legacy_count=1,
-        has_canonical_on_same_user=True,
+    )
+    assert plan.action == "dedupe"
+
+
+def test_plan_legacy_migration_dedupe_when_canonical_and_mismatched_display_name() -> (
+    None
+):
+    user_id = uuid.uuid4()
+    plan = plan_legacy_oauth_migration(
+        account_id="acct-1",
+        display_name="NewDisplay",
+        canonical_user_id=user_id,
+        legacy_user_id=None,
+        same_user_legacy_count=1,
     )
     assert plan.action == "dedupe"
 
@@ -141,6 +153,47 @@ def test_reconcile_legacy_oauth_account_dedupes_canonical_and_legacy_same_user()
     asyncio.run(_run())
     user_db.session.delete.assert_awaited_once_with(legacy)
     user_db.session.commit.assert_awaited_once()
+
+
+def test_reconcile_dedupes_legacy_alias_when_display_name_changed() -> None:
+    user_id = uuid.uuid4()
+    canonical = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id="acct-1",
+        oauth_name=OAUTH_ROUTE_NAME,
+        access_token="token",
+        account_email="user@example.com",
+        expires_at=None,
+        refresh_token=None,
+    )
+    legacy = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id="acct-1",
+        oauth_name="OldDisplay",
+        access_token="token",
+        account_email="user@example.com",
+        expires_at=None,
+        refresh_token=None,
+    )
+    user = SimpleNamespace(id=user_id, oauth_accounts=[canonical, legacy])
+    user_db = AsyncMock()
+    user_db.get_by_oauth_account = AsyncMock(return_value=user)
+    user_db.session = AsyncMock()
+    user_db.session.delete = AsyncMock()
+    user_db.session.commit = AsyncMock()
+    user_db.update_oauth_account = AsyncMock()
+
+    async def _run() -> None:
+        await reconcile_legacy_oauth_account(
+            user_db,
+            account_id="acct-1",
+            display_name="NewDisplay",
+        )
+
+    asyncio.run(_run())
+    user_db.session.delete.assert_awaited_once_with(legacy)
+    user_db.session.commit.assert_awaited_once()
+    user_db.update_oauth_account.assert_not_awaited()
 
 
 def test_reconcile_legacy_oauth_account_fails_closed_on_conflict() -> None:

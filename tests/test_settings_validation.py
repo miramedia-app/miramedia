@@ -129,6 +129,34 @@ def test_restart_only_paths_include_token_secret() -> None:
     assert ("auth", "token_secret") in RESTART_ONLY_OVERRIDE_PATHS
 
 
+@pytest.mark.parametrize(
+    ("session_lifetime", "accepted"),
+    [
+        (1, True),
+        (60 * 60 * 24 * 366, True),
+        (0, False),
+        (-1, False),
+        (60 * 60 * 24 * 366 + 1, False),
+    ],
+)
+def test_session_lifetime_boundaries_in_settings_validation(
+    session_lifetime: int,
+    accepted: bool,
+) -> None:
+    overrides = {"auth": {"session_lifetime": session_lifetime}}
+    if accepted:
+        config = build_merged_validated_config(overrides)
+        assert config.auth.session_lifetime == session_lifetime
+        sanitize_persisted_overrides(overrides)
+        payload = validate_incoming_settings_update(overrides)
+        assert payload["auth"]["session_lifetime"] == session_lifetime
+    else:
+        with pytest.raises(SettingsValidationError):
+            build_merged_validated_config(overrides)
+        with pytest.raises(ValidationError):
+            validate_incoming_settings_update(overrides)
+
+
 def test_strip_restart_only_is_deep() -> None:
     overrides = copy.deepcopy(
         {"auth": {"token_secret": "x" * 64, "openid_connect": {"enabled": True}}}

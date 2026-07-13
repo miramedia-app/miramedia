@@ -15,7 +15,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from fastapi_users.jwt import SecretType
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 
-from miramedia.auth.config import AuthConfig, OpenIdConfig
+from miramedia.auth.config import OpenIdConfig, validate_session_lifetime_value
 from miramedia.auth.runtime import (
     OAUTH_ROUTE_NAME,
     AuthRuntimeGeneration,
@@ -27,7 +27,6 @@ log = logging.getLogger(__name__)
 
 OAUTH_GENERATION_STATE_KEY = "generation_snapshot"
 OAUTH_STATE_GENERATION_TTL_SECONDS = 3600
-_MAX_SESSION_LIFETIME_SECONDS = 60 * 60 * 24 * 366
 _OAUTH_SNAPSHOT_KDF_INFO = b"miramedia-oauth-generation-snapshot-v1"
 _HTTP_URL_ADAPTER: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 
@@ -80,14 +79,16 @@ def _strict_bool(value: Any, field: str) -> bool:  # noqa: ANN401
     raise ValueError(msg)
 
 
-def _strict_positive_int(value: Any, field: str) -> int:  # noqa: ANN401
+def validate_snapshot_session_lifetime(value: Any) -> int:  # noqa: ANN401
+    """Validate snapshot session lifetime using the canonical auth contract."""
     if type(value) is not int or isinstance(value, bool):
-        msg = f"{field} must be an integer"
+        msg = "session_lifetime must be an integer"
         raise ValueError(msg)
-    if value <= 0 or value > _MAX_SESSION_LIFETIME_SECONDS:
-        msg = f"{field} out of allowed range"
-        raise ValueError(msg)
-    return value
+    try:
+        return validate_session_lifetime_value(value)
+    except ValueError as exc:
+        msg = "session_lifetime out of allowed range"
+        raise ValueError(msg) from exc
 
 
 def _nonempty_str(value: Any, field: str) -> str:  # noqa: ANN401
@@ -101,15 +102,23 @@ def _nonempty_str(value: Any, field: str) -> str:  # noqa: ANN401
     return stripped
 
 
+def _opaque_credential_str(value: Any, field: str) -> str:  # noqa: ANN401
+    if not isinstance(value, str):
+        msg = f"{field} must be a string"
+        raise TypeError(msg)
+    if not value.strip():
+        msg = f"{field} must be non-empty"
+        raise ValueError(msg)
+    return value
+
+
 def _validate_snapshot_payload(data: dict[str, Any]) -> OAuthAuthorizeSnapshot:
     try:
         cookie_secure = _strict_bool(data["cookie_secure"], "cookie_secure")
         oidc_enabled = _strict_bool(data.get("oidc_enabled", True), "oidc_enabled")
-        session_lifetime = _strict_positive_int(
-            data["session_lifetime"], "session_lifetime"
-        )
-        client_id = _nonempty_str(data["client_id"], "client_id")
-        client_secret = _nonempty_str(data["client_secret"], "client_secret")
+        session_lifetime = validate_snapshot_session_lifetime(data["session_lifetime"])
+        client_id = _opaque_credential_str(data["client_id"], "client_id")
+        client_secret = _opaque_credential_str(data["client_secret"], "client_secret")
         configuration_endpoint = _nonempty_str(
             data["configuration_endpoint"], "configuration_endpoint"
         )
@@ -127,10 +136,6 @@ def _validate_snapshot_payload(data: dict[str, Any]) -> OAuthAuthorizeSnapshot:
             configuration_endpoint=configuration_endpoint,
         )
         BasicConfig(frontend_url=frontend_http_url)
-        AuthConfig(
-            session_lifetime=session_lifetime,
-            cookie_secure=cookie_secure,
-        )
     except (KeyError, TypeError, ValueError, ValidationError) as exc:
         msg = _SNAPSHOT_MALFORMED
         raise OAuthAuthorizeSnapshotError(msg) from exc
