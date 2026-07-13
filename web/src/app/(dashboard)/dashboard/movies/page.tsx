@@ -76,8 +76,8 @@ export default function MoviesPage() {
 
   const facetsQuery = useQuery({
     queryKey: ["movies", "facets"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/movies/facets");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/movies/facets", { signal });
       if (error) throw error;
       return data ?? { libraries: [], genres: [], decades: [] };
     },
@@ -87,7 +87,7 @@ export default function MoviesPage() {
 
   const moviesQuery = useQuery({
     queryKey: ["movies", "list", deferredSearchQuery, sortBy, currentPage, pageSize, filterParams],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const baseQuery: MoviesQuery = {
         q: deferredSearchQuery.trim() || undefined,
         sort: sortBy,
@@ -96,6 +96,7 @@ export default function MoviesPage() {
         ...(filterParams as Partial<MoviesQuery>),
       };
       const listRes = await apiClient.GET("/api/v1/movies", {
+        signal,
         params: { query: baseQuery },
       });
       if (listRes.error) throw listRes.error;

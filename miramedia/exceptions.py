@@ -46,6 +46,22 @@ class NoVideoFilesError(MiraMediaError):
         super().__init__(message)
 
 
+class UnsafeTorrentTitleError(MiraMediaError):
+    """Raised when a torrent title cannot be used as a safe filesystem path
+    component. Callers must fail closed — no writes or deletes outside the
+    configured torrent root."""
+
+    def __init__(
+        self, message: str = "Torrent title is not a safe filesystem path component"
+    ) -> None:
+        super().__init__(message)
+
+
+UNSAFE_TORRENT_TITLE_API_DETAIL = (
+    "Torrent title is not a safe filesystem path component"
+)
+
+
 class NotFoundError(MiraMediaError):
     """Raised when an entity is not found (HTTP 404)."""
 
@@ -178,6 +194,14 @@ async def no_video_files_error_handler(
     return JSONResponse(status_code=422, content={"detail": exc.message})
 
 
+async def unsafe_torrent_title_error_handler(
+    _request: Request, _exc: UnsafeTorrentTitleError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422, content={"detail": UNSAFE_TORRENT_TITLE_API_DETAIL}
+    )
+
+
 async def metadata_provider_unavailable_handler(
     _request: Request, exc: MetadataProviderUnavailableError
 ) -> JSONResponse:
@@ -191,6 +215,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     )
     app.add_exception_handler(MediaSkippedError, media_skipped_error_handler)
     app.add_exception_handler(NoVideoFilesError, no_video_files_error_handler)
+    app.add_exception_handler(
+        UnsafeTorrentTitleError, unsafe_torrent_title_error_handler
+    )
     app.add_exception_handler(
         InvalidConfigError, invalid_config_error_exception_handler
     )

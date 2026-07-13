@@ -446,8 +446,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Oauth:Oauth2.Cookie.Authorize */
-        get: operations["oauth_oauth2_cookie_authorize_api_v1_auth_oauth_authorize_get"];
+        /** Oauth:Oidc.Cookie.Authorize */
+        get: operations["oauth_oidc_cookie_authorize_api_v1_auth_oauth_authorize_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -464,10 +464,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Oauth:Oauth2.Cookie.Callback
+         * Oauth:Oidc.Cookie.Callback
          * @description The response varies based on the authentication backend used.
          */
-        get: operations["oauth_oauth2_cookie_callback_api_v1_auth_oauth_callback_get"];
+        get: operations["oauth_oidc_cookie_callback_api_v1_auth_oauth_callback_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3054,6 +3054,8 @@ export interface components {
             session_lifetime?: number | null;
             /** Email Password Resets */
             email_password_resets?: boolean | null;
+            /** Cookie Secure */
+            cookie_secure?: boolean | null;
             openid_connect?: components["schemas"]["OpenIdSettingsSchema"] | null;
         };
         /** BazarrSettingsSchema */
@@ -3488,11 +3490,6 @@ export interface components {
              * @default 0
              */
             import_total: number;
-            /**
-             * Corrupted
-             * @default 0
-             */
-            corrupted: number;
         };
         /**
          * ImportFileDetail
@@ -4565,6 +4562,22 @@ export interface components {
             offset: number;
             /** Limit */
             limit: number;
+        };
+        /**
+         * PaginatedIntegrityMismatches
+         * @description Bounded page of integrity-mismatch rows (shows first, then movies).
+         */
+        PaginatedIntegrityMismatches: {
+            /** Items */
+            items: components["schemas"]["IntegrityMismatch"][];
+            /** Total */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Limit */
+            limit: number;
+            /** Next Offset */
+            next_offset?: number | null;
         };
         /** PaginatedResponse[ActivityLogRead] */
         PaginatedResponse_ActivityLogRead_: {
@@ -6965,7 +6978,7 @@ export interface operations {
             };
         };
     };
-    oauth_oauth2_cookie_authorize_api_v1_auth_oauth_authorize_get: {
+    oauth_oidc_cookie_authorize_api_v1_auth_oauth_authorize_get: {
         parameters: {
             query?: {
                 scopes?: string[];
@@ -6996,11 +7009,10 @@ export interface operations {
             };
         };
     };
-    oauth_oauth2_cookie_callback_api_v1_auth_oauth_callback_get: {
+    oauth_oidc_cookie_callback_api_v1_auth_oauth_callback_get: {
         parameters: {
             query?: {
                 code?: string | null;
-                code_verifier?: string | null;
                 state?: string | null;
                 error?: string | null;
             };
@@ -8113,7 +8125,10 @@ export interface operations {
     };
     list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get: {
         parameters: {
-            query?: never;
+            query?: {
+                offset?: number;
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -8126,7 +8141,16 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["IntegrityMismatch"][];
+                    "application/json": components["schemas"]["PaginatedIntegrityMismatches"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

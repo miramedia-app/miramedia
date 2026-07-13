@@ -32,8 +32,8 @@ export function ApiTokens() {
   const qc = useQueryClient();
   const tokensQuery = useQuery({
     queryKey: ["users", "me", "tokens"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/users/me/tokens");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/users/me/tokens", { signal });
       if (error) {
         toast.error("Failed to load API tokens");
         return [] as ApiTokenRead[];

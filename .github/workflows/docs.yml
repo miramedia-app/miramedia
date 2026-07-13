@@ -31,7 +31,7 @@ jobs:
       # static spec bundled from web/public (served under BASE_PATH).
       NEXT_PUBLIC_OPENAPI_URL: /miramedia/openapi.json
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           package_json_file: web/package.json
@@ -42,8 +42,8 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      - name: Generate types (fumadocs source + next typegen)
-        run: pnpm exec fumadocs-mdx && pnpm exec next typegen
+      # No separate generation step: the `build` script generates first, then
+      # compiles (exactly one MDX run).
       - name: Build static export
         run: pnpm build
       - name: Land root on the docs

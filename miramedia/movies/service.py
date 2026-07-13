@@ -74,6 +74,10 @@ from miramedia.indexers.schemas import (  # noqa: E402
 )
 from miramedia.indexers.service import IndexerService  # noqa: E402
 from miramedia.indexers.utils import evaluate_indexer_query_results  # noqa: E402
+from miramedia.media_paths import (  # noqa: E402
+    PathCanonicalResolutionError,
+    paths_same_canonical,
+)
 from miramedia.media_service import (  # noqa: E402
     BgMediaSessionProtocol,
     MediaFileRowProtocol,
@@ -99,6 +103,9 @@ from miramedia.naming import (  # noqa: E402
     old_movie_folder_name,
 )
 from miramedia.notifications.service import NotificationService  # noqa: E402
+from miramedia.torrents.integrity import (  # noqa: E402
+    resolve_movie_file_path_in_memory,
+)
 from miramedia.torrents.mediainfo import analyze_async  # noqa: E402
 from miramedia.torrents.parsing import (  # noqa: E402
     is_video_file,
@@ -1110,25 +1117,27 @@ class MovieService(MediaService[Movie, MovieId]):
         except NotFoundError:
             return None
         movie_root = self.get_movie_root_path(movie=movie)
-        if not movie_root.exists():
-            return None
-        stems = movie_file_stem_candidates(
-            movie, movie_file.quality, NameParts.from_row(movie_file)
+        return resolve_movie_file_path_in_memory(
+            movie=movie,
+            movie_file=movie_file,
+            movie_root=movie_root,
         )
-        for stem in stems:
-            for candidate in files_matching_stem(movie_root, stem):
-                if candidate.suffix.lower() in {
-                    ".mkv",
-                    ".mp4",
-                    ".avi",
-                    ".mov",
-                    ".m4v",
-                    ".webm",
-                    ".ts",
-                    ".wmv",
-                }:
-                    return candidate
-        return None
+
+    async def batch_resolve_movie_file_paths(
+        self,
+        rows: list[MovieFile],
+        movies: dict[MovieId, Movie],
+    ) -> dict[UUID, Path | None]:
+        """Resolve on-disk paths for a batch with one directory scan per movie."""
+        from miramedia.database import release_session_before_external_io
+        from miramedia.torrents.integrity import (
+            IntegrityPathLayout,
+            batch_resolve_movie_paths_async,
+        )
+
+        await release_session_before_external_io(self.movie_repository.db)
+        layout = IntegrityPathLayout.from_config()
+        return await batch_resolve_movie_paths_async(rows, movies, layout)
 
     async def import_movie_from_file(
         self,
@@ -1571,7 +1580,11 @@ class MovieService(MediaService[Movie, MovieId]):
         dropped into an already-tracked movie folder.
         """
         canonical_dir = self.get_movie_root_path(movie=movie, write=False)
-        is_canonical = source_directory.absolute() == canonical_dir.absolute()  # noqa: ASYNC240 — cheap path resolution, intentional
+        try:
+            is_canonical = paths_same_canonical(source_directory, canonical_dir)
+        except PathCanonicalResolutionError as exc:
+            log.exception("Failed to resolve canonical path for %s", source_directory)
+            raise RenameError from exc
         if not is_canonical and not source_directory.name.startswith("."):
             dot_path = source_directory.parent / ("." + source_directory.name)
             try:

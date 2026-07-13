@@ -134,6 +134,18 @@ class FakeShowService:
             return self.path_by_row_id[row.id]
         return getattr(row, "_resolved_path", None)
 
+    async def batch_resolve_episode_file_paths(
+        self,
+        rows: list[Any],
+        episode_context: dict[Any, Any],
+        shows: dict[Any, Any],
+    ) -> dict[UUID, Any]:
+        del episode_context, shows
+        paths: dict[UUID, Any] = {}
+        for row in rows:
+            paths[row.id] = await self.resolve_episode_file_path(row)
+        return paths
+
 
 class FakeMoviePathService:
     def __init__(self, *, path_by_row_id: dict[UUID, Any] | None = None) -> None:
@@ -143,6 +155,17 @@ class FakeMoviePathService:
         if row.id in self.path_by_row_id:
             return self.path_by_row_id[row.id]
         return getattr(row, "_resolved_path", None)
+
+    async def batch_resolve_movie_file_paths(
+        self,
+        rows: list[Any],
+        movies: dict[Any, Any],
+    ) -> dict[UUID, Any]:
+        del movies
+        paths: dict[UUID, Any] = {}
+        for row in rows:
+            paths[row.id] = await self.resolve_movie_file_path(row)
+        return paths
 
 
 def bg_request_service_factory(
@@ -181,6 +204,53 @@ def bg_movie_path_service_factory(movie_service: FakeMoviePathService) -> Any:
     return _bg_movie_service
 
 
+def patch_batch_resolve_paths(monkeypatch: Any, path_by_id: dict[UUID, Any]) -> None:
+    """Route scheduler/API path resolution without bg_show/bg_movie services."""
+
+    async def _episode_paths(rows, episode_context, shows, layout):  # noqa: ARG001
+        return {row.id: path_by_id.get(row.id) for row in rows}
+
+    async def _movie_paths(rows, movies, layout):  # noqa: ARG001
+        return {row.id: path_by_id.get(row.id) for row in rows}
+
+    monkeypatch.setattr(
+        "miramedia.torrents.integrity.batch_resolve_episode_paths_async",
+        _episode_paths,
+    )
+    monkeypatch.setattr(
+        "miramedia.torrents.integrity.batch_resolve_movie_paths_async",
+        _movie_paths,
+    )
+
+
+def patch_audit_repository_lookups(monkeypatch: Any) -> None:
+    """Stub show/movie context loads used by the audit task snapshot phase."""
+    from miramedia.movies.repository import MovieRepository
+    from miramedia.shows.repository import ShowRepository
+    from miramedia.shows.schemas import EpisodeId, EpisodeIntegrityContext, ShowId
+
+    async def _episode_context(self, episode_ids):  # noqa: ARG001
+        return {
+            EpisodeId(eid): EpisodeIntegrityContext(
+                episode_number=1,
+                season_number=1,
+                show_id=ShowId(uuid.uuid4()),
+                show_name="Test Show",
+            )
+            for eid in episode_ids
+        }
+
+    async def _shows_by_ids(self, show_ids):  # noqa: ARG001
+        return {}
+
+    async def _movies_by_ids(self, movie_ids):  # noqa: ARG001
+        return {}
+
+    monkeypatch.setattr(ShowRepository, "batch_episodes_with_context", _episode_context)
+    monkeypatch.setattr(ShowRepository, "get_shows_by_ids", _shows_by_ids)
+    monkeypatch.setattr(MovieRepository, "get_movies_by_ids", _movies_by_ids)
+
+
 def background_session_factory(
     *,
     episode_rows: list[Any] | None = None,
@@ -204,4 +274,20 @@ def background_session_factory(
 class FakeFileRow:
     id: UUID
     sha1: str | None = None
+    import_error: str | None = None
+    episode_id: UUID | None = field(default_factory=uuid.uuid4)
+    movie_id: UUID | None = None
+    torrent_id: UUID | None = None
+    quality: Any = None
+    variant: str = ""
+    import_status: Any = None
     _resolved_path: Any = None
+
+    def __post_init__(self) -> None:
+        from miramedia.file_status import ImportOutcome
+        from miramedia.torrents.schemas import Quality
+
+        if self.quality is None:
+            self.quality = Quality.hd
+        if self.import_status is None:
+            self.import_status = ImportOutcome.imported

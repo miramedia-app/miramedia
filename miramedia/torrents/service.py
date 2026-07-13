@@ -8,11 +8,22 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from miramedia.events.bus import Event, get_event_bus
-from miramedia.exceptions import MediaSkippedError, NotFoundError, NoVideoFilesError
+from miramedia.exceptions import (
+    ConflictError,
+    MediaSkippedError,
+    NotFoundError,
+    NoVideoFilesError,
+)
 from miramedia.file_status import ImportOutcome
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.movies.schemas import Movie, MovieFile
 from miramedia.shows.schemas import Episode, EpisodeFile, EpisodeNumber, Show
+from miramedia.torrents.integrity import (
+    INTEGRITY_MISMATCH_MAX_LIMIT,
+    IntegrityPathLayout,
+    batch_resolve_episode_paths_async,
+    batch_resolve_movie_paths_async,
+)
 from miramedia.torrents.manager import DownloadManager
 from miramedia.torrents.repository import TorrentRepository
 from miramedia.torrents.schemas import (
@@ -24,6 +35,7 @@ from miramedia.torrents.schemas import (
     IntegrityActionResult,
     IntegrityMismatch,
     MediaType,
+    PaginatedIntegrityMismatches,
     Quality,
     RichTorrent,
     Torrent,
@@ -1832,74 +1844,133 @@ class TorrentService:
     async def list_integrity_mismatches(
         self,
         *,
+        offset: int,
+        limit: int,
         show_service: "ShowService",
         movie_service: "MovieService",
-    ) -> list[IntegrityMismatch]:
-        """List imported files whose integrity audit recorded a SHA1 mismatch."""
-        out: list[IntegrityMismatch] = []
+    ) -> PaginatedIntegrityMismatches:
+        """List imported files whose integrity audit recorded a SHA1 mismatch.
 
-        show_rows = await show_service.show_repository.list_sha1_mismatch_files()
-        episode_context = (
-            await show_service.show_repository.batch_episodes_with_context(
-                [row.episode_id for row in show_rows]
-            )
+        Global order is shows first (by file id), then movies (by file id).
+        Page keys and total come from one SQL snapshot; path resolution runs
+        only after the request session is released.
+        """
+        page_limit = min(limit, INTEGRITY_MISMATCH_MAX_LIMIT)
+        show_repo = show_service.show_repository
+        movie_repo = movie_service.movie_repository
+
+        page = await self.torrent_repository.paginate_sha1_mismatch_keys(
+            offset=offset,
+            limit=page_limit,
         )
-        for row in show_rows:
-            media_title = ""
-            episode_label: str | None = None
-            try:
-                ctx = episode_context[row.episode_id]
-                media_title = ctx.show_name
-                episode_label = f"S{ctx.season_number:02d}E{ctx.episode_number:02d}"
-            except Exception:
-                log.exception(
-                    "Failed to resolve show title for mismatched episode_file %s",
-                    row.id,
-                )
-            path = await show_service.resolve_episode_file_path(row)
-            out.append(
-                IntegrityMismatch(
-                    file_id=row.id,
-                    media_type="show",
-                    media_title=media_title,
-                    episode=episode_label,
-                    path=str(path) if path is not None else None,
-                    quality=Quality(row.quality),
-                    variant_tag=row.variant or "",
-                    import_error=row.import_error or "",
-                    detected_at=row.last_attempt_at,
-                )
-            )
+        show_ids = [key.file_id for key in page.keys if key.media_type == "show"]
+        movie_ids = [key.file_id for key in page.keys if key.media_type == "movie"]
 
-        movie_rows = await movie_service.movie_repository.list_sha1_mismatch_files()
-        movie_names = await movie_service.movie_repository.get_movie_names_by_ids(
+        show_rows_map = await show_repo.get_sha1_mismatch_episode_files_by_ids(show_ids)
+        movie_rows_map = await movie_repo.get_sha1_mismatch_movie_files_by_ids(
+            movie_ids
+        )
+        show_rows = [show_rows_map[fid] for fid in show_ids if fid in show_rows_map]
+        movie_rows = [movie_rows_map[fid] for fid in movie_ids if fid in movie_rows_map]
+
+        episode_context = await show_repo.batch_episodes_with_context(
+            [row.episode_id for row in show_rows]
+        )
+        shows = await show_repo.get_shows_by_ids(
+            list({ctx.show_id for ctx in episode_context.values()})
+        )
+        movie_names = await movie_repo.get_movie_names_by_ids(
             [row.movie_id for row in movie_rows]
         )
-        for row in movie_rows:
-            media_title = ""
-            try:
-                media_title = movie_names[row.movie_id]
-            except Exception:
-                log.exception(
-                    "Failed to resolve movie title for mismatched movie_file %s",
-                    row.id,
-                )
-            path = await movie_service.resolve_movie_file_path(row)
-            out.append(
-                IntegrityMismatch(
-                    file_id=row.id,
-                    media_type="movie",
-                    media_title=media_title,
-                    episode=None,
-                    path=str(path) if path is not None else None,
-                    quality=Quality(row.quality),
-                    variant_tag=row.variant or "",
-                    import_error=row.import_error or "",
-                    detected_at=row.last_attempt_at,
-                )
-            )
+        movies = await movie_repo.get_movies_by_ids(
+            [row.movie_id for row in movie_rows]
+        )
 
-        return out
+        from miramedia.database import release_sessions_before_external_io
+
+        await release_sessions_before_external_io(
+            self.torrent_repository.db,
+            show_repo.db,
+            movie_repo.db,
+        )
+
+        layout = IntegrityPathLayout.from_config()
+        show_paths = await batch_resolve_episode_paths_async(
+            show_rows, episode_context, shows, layout
+        )
+        movie_paths = await batch_resolve_movie_paths_async(movie_rows, movies, layout)
+
+        out: list[IntegrityMismatch] = []
+        for key in page.keys:
+            if key.media_type == "show":
+                row = show_rows_map.get(key.file_id)
+                if row is None:
+                    continue
+                media_title = ""
+                episode_label: str | None = None
+                try:
+                    ctx = episode_context[row.episode_id]
+                    media_title = ctx.show_name
+                    episode_label = f"S{ctx.season_number:02d}E{ctx.episode_number:02d}"
+                except Exception:
+                    log.exception(
+                        "Failed to resolve show title for mismatched episode_file %s",
+                        row.id,
+                    )
+                path = show_paths.get(row.id)
+                out.append(
+                    IntegrityMismatch(
+                        file_id=row.id,
+                        media_type="show",
+                        media_title=media_title,
+                        episode=episode_label,
+                        path=str(path) if path is not None else None,
+                        quality=Quality(row.quality),
+                        variant_tag=row.variant or "",
+                        import_error=row.import_error or "",
+                        detected_at=row.last_attempt_at,
+                    )
+                )
+            else:
+                row = movie_rows_map.get(key.file_id)
+                if row is None:
+                    continue
+                media_title = ""
+                try:
+                    media_title = movie_names[row.movie_id]
+                except Exception:
+                    log.exception(
+                        "Failed to resolve movie title for mismatched movie_file %s",
+                        row.id,
+                    )
+                path = movie_paths.get(row.id)
+                out.append(
+                    IntegrityMismatch(
+                        file_id=row.id,
+                        media_type="movie",
+                        media_title=media_title,
+                        episode=None,
+                        path=str(path) if path is not None else None,
+                        quality=Quality(row.quality),
+                        variant_tag=row.variant or "",
+                        import_error=row.import_error or "",
+                        detected_at=row.last_attempt_at,
+                    )
+                )
+
+        page_span = len(page.keys)
+        next_offset = (
+            offset + page_span
+            if page_span > 0 and offset + page_span < page.total
+            else None
+        )
+        return PaginatedIntegrityMismatches(
+            items=out,
+            total=page.total,
+            offset=offset,
+            limit=page_limit,
+            next_offset=next_offset,
+        )
 
     async def rebaseline_file(
         self,
@@ -1910,16 +1981,13 @@ class TorrentService:
         movie_service: "MovieService",
     ) -> IntegrityActionResult:
         """Accept the on-disk file: clear error + sha1 so the next audit re-baselines."""
-        cleared = await self._clear_integrity_state(
+        await self._clear_integrity_state(
             media_type=media_type,
             file_id=file_id,
             reset_sha1=True,
             show_service=show_service,
             movie_service=movie_service,
         )
-        if not cleared:
-            msg = f"File {file_id} not found"
-            raise NotFoundError(msg)
         return IntegrityActionResult(ok=True)
 
     async def dismiss_mismatch(
@@ -1931,16 +1999,13 @@ class TorrentService:
         movie_service: "MovieService",
     ) -> IntegrityActionResult:
         """Clear the mismatch error only; keep sha1 so the next audit re-verifies."""
-        cleared = await self._clear_integrity_state(
+        await self._clear_integrity_state(
             media_type=media_type,
             file_id=file_id,
             reset_sha1=False,
             show_service=show_service,
             movie_service=movie_service,
         )
-        if not cleared:
-            msg = f"File {file_id} not found"
-            raise NotFoundError(msg)
         return IntegrityActionResult(ok=True)
 
     async def _clear_integrity_state(
@@ -1951,13 +2016,47 @@ class TorrentService:
         reset_sha1: bool,
         show_service: "ShowService",
         movie_service: "MovieService",
-    ) -> bool:
+    ) -> None:
         if media_type == MediaType.show:
-            return await show_service.show_repository.clear_file_integrity_state(
-                file_id, reset_sha1=reset_sha1
+            row = await show_service.show_repository.get_episode_file_by_id(file_id)
+            if row is None:
+                msg = f"File {file_id} not found"
+                raise NotFoundError(msg)
+            import_error = row.import_error or ""
+            if (
+                row.import_status != ImportOutcome.imported
+                or not import_error.startswith("sha1 mismatch")
+            ):
+                msg = "Integrity mismatch is no longer present for this file"
+                raise ConflictError(msg)
+            cleared = await show_service.show_repository.clear_file_integrity_state(
+                file_id,
+                expected_sha1=row.sha1,
+                expected_import_error=import_error,
+                reset_sha1=reset_sha1,
             )
-        if media_type == MediaType.movie:
-            return await movie_service.movie_repository.clear_file_integrity_state(
-                file_id, reset_sha1=reset_sha1
+        elif media_type == MediaType.movie:
+            row = await movie_service.movie_repository.get_movie_file_by_id(file_id)
+            if row is None:
+                msg = f"File {file_id} not found"
+                raise NotFoundError(msg)
+            import_error = row.import_error or ""
+            if (
+                row.import_status != ImportOutcome.imported
+                or not import_error.startswith("sha1 mismatch")
+            ):
+                msg = "Integrity mismatch is no longer present for this file"
+                raise ConflictError(msg)
+            cleared = await movie_service.movie_repository.clear_file_integrity_state(
+                file_id,
+                expected_sha1=row.sha1,
+                expected_import_error=import_error,
+                reset_sha1=reset_sha1,
             )
-        return False
+        else:
+            msg = f"File {file_id} not found"
+            raise NotFoundError(msg)
+
+        if not cleared:
+            msg = "Integrity mismatch is no longer present for this file"
+            raise ConflictError(msg)

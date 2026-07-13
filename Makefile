@@ -13,7 +13,9 @@ APP_SVC ?= api
 FRONTEND_SVC ?= web
 
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
-	lint format format-check ty test check audit frontend-bootstrap tsc frontend-build
+	lint format format-check ty test integration-test migration-head-audit check audit \
+	frontend-bootstrap frontend-generate \
+	tsc frontend-build frontend-test frontend-lint
 
 help:
 	@echo "Usage:"
@@ -28,10 +30,15 @@ help:
 	@echo "  make app                    # Shell into $(APP_SVC) container"
 	@echo "  make frontend               # Shell into $(FRONTEND_SVC) container"
 	@echo "  make test                   # Run the backend test suite on the host (no docker needed)"
+	@echo "  make integration-test       # PostgreSQL integration suite (requires MIRAMEDIA_TEST_DATABASE_URL)"
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
 	@echo "  make check                  # lint + format-check + ty + test + tsc (CI parity minus OpenAPI drift)"
-	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + fumadocs-mdx + next typegen)"
+	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
+	@echo "  make frontend-generate      # Generate web build prerequisites (web 'generate' script)"
+	@echo "  make frontend-build         # Generate prerequisites, then build the static export"
 	@echo "  make tsc                    # Type-check the Next.js frontend"
+	@echo "  make frontend-test          # Run the frontend unit tests (vitest, no backend/browser)"
+	@echo "  make frontend-lint          # Frontend lint + format check (oxlint, oxfmt --check)"
 
 # Core lifecycle
 up:
@@ -85,8 +92,24 @@ format-check:
 ty:
 	@uv run --python 3.13 ty check miramedia
 
+# Canonical frontend generation, for workflows that need the generated artifacts
+# WITHOUT running a build: `web/src` imports the Fumadocs collections
+# (`collections/*` -> `web/.source`) and Next's generated type declarations, both
+# gitignored, so a bare `tsgo --noEmit` on a fresh clone would fail without this.
+#
+# Do NOT wrap this around `pnpm build` — the build script generates on its own
+# (see web/package.json). Both scripts run `fumadocs-mdx` explicitly and then set
+# _FUMADOCS_MDX=1, which is Fumadocs' own guard sentinel: it suppresses the
+# fire-and-forget re-init inside createMDX, whose write is NOT awaited and races
+# the compile on a clean tree ("Can't resolve 'collections/server'"). Net effect:
+# exactly one MDX run per path, deterministically ordered before compilation.
+# Assumes dependencies are already installed (see frontend-bootstrap).
+frontend-generate:
+	@cd web && pnpm run generate
+
 frontend-bootstrap:
-	@cd web && pnpm install --frozen-lockfile && pnpm exec fumadocs-mdx && pnpm exec next typegen
+	@cd web && pnpm install --frozen-lockfile
+	@$(MAKE) frontend-generate
 
 # Scan production Python deps for known vulnerabilities (CI parity).
 audit:
@@ -96,13 +119,34 @@ audit:
 # CI parity minus OpenAPI/api.d.ts drift checks (those are PR-only in ci.yml).
 check: lint format-check ty test tsc
 
-# Type-check the Next.js frontend
+# Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
+# collections + Next type declarations, and nothing here runs `next build`, so
+# `pnpm run typecheck` generates them exactly once first. Use
+# `pnpm run typecheck:generated` in a path that has already generated.
 tsc:
-	@cd web && pnpm exec tsgo --noEmit
+	@cd web && pnpm run typecheck
 
+# The `build` script is self-sufficient: it generates, then compiles. Do not add
+# a generation step here — it would just run Fumadocs twice.
 frontend-build:
 	@cd web && pnpm build
+
+# Frontend unit tests: pure helpers in Node (vitest). No backend, browser or
+# generated artifacts required — safe on a bare `pnpm install`.
+frontend-test:
+	@cd web && pnpm test
+
+frontend-lint:
+	@cd web && pnpm run lint && pnpm run format:check
 
 # Run the backend test suite on the host (no docker needed).
 test:
 	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest
+
+# PostgreSQL integration suite — not collected by `make test`.
+integration-test:
+	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest -m integration tests/integration
+	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest -m postgresql tests/
+
+migration-head-audit:
+	@uv run --python 3.13 python scripts/migration_head_audit.py

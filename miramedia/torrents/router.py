@@ -21,7 +21,7 @@ from fastapi import (
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from miramedia.auth.users import current_active_user, current_superuser
-from miramedia.exceptions import NotFoundError
+from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.imports.matching import find_candidate_media_matches
 from miramedia.imports.schemas import ManualParseCandidate, ManualParseResponse
 from miramedia.indexers.dependencies import indexer_service_dep
@@ -42,6 +42,10 @@ from miramedia.torrents.dependencies import (
     torrent_repository_dep,
     torrent_service_dep,
 )
+from miramedia.torrents.integrity import (
+    INTEGRITY_MISMATCH_DEFAULT_LIMIT,
+    INTEGRITY_MISMATCH_MAX_LIMIT,
+)
 from miramedia.torrents.quality_naming import NameParts
 from miramedia.torrents.schemas import (
     BulkRetryImportFailure,
@@ -52,12 +56,12 @@ from miramedia.torrents.schemas import (
     ImportStatusCounts,
     ImportStatusFilter,
     IntegrityActionResult,
-    IntegrityMismatch,
     ManualDownloadRequest,
     ManualMapRequest,
     ManualMapResult,
     ManualMapTargetType,
     MediaType,
+    PaginatedIntegrityMismatches,
     PaginatedTorrentImports,
     Quality,
     RetryImportResult,
@@ -757,9 +761,15 @@ async def list_integrity_mismatches(
     service: torrent_service_dep,
     show_service: show_service_dep,
     movie_service: movie_service_dep,
-) -> list[IntegrityMismatch]:
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[
+        int, Query(gt=0, le=INTEGRITY_MISMATCH_MAX_LIMIT)
+    ] = INTEGRITY_MISMATCH_DEFAULT_LIMIT,
+) -> PaginatedIntegrityMismatches:
     """Imported files whose integrity audit recorded a SHA1 mismatch."""
     return await service.list_integrity_mismatches(
+        offset=offset,
+        limit=limit,
         show_service=show_service,
         movie_service=movie_service,
     )
@@ -787,6 +797,8 @@ async def rebaseline_integrity_file(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.post(
@@ -811,6 +823,8 @@ async def dismiss_integrity_mismatch(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.post(

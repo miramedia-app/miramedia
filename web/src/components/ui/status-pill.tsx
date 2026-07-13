@@ -34,6 +34,7 @@ const STATUS_VARIANT: Record<string, StatusTone> = {
   unverified: "secondary",
   unknown: "secondary",
   error: "destructive",
+  corrupt: "destructive",
   critical: "destructive",
   failed: "destructive",
   failed_no_match: "destructive",

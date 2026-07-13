@@ -8,6 +8,17 @@ from pydantic_settings import BaseSettings
 log = logging.getLogger(__name__)
 
 PLACEHOLDER_TOKEN_SECRET = "CHANGE_ME_GENERATE_RANDOM_STRING"  # noqa: S105 -- known placeholder, not a secret
+MAX_SESSION_LIFETIME_SECONDS = 60 * 60 * 24 * 366
+
+
+def validate_session_lifetime_value(value: int) -> int:
+    if value <= 0 or value > MAX_SESSION_LIFETIME_SECONDS:
+        msg = (
+            "session_lifetime must be between 1 and "
+            f"{MAX_SESSION_LIFETIME_SECONDS} seconds"
+        )
+        raise ValueError(msg)
+    return value
 
 
 def _ephemeral_token_secret() -> str:
@@ -41,6 +52,11 @@ class AuthConfig(BaseSettings):
     # for setups where the scheme of frontend_url doesn't match what the
     # browser sees (e.g. TLS-terminating proxy in front of an http URL).
     cookie_secure: bool | None = None
+
+    @field_validator("session_lifetime")
+    @classmethod
+    def validate_session_lifetime(cls, value: int) -> int:
+        return validate_session_lifetime_value(value)
 
     @field_validator("token_secret")
     @classmethod

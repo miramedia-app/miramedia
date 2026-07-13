@@ -23,7 +23,6 @@ if config.config_file_name is not None:
 
 from miramedia.auth.api_tokens import UserApiToken  # noqa: E402, F401
 from miramedia.auth.db import OAuthAccount, User  # noqa: E402
-from miramedia.config import MiraMediaConfig  # noqa: E402
 from miramedia.database import Base  # noqa: E402
 from miramedia.imports.models import (  # noqa: E402, F401
     IgnoredImportPath,
@@ -85,19 +84,11 @@ __all__ = [
 # ... etc.
 
 
-from miramedia.database import render_db_url  # noqa: E402
-
-db_config = MiraMediaConfig().database
-db_url = render_db_url(
-    db_config.user,
-    db_config.password,
-    db_config.host,
-    db_config.port,
-    db_config.dbname,
-    driver="psycopg",
+from miramedia.database.migration_url import (  # noqa: E402
+    migration_url_for_alembic_config,
 )
 
-config.set_main_option("sqlalchemy.url", db_url)
+config.set_main_option("sqlalchemy.url", migration_url_for_alembic_config())
 
 
 def run_migrations_offline() -> None:

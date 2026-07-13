@@ -1,6 +1,6 @@
 [project]
 name = "miramedia"
-version = "1.0.8"
+version = "1.0.9"
 description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [
@@ -10,7 +10,6 @@ dependencies = [
     "httpx>=0.28.1",
     "httpx-oauth>=0.16.1",
     "jsonschema>=4.24.0",
-    "patool>=4.0.1",
     "psycopg[binary,pool]>=3.2.9",
     "asyncpg>=0.30.0",
     "greenlet>=3.1.1",
@@ -45,6 +44,7 @@ dependencies = [
     "guessit>=3.8.0,<4",
     "pymediainfo>=7.0.1",
     "curl-cffi>=0.7",
+    "cryptography>=44.0.0",
     "defusedxml>=0.7.1",
     "sse-starlette>=3.4.4",
     "prometheus-fastapi-instrumentator>=8.0.1",
@@ -111,9 +111,15 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Path", "taskiq.TaskiqDepen
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --ignore=tests/integration -m 'not postgresql'"
+markers = [
+    "integration: PostgreSQL integration tests (require MIRAMEDIA_TEST_DATABASE_URL)",
+    "postgresql: tests that require MIRAMEDIA_TEST_DATABASE_URL disposable PostgreSQL",
+]
 
 [tool.ruff.lint.per-file-ignores]
+"scripts/migration_head_audit.py" = ["INP001"]
+"tests/integration/**" = ["S607", "TRY300"]
 # Indexer sites and the generic metadata backend implement a shared abstract
 # interface; some sites/backends legitimately ignore interface parameters
 # (e.g. a movies-only site ignores season_number). The unused-argument is

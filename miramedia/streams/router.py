@@ -184,7 +184,9 @@ async def probe_movie_stream(
     file_id: FileIdQuery,
 ) -> StreamProbeResponse:
     """Tell the player whether to use direct range streaming or HLS."""
-    movie_file = await _load_movie_file(movie_service=movie_service, file_id=file_id)
+    movie_file = await _load_movie_file(
+        movie_service=movie_service, movie_id=movie.id, file_id=file_id
+    )
     video_file = await _resolve_movie_video_file(
         movie=movie,
         movie_service=movie_service,
@@ -212,7 +214,9 @@ async def probe_episode_stream(
     db: DbSessionDependency,
     file_id: FileIdQuery,
 ) -> StreamProbeResponse:
-    episode_file = await _load_episode_file(show_service=show_service, file_id=file_id)
+    episode_file = await _load_episode_file(
+        show_service=show_service, episode_id=episode_id, file_id=file_id
+    )
     video_file = await _resolve_episode_video_file(
         show_service=show_service,
         episode_file=episode_file,
@@ -271,10 +275,11 @@ async def _resolve_video_file(
 async def _load_episode_file(
     *,
     show_service: ShowService,
+    episode_id: EpisodeId,
     file_id: UUID,
 ) -> EpisodeFile:
     episode_file = await show_service.show_repository.get_episode_file_by_id(file_id)
-    if episode_file is None:
+    if episode_file is None or episode_file.episode_id != episode_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Episode file not found"
         )
@@ -284,10 +289,11 @@ async def _load_episode_file(
 async def _load_movie_file(
     *,
     movie_service: MovieService,
+    movie_id: UUID,
     file_id: UUID,
 ) -> MovieFile:
     movie_file = await movie_service.movie_repository.get_movie_file_by_id(file_id)
-    if movie_file is None:
+    if movie_file is None or movie_file.movie_id != movie_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Movie file not found"
         )
@@ -364,12 +370,14 @@ async def _resolve_movie_video_file(
 
 @router.get("/episodes/{episode_id}/hls/index.m3u8")
 async def episode_hls_playlist(
-    episode_id: EpisodeId,  # noqa: ARG001 — required by route signature
+    episode_id: EpisodeId,
     show_service: show_service_dep,
     db: DbSessionDependency,
     file_id: FileIdQuery,
 ) -> FileResponse:
-    episode_file = await _load_episode_file(show_service=show_service, file_id=file_id)
+    episode_file = await _load_episode_file(
+        show_service=show_service, episode_id=episode_id, file_id=file_id
+    )
     video_file = await _resolve_episode_video_file(
         show_service=show_service,
         episode_file=episode_file,
@@ -391,13 +399,15 @@ async def episode_hls_playlist(
 
 @router.get("/episodes/{episode_id}/hls/{segment_name}")
 async def episode_hls_segment(
-    episode_id: EpisodeId,  # noqa: ARG001 — required by route signature
+    episode_id: EpisodeId,
     show_service: show_service_dep,
     db: DbSessionDependency,
     segment_name: str,
     file_id: FileIdQuery,
 ) -> FileResponse:
-    episode_file = await _load_episode_file(show_service=show_service, file_id=file_id)
+    episode_file = await _load_episode_file(
+        show_service=show_service, episode_id=episode_id, file_id=file_id
+    )
     video_file = await _resolve_episode_video_file(
         show_service=show_service,
         episode_file=episode_file,
@@ -416,7 +426,9 @@ async def movie_hls_playlist(
     db: DbSessionDependency,
     file_id: FileIdQuery,
 ) -> FileResponse:
-    movie_file = await _load_movie_file(movie_service=movie_service, file_id=file_id)
+    movie_file = await _load_movie_file(
+        movie_service=movie_service, movie_id=movie.id, file_id=file_id
+    )
     video_file = await _resolve_movie_video_file(
         movie=movie,
         movie_service=movie_service,
@@ -445,7 +457,9 @@ async def movie_hls_segment(
     segment_name: str,
     file_id: FileIdQuery,
 ) -> FileResponse:
-    movie_file = await _load_movie_file(movie_service=movie_service, file_id=file_id)
+    movie_file = await _load_movie_file(
+        movie_service=movie_service, movie_id=movie.id, file_id=file_id
+    )
     video_file = await _resolve_movie_video_file(
         movie=movie,
         movie_service=movie_service,
@@ -467,7 +481,9 @@ async def stream_movie(
     download: DownloadQuery = False,
 ) -> FileResponse:
     """Stream or download a movie file."""
-    movie_file = await _load_movie_file(movie_service=movie_service, file_id=file_id)
+    movie_file = await _load_movie_file(
+        movie_service=movie_service, movie_id=movie.id, file_id=file_id
+    )
     video_file = await _resolve_movie_video_file(
         movie=movie,
         movie_service=movie_service,
@@ -488,14 +504,16 @@ async def stream_movie(
 
 @router.get("/episodes/{episode_id}")
 async def stream_episode(
-    episode_id: EpisodeId,  # noqa: ARG001 — required by route signature
+    episode_id: EpisodeId,
     show_service: show_service_dep,
     db: DbSessionDependency,
     file_id: FileIdQuery,
     download: DownloadQuery = False,
 ) -> FileResponse:
     """Stream or download a TV episode file."""
-    episode_file = await _load_episode_file(show_service=show_service, file_id=file_id)
+    episode_file = await _load_episode_file(
+        show_service=show_service, episode_id=episode_id, file_id=file_id
+    )
     video_file = await _resolve_episode_video_file(
         show_service=show_service,
         episode_file=episode_file,
@@ -604,7 +622,9 @@ async def stream_movie_subtitle(
 ) -> Response:
     """Stream a subtitle file for a movie."""
     config = MiraMediaConfig()
-    movie_file = await _load_movie_file(movie_service=movie_service, file_id=file_id)
+    movie_file = await _load_movie_file(
+        movie_service=movie_service, movie_id=movie.id, file_id=file_id
+    )
     movie_root = movie_service.get_movie_root_path(movie=movie)
     parts = NameParts.from_row(movie_file)
     movie_file_names = movie_file_stem_candidates(movie, movie_file.quality, parts)
@@ -629,7 +649,7 @@ async def stream_movie_subtitle(
 
 @router.get("/subtitles/episodes/{episode_id}/{language}")
 async def stream_episode_subtitle(
-    episode_id: EpisodeId,  # noqa: ARG001 — required by route signature
+    episode_id: EpisodeId,
     show_service: show_service_dep,
     db: DbSessionDependency,
     language: str,
@@ -637,7 +657,9 @@ async def stream_episode_subtitle(
 ) -> Response:
     """Stream a subtitle file for an episode."""
     config = MiraMediaConfig()
-    episode_file = await _load_episode_file(show_service=show_service, file_id=file_id)
+    episode_file = await _load_episode_file(
+        show_service=show_service, episode_id=episode_id, file_id=file_id
+    )
 
     try:
         episode = await show_service.get_episode(episode_id=episode_file.episode_id)

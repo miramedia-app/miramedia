@@ -4,30 +4,45 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+from miramedia.auth.runtime import (
+    OIDC_CONFIG_INVALID_DETAIL,
+    AuthRuntimeActivationError,
+    AuthRuntimeGeneration,
+    prepare_auth_runtime_for_overrides,
+)
 from miramedia.auth.users import SuperuserDep, current_superuser
 from miramedia.config import MiraMediaConfig
 from miramedia.movies.cleanup import cleanup_stale_movie_preferences
 from miramedia.settings.dependencies import settings_repository_dep
 from miramedia.settings.integration_tests import HANDLERS as TEST_HANDLERS
 from miramedia.settings.integration_tests import IntegrationTestResult
+from miramedia.settings.mutation import (
+    SETTINGS_MUTATION_FAILED_DETAIL,
+    SettingsMutationError,
+    SettingsMutationSupersededError,
+    execute_settings_mutation,
+)
 from miramedia.settings.schemas import SystemSettingsRead, SystemSettingsUpdate
 from miramedia.settings.service import (
-    _config_to_dict,
-    _singleton_swap_lock,
-    apply_overrides_to_config,
-    deep_merge,
-    diff_against_defaults,
+    compute_clear_override_path,
+    compute_mutation_overrides,
     get_effective_config,
     get_settings_schema,
     get_toml_defaults,
-    revert_field_to_toml_default,
-    strip_none,
+)
+from miramedia.settings.validation import (
+    SettingsValidationError,
+    reject_restart_only_clear_path,
+    reject_restart_only_incoming,
+    sanitize_export_overrides,
+    validate_incoming_settings_update,
 )
 from miramedia.shows.cleanup import cleanup_stale_show_preferences
 
@@ -35,6 +50,52 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
+
+
+async def _stage_auth_runtime(
+    merged_overrides: dict,
+) -> AuthRuntimeGeneration:
+    try:
+        return await prepare_auth_runtime_for_overrides(merged_overrides)
+    except AuthRuntimeActivationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc) or OIDC_CONFIG_INVALID_DETAIL,
+        ) from exc
+
+
+async def _commit_settings_mutation(
+    *,
+    repo: settings_repository_dep,
+    prepare: Callable[[], Awaitable[tuple[dict, dict, int]]],
+) -> dict:
+    async def _fetch_current() -> tuple[dict, int]:
+        return await repo.get_overrides_with_revision()
+
+    try:
+        return await execute_settings_mutation(
+            prepare=prepare,
+            persist_overrides_cas=repo.save_overrides_cas,
+            fetch_current=_fetch_current,
+            db_session=repo.db,
+            stage_auth_runtime=_stage_auth_runtime,
+        )
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except SettingsMutationSupersededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except SettingsMutationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=SETTINGS_MUTATION_FAILED_DETAIL,
+        ) from exc
+
 
 router = APIRouter(
     prefix="/system",
@@ -141,35 +202,27 @@ async def update_system_settings(
     to the in-memory config singleton so changes take effect immediately.
     Interval-driven scheduler tasks are also re-synced on save.
     """
-    new_overrides = strip_none(data.model_dump(mode="json"))
+    try:
+        incoming_patch = validate_incoming_settings_update(
+            data.model_dump(mode="json", exclude_unset=True)
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
-    # Diff against TOML defaults so only real changes are stored as overrides
-    # Use json_mode so enum/Path serialization matches the incoming data
-    config = MiraMediaConfig()
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
-    toml_defaults = {
-        s: _config_to_dict(getattr(config, s), json_mode=True) for s in sections
-    }
-    new_overrides = diff_against_defaults(new_overrides, toml_defaults)
+    async def _prepare() -> tuple[dict, dict, int]:
+        prior_overrides, revision = await repo.get_overrides_with_revision()
+        return (
+            compute_mutation_overrides(prior_overrides, incoming_patch),
+            prior_overrides,
+            revision,
+        )
 
-    existing_overrides = await repo.get_overrides()
-    merged_overrides = deep_merge(existing_overrides, new_overrides)
-    await repo.save_overrides(merged_overrides)
-
-    # Apply overrides to the in-memory config singleton immediately
-    apply_overrides_to_config(MiraMediaConfig(), merged_overrides)
+    merged_overrides = await _commit_settings_mutation(
+        repo=repo,
+        prepare=_prepare,
+    )
 
     # Clear per-show/movie overrides that reference now-disabled options
     await _cleanup_stale_media_preferences(repo.db)
@@ -191,25 +244,15 @@ async def reset_system_settings(
     repo: settings_repository_dep,
 ) -> None:
     """Reset all system settings to TOML defaults (removes all DB overrides)."""
-    await repo.reset_overrides()
 
-    # Reset singleton fields back to TOML defaults section-by-section
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-    if saved_instance is not None:
-        for section in _ALLOWED_SECTIONS:
-            try:
-                setattr(saved_instance, section, getattr(fresh, section))
-            except Exception:
-                log.exception("Failed to reset section %s on singleton", section)
+    async def _prepare() -> tuple[dict, dict, int]:
+        prior_overrides, revision = await repo.get_overrides_with_revision()
+        return {}, prior_overrides, revision
+
+    await _commit_settings_mutation(
+        repo=repo,
+        prepare=_prepare,
+    )
 
     await _cleanup_stale_media_preferences(repo.db)
 
@@ -242,7 +285,7 @@ async def export_settings(repo: settings_repository_dep) -> SettingsExport:
     """Download every DB override as JSON for backup or transfer."""
     return SettingsExport(
         exported_at=datetime.now(UTC),
-        overrides=await repo.get_overrides(),
+        overrides=sanitize_export_overrides(await repo.get_overrides()),
     )
 
 
@@ -258,6 +301,12 @@ async def import_settings(
     against the known set so a malformed file can't poison the singleton.
     """
     incoming = body.overrides or {}
+    try:
+        reject_restart_only_incoming(incoming)
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     for key in incoming:
         if key not in _ALLOWED_SECTIONS:
             raise HTTPException(
@@ -265,32 +314,22 @@ async def import_settings(
             )
 
     if body.mode == "replace":
-        merged = incoming
+        incoming_merged = incoming
     else:
-        existing = await repo.get_overrides()
-        merged = deep_merge(existing, incoming)
+        incoming_merged = None
 
-    await repo.save_overrides(merged)
+    async def _prepare() -> tuple[dict, dict, int]:
+        existing, revision = await repo.get_overrides_with_revision()
+        if incoming_merged is not None:
+            merged = compute_mutation_overrides({}, incoming_merged)
+        else:
+            merged = compute_mutation_overrides(existing, incoming)
+        return merged, existing, revision
 
-    # Reload TOML defaults onto the singleton then re-apply, mirroring the reset flow,
-    # so removed-via-replace fields revert and added-via-merge fields take effect now.
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-    if saved_instance is not None:
-        for section in _ALLOWED_SECTIONS:
-            try:
-                setattr(saved_instance, section, getattr(fresh, section))
-            except Exception:
-                log.exception("Failed to reset section %s on singleton", section)
-    apply_overrides_to_config(MiraMediaConfig(), merged)
+    merged = await _commit_settings_mutation(
+        repo=repo,
+        prepare=_prepare,
+    )
 
     await _cleanup_stale_media_preferences(repo.db)
 
@@ -320,9 +359,21 @@ async def clear_override_path(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid section: {body.path[0]}",
         )
-    updated_overrides = await repo.clear_override_path(body.path)
-    revert_field_to_toml_default(body.path)
-    apply_overrides_to_config(MiraMediaConfig(), updated_overrides)
+    try:
+        reject_restart_only_clear_path(body.path)
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+    async def _prepare() -> tuple[dict, dict, int]:
+        prior, revision = await repo.get_overrides_with_revision()
+        return compute_clear_override_path(prior, body.path), prior, revision
+
+    updated_overrides = await _commit_settings_mutation(
+        repo=repo,
+        prepare=_prepare,
+    )
 
     await _cleanup_stale_media_preferences(repo.db)
 

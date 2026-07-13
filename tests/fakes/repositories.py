@@ -26,6 +26,7 @@ from miramedia.shows.schemas import (
     Show,
     ShowId,
 )
+from miramedia.torrents.integrity import Sha1MismatchPage, Sha1MismatchPageKey
 from miramedia.torrents.schemas import Quality, Torrent, TorrentId, TorrentStatus
 from tests.fakes.db import FakeDb
 
@@ -63,7 +64,7 @@ class FakeShowRepository:
     async def batch_episodes_with_context(
         self, episode_ids: list[EpisodeId]
     ) -> dict[EpisodeId, object]:
-        from miramedia.shows.repository import EpisodeIntegrityContext
+        from miramedia.shows.schemas import EpisodeIntegrityContext
 
         self.context_batch_calls = getattr(self, "context_batch_calls", 0) + 1
         out: dict[EpisodeId, object] = {}
@@ -173,6 +174,9 @@ class FakeShowRepository:
         episode.episode_files = [*episode.episode_files, episode_file]
         return episode_file
 
+    async def get_episode_file_by_id(self, file_id: UUID) -> EpisodeFile | None:
+        return self.episode_files.get(file_id)
+
 
 class FakeMovieRepository:
     def __init__(self) -> None:
@@ -270,9 +274,20 @@ class FakeMovieRepository:
         self.movie_files[movie_file.id] = movie_file
         return movie_file
 
+    async def get_movie_file_by_id(self, file_id: UUID) -> MovieFile | None:
+        return self.movie_files.get(file_id)
+
 
 class FakeTorrentRepository:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        show_repo: FakeShowRepository | None = None,
+        movie_repo: FakeMovieRepository | None = None,
+    ) -> None:
+        self.show_repo = show_repo
+        self.movie_repo = movie_repo
+        self.db = FakeDb()
         self.torrents: dict[TorrentId, Torrent] = {}
         self.episode_files: dict[TorrentId, list[EpisodeFile]] = {}
         self.movie_files: dict[TorrentId, list[MovieFile]] = {}
@@ -316,6 +331,39 @@ class FakeTorrentRepository:
 
     async def get_all_torrents(self) -> list[Torrent]:
         return list(self.torrents.values())
+
+    async def get_active_torrents(self) -> list[Torrent]:
+        from miramedia.torrents.repository import ACTIVE_TORRENT_STATUSES
+
+        return [
+            torrent
+            for torrent in self.torrents.values()
+            if torrent.status in ACTIVE_TORRENT_STATUSES
+        ]
+
+    async def paginate_sha1_mismatch_keys(
+        self, *, offset: int, limit: int
+    ) -> Sha1MismatchPage:
+        show_rows: list[EpisodeFile] = []
+        movie_rows: list[MovieFile] = []
+        if self.show_repo is not None and hasattr(
+            self.show_repo, "list_sha1_mismatch_files"
+        ):
+            show_rows = await self.show_repo.list_sha1_mismatch_files(
+                offset=0, limit=10_000
+            )
+        if self.movie_repo is not None and hasattr(
+            self.movie_repo, "list_sha1_mismatch_files"
+        ):
+            movie_rows = await self.movie_repo.list_sha1_mismatch_files(
+                offset=0, limit=10_000
+            )
+        keys = [Sha1MismatchPageKey("show", row.id) for row in show_rows] + [
+            Sha1MismatchPageKey("movie", row.id) for row in movie_rows
+        ]
+        total = len(keys)
+        page = keys[offset : offset + limit]
+        return Sha1MismatchPage(keys=page, total=total)
 
 
 def _season_for_episode(repo: FakeShowRepository, episode_id: EpisodeId) -> Season:
@@ -473,42 +521,79 @@ class FakeRequestRepository:
 class FakeSettingsRepository:
     """In-memory stand-in for ``SettingsRepository``."""
 
-    def __init__(self, overrides: dict | None = None) -> None:
+    def __init__(
+        self,
+        overrides: dict | None = None,
+        *,
+        revision: int | None = None,
+    ) -> None:
         self.db = FakeDb()
         self.overrides: dict = copy.deepcopy(overrides or {})
+        if revision is not None:
+            self.revision = revision
+        elif self.overrides:
+            self.revision = 1
+        else:
+            self.revision = 0
         self.save_calls: list[dict] = []
+        self.cas_calls: list[tuple[dict, int]] = []
         self.reset_called = False
         self.clear_path_calls: list[list[str]] = []
+        self._insert_lost_race = False
 
     async def get_overrides(self) -> dict:
-        return copy.deepcopy(self.overrides)
+        from miramedia.settings.normalize import normalize_stored_overrides
 
-    async def save_overrides(self, overrides: dict) -> dict:
+        return normalize_stored_overrides(self.overrides)
+
+    async def get_overrides_with_revision(self) -> tuple[dict, int]:
+        from miramedia.settings.normalize import normalize_stored_overrides
+
+        return normalize_stored_overrides(self.overrides), self.revision
+
+    async def save_overrides_cas(
+        self,
+        overrides: dict,
+        expected_revision: int,
+    ) -> tuple[dict, int]:
+        from miramedia.settings.repository import SettingsRevisionConflictError
+
+        if expected_revision == 0:
+            if self._insert_lost_race and self.revision == 0:
+                self.revision = 1
+                self.overrides = copy.deepcopy(overrides)
+                self.cas_calls.append((copy.deepcopy(overrides), 0))
+                self.save_calls.append(copy.deepcopy(overrides))
+                raise SettingsRevisionConflictError(0, 1)
+            if self.revision == 0:
+                self.cas_calls.append((copy.deepcopy(overrides), 0))
+                self.save_calls.append(copy.deepcopy(overrides))
+                self.overrides = copy.deepcopy(overrides)
+                self.revision = 1
+                return self.overrides, self.revision
+            raise SettingsRevisionConflictError(0, self.revision)
+
+        if expected_revision != self.revision:
+            raise SettingsRevisionConflictError(expected_revision, self.revision)
+        self.cas_calls.append((copy.deepcopy(overrides), expected_revision))
         self.save_calls.append(copy.deepcopy(overrides))
         self.overrides = copy.deepcopy(overrides)
-        return self.overrides
+        self.revision += 1
+        if not overrides:
+            self.reset_called = True
+        return self.overrides, self.revision
+
+    async def fetch_overrides_with_revision(self) -> tuple[dict, int]:
+        return await self.get_overrides_with_revision()
 
     async def reset_overrides(self) -> None:
         self.reset_called = True
         self.overrides = {}
 
     async def clear_override_path(self, path: list[str]) -> dict:
+        from miramedia.settings.service import compute_clear_override_path
+
         self.clear_path_calls.append(list(path))
-        if not path:
-            return await self.get_overrides()
-        overrides = await self.get_overrides()
-        node = overrides
-        stack: list[tuple[dict, str]] = []
-        for key in path[:-1]:
-            if not isinstance(node, dict) or key not in node:
-                return overrides
-            stack.append((node, key))
-            node = node[key]
-        if not isinstance(node, dict) or path[-1] not in node:
-            return overrides
-        del node[path[-1]]
-        for parent, key in reversed(stack):
-            if isinstance(parent[key], dict) and not parent[key]:
-                del parent[key]
-        self.overrides = overrides
-        return overrides
+        updated = compute_clear_override_path(self.overrides, path)
+        saved, _revision = await self.save_overrides_cas(updated, self.revision)
+        return saved

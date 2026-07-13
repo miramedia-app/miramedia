@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import enum
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, func, insert, select
+from sqlalchemy import delete, func, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.imports.models import (
@@ -18,18 +20,177 @@ from miramedia.imports.schemas import ScanRunState, ScanRunStatus
 
 _SINGLETON_ID = "current"
 
+# Grace window before an unstarted queued row may be automatically reclaimed.
+STALE_QUEUED_IMPORT_GRACE = timedelta(minutes=30)
+
+CLAIM_SCAN_CACHE_ROW_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'import_error' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'queued',
+        'queued_at', CAST(:queued_at AS text),
+        'claim_token', CAST(:claim_token AS text)
+    )
+WHERE directory = :directory
+  AND payload->>'status' IN ('pending', 'failed')
+  AND payload->>'media_type_hint' = CAST(:media_type AS text)
+RETURNING directory
+"""
+
+BEGIN_MANUAL_SCAN_WORKER_SQL = """
+UPDATE scan_result_cache
+SET payload = payload || jsonb_build_object(
+    'worker_started_at', CAST(:worker_started_at AS text)
+)
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'media_type_hint' = CAST(:media_type AS text)
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
+  AND payload->>'worker_started_at' IS NULL
+RETURNING directory
+"""
+
+SELECT_QUEUED_IMPORT_SNAPSHOT_SQL = """
+SELECT directory,
+       payload->>'claim_token' AS claim_token,
+       payload->>'queued_at' AS queued_at
+FROM scan_result_cache
+WHERE payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NULL
+"""
+
+STAMP_LEGACY_QUEUED_AT_SQL = """
+UPDATE scan_result_cache
+SET payload = payload || jsonb_build_object('queued_at', CAST(:queued_at AS text))
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NULL
+  AND (
+    (CAST(:expected_queued_at AS text) IS NULL AND payload->>'queued_at' IS NULL)
+    OR payload->>'queued_at' = CAST(:expected_queued_at AS text)
+  )
+RETURNING directory
+"""
+
+RECLAIM_STALE_QUEUED_IMPORT_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NULL
+  AND payload->>'queued_at' = CAST(:expected_queued_at AS text)
+  AND (
+    (CAST(:expected_claim_token AS text) IS NULL AND payload->>'claim_token' IS NULL)
+    OR payload->>'claim_token' = CAST(:expected_claim_token AS text)
+  )
+RETURNING directory
+"""
+
+_STALE_RECLAIM_ERROR = (
+    "Import was interrupted before completing (worker restarted). "
+    "Press Import to retry."
+)
+
+COMPENSATE_SCAN_CACHE_CLAIM_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
+  AND payload->>'worker_started_at' IS NULL
+RETURNING directory
+"""
+
+COMPLETE_MANUAL_SCAN_IMPORT_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'imported',
+        'imported_name', CAST(:imported_name AS text),
+        'imported_media_id', CAST(:imported_media_id AS text),
+        'imported_media_type', CAST(:imported_media_type AS text)
+    )
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
+  AND payload->>'worker_started_at' IS NOT NULL
+RETURNING directory
+"""
+
+FAIL_MANUAL_SCAN_IMPORT_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'claim_token' = CAST(:claim_token AS text)
+  AND payload->>'worker_started_at' IS NOT NULL
+RETURNING directory
+"""
+
+RESET_IMPORT_BATCH_IF_IDLE_SQL = """
+UPDATE import_batch SET total = 0
+WHERE id = :id AND total <> 0 AND NOT EXISTS (
+    SELECT 1 FROM scan_result_cache
+    WHERE payload->>'status' = 'queued'
+)
+"""
+
+
+class ScanClaimResult(enum.Enum):
+    claimed = "claimed"
+    not_found = "not_found"
+    not_eligible = "not_eligible"
+
+
+@dataclass(frozen=True)
+class ScanClaimOutcome:
+    result: ScanClaimResult
+    claim_token: str | None = None
+
+
+class ScanWorkerBeginResult(enum.Enum):
+    started = "started"
+    duplicate = "duplicate"
+    stale = "stale"
+
+
+@dataclass(frozen=True)
+class ScanWorkerBeginOutcome:
+    result: ScanWorkerBeginResult
+    worker_started_at: str | None = None
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _queued_at_valid(queued_at: str | None) -> bool:
+    if not queued_at:
+        return False
+    try:
+        datetime.fromisoformat(queued_at)
+    except ValueError:
+        return False
+    return True
+
 
 def _queued_before(queued_at: str | None, cutoff: datetime) -> bool:
-    """True if a row's ``queued_at`` is older than ``cutoff`` (so it's stale).
-
-    A missing or unparseable timestamp is treated as stale — a queued row with
-    no usable dispatch time has nothing keeping it alive, so reclaim it."""
-    if not queued_at:
-        return True
-    try:
-        ts = datetime.fromisoformat(queued_at)
-    except ValueError:
-        return True
+    """True if a parseable ``queued_at`` is older than ``cutoff``."""
+    if not _queued_at_valid(queued_at):
+        return False
+    ts = datetime.fromisoformat(queued_at)  # type: ignore[arg-type]
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
     return ts < cutoff
@@ -65,6 +226,18 @@ class ImportsRepository:
 
         schedule_import_queue_rebuild()
 
+    async def get_scan_cache_entry(self, directory: str) -> dict | None:
+        """Exact-key lookup for one scan-cache row."""
+        result = await self.db.execute(
+            select(ScanResultCache.directory, ScanResultCache.payload).where(
+                ScanResultCache.directory == directory
+            )
+        )
+        row = result.first()
+        if row is None:
+            return None
+        return {"directory": row.directory, **row.payload}
+
     async def list_scan_cache(self) -> list[dict]:
         stmt = select(ScanResultCache.payload, ScanResultCache.directory)
         result = await self.db.execute(stmt)
@@ -89,10 +262,8 @@ class ImportsRepository:
 
     # ---- import batch progress counter ------------------------------------
 
-    async def bump_import_batch_total(self, n: int = 1) -> None:
-        """Atomically add ``n`` to the live batch total (the M in "N/M").
-
-        Upsert so a fresh DB without the seeded singleton row still works."""
+    async def _bump_import_batch_total_in_tx(self, n: int = 1) -> None:
+        """Add ``n`` to the live batch total without committing."""
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         stmt = pg_insert(ImportBatch.__table__).values(id=_SINGLETON_ID, total=n)
@@ -101,107 +272,284 @@ class ImportsRepository:
             set_={"total": ImportBatch.total + n},
         )
         await self.db.execute(stmt)
+
+    async def bump_import_batch_total(self, n: int = 1) -> None:
+        """Atomically add ``n`` to the live batch total (the M in "N/M").
+
+        Upsert so a fresh DB without the seeded singleton row still works."""
+        await self._bump_import_batch_total_in_tx(n)
         await self.db.commit()
+
+    async def _decrement_import_batch_total_in_tx(self, n: int = 1) -> None:
+        from sqlalchemy import text
+
+        await self.db.execute(
+            text(
+                "UPDATE import_batch SET total = GREATEST(total - :n, 0) WHERE id = :id"
+            ),
+            {"id": _SINGLETON_ID, "n": n},
+        )
+
+    async def _reset_import_batch_if_idle_in_tx(self) -> None:
+        await self.db.execute(
+            text(RESET_IMPORT_BATCH_IF_IDLE_SQL),
+            {"id": _SINGLETON_ID},
+        )
 
     async def reset_import_batch_if_idle(self) -> None:
         """Zero the batch total once no scan row is still queued — the batch is
         over. Single atomic statement so concurrent worker completions race
         safely (idempotent) and a mid-flight dispatch keeps a queued row alive,
         preventing a premature reset."""
-        from sqlalchemy import text
-
-        await self.db.execute(
-            text(
-                "UPDATE import_batch SET total = 0 "
-                "WHERE id = :id AND total <> 0 AND NOT EXISTS ("
-                "SELECT 1 FROM scan_result_cache "
-                "WHERE payload->>'status' = 'queued')"
-            ),
-            {"id": _SINGLETON_ID},
-        )
+        await self._reset_import_batch_if_idle_in_tx()
         await self.db.commit()
 
     async def get_import_batch_total(self) -> int:
         return int((await self.db.scalar(select(ImportBatch.total))) or 0)
 
-    async def reclaim_stale_queued_imports(
-        self, *, older_than: timedelta | None = None
-    ) -> int:
-        """Recover scan rows stuck in "queued" because their import worker died
-        before reaching a terminal state (process restart / OOM kill — the
-        per-task ``except`` that would mark them failed never runs).
+    async def reclaim_stale_queued_imports(self, *, older_than: timedelta) -> int:
+        """Recover dispatched-but-not-started queued rows only.
 
-        Flips them to "failed" with an explanatory error so they re-surface in
-        Review and stay retryable, then resets the batch counter so the live
-        "Importing N/M" toast can drain.
+        Automatic reclaim never touches rows after ``begin_manual_scan_worker``
+        succeeds — filesystem mutation may still be running and cannot be fenced
+        cooperatively. Legacy rows with missing/invalid ``queued_at`` are stamped
+        once, then become eligible only after the normal grace interval.
+        """
+        cutoff = _utc_now() - older_than
+        snapshot_result = await self.db.execute(text(SELECT_QUEUED_IMPORT_SNAPSHOT_SQL))
 
-        ``older_than=None`` reclaims every queued row — used at startup, where no
-        in-process worker can have survived the restart. A ``timedelta`` reclaims
-        only rows queued before the cutoff (periodic sweep), leaving genuinely
-        in-flight imports alone."""
-        rows = (
-            (
-                await self.db.execute(
-                    select(ScanResultCache).where(
-                        ScanResultCache.payload["status"].astext == "queued"
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not rows:
-            return 0
-        cutoff = datetime.now(UTC) - older_than if older_than is not None else None
+        stamped = 0
         reclaimed = 0
-        for row in rows:
-            payload = dict(row.payload)
-            if cutoff is not None and not _queued_before(
-                payload.get("queued_at"), cutoff
-            ):
-                continue
-            payload["status"] = "failed"
-            payload["import_error"] = (
-                "Import was interrupted before completing (worker restarted). "
-                "Press Import to retry."
-            )
-            payload.pop("queued_at", None)
-            row.payload = payload
-            reclaimed += 1
-        if reclaimed == 0:
-            return 0
-        await self.db.commit()
-        await self.reset_import_batch_if_idle()
+        try:
+            for row in snapshot_result:
+                queued_at = row.queued_at
+                if not _queued_at_valid(queued_at):
+                    result = await self.db.execute(
+                        text(STAMP_LEGACY_QUEUED_AT_SQL),
+                        {
+                            "directory": row.directory,
+                            "queued_at": _utc_now().isoformat(),
+                            "expected_queued_at": queued_at,
+                        },
+                    )
+                    if result.first() is not None:
+                        stamped += 1
+                    continue
+
+                if not _queued_before(queued_at, cutoff):
+                    continue
+
+                result = await self.db.execute(
+                    text(RECLAIM_STALE_QUEUED_IMPORT_SQL),
+                    {
+                        "directory": row.directory,
+                        "expected_claim_token": row.claim_token,
+                        "expected_queued_at": queued_at,
+                        "error": _STALE_RECLAIM_ERROR,
+                    },
+                )
+                if result.first() is not None:
+                    reclaimed += 1
+
+            if reclaimed == 0 and stamped == 0:
+                return 0
+            if reclaimed > 0:
+                await self._reset_import_batch_if_idle_in_tx()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
         from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
 
         schedule_import_queue_rebuild()
         return reclaimed
 
-    async def mark_scan_cache_queued(self, directory: str) -> bool:
-        """Mark a cached scan row as queued for import. The imports page hides
-        the Import button while a row is in this state to prevent double-clicks
-        and double-dispatches; the worker flips it to imported/failed when the
-        background task completes."""
-        result = await self.db.execute(
-            select(ScanResultCache).where(ScanResultCache.directory == directory)
-        )
-        row = result.scalar_one_or_none()
-        if row is None:
-            return False
-        payload = dict(row.payload)
-        payload["status"] = "queued"
-        payload.pop("import_error", None)
-        # Stamp dispatch time so a periodic sweep can reclaim this row if its
-        # worker dies mid-import and never reaches a terminal state.
-        payload["queued_at"] = datetime.now(UTC).isoformat()
-        row.payload = payload
-        await self.db.commit()
-        # New row entering the worker lane → grow the live batch total (M).
-        await self.bump_import_batch_total(1)
+    async def claim_scan_cache_row(
+        self, directory: str, *, media_type: str
+    ) -> ScanClaimOutcome:
+        """Atomically claim one cached scan row for background import.
+
+        Eligible rows transition ``pending``/``failed`` -> ``queued`` in a
+        single conditional UPDATE matching directory, retryable status, and
+        ``media_type_hint``. A fresh ``claim_token`` is stored with the row.
+        The batch counter grows in the same transaction.
+        """
+        queued_at = _utc_now().isoformat()
+        claim_token = str(uuid.uuid4())
+        try:
+            result = await self.db.execute(
+                text(CLAIM_SCAN_CACHE_ROW_SQL),
+                {
+                    "directory": directory,
+                    "queued_at": queued_at,
+                    "media_type": media_type,
+                    "claim_token": claim_token,
+                },
+            )
+            if result.first() is None:
+                await self.db.rollback()
+                exists = await self.db.scalar(
+                    select(ScanResultCache.directory).where(
+                        ScanResultCache.directory == directory
+                    )
+                )
+                if exists is None:
+                    return ScanClaimOutcome(ScanClaimResult.not_found)
+                return ScanClaimOutcome(ScanClaimResult.not_eligible)
+
+            await self._bump_import_batch_total_in_tx(1)
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return ScanClaimOutcome(ScanClaimResult.claimed, claim_token=claim_token)
+
+    async def compensate_scan_cache_claim(
+        self, directory: str, *, claim_token: str, error: str
+    ) -> bool:
+        """Undo a queued claim when broker dispatch fails.
+
+        Flips this exact row from ``queued`` to retryable ``failed`` when the
+        claim token matches, decrements the batch total, and zeros the batch
+        counter when no queued rows remain — all in one transaction.
+        """
+        try:
+            result = await self.db.execute(
+                text(COMPENSATE_SCAN_CACHE_CLAIM_SQL),
+                {
+                    "directory": directory,
+                    "claim_token": claim_token,
+                    "error": error,
+                },
+            )
+            if result.first() is None:
+                await self.db.rollback()
+                return False
+            await self._decrement_import_batch_total_in_tx(1)
+            await self._reset_import_batch_if_idle_in_tx()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
         from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
 
         schedule_import_queue_rebuild()
         return True
+
+    async def begin_manual_scan_worker(
+        self, directory: str, *, claim_token: str, media_type: str
+    ) -> ScanWorkerBeginOutcome:
+        """Atomically mark one queued manual resolve as worker-started.
+
+        Only the first delivery with a matching claim token may proceed to
+        filesystem mutation. Duplicate deliveries observe an existing
+        ``worker_started_at`` and return without touching the row.
+        """
+        worker_started_at = _utc_now().isoformat()
+        result = await self.db.execute(
+            text(BEGIN_MANUAL_SCAN_WORKER_SQL),
+            {
+                "directory": directory,
+                "claim_token": claim_token,
+                "media_type": media_type,
+                "worker_started_at": worker_started_at,
+            },
+        )
+        if result.first() is not None:
+            await self.db.commit()
+            return ScanWorkerBeginOutcome(
+                ScanWorkerBeginResult.started,
+                worker_started_at=worker_started_at,
+            )
+
+        row = await self.get_scan_cache_entry(directory)
+        if row is None:
+            return ScanWorkerBeginOutcome(ScanWorkerBeginResult.stale)
+        if (
+            row.get("status") == "queued"
+            and row.get("claim_token") == claim_token
+            and row.get("media_type_hint") == media_type
+            and row.get("worker_started_at") is not None
+        ):
+            return ScanWorkerBeginOutcome(ScanWorkerBeginResult.duplicate)
+        return ScanWorkerBeginOutcome(ScanWorkerBeginResult.stale)
+
+    async def complete_manual_scan_import(
+        self,
+        directory: str,
+        *,
+        claim_token: str,
+        imported_name: str | None = None,
+        imported_media_id: str | None = None,
+        imported_media_type: str | None = None,
+    ) -> bool:
+        """Terminal imported write for a manual resolve, CAS on claim token."""
+        try:
+            result = await self.db.execute(
+                text(COMPLETE_MANUAL_SCAN_IMPORT_SQL),
+                {
+                    "directory": directory,
+                    "claim_token": claim_token,
+                    "imported_name": imported_name,
+                    "imported_media_id": imported_media_id,
+                    "imported_media_type": imported_media_type,
+                },
+            )
+            if result.first() is None:
+                await self.db.rollback()
+                return False
+            await self._reset_import_batch_if_idle_in_tx()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return True
+
+    async def fail_manual_scan_import(
+        self, directory: str, *, claim_token: str, error: str | None = None
+    ) -> bool:
+        """Terminal failed write for a manual resolve, CAS on claim token."""
+        try:
+            result = await self.db.execute(
+                text(FAIL_MANUAL_SCAN_IMPORT_SQL),
+                {
+                    "directory": directory,
+                    "claim_token": claim_token,
+                    "error": error,
+                },
+            )
+            if result.first() is None:
+                await self.db.rollback()
+                return False
+            await self._reset_import_batch_if_idle_in_tx()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return True
+
+    async def mark_scan_cache_queued(self, directory: str) -> bool:
+        """Deprecated alias for :meth:`claim_scan_cache_row`."""
+        row = await self.get_scan_cache_entry(directory)
+        media_type = (row or {}).get("media_type_hint")
+        if not isinstance(media_type, str):
+            return False
+        outcome = await self.claim_scan_cache_row(directory, media_type=media_type)
+        return outcome.result is ScanClaimResult.claimed
 
     async def mark_scan_cache_imported(
         self,

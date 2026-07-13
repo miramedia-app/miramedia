@@ -11,7 +11,10 @@
 | Format check | `make format-check` |
 | Typecheck (backend) | `make ty` |
 | Typecheck (frontend) | `make tsc` |
+| Frontend tests | `make frontend-test` (= `cd web && pnpm test`; vitest, Node-only, no backend) |
+| Frontend lint + format check | `make frontend-lint` |
 | Frontend bootstrap | `make frontend-bootstrap` |
+| Frontend generate (non-build paths only) | `make frontend-generate` (= `cd web && pnpm run generate`) |
 | OpenAPI regen | `make openapi` (backend must be importable; writes `web/src/lib/api/api.d.ts`) |
 | Dev stack up | `make up` (docker-compose.dev.yaml; `make dev` for watch mode) |
 
@@ -44,9 +47,22 @@ Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/con
 ## Gotchas
 
 - **libtorrent wheel**: cp313 only — CI pins `UV_PYTHON=3.13`; newer interpreters break the install.
-- **Fresh-clone frontend**: `pnpm install --frozen-lockfile` alone is not enough. pnpm 10 blocks
-  postinstall scripts, so run manually before typechecking or building:
-  `pnpm exec fumadocs-mdx && pnpm exec next typegen`
+- **Fresh-clone frontend**: `pnpm install --frozen-lockfile` alone is not enough — pnpm 10 blocks
+  postinstall scripts, so `web/.source` (Fumadocs collections) and Next's type declarations are
+  absent. Do NOT rely on `next build` to generate them implicitly: `createMDX` kicks off `init()`
+  **without awaiting it**, so on a clean tree the write races the compile and fails with
+  `Can't resolve 'collections/server'`. Both `web/package.json` scripts therefore generate
+  explicitly first and then set `_FUMADOCS_MDX=1` (Fumadocs' own guard sentinel) to suppress that
+  un-awaited re-init:
+  - `pnpm build` = `fumadocs-mdx && _FUMADOCS_MDX=1 next build` — self-sufficient. `make
+    frontend-build` and Docker just call it; never add a generation step around them.
+  - `pnpm run generate` = `fumadocs-mdx && _FUMADOCS_MDX=1 next typegen` — for non-build paths
+    (`make frontend-generate`, `make tsc`, CI's typecheck-only job).
+
+  Each path runs MDX exactly once. CI's frontend job generates **once** up front and then runs the
+  already-generated variants (`typecheck:generated`, `build:generated`) plus `test` / `lint` /
+  `format:check`, so the whole job also invokes `fumadocs-mdx` exactly once. Dockerfile and the docs
+  workflow keep calling the self-contained `pnpm build` — never prepend a generate step there.
 - **ty config**: lives in `pyproject.toml` under `[tool.ty]`. Don't bulk-suppress diagnostics in
   new code — fix real bugs, configure stub noise specifically.
 - **YAML folded scalars**: `#` inside a YAML folded/literal block is NOT a comment — it is literal

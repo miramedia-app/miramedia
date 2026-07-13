@@ -11,7 +11,11 @@ from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
 from miramedia.torrents.schemas import Torrent, TorrentStatus
-from miramedia.torrents.utils import get_torrent_hash
+from miramedia.torrents.utils import (
+    get_torrent_hash,
+    torrent_dir_under_root,
+    torrent_title_path_component,
+)
 
 if TYPE_CHECKING:
     from miramedia.torrents.utils import TorrentFile
@@ -59,9 +63,10 @@ class TransmissionDownloadClient(AbstractDownloadClient):
         :param indexer_result: The indexer query result of the torrent file to download.
         :return: The torrent object with calculated hash and initial status.
         """
+        torrent_title_path_component(indexer_result.title)
         torrent_hash = get_torrent_hash(torrent=indexer_result)
-        download_dir = (
-            MiraMediaConfig().misc.effective_completed_path / indexer_result.title
+        download_dir = torrent_dir_under_root(
+            MiraMediaConfig().misc.effective_completed_path, indexer_result.title
         )
         try:
             self._client.add_torrent(

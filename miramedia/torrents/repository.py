@@ -2,11 +2,23 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, exists, func, or_, select, text
+from sqlalchemy import (
+    and_,
+    delete,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    true,
+    union_all,
+)
 from sqlalchemy.orm import selectinload
 
 from miramedia.database import DbSessionDependency
 from miramedia.exceptions import NotFoundError
+from miramedia.file_status import ImportOutcome
 from miramedia.movies.models import Movie, MovieFile
 from miramedia.movies.schemas import Movie as MovieSchema
 from miramedia.movies.schemas import MovieFile as MovieFileSchema
@@ -19,6 +31,7 @@ from miramedia.pagination import (
 from miramedia.shows.models import Episode, EpisodeFile, Season, Show
 from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.shows.schemas import Show as ShowSchema
+from miramedia.torrents.integrity import Sha1MismatchPage, Sha1MismatchPageKey
 from miramedia.torrents.models import (
     ManualParseToken,
     Torrent,
@@ -29,6 +42,9 @@ from miramedia.torrents.schemas import Torrent as TorrentSchema
 from miramedia.torrents.schemas import TorrentHistoryOutcome, TorrentId, TorrentStatus
 
 log = logging.getLogger(__name__)
+
+# Statuses the minute-level finished-download detector can still transition.
+ACTIVE_TORRENT_STATUSES = (TorrentStatus.downloading, TorrentStatus.unknown)
 
 
 class TorrentRepository:
@@ -107,6 +123,17 @@ class TorrentRepository:
         return [
             TorrentSchema.model_validate(torrent_schema) for torrent_schema in result
         ]
+
+    async def get_active_torrents(self) -> list[TorrentSchema]:
+        """Torrents the finished-download detector may still transition.
+
+        Excludes terminal or inactive statuses (``finished``, ``paused``,
+        ``error``) so the minute scheduler does not materialize the whole
+        library.
+        """
+        stmt = select(Torrent).where(Torrent.status.in_(ACTIVE_TORRENT_STATUSES))
+        result = (await self.db.execute(stmt)).scalars().all()
+        return [TorrentSchema.model_validate(row) for row in result]
 
     # ---- torrent history (durable download log) -------------------------
 
@@ -650,3 +677,59 @@ class TorrentRepository:
         for tid, st, err, attempt in (await self.db.execute(mv_stmt)).all():
             result.setdefault(tid, []).append((st, err, attempt))
         return result
+
+    async def paginate_sha1_mismatch_keys(
+        self, *, offset: int, limit: int
+    ) -> Sha1MismatchPage:
+        """Single-snapshot page of mismatch file keys (shows first, then movies)."""
+        mismatch = "sha1 mismatch%"
+        show_part = select(
+            literal(0).label("type_sort"),
+            EpisodeFile.id.label("file_id"),
+        ).where(
+            EpisodeFile.import_status == ImportOutcome.imported,
+            EpisodeFile.import_error.like(mismatch),
+        )
+        movie_part = select(
+            literal(1).label("type_sort"),
+            MovieFile.id.label("file_id"),
+        ).where(
+            MovieFile.import_status == ImportOutcome.imported,
+            MovieFile.import_error.like(mismatch),
+        )
+        union = union_all(show_part, movie_part).subquery("mismatch_keys")
+        total_cte = (
+            select(func.count().label("total")).select_from(union).cte("mismatch_total")
+        )
+        page_cte = (
+            select(union.c.type_sort, union.c.file_id)
+            .order_by(union.c.type_sort, union.c.file_id)
+            .offset(offset)
+            .limit(limit)
+            .cte("mismatch_page")
+        )
+        stmt = (
+            select(
+                total_cte.c.total,
+                page_cte.c.type_sort,
+                page_cte.c.file_id,
+            )
+            .select_from(total_cte.outerjoin(page_cte, true()))
+            .order_by(
+                page_cte.c.type_sort.asc().nulls_last(),
+                page_cte.c.file_id.asc().nulls_last(),
+            )
+        )
+        rows = (await self.db.execute(stmt)).all()
+        if not rows:
+            return Sha1MismatchPage(keys=[], total=0)
+        total = int(rows[0][0])
+        keys = [
+            Sha1MismatchPageKey(
+                media_type="show" if type_sort == 0 else "movie",
+                file_id=file_id,
+            )
+            for _total, type_sort, file_id in rows
+            if file_id is not None
+        ]
+        return Sha1MismatchPage(keys=keys, total=total)

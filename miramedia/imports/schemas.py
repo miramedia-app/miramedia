@@ -207,9 +207,6 @@ class ImportCounts(BaseModel):
     # + durable, so the denominator survives a refresh. Done (N) = total -
     # importing.
     import_total: int = 0
-    # Imported files whose integrity audit stamped a SHA1 mismatch (still
-    # import_status=imported — surfaced via /torrents/integrity/mismatches).
-    corrupted: int = 0
 
 
 # --- Resolve / ignore ---
@@ -236,6 +233,17 @@ class ResolveRequest(BaseModel):
 class ResolveResult(BaseModel):
     ok: bool
     detail: str = ""
+
+
+class ResolveImportTaskPayload(BaseModel):
+    """Internal worker payload for /imports/resolve dispatch.
+
+    ``scan_claim_token`` is server-issued at claim time and is never accepted
+    from the public API — it binds one broker delivery to one queued row.
+    """
+
+    body: ResolveRequest
+    scan_claim_token: str | None = None
 
 
 class IgnoreRequest(BaseModel):

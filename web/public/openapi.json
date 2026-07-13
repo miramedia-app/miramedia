@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.8"
+    "version": "1.0.9"
   },
   "paths": {
     "/api/v1/health": {
@@ -1283,8 +1283,8 @@
         "tags": [
           "openid"
         ],
-        "summary": "Oauth:Oauth2.Cookie.Authorize",
-        "operationId": "oauth_oauth2_cookie_authorize_api_v1_auth_oauth_authorize_get",
+        "summary": "Oauth:Oidc.Cookie.Authorize",
+        "operationId": "oauth_oidc_cookie_authorize_api_v1_auth_oauth_authorize_get",
         "parameters": [
           {
             "name": "scopes",
@@ -1328,9 +1328,9 @@
         "tags": [
           "openid"
         ],
-        "summary": "Oauth:Oauth2.Cookie.Callback",
+        "summary": "Oauth:Oidc.Cookie.Callback",
         "description": "The response varies based on the authentication backend used.",
-        "operationId": "oauth_oauth2_cookie_callback_api_v1_auth_oauth_callback_get",
+        "operationId": "oauth_oidc_cookie_callback_api_v1_auth_oauth_callback_get",
         "parameters": [
           {
             "name": "code",
@@ -1346,22 +1346,6 @@
                 }
               ],
               "title": "Code"
-            }
-          },
-          {
-            "name": "code_verifier",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Code Verifier"
             }
           },
           {
@@ -1417,18 +1401,6 @@
                     "summary": "User is inactive.",
                     "value": {
                       "detail": "LOGIN_BAD_CREDENTIALS"
-                    }
-                  },
-                  "ACCESS_TOKEN_DECODE_ERROR": {
-                    "summary": "Access token is error.",
-                    "value": {
-                      "detail": "ACCESS_TOKEN_DECODE_ERROR"
-                    }
-                  },
-                  "ACCESS_TOKEN_ALREADY_EXPIRED": {
-                    "summary": "Access token is already expired.",
-                    "value": {
-                      "detail": "ACCESS_TOKEN_ALREADY_EXPIRED"
                     }
                   }
                 },
@@ -3814,22 +3786,6 @@
         "summary": "List Integrity Mismatches",
         "description": "Imported files whose integrity audit recorded a SHA1 mismatch.",
         "operationId": "list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/IntegrityMismatch"
-                  },
-                  "type": "array",
-                  "title": "Response List Integrity Mismatches Api V1 Torrents Integrity Mismatches Get"
-                }
-              }
-            }
-          }
-        },
         "security": [
           {
             "OAuth2PasswordBearer": []
@@ -3837,7 +3793,54 @@
           {
             "APIKeyCookie": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "exclusiveMinimum": 0,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedIntegrityMismatches"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline": {
@@ -9751,6 +9754,17 @@
             ],
             "title": "Email Password Resets"
           },
+          "cookie_secure": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cookie Secure"
+          },
           "openid_connect": {
             "anyOf": [
               {
@@ -9762,6 +9776,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "AuthSettingsSchema"
       },
@@ -9801,6 +9816,7 @@
             "title": "Api Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "BazarrSettingsSchema"
       },
@@ -10140,6 +10156,7 @@
             "title": "Enabled"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "CinemetaSettingsSchema"
       },
@@ -10262,6 +10279,7 @@
             "title": "Solve Timeout Seconds"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "CloudflareSettingsSchema"
       },
@@ -10289,6 +10307,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -10393,6 +10412,7 @@
             "title": "Emails"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "EmailNotificationsSettingsSchema"
       },
@@ -10706,6 +10726,7 @@
             "title": "Url"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "GotifySettingsSchema"
       },
@@ -10779,11 +10800,6 @@
           "import_total": {
             "type": "integer",
             "title": "Import Total",
-            "default": 0
-          },
-          "corrupted": {
-            "type": "integer",
-            "title": "Corrupted",
             "default": 0
           }
         },
@@ -11104,6 +11120,7 @@
             "title": "Auto Scan Interval Hours"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "ImportsSettingsSchema"
       },
@@ -11131,6 +11148,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -11438,6 +11456,7 @@
             "title": "Recency Decay Days"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "IndexerSettingsSchema"
       },
@@ -11995,6 +12014,7 @@
             "title": "Indexers"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "JackettSettingsSchema"
       },
@@ -12028,6 +12048,7 @@
             "title": "Path"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -12967,6 +12988,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "MetadataSettingsSchema"
       },
@@ -13212,6 +13234,7 @@
             "title": "Integrity Check Interval Hours"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "MiscSettingsSchema"
       },
@@ -13543,6 +13566,7 @@
             "title": "Episode File Format"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NamingSettingsSchema"
       },
@@ -13571,6 +13595,7 @@
             "title": "Max Concurrent Searches"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeIndexerSettingsSchema"
       },
@@ -13597,6 +13622,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeMetadataSettingsSchema"
       },
@@ -13625,6 +13651,7 @@
             "title": "Retention Days"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeNotificationSettingsSchema"
       },
@@ -13642,6 +13669,7 @@
             "title": "Enabled"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeRequestsSettingsSchema"
       },
@@ -13670,6 +13698,7 @@
             "title": "Scan Interval Hours"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeSubtitleSettingsSchema"
       },
@@ -13720,6 +13749,7 @@
             "title": "Max Upload Rate"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeTorrentSettingsSchema"
       },
@@ -13829,6 +13859,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NotificationSettingsSchema"
       },
@@ -13857,6 +13888,7 @@
             "title": "Url"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NtfySettingsSchema"
       },
@@ -13931,6 +13963,7 @@
             "title": "Name"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "OpenIdSettingsSchema"
       },
@@ -14005,6 +14038,49 @@
           "limit"
         ],
         "title": "PaginatedImports"
+      },
+      "PaginatedIntegrityMismatches": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IntegrityMismatch"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "offset",
+          "limit"
+        ],
+        "title": "PaginatedIntegrityMismatches",
+        "description": "Bounded page of integrity-mismatch rows (shows first, then movies)."
       },
       "PaginatedResponse_ActivityLogRead_": {
         "properties": {
@@ -14153,6 +14229,7 @@
             "title": "Url"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "ProwlarrSettingsSchema"
       },
@@ -15026,6 +15103,7 @@
             "title": "User"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "PushoverSettingsSchema"
       },
@@ -15109,6 +15187,7 @@
             "title": "Category Save Path"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "QbittorrentSettingsSchema"
       },
@@ -15147,6 +15226,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -15218,6 +15298,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "RequestsSettingsSchema"
       },
@@ -15465,6 +15546,7 @@
             "title": "Base Path"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SabnzbdSettingsSchema"
       },
@@ -15961,6 +16043,7 @@
             "default": []
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name"
@@ -16068,6 +16151,7 @@
             "title": "Api Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SeerrSettingsSchema"
       },
@@ -16533,6 +16617,7 @@
             "title": "Use Tls"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SmtpSettingsSchema"
       },
@@ -16641,6 +16726,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SubtitleSettingsSchema"
       },
@@ -16893,6 +16979,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SystemSettingsUpdate",
         "description": "Partial update \u2014 only include sections/fields you want to override."
@@ -16921,6 +17008,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -16978,6 +17066,7 @@
             "title": "Default Language"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TmdbSettingsSchema"
       },
@@ -17230,6 +17319,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TorrentSettingsSchema"
       },
@@ -17397,6 +17487,7 @@
             "title": "Password"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TransmissionSettingsSchema"
       },
@@ -17425,6 +17516,7 @@
             "title": "Api Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TvdbSettingsSchema"
       },
@@ -17442,6 +17534,7 @@
             "title": "Enabled"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TvmazeSettingsSchema"
       },
@@ -17711,6 +17804,7 @@
             "title": "Container Name"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "UpdateSettingsSchema"
       },

@@ -1,5 +1,7 @@
 import logging
+from collections.abc import Mapping
 from datetime import date, datetime
+from typing import Any
 from typing import cast as typing_cast
 from uuid import UUID
 
@@ -26,11 +28,49 @@ from miramedia.movies.schemas import (
 from miramedia.movies.schemas import (
     MovieId,
 )
+from miramedia.torrents.integrity import (
+    integrity_audit_snapshot_where,
+    integrity_mismatch_action_snapshot_where,
+)
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
 
 log = logging.getLogger(__name__)
+
+_MOVIE_INTEGRITY_COLUMNS = (
+    Movie.id,
+    Movie.name,
+    Movie.overview,
+    Movie.year,
+    Movie.release_date,
+    Movie.external_id,
+    Movie.metadata_provider,
+    Movie.continuous_download,
+    Movie.skipped,
+    Movie.library,
+    Movie.original_language,
+    Movie.imdb_id,
+    Movie.vote_average,
+    Movie.content_rating,
+    Movie.runtime,
+    Movie.genres,
+    Movie.cast,
+    Movie.preferred_quality,
+    Movie.preferred_codec,
+    Movie.subtitle_languages,
+    Movie.last_metadata_check,
+    Movie.metadata_failure_backoff_until,
+    Movie.auto_download_backoff_until,
+    Movie.downloaded,
+)
+
+
+def _movie_schema_from_row_mapping(row: Mapping[str, Any]) -> MovieSchema:
+    """Build a MovieSchema from a scalar column mapping."""
+    payload = dict(row)
+    payload["id"] = MovieId(payload["id"])
+    return MovieSchema.model_validate(payload)
 
 
 def _movie_summary_eager_loads() -> tuple[ExecutableOption, ...]:
@@ -633,20 +673,64 @@ class MovieRepository:
             log.exception("Failed to set sha1 for movie_file %s", file_id)
             raise
 
-    async def list_sha1_mismatch_files(self) -> list[MovieFileSchema]:
+    async def count_sha1_mismatch_files(self) -> int:
+        """Count imported movie files with a SHA1 mismatch stamp."""
+        stmt = (
+            select(func.count())
+            .select_from(MovieFile)
+            .where(
+                MovieFile.import_status == ImportOutcome.imported,
+                MovieFile.import_error.like("sha1 mismatch%"),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def list_sha1_mismatch_files(
+        self, *, offset: int = 0, limit: int
+    ) -> list[MovieFileSchema]:
         """Imported movie files whose integrity audit recorded a SHA1 mismatch.
 
         Contract: ``import_error`` prefix ``sha1 mismatch%`` must stay in sync
         with ``verify_imported_files_task`` in ``miramedia/scheduler.py``.
         MovieFile has no ORM ``movie`` relationship; title is resolved by the
-        service via ``movie_id``.
+        service via ``movie_id``. Rows are ordered by ``id`` ascending.
         """
+        stmt = (
+            select(MovieFile)
+            .where(
+                MovieFile.import_status == ImportOutcome.imported,
+                MovieFile.import_error.like("sha1 mismatch%"),
+            )
+            .order_by(MovieFile.id)
+            .offset(offset)
+            .limit(limit)
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return [MovieFileSchema.model_validate(r) for r in rows]
+
+    async def get_sha1_mismatch_movie_files_by_ids(
+        self, file_ids: list[UUID]
+    ) -> dict[UUID, MovieFileSchema]:
+        """Batch-load mismatch movie files still matching the list predicate."""
+        if not file_ids:
+            return {}
         stmt = select(MovieFile).where(
+            MovieFile.id.in_(file_ids),
             MovieFile.import_status == ImportOutcome.imported,
             MovieFile.import_error.like("sha1 mismatch%"),
         )
         rows = (await self.db.execute(stmt)).scalars().all()
-        return [MovieFileSchema.model_validate(r) for r in rows]
+        return {row.id: MovieFileSchema.model_validate(row) for row in rows}
+
+    async def get_movies_by_ids(
+        self, movie_ids: list[MovieId]
+    ) -> dict[MovieId, MovieSchema]:
+        """Batch-load movies by primary key for integrity path resolution."""
+        if not movie_ids:
+            return {}
+        stmt = select(*_MOVIE_INTEGRITY_COLUMNS).where(Movie.id.in_(movie_ids))
+        rows = (await self.db.execute(stmt)).mappings().all()
+        return {MovieId(row["id"]): _movie_schema_from_row_mapping(row) for row in rows}
 
     async def get_movie_names_by_ids(
         self, movie_ids: list[MovieId]
@@ -658,31 +742,99 @@ class MovieRepository:
         rows = (await self.db.execute(stmt)).all()
         return {MovieId(movie_id): name for movie_id, name in rows}
 
-    async def count_sha1_mismatch_files(self) -> int:
-        """Count imported movie files with a SHA1 mismatch error stamp."""
-        stmt = (
-            select(func.count())
-            .select_from(MovieFile)
-            .where(
-                MovieFile.import_status == ImportOutcome.imported,
-                MovieFile.import_error.like("sha1 mismatch%"),
+    async def apply_integrity_baseline_if_current(
+        self,
+        file_id: UUID,
+        *,
+        expected_sha1: None,
+        expected_import_error: str | None,
+        new_sha1: str,
+    ) -> bool:
+        """Set ``sha1`` when the row still matches the pre-hash snapshot."""
+        try:
+            stmt = (
+                update(MovieFile)
+                .where(
+                    integrity_audit_snapshot_where(
+                        MovieFile,
+                        file_id,
+                        expected_sha1=expected_sha1,
+                        expected_import_error=expected_import_error,
+                    )
+                )
+                .values(sha1=new_sha1)
             )
-        )
-        return int((await self.db.execute(stmt)).scalar_one())
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to baseline integrity sha1 for movie_file %s", file_id
+            )
+            raise
+
+    async def stamp_integrity_mismatch_if_current(
+        self,
+        file_id: UUID,
+        *,
+        expected_sha1: str,
+        expected_import_error: str | None,
+        import_error: str,
+    ) -> bool:
+        """Stamp a mismatch error when the row still matches the pre-hash snapshot."""
+        try:
+            stmt = (
+                update(MovieFile)
+                .where(
+                    integrity_audit_snapshot_where(
+                        MovieFile,
+                        file_id,
+                        expected_sha1=expected_sha1,
+                        expected_import_error=expected_import_error,
+                    )
+                )
+                .values(import_error=import_error)
+            )
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to stamp integrity mismatch for movie_file %s", file_id
+            )
+            raise
 
     async def clear_file_integrity_state(
-        self, file_id: UUID, *, reset_sha1: bool
+        self,
+        file_id: UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
     ) -> bool:
-        """Clear ``import_error`` (and optionally ``sha1``) on a movie file.
+        """Clear mismatch state when the row still matches the action snapshot.
 
-        Returns ``True`` when a row was updated, ``False`` when ``file_id`` is
-        unknown. Does not change ``import_status``.
+        Returns ``True`` when a row was updated. Returns ``False`` when the row
+        is unknown or no longer matches the observed mismatch fields.
         """
         values: dict[str, object] = {"import_error": None}
         if reset_sha1:
             values["sha1"] = None
         try:
-            stmt = update(MovieFile).where(MovieFile.id == file_id).values(**values)
+            stmt = (
+                update(MovieFile)
+                .where(
+                    integrity_mismatch_action_snapshot_where(
+                        MovieFile,
+                        file_id,
+                        expected_sha1=expected_sha1,
+                        expected_import_error=expected_import_error,
+                    )
+                )
+                .values(**values)
+            )
             result = await self.db.execute(stmt)
             await self.db.flush()
             return bool(result.rowcount)

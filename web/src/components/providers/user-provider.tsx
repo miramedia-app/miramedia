@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
+import { authTransition } from "@/lib/auth-generation";
 import type { components } from "@/lib/api/api";
 
 type User = components["schemas"]["UserRead"];
@@ -18,8 +19,10 @@ const UserContext = React.createContext<UserContextValue | null>(null);
 export function UserProvider({ children }: { children: React.ReactNode }) {
   const query = useQuery({
     queryKey: ["users", "me"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/users/me");
+    // Pass TanStack's signal through to fetch so `cancelQueries` at an auth
+    // boundary aborts the request in transport, not just in the cache.
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/users/me", { signal });
       if (error) throw error;
       return data;
     },
@@ -30,8 +33,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   // second waterfall (static export cannot forward cookies for RSC fetches).
   useQuery({
     queryKey: ["dashboard", "summary"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/dashboard/summary");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/dashboard/summary", { signal });
       if (error) throw error;
       return data;
     },
@@ -39,14 +42,24 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     staleTime: 30 * 1000,
   });
 
+  // `QueryClient.clear()` does not blank an active observer's last result, so a
+  // stalled or failed navigation could leave this provider still handing out the
+  // previous account's `is_superuser`. Once an auth transition starts we report
+  // no user, unconditionally, until a new document initializes.
+  const isTransitioning = React.useSyncExternalStore(
+    authTransition.subscribe,
+    authTransition.isTransitioning,
+    () => false,
+  );
+
   const { data, isLoading, refetch } = query;
   const value = React.useMemo<UserContextValue>(
     () => ({
-      user: data ?? null,
-      isLoading,
+      user: isTransitioning ? null : (data ?? null),
+      isLoading: isTransitioning || isLoading,
       refresh: () => void refetch(),
     }),
-    [data, isLoading, refetch],
+    [data, isLoading, refetch, isTransitioning],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;

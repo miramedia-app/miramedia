@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -228,18 +229,13 @@ async def detect_finished_downloads_task() -> None:
     from miramedia.torrents.schemas import TorrentStatus
 
     async with bg_torrent_service() as svc:
-        torrents = await svc.torrent_repository.get_all_torrents()
-        active = [
-            t
-            for t in torrents
-            if t.status in (TorrentStatus.downloading, TorrentStatus.unknown)
-        ]
-        if not active:
+        torrents = await svc.torrent_repository.get_active_torrents()
+        if not torrents:
             return
         # Release the DB connection before the per-torrent client RPC fan-out
         # so the session never sits idle-in-transaction across external I/O.
         await release_session_before_external_io(svc.torrent_repository.db)
-        live = await svc._fetch_live_torrent_statuses(active)
+        live = await svc._fetch_live_torrent_statuses(torrents)
         newly_finished = any(t.status == TorrentStatus.finished for t in live)
 
     if newly_finished:
@@ -451,9 +447,7 @@ _STARTUP_SCHEDULES: dict[str, list[dict[str, str]]] = {
 }
 
 
-# Grace window before a still-"queued" scan row is presumed orphaned. Generous
-# enough to cover a large multi-file cross-filesystem import on a slow NAS.
-_STALE_QUEUED_IMPORT_GRACE = timedelta(minutes=30)
+# Grace window before an unstarted queued row may be automatically reclaimed.
 
 
 @background_broker.task(labels={"priority": "background"})
@@ -463,11 +457,14 @@ async def reclaim_stale_queued_imports_task() -> None:
     library-scan import can show "Importing" forever and the progress toast
     never drains."""
     from miramedia.database import SessionLocalBackground
-    from miramedia.imports.repository import ImportsRepository
+    from miramedia.imports.repository import (
+        STALE_QUEUED_IMPORT_GRACE,
+        ImportsRepository,
+    )
 
     async with SessionLocalBackground() as db:
         reclaimed = await ImportsRepository(db).reclaim_stale_queued_imports(
-            older_than=_STALE_QUEUED_IMPORT_GRACE
+            older_than=STALE_QUEUED_IMPORT_GRACE
         )
     if reclaimed:
         log.warning("Reclaimed %d stale queued import(s)", reclaimed)
@@ -749,126 +746,303 @@ async def verify_imported_files_task() -> None:
     if not MiraMediaConfig().misc.integrity_check_enabled:
         return
 
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
-    from miramedia.database import (
-        background_session,
-        bg_movie_service,
-        bg_show_service,
-    )
+    from miramedia.database import background_session
     from miramedia.file_status import ImportOutcome
     from miramedia.movies.models import MovieFile
+    from miramedia.movies.repository import MovieRepository
+    from miramedia.movies.schemas import MovieFile as MovieFileSchema
     from miramedia.shows.models import EpisodeFile
+    from miramedia.shows.repository import ShowRepository
+    from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
+    from miramedia.torrents.integrity import (
+        INTEGRITY_AUDIT_CHUNK_SIZE,
+        IntegrityPathLayout,
+        batch_resolve_episode_paths_async,
+        batch_resolve_movie_paths_async,
+    )
 
     baselined = 0
     verified = 0
     mismatched = 0
+    skipped_stale = 0
 
-    # Snapshot work-list under a short session, then drop the session before
-    # any disk hashing. Each list entry is a tuple of the surrogate row id +
-    # the pre-existing sha1 + the resolved on-disk path. Rows are addressed by
-    # id throughout — the (quality, variant) tuple no longer uniquely keys a row.
-    ep_targets: list[tuple] = []
-    mv_targets: list[tuple] = []
-    async with background_session() as db:
-        ep_result = await db.execute(
-            select(EpisodeFile).where(
-                EpisodeFile.import_status == ImportOutcome.imported
-            )
-        )
-        ep_rows = ep_result.scalars().all()
-        async with bg_show_service() as show_service:
-            for row in ep_rows:
-                target = await show_service.resolve_episode_file_path(row)
-                if target is None or not target.exists():
-                    continue
-                ep_targets.append((row.id, row.sha1, target))
-        mv_result = await db.execute(
-            select(MovieFile).where(MovieFile.import_status == ImportOutcome.imported)
-        )
-        mv_rows = mv_result.scalars().all()
-        async with bg_movie_service() as movie_service:
-            for row in mv_rows:
-                target = await movie_service.resolve_movie_file_path(row)
-                if target is None or not target.exists():
-                    continue
-                mv_targets.append((row.id, row.sha1, target))
-
-    # Hash everything with NO DB session held — this is the heavy walltime.
-    ep_results: list[tuple] = []
-    for file_id, prior, target in ep_targets:
-        sha = await _compute_sha1_async(target)
-        if sha is None:
-            continue
-        ep_results.append((file_id, prior, sha, target))
-    mv_results: list[tuple] = []
-    for file_id, prior, target in mv_targets:
-        sha = await _compute_sha1_async(target)
-        if sha is None:
-            continue
-        mv_results.append((file_id, prior, sha, target))
-
-    from sqlalchemy import update
-
-    async with background_session() as db:
-        for file_id, prior, sha, target in ep_results:
-            if prior is None:
-                await db.execute(
-                    update(EpisodeFile)
-                    .where(EpisodeFile.id == file_id)
-                    .values(sha1=sha)
-                )
+    async def _apply_episode_result(
+        show_repo: ShowRepository,
+        file_id: uuid.UUID,
+        prior: str | None,
+        prior_error: str | None,
+        sha: str,
+        target: Path,
+    ) -> None:
+        nonlocal baselined, verified, mismatched, skipped_stale
+        if prior is None:
+            if await show_repo.apply_integrity_baseline_if_current(
+                file_id,
+                expected_sha1=None,
+                expected_import_error=prior_error,
+                new_sha1=sha,
+            ):
                 baselined += 1
-            elif prior != sha:
-                mismatched += 1
-                await db.execute(
-                    update(EpisodeFile)
-                    .where(EpisodeFile.id == file_id)
-                    .values(
-                        import_error=(
-                            f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
-                        )
-                    )
+            else:
+                skipped_stale += 1
+                log.debug(
+                    "integrity audit: skipped stale baseline for episode_file %s",
+                    file_id,
                 )
+        elif prior != sha:
+            mismatch_error = f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
+            if await show_repo.stamp_integrity_mismatch_if_current(
+                file_id,
+                expected_sha1=prior,
+                expected_import_error=prior_error,
+                import_error=mismatch_error,
+            ):
+                mismatched += 1
                 log.warning(
                     "integrity audit: episode_file sha1 mismatch %s (%s)",
                     target,
                     file_id,
                 )
             else:
-                verified += 1
+                skipped_stale += 1
+                log.debug(
+                    "integrity audit: skipped stale mismatch for episode_file %s",
+                    file_id,
+                )
+        else:
+            verified += 1
 
-        for file_id, prior, sha, target in mv_results:
-            if prior is None:
-                await db.execute(
-                    update(MovieFile).where(MovieFile.id == file_id).values(sha1=sha)
-                )
+    async def _apply_movie_result(
+        movie_repo: MovieRepository,
+        file_id: uuid.UUID,
+        prior: str | None,
+        prior_error: str | None,
+        sha: str,
+        target: Path,
+    ) -> None:
+        nonlocal baselined, verified, mismatched, skipped_stale
+        if prior is None:
+            if await movie_repo.apply_integrity_baseline_if_current(
+                file_id,
+                expected_sha1=None,
+                expected_import_error=prior_error,
+                new_sha1=sha,
+            ):
                 baselined += 1
-            elif prior != sha:
-                mismatched += 1
-                await db.execute(
-                    update(MovieFile)
-                    .where(MovieFile.id == file_id)
-                    .values(
-                        import_error=(
-                            f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
-                        )
-                    )
+            else:
+                skipped_stale += 1
+                log.debug(
+                    "integrity audit: skipped stale baseline for movie_file %s",
+                    file_id,
                 )
+        elif prior != sha:
+            mismatch_error = f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
+            if await movie_repo.stamp_integrity_mismatch_if_current(
+                file_id,
+                expected_sha1=prior,
+                expected_import_error=prior_error,
+                import_error=mismatch_error,
+            ):
+                mismatched += 1
                 log.warning(
                     "integrity audit: movie_file sha1 mismatch %s (%s)",
                     target,
                     file_id,
                 )
             else:
-                verified += 1
-        await db.commit()
+                skipped_stale += 1
+                log.debug(
+                    "integrity audit: skipped stale mismatch for movie_file %s",
+                    file_id,
+                )
+        else:
+            verified += 1
+
+    layout = IntegrityPathLayout.from_config()
+
+    ep_max_id: uuid.UUID | None = None
+    ep_budget = 0
+    mv_max_id: uuid.UUID | None = None
+    mv_budget = 0
+    async with background_session() as db:
+        ep_max_id = (
+            await db.execute(
+                select(EpisodeFile.id)
+                .where(EpisodeFile.import_status == ImportOutcome.imported)
+                .order_by(EpisodeFile.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        ep_budget = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(EpisodeFile)
+                    .where(EpisodeFile.import_status == ImportOutcome.imported)
+                )
+            ).scalar_one()
+        )
+        mv_max_id = (
+            await db.execute(
+                select(MovieFile.id)
+                .where(MovieFile.import_status == ImportOutcome.imported)
+                .order_by(MovieFile.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        mv_budget = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(MovieFile)
+                    .where(MovieFile.import_status == ImportOutcome.imported)
+                )
+            ).scalar_one()
+        )
+
+    last_episode_id = uuid.UUID(int=0)
+    remaining_ep_budget = ep_budget
+    if remaining_ep_budget > 0 and ep_max_id is not None:
+        while remaining_ep_budget > 0:
+            row_snapshots: list[tuple] = []
+            episode_context = {}
+            shows = {}
+            ep_schema_rows: list[EpisodeFileSchema] = []
+            chunk_limit = min(INTEGRITY_AUDIT_CHUNK_SIZE, remaining_ep_budget)
+            async with background_session() as db:
+                ep_result = await db.execute(
+                    select(EpisodeFile)
+                    .where(
+                        EpisodeFile.import_status == ImportOutcome.imported,
+                        EpisodeFile.id > last_episode_id,
+                        EpisodeFile.id <= ep_max_id,
+                    )
+                    .order_by(EpisodeFile.id)
+                    .limit(chunk_limit)
+                )
+                ep_rows = ep_result.scalars().all()
+                if not ep_rows:
+                    break
+                last_episode_id = ep_rows[-1].id
+                remaining_ep_budget -= len(ep_rows)
+                show_repo = ShowRepository(db)
+                ep_schema_rows = [
+                    EpisodeFileSchema.model_validate(row) for row in ep_rows
+                ]
+                episode_context = await show_repo.batch_episodes_with_context(
+                    [
+                        row.episode_id
+                        for row in ep_schema_rows
+                        if row.episode_id is not None
+                    ]
+                )
+                shows = await show_repo.get_shows_by_ids(
+                    list({ctx.show_id for ctx in episode_context.values()})
+                )
+                row_snapshots = [
+                    (row.id, row.sha1, row.import_error, row) for row in ep_rows
+                ]
+
+            paths = await batch_resolve_episode_paths_async(
+                ep_schema_rows,
+                episode_context,
+                shows,
+                layout,
+            )
+
+            chunk_targets: list[tuple] = []
+            for file_id, prior, prior_error, _row in row_snapshots:
+                target = paths.get(file_id)
+                if target is None or not target.exists():
+                    continue
+                chunk_targets.append((file_id, prior, prior_error, target))
+
+            chunk_results: list[tuple] = []
+            for file_id, prior, prior_error, target in chunk_targets:
+                sha = await _compute_sha1_async(target)
+                if sha is None:
+                    continue
+                chunk_results.append((file_id, prior, prior_error, sha, target))
+
+            async with background_session() as db:
+                show_repo = ShowRepository(db)
+                for file_id, prior, prior_error, sha, target in chunk_results:
+                    await _apply_episode_result(
+                        show_repo, file_id, prior, prior_error, sha, target
+                    )
+                await db.commit()
+
+    last_movie_id = uuid.UUID(int=0)
+    remaining_mv_budget = mv_budget
+    if remaining_mv_budget > 0 and mv_max_id is not None:
+        while remaining_mv_budget > 0:
+            row_snapshots = []
+            movies = {}
+            mv_schema_rows: list[MovieFileSchema] = []
+            chunk_limit = min(INTEGRITY_AUDIT_CHUNK_SIZE, remaining_mv_budget)
+            async with background_session() as db:
+                mv_result = await db.execute(
+                    select(MovieFile)
+                    .where(
+                        MovieFile.import_status == ImportOutcome.imported,
+                        MovieFile.id > last_movie_id,
+                        MovieFile.id <= mv_max_id,
+                    )
+                    .order_by(MovieFile.id)
+                    .limit(chunk_limit)
+                )
+                mv_rows = mv_result.scalars().all()
+                if not mv_rows:
+                    break
+                last_movie_id = mv_rows[-1].id
+                remaining_mv_budget -= len(mv_rows)
+                movie_repo = MovieRepository(db)
+                mv_schema_rows = [
+                    MovieFileSchema.model_validate(row) for row in mv_rows
+                ]
+                movies = await movie_repo.get_movies_by_ids(
+                    [row.movie_id for row in mv_schema_rows if row.movie_id is not None]
+                )
+                row_snapshots = [
+                    (row.id, row.sha1, row.import_error, row) for row in mv_rows
+                ]
+
+            paths = await batch_resolve_movie_paths_async(
+                mv_schema_rows,
+                movies,
+                layout,
+            )
+
+            chunk_targets = []
+            for file_id, prior, prior_error, _row in row_snapshots:
+                target = paths.get(file_id)
+                if target is None or not target.exists():
+                    continue
+                chunk_targets.append((file_id, prior, prior_error, target))
+
+            chunk_results = []
+            for file_id, prior, prior_error, target in chunk_targets:
+                sha = await _compute_sha1_async(target)
+                if sha is None:
+                    continue
+                chunk_results.append((file_id, prior, prior_error, sha, target))
+
+            async with background_session() as db:
+                movie_repo = MovieRepository(db)
+                for file_id, prior, prior_error, sha, target in chunk_results:
+                    await _apply_movie_result(
+                        movie_repo, file_id, prior, prior_error, sha, target
+                    )
+                await db.commit()
 
     log.info(
-        "integrity audit: %d baselined, %d verified, %d MISMATCH",
+        "integrity audit: %d baselined, %d verified, %d MISMATCH, %d stale skipped",
         baselined,
         verified,
         mismatched,
+        skipped_stale,
     )
 
 

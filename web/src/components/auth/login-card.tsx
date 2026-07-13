@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { toast } from "sonner";
@@ -11,15 +10,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
+import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
-import { handleOauth } from "@/lib/auth";
+import { beginAuthTransition, handleOauth, hardNavigate } from "@/lib/auth";
 
 type Props = {
   oauthProviderNames: string[];
 };
 
 export function LoginCard({ oauthProviderNames }: Props) {
-  const router = useRouter();
+  const qc = useQueryClient();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [errorMessage, setErrorMessage] = React.useState("");
@@ -33,6 +33,12 @@ export function LoginCard({ oauthProviderNames }: Props) {
     setSuccessMessage("");
 
     try {
+      // Transition BEFORE authenticating, not just before navigating: this
+      // advances the auth generation and drains any in-flight 401 exit, so a
+      // response still travelling for the previous session cannot land on — or
+      // log out — the session this POST is about to establish.
+      await beginAuthTransition(qc);
+
       const { error } = await apiClient.POST("/api/v1/auth/cookie/login", {
         body: {
           username: email,
@@ -46,7 +52,9 @@ export function LoginCard({ oauthProviderNames }: Props) {
         const message = "Login successful! Redirecting...";
         setSuccessMessage(message);
         toast.success(message);
-        router.push("/dashboard");
+        // Full document load: no QueryObserver from the previous session can
+        // survive into the new one.
+        hardNavigate("/dashboard");
       } else {
         toast.error("Login failed!");
         setErrorMessage("Login failed! Please check your credentials and try again.");
@@ -126,7 +134,7 @@ export function LoginCard({ oauthProviderNames }: Props) {
               <Button
                 className="mt-2 w-full"
                 variant="outline"
-                onClick={() => handleOauth((msg) => toast.error(msg))}
+                onClick={() => void handleOauth(qc, (msg) => toast.error(msg))}
               >
                 Login with {name}
               </Button>

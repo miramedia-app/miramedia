@@ -7,8 +7,8 @@ import { LoginCard } from "@/components/auth/login-card";
 export default function LoginPage() {
   const { data } = useQuery({
     queryKey: ["auth", "metadata"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/auth/metadata");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/auth/metadata", { signal });
       return data ?? { oauth_providers: [] };
     },
   });

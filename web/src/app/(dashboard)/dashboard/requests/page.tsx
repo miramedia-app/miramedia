@@ -63,8 +63,9 @@ export default function RequestsPage() {
 
   const requestsQuery = useQuery({
     queryKey: ["requests", "list"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data, error } = await apiClient.GET("/api/v1/requests", {
+        signal,
         params: { query: {} },
       });
       if (error) throw error;

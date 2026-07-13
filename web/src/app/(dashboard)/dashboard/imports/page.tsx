@@ -13,11 +13,13 @@ import {
   RotateCcw,
   ScanLine,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
+import { IntegritySection } from "@/components/imports/integrity-section";
 import { getTorrentStatusString } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,41 +29,30 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ManualMapDialog } from "@/components/imports/manual-map-dialog";
-import { CorruptedFilesPanel } from "@/components/imports/corrupted-files-panel";
 import { MatchConfidencePill } from "@/components/match-confidence-pill";
-import { DataList } from "@/components/data-list";
+import { DataList, DataListEmpty } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
 import { useEventStream } from "@/hooks/use-event-stream";
+import {
+  BUCKET_ORDER,
+  KIND_LABELS,
+  KIND_ORDER,
+  bucketOf,
+  importsListViewState,
+  isMedia,
+  isTorrent,
+} from "@/lib/imports";
+import type { ImportItem, ScanImport, TorrentImport } from "@/lib/imports";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
 import type { components } from "@/lib/api/api";
 
-type TorrentImport = components["schemas"]["TorrentImportItem"];
-type ScanImport = components["schemas"]["ScanImportItem"];
-type MediaImport = components["schemas"]["MediaImportItem"];
-type ImportItem = TorrentImport | ScanImport | MediaImport;
 type ScanCandidate = components["schemas"]["ScanCandidate"];
 type ScanProviderCandidate = components["schemas"]["ScanProviderCandidate"];
 type ScanRunStatus = components["schemas"]["ScanRunStatus"];
 
 const TRAILING_SLASHES = /\/+$/;
 type ImportTabApi = "all" | "review" | "retry" | "done";
-
-const BUCKET_ORDER: Record<string, number> = {
-  Review: 0,
-  Retry: 1,
-  Done: 2,
-};
-
-function bucketOf(it: ImportItem): "Review" | "Retry" | "Done" {
-  if (it.kind === "scan") return it.result.status === "imported" ? "Done" : "Review";
-  if (it.kind === "media") return "Done";
-  const p = it.entry.progress;
-  if ((p.failed ?? 0) > 0 || (p.ambiguous ?? 0) > 0) return "Review";
-  if (p.imported >= p.total && p.total > 0) return "Done";
-  if (it.backoff_seconds != null) return "Retry";
-  return "Review";
-}
 
 /** Map search-bar Status facet (URL ``f`` param) to the imports API tab. */
 function apiTabFromBucketFilter(filterParam: string | null): ImportTabApi {
@@ -77,14 +68,6 @@ function apiTabFromBucketFilter(filterParam: string | null): ImportTabApi {
     return "all";
   }
   return "all";
-}
-
-function isTorrent(item: ImportItem): item is TorrentImport {
-  return item.kind === "torrent";
-}
-
-function isMedia(item: ImportItem): item is MediaImport {
-  return item.kind === "media";
 }
 
 type RankedChoice =
@@ -114,7 +97,6 @@ export default function ImportsPage() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(searchParams.get("f")), [searchParams]);
-  const [view, setView] = React.useState<"imports" | "corrupted">("imports");
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [mapDialogTorrent, setMapDialogTorrent] = React.useState<{
     id: string;
@@ -157,7 +139,7 @@ export default function ImportsPage() {
 
   const listQuery = useQuery({
     queryKey: [...qk.imports.list(apiTab), "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const PAGE = 200; // server cap (le=200)
       const items: ImportItem[] = [];
       let offset = 0;
@@ -167,6 +149,7 @@ export default function ImportsPage() {
       for (let i = 0; i < 20; i++) {
         const { data, error } = await apiClient.GET("/api/v1/imports", {
           params: { query: { tab: apiTab, offset, limit: PAGE } },
+          signal,
         });
         if (error) throw error;
         const page = (data?.items ?? []) as ImportItem[];
@@ -182,8 +165,8 @@ export default function ImportsPage() {
 
   const scanStatusQuery = useQuery<ScanRunStatus>({
     queryKey: [...qk.imports.scan(), "status"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status", { signal });
       if (error) throw error;
       return data!;
     },
@@ -198,8 +181,8 @@ export default function ImportsPage() {
   // backstop while a batch is in flight in case the stream drops.
   const countsQuery = useQuery({
     queryKey: [...qk.imports.counts()],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/counts");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/counts", { signal });
       if (error) throw error;
       return data;
     },
@@ -208,7 +191,6 @@ export default function ImportsPage() {
   });
   const importing = countsQuery.data?.importing ?? 0;
   const importTotal = countsQuery.data?.import_total ?? 0;
-  const corruptedCount = countsQuery.data?.corrupted ?? 0;
 
   React.useEffect(() => {
     if (importing > 0 && importTotal > 0) {
@@ -268,8 +250,9 @@ export default function ImportsPage() {
     },
   });
 
-  const items: ImportItem[] = listQuery.data?.items ?? [];
+  const items: ImportItem[] = React.useMemo(() => listQuery.data?.items ?? [], [listQuery.data]);
   const isLoading = listQuery.isLoading || listQuery.isFetching;
+  const listView = importsListViewState({ isError: listQuery.isError, count: items.length });
 
   // Drop the optimistic "queued" flag once the server-side scan row has caught
   // up (status is no longer "pending") or the row has left the list — from then
@@ -398,7 +381,7 @@ export default function ImportsPage() {
   }
 
   async function ignoreItem(item: ImportItem) {
-    // Media (torrent-independent Done) entries are read-only — no ignore.
+    // Media rows (torrent-independent Done) are read-only — no ignore.
     if (isMedia(item)) return;
     const isTor = isTorrent(item);
     const label = isTor ? item.entry.torrent_title : item.result.detected_name;
@@ -742,10 +725,11 @@ export default function ImportsPage() {
       {
         id: "kind",
         label: "Type",
-        getGroup: (it) =>
-          it.kind === "scan"
-            ? { key: "scan", label: "Scans" }
-            : { key: "torrent", label: "Torrents" },
+        getGroup: (it) => ({
+          key: it.kind,
+          label: KIND_LABELS[it.kind],
+          sortOrder: KIND_ORDER.indexOf(it.kind),
+        }),
       },
     ],
     [],
@@ -907,11 +891,7 @@ export default function ImportsPage() {
       {
         id: "kind",
         label: "Type",
-        options: [
-          { value: "torrent", label: "Download" },
-          { value: "media", label: "Imported" },
-          { value: "scan", label: "Scan" },
-        ],
+        options: KIND_ORDER.map((kind) => ({ value: kind, label: KIND_LABELS[kind] })),
         predicate: (it, values, op) => {
           const hit = values.includes(it.kind);
           return op === "excludes" ? !hit : hit;
@@ -927,182 +907,159 @@ export default function ImportsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Imports" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <div className="flex items-center gap-1 border-b border-border/60">
-          <button
-            type="button"
-            onClick={() => setView("imports")}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
-              view === "imports"
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Imports
-          </button>
-          <button
-            type="button"
-            onClick={() => setView("corrupted")}
-            className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
-              view === "corrupted"
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            Corrupted
-            {corruptedCount > 0 ? (
-              <MetaPill className="tabular-nums">{corruptedCount}</MetaPill>
-            ) : null}
-          </button>
-        </div>
-        {view === "corrupted" ? (
-          <CorruptedFilesPanel />
+        <IntegritySection />
+        {listView === "error" ? (
+          <DataListEmpty
+            icon={<TriangleAlert />}
+            title="Imports could not be loaded"
+            description="The import list request failed. Check that the backend is reachable."
+            action={
+              <Button variant="outline" size="sm" onClick={() => void listQuery.refetch()}>
+                Retry
+              </Button>
+            }
+          />
         ) : (
-          <>
-            <DataList<ImportItem>
-              data={items}
-              getId={(it) => it.id}
-              columns={columns}
-              pageSize={50}
-              searchPlaceholder="Search imports…"
-              searchMatch={(it, q) => {
-                if (isTorrent(it)) {
-                  return (
-                    it.entry.torrent_title.toLowerCase().includes(q) ||
-                    (it.entry.media?.media_name ?? "").toLowerCase().includes(q)
-                  );
-                }
-                if (isMedia(it)) {
-                  return (
-                    it.media_name.toLowerCase().includes(q) ||
-                    it.torrent_title.toLowerCase().includes(q)
-                  );
-                }
+          <DataList<ImportItem>
+            data={items}
+            getId={(it) => it.id}
+            columns={columns}
+            pageSize={50}
+            searchPlaceholder="Search imports…"
+            searchMatch={(it, q) => {
+              if (isTorrent(it)) {
                 return (
-                  it.result.detected_name.toLowerCase().includes(q) ||
-                  it.result.directory.toLowerCase().includes(q)
+                  it.entry.torrent_title.toLowerCase().includes(q) ||
+                  (it.entry.media?.media_name ?? "").toLowerCase().includes(q)
                 );
-              }}
-              loading={isLoading && items.length === 0}
-              density="rich"
-              groupings={groupings}
-              defaultGroupId="bucket"
-              collapseStorageKey="imports"
-              facets={facets}
-              emptyIcon={<FolderInput />}
-              emptyTitle="No imports yet"
-              emptyDescription="Run a scan to surface library candidates."
-              toolbarTrailing={
-                <>
-                  <Button
-                    size="default"
-                    variant="outline"
-                    className="text-xs"
-                    onClick={() => void triggerScan()}
-                    disabled={scanState === "running"}
-                  >
-                    {scanState === "running" ? (
-                      <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <ScanLine className="mr-1 h-4 w-4" />
-                    )}
-                    Scan
-                  </Button>
-                  <Button
-                    size="default"
-                    variant="outline"
-                    className="text-xs"
-                    onClick={refreshAll}
-                    disabled={isLoading}
-                  >
-                    {isLoading ? (
-                      <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-1 h-4 w-4" />
-                    )}
-                    Refresh
-                  </Button>
-                </>
               }
-              bulkActions={bulkActions}
-              expandedContent={(it) => {
-                if (isTorrent(it) || isMedia(it)) {
-                  const files = isTorrent(it) ? it.entry.files : it.files;
-                  if (files.length === 0) return null;
-                  return (
-                    <div className="bg-black/30 p-2">
-                      <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
-                        {files.map((file, i) => (
-                          <div
-                            key={`${file.media_label}-${i}`}
-                            className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
-                          >
-                            <StatusPill
-                              status={file.import_status}
-                              label={file.import_status.startsWith("failed") ? "Failed" : undefined}
-                              className="shrink-0"
-                            />
-                            <span className="shrink-0 font-mono">{file.media_label}</span>
-                            {file.variant && (
-                              <span className="shrink-0 font-mono text-muted-foreground">
-                                · {file.variant}
-                              </span>
-                            )}
-                            {file.import_error && (
-                              <span
-                                className="ml-auto truncate text-red-500"
-                                title={file.import_error}
-                              >
-                                {file.import_error}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                }
-                const r = it.result;
-                const sfiles = r.files ?? [];
-                if (sfiles.length === 0) {
-                  return (
-                    <div className="flex items-center justify-center bg-black/30 px-4 py-8 text-center text-xs text-muted-foreground">
-                      No files listed — re-run the scan to refresh.
-                    </div>
-                  );
-                }
-                const scanFileStatus =
-                  r.status === "failed"
-                    ? "failed"
-                    : r.status === "imported"
-                      ? "imported"
-                      : "pending";
+              if (isMedia(it)) {
+                return (
+                  it.media_name.toLowerCase().includes(q) ||
+                  it.torrent_title.toLowerCase().includes(q)
+                );
+              }
+              return (
+                it.result.detected_name.toLowerCase().includes(q) ||
+                it.result.directory.toLowerCase().includes(q)
+              );
+            }}
+            loading={isLoading && items.length === 0}
+            density="rich"
+            groupings={groupings}
+            defaultGroupId="bucket"
+            collapseStorageKey="imports"
+            facets={facets}
+            emptyIcon={<FolderInput />}
+            emptyTitle="No imports yet"
+            emptyDescription="Run a scan to surface library candidates."
+            toolbarTrailing={
+              <>
+                <Button
+                  size="default"
+                  variant="outline"
+                  className="text-xs"
+                  onClick={() => void triggerScan()}
+                  disabled={scanState === "running"}
+                >
+                  {scanState === "running" ? (
+                    <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <ScanLine className="mr-1 h-4 w-4" />
+                  )}
+                  Scan
+                </Button>
+                <Button
+                  size="default"
+                  variant="outline"
+                  className="text-xs"
+                  onClick={refreshAll}
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="mr-1 h-4 w-4" />
+                  )}
+                  Refresh
+                </Button>
+              </>
+            }
+            bulkActions={bulkActions}
+            expandedContent={(it) => {
+              if (isTorrent(it) || isMedia(it)) {
+                const files = isTorrent(it) ? it.entry.files : it.files;
+                if (files.length === 0) return null;
                 return (
                   <div className="bg-black/30 p-2">
                     <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
-                      {sfiles.map((f, i) => (
+                      {files.map((file, i) => (
                         <div
-                          key={`${f.relative_path}-${i}`}
+                          key={`${file.media_label}-${i}`}
                           className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
                         >
                           <StatusPill
-                            status={scanFileStatus}
-                            className="h-5 shrink-0 px-1.5 text-[10px]"
+                            status={file.import_status}
+                            label={file.import_status.startsWith("failed") ? "Failed" : undefined}
+                            className="shrink-0"
                           />
-                          <span className="truncate font-mono" title={f.relative_path}>
-                            {f.relative_path}
-                          </span>
-                          <TypePill className="ml-auto h-5 shrink-0 px-1.5 text-[10px] uppercase">
-                            {f.is_video ? "video" : "file"}
-                          </TypePill>
+                          <span className="shrink-0 font-mono">{file.media_label}</span>
+                          {file.variant && (
+                            <span className="shrink-0 font-mono text-muted-foreground">
+                              · {file.variant}
+                            </span>
+                          )}
+                          {file.import_error && (
+                            <span
+                              className="ml-auto truncate text-red-500"
+                              title={file.import_error}
+                            >
+                              {file.import_error}
+                            </span>
+                          )}
                         </div>
                       ))}
                     </div>
                   </div>
                 );
-              }}
-              rowActions={renderRowActions}
-            />
-          </>
+              }
+              const r = it.result;
+              const sfiles = r.files ?? [];
+              if (sfiles.length === 0) {
+                return (
+                  <div className="flex items-center justify-center bg-black/30 px-4 py-8 text-center text-xs text-muted-foreground">
+                    No files listed — re-run the scan to refresh.
+                  </div>
+                );
+              }
+              const scanFileStatus =
+                r.status === "failed" ? "failed" : r.status === "imported" ? "imported" : "pending";
+              return (
+                <div className="bg-black/30 p-2">
+                  <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
+                    {sfiles.map((f, i) => (
+                      <div
+                        key={`${f.relative_path}-${i}`}
+                        className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
+                      >
+                        <StatusPill
+                          status={scanFileStatus}
+                          className="h-5 shrink-0 px-1.5 text-[10px]"
+                        />
+                        <span className="truncate font-mono" title={f.relative_path}>
+                          {f.relative_path}
+                        </span>
+                        <TypePill className="ml-auto h-5 shrink-0 px-1.5 text-[10px] uppercase">
+                          {f.is_video ? "video" : "file"}
+                        </TypePill>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            }}
+            rowActions={renderRowActions}
+          />
         )}
       </main>
 

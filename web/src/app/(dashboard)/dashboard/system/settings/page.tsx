@@ -222,15 +222,15 @@ export default function SystemSettingsPage() {
 
   const settingsQuery = useQuery({
     queryKey: ["system", "settings"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/settings");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/settings", { signal });
       return (data ?? {}) as Settings;
     },
   });
   const schemaQuery = useQuery({
     queryKey: ["system", "settings", "schema"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/settings/schema");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/settings/schema", { signal });
       return (data ?? []) as unknown as SchemaEntry[];
     },
   });

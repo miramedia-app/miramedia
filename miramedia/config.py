@@ -190,6 +190,13 @@ class MiraMediaConfig(BaseSettings):
         MiraMediaConfig._initialized = True
 
     @classmethod
+    def load_isolated(cls) -> Self:
+        """Load TOML/env settings into a fresh instance without touching the singleton."""
+        instance = object.__new__(cls)
+        BaseSettings.__init__(instance)
+        return cast("Self", instance)
+
+    @classmethod
     def settings_customise_sources(
         cls,
         settings_cls: type[BaseSettings],

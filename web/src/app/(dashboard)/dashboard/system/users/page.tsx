@@ -74,8 +74,8 @@ export default function UsersPage() {
 
   const usersQuery = useQuery({
     queryKey: ["users", "all"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/users");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/users", { signal });
       return (data ?? []) as UserRead[];
     },
   });

@@ -9,14 +9,17 @@ domain, not the torrents domain.
 """
 
 import logging
-import mimetypes
 import re
 import shutil
 from collections.abc import Iterable, Mapping
 from pathlib import Path, UnsupportedOperation
 
-import patoolib
-
+from miramedia.imports.archive_extraction import (
+    ArchiveExtractionError,
+    classify_archive,
+    extract_archive_to_directory,
+)
+from miramedia.imports.archive_publication import list_importable_files
 from miramedia.torrents.parsing import (
     is_sample_or_extra,
     is_subtitle_file,
@@ -122,37 +125,34 @@ def list_files_recursively(path: Path = Path()) -> list[Path]:
 
 
 def extract_archives(files: list) -> None:
-    archive_types = {
-        "application/zip",
-        "application/x-zip-compressed",
-        "application/x-compressed",
-        "application/vnd.rar",
-        "application/x-7z-compressed",
-        "application/x-freearc",
-        "application/x-bzip",
-        "application/x-bzip2",
-        "application/gzip",
-        "application/x-gzip",
-        "application/x-tar",
-    }
     for file in files:
-        file_type = mimetypes.guess_type(file)
+        classification = classify_archive(file)
+        if classification is None:
+            continue
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
-                "File: %s, Size: %d bytes, Type: %s",
+                "File: %s, Size: %d bytes, classification: %s",
                 file,
                 file.stat().st_size,
-                file_type,
+                classification,
             )
-
-        if file_type[0] in archive_types:
-            log.info(
-                f"File {file} is a compressed file, extracting it into directory {file.parent}"
+        if classification.disposition == "unsupported":
+            log.warning(
+                "Skipping unsupported archive %s (format=%s)",
+                file,
+                classification.format,
             )
-            try:
-                patoolib.extract_archive(str(file), outdir=str(file.parent))
-            except patoolib.util.PatoolError:
-                log.exception(f"Failed to extract archive {file}")
+            continue
+        log.info(
+            "File %s is archive format %s, extracting safely into directory %s",
+            file,
+            classification.format,
+            file.parent,
+        )
+        try:
+            extract_archive_to_directory(file, file.parent)
+        except ArchiveExtractionError:
+            log.exception("Failed to safely extract archive %s", file)
 
 
 def import_file(
@@ -321,10 +321,10 @@ def get_files_for_import(
     log.info(f"Importing files from directory {directory}")
     search_directory = directory
 
-    all_files: list[Path] = list_files_recursively(path=search_directory)
+    all_files: list[Path] = list_importable_files(search_directory)
     log.debug("Found %d files in the directory", len(all_files))
     extract_archives(all_files)
-    all_files = list_files_recursively(path=search_directory)
+    all_files = list_importable_files(search_directory)
 
     video_files: list[Path] = []
     subtitle_files: list[Path] = []
