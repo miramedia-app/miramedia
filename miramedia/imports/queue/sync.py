@@ -12,7 +12,12 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.imports.models import ImportQueueItem
-from miramedia.imports.schemas import ImportTab, ScanImportItem, TorrentImportItem
+from miramedia.imports.schemas import (
+    ImportTab,
+    IntegrityImportItem,
+    ScanImportItem,
+    TorrentImportItem,
+)
 from miramedia.imports.service import ImportsService
 
 log = logging.getLogger(__name__)
@@ -43,7 +48,7 @@ def _dedupe_import_items(
     return out
 
 
-def _bucket_rank(item: TorrentImportItem | ScanImportItem) -> int:
+def _bucket_rank(item: TorrentImportItem | ScanImportItem | IntegrityImportItem) -> int:
     """Status bucket order (Review=0, Retry=1, Done=2).
 
     Mirrors the frontend ``bucketOf`` grouping so the ``all`` tab lists every
@@ -55,6 +60,8 @@ def _bucket_rank(item: TorrentImportItem | ScanImportItem) -> int:
         return 2 if item.result.status == "imported" else 0
     if item.kind == "media":
         return 2
+    if item.kind == "integrity":
+        return 0
     p = item.entry.progress
     if p.failed > 0 or p.ambiguous > 0:
         return 0
@@ -67,7 +74,7 @@ def _bucket_rank(item: TorrentImportItem | ScanImportItem) -> int:
 
 def _queue_rows_for_item(
     service: ImportsService,
-    item: TorrentImportItem | ScanImportItem,
+    item: TorrentImportItem | ScanImportItem | IntegrityImportItem,
 ) -> dict[tuple[str, str, str], dict]:
     """Build at most one row per (kind, ref_id, tab)."""
     row_by_key: dict[tuple[str, str, str], dict] = {}
@@ -84,6 +91,10 @@ def _queue_rows_for_item(
                 sort_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
         elif item.kind == "media":
             ts = item.imported_at
+            if ts is not None:
+                sort_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+        elif item.kind == "integrity":
+            ts = item.mismatch.detected_at
             if ts is not None:
                 sort_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
         row_by_key[(item.kind, ref, tab.value)] = {
@@ -129,16 +140,18 @@ async def list_queue_page(
     tab: ImportTab,
     offset: int,
     limit: int,
+    include_integrity: bool = False,
 ) -> tuple[list[dict], int]:
+    # Integrity rows are superuser-only: filtered in SQL so pagination offsets
+    # and totals stay consistent per role.
     tab_value = tab.value
-    count_stmt = (
-        select(func.count())
-        .select_from(ImportQueueItem)
-        .where(ImportQueueItem.tab == tab_value)
-    )
+    where = [ImportQueueItem.tab == tab_value]
+    if not include_integrity:
+        where.append(ImportQueueItem.kind != "integrity")
+    count_stmt = select(func.count()).select_from(ImportQueueItem).where(*where)
     stmt = (
         select(ImportQueueItem.payload)
-        .where(ImportQueueItem.tab == tab_value)
+        .where(*where)
         .order_by(ImportQueueItem.bucket_rank.asc(), ImportQueueItem.sort_at.desc())
         .offset(offset)
         .limit(limit)
@@ -148,7 +161,11 @@ async def list_queue_page(
     return payloads, total
 
 
-async def count_queue_by_tab(db: AsyncSession) -> dict[str, int]:
+async def count_queue_by_tab(
+    db: AsyncSession, *, include_integrity: bool = False
+) -> dict[str, int]:
     stmt = select(ImportQueueItem.tab, func.count()).group_by(ImportQueueItem.tab)
+    if not include_integrity:
+        stmt = stmt.where(ImportQueueItem.kind != "integrity")
     rows = (await db.execute(stmt)).all()
     return {tab: int(count) for tab, count in rows}

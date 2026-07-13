@@ -321,13 +321,17 @@ def publish_staging_tree(
         published = True
         return container_path
     finally:
+        # Re-stat through the still-open fd: installing the payload and the
+        # fchmod above bump the container's ctime, so private_stat is stale and
+        # would read as a replacement to same_inode_generation().
+        current_private_stat = os.fstat(private_fd)
         os.close(private_fd)
         if not published:
             allow_recursive_cleanup = (not installed_staging) or payload_verified
             quarantine_owned_directory(
                 parent_fd,
                 private_name,
-                private_stat,
+                current_private_stat,
                 allow_recursive_cleanup=allow_recursive_cleanup,
             )
 
@@ -594,7 +598,7 @@ def quarantine_owned_directory(
     except OSError as exc:
         log.warning("Failed to stat %s during cleanup: %s", name, exc)
         return
-    if current.st_ino != expected_stat.st_ino or current.st_dev != expected_stat.st_dev:
+    if not same_inode_generation(current, expected_stat):
         log.warning("%s was replaced before cleanup; leaving it in place", name)
         return
     if not stat.S_ISDIR(current.st_mode):
@@ -610,10 +614,7 @@ def quarantine_owned_directory(
             exc,
         )
         return
-    if (
-        pre_rename.st_ino != expected_stat.st_ino
-        or pre_rename.st_dev != expected_stat.st_dev
-    ):
+    if not same_inode_generation(pre_rename, expected_stat):
         log.warning("%s changed before quarantine rename; leaving it in place", name)
         return
 
@@ -931,8 +932,24 @@ def _open_directory_verified(dir_fd: int, name: str) -> tuple[int, os.stat_resul
     return fd, expected
 
 
+def same_inode_generation(opened: os.stat_result, expected: os.stat_result) -> bool:
+    """Report whether two stats name the same object, resisting inode reuse.
+
+    Linux recycles inode numbers immediately, so an unlink/recreate swap can
+    reproduce (st_dev, st_ino). A recreated inode always carries a fresh ctime,
+    so it is the field that distinguishes the original from a replacement. Only
+    use this where the object is not legitimately mutated in the compared
+    window: any chmod, rename, or child write bumps ctime on the original too.
+    """
+    return (
+        opened.st_dev == expected.st_dev
+        and opened.st_ino == expected.st_ino
+        and opened.st_ctime_ns == expected.st_ctime_ns
+    )
+
+
 def _assert_matching_stat(opened: os.stat_result, expected: os.stat_result) -> None:
-    if opened.st_dev != expected.st_dev or opened.st_ino != expected.st_ino:
+    if not same_inode_generation(opened, expected):
         msg = "archive tree entry was redirected during validation"
         raise ArchiveExtractionError(msg)
     if stat.S_ISREG(opened.st_mode) and opened.st_nlink > 1:

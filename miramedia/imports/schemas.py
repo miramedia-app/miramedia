@@ -19,6 +19,7 @@ from miramedia.torrents.schemas import (
     ImportFileDetail,
     ImportProgress,
     ImportStatusEntry,
+    IntegrityMismatch,
     MediaType,
     Quality,
 )
@@ -180,8 +181,22 @@ class MediaImportItem(BaseModel):
     files: list[ImportFileDetail]
 
 
+class IntegrityImportItem(BaseModel):
+    """An imported library file the integrity audit flagged as corrupt.
+
+    Superuser-only: excluded from the queue page/counts for ordinary users at
+    the SQL layer. Resolution goes through the existing
+    ``/torrents/integrity/{media_type}/{file_id}/(rebaseline|dismiss)``
+    endpoints, not ``/imports/resolve``.
+    """
+
+    kind: Literal["integrity"] = "integrity"
+    id: str  # "integrity:{media_type}:{file_id}"
+    mismatch: IntegrityMismatch
+
+
 ImportItem = Annotated[
-    TorrentImportItem | ScanImportItem | MediaImportItem,
+    TorrentImportItem | ScanImportItem | MediaImportItem | IntegrityImportItem,
     Field(discriminator="kind"),
 ]
 

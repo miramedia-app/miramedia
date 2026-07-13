@@ -37,12 +37,5 @@ export const qk = {
         : (["imports", "list"] as const),
     counts: () => ["imports", "counts"] as const,
     scan: () => ["imports", "scan"] as const,
-    // Integrity-audit mismatches. Namespaced under "imports" so `refreshAll`
-    // (which invalidates `imports.all`) also refreshes corruption rows.
-    // One key per server page: paging must refetch, never re-slice a cached list.
-    integrity: (offset?: number, limit?: number) =>
-      offset !== undefined
-        ? (["imports", "integrity", "mismatches", offset, limit] as const)
-        : (["imports", "integrity", "mismatches"] as const),
   },
 } as const;

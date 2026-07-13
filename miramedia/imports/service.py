@@ -33,6 +33,7 @@ from miramedia.imports.schemas import (
     ImportCounts,
     ImportItem,
     ImportTab,
+    IntegrityImportItem,
     MediaImportItem,
     PaginatedImports,
     ResolveRequest,
@@ -140,13 +141,24 @@ class ImportsService:
             _queue_built_at = datetime.now(UTC)
 
     async def list_imports(
-        self, *, tab: ImportTab, offset: int, limit: int
+        self,
+        *,
+        tab: ImportTab,
+        offset: int,
+        limit: int,
+        include_integrity: bool = False,
     ) -> PaginatedImports:
         from miramedia.imports.queue.sync import list_queue_page
 
         db = self.repository.db
         await self._ensure_queue_populated(db)
-        payloads, total = await list_queue_page(db, tab=tab, offset=offset, limit=limit)
+        payloads, total = await list_queue_page(
+            db,
+            tab=tab,
+            offset=offset,
+            limit=limit,
+            include_integrity=include_integrity,
+        )
         items = [_IMPORT_ITEM_ADAPTER.validate_python(p) for p in payloads]
         return PaginatedImports(
             items=items,
@@ -155,12 +167,12 @@ class ImportsService:
             limit=limit,
         )
 
-    async def get_counts(self) -> ImportCounts:
+    async def get_counts(self, *, include_integrity: bool = False) -> ImportCounts:
         from miramedia.imports.queue.sync import count_queue_by_tab
 
         db = self.repository.db
         await self._ensure_queue_populated(db)
-        by_tab = await count_queue_by_tab(db)
+        by_tab = await count_queue_by_tab(db, include_integrity=include_integrity)
         return ImportCounts(
             review=by_tab.get(ImportTab.review.value, 0),
             retry=by_tab.get(ImportTab.retry.value, 0),
@@ -170,8 +182,10 @@ class ImportsService:
             import_total=await self.repository.get_import_batch_total(),
         )
 
-    async def _collect_items(self) -> list[TorrentImportItem | ScanImportItem]:
-        out: list[TorrentImportItem | ScanImportItem] = []
+    async def _collect_items(
+        self,
+    ) -> list[TorrentImportItem | ScanImportItem | IntegrityImportItem]:
+        out: list[TorrentImportItem | ScanImportItem | IntegrityImportItem] = []
 
         entries = await self.torrent_service.build_all_import_status_entries()
         for entry in entries:
@@ -198,7 +212,44 @@ class ImportsService:
         # ``torrent_history`` log, so successful imports survive
         # cleanup_after_import deleting the live torrent row.
         out.extend(await self._collect_history_items())
+
+        out.extend(await self._collect_integrity_items())
         return out
+
+    async def _collect_integrity_items(self) -> list[IntegrityImportItem]:
+        """All integrity-audit mismatches, as needs-review rows.
+
+        The queue stores every mismatch (they are rare — bit-rot on imported
+        files); superuser gating happens at page/count time via
+        ``include_integrity``, not here.
+        """
+        from miramedia.torrents.integrity import INTEGRITY_MISMATCH_MAX_LIMIT
+
+        items: list[IntegrityImportItem] = []
+        offset = 0
+        while True:
+            try:
+                page = await self.torrent_service.list_integrity_mismatches(
+                    offset=offset,
+                    limit=INTEGRITY_MISMATCH_MAX_LIMIT,
+                    show_service=self.show_service,
+                    movie_service=self.movie_service,
+                )
+            except Exception:
+                # A failing audit listing must not blank the torrent/scan rows.
+                log.exception("Failed to collect integrity mismatches for queue")
+                return items
+            items.extend(
+                IntegrityImportItem(
+                    id=f"integrity:{m.media_type}:{m.file_id}",
+                    mismatch=m,
+                )
+                for m in page.items
+            )
+            if page.next_offset is None:
+                break
+            offset = page.next_offset
+        return items
 
     async def _collect_history_items(self) -> list[MediaImportItem]:
         items: list[MediaImportItem] = []
@@ -230,7 +281,12 @@ class ImportsService:
         return items
 
     def _tab_matches(
-        self, item: TorrentImportItem | ScanImportItem | MediaImportItem, tab: ImportTab
+        self,
+        item: TorrentImportItem
+        | ScanImportItem
+        | MediaImportItem
+        | IntegrityImportItem,
+        tab: ImportTab,
     ) -> bool:
         # A fully-imported live torrent is represented by its torrent_history
         # row (kind=media). Hide the live torrent from every tab so Done isn't
@@ -240,6 +296,10 @@ class ImportsService:
 
         if tab == ImportTab.all:
             return True
+
+        if isinstance(item, IntegrityImportItem):
+            # A corrupt file needs a human decision → Review.
+            return tab == ImportTab.review
 
         if isinstance(item, ScanImportItem):
             # Imported scans are finished → Done; pending ones need a human

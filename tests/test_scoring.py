@@ -9,7 +9,11 @@ in evaluate_indexer_query_results. These tests drive the real pipeline.
 import pytest
 
 from miramedia.indexers.schemas import IndexerQueryResult
-from miramedia.indexers.utils import evaluate_indexer_query_results
+from miramedia.indexers.utils import (
+    _is_title_relevant,
+    _normalized_name_variants,
+    evaluate_indexer_query_results,
+)
 from miramedia.movies.schemas import Movie
 
 
@@ -236,3 +240,31 @@ def test_search_name_variants() -> None:
         "The Agency",
     ]
     assert search_name_variants("Supergirl") == ["Supergirl"]
+
+
+@pytest.mark.parametrize(
+    ("title", "media_name", "expected"),
+    [
+        ("The Bear 2022 1080p WEB-DL x264-GRP", "The Bear", True),
+        ("[GRP] The Bear 2022 1080p WEB-DL x264-GRP", "The Bear", True),
+        (
+            "The.Agency.2024.S01E01.1080p.WEB-DL.x265-GRP",
+            "The Agency: Central Intelligence",
+            True,
+        ),
+        ("Masha and the Bear S01E01 1080p WEB-DL", "The Bear", False),
+        (
+            "Star.Trek.Strange.New.Worlds.S01E01.1080p.WEB-DL",
+            "Star Trek: Discovery",
+            False,
+        ),
+    ],
+)
+def test_title_relevance_hoisted_path(title, media_name, expected) -> None:
+    norm_variants = _normalized_name_variants(media_name)
+    assert _is_title_relevant(title, norm_variants) is expected
+
+
+def test_title_relevance_empty_variants_rejects() -> None:
+    assert _normalized_name_variants("[only punctuation]") == []
+    assert _is_title_relevant("Some Movie 2024 1080p WEB-DL", []) is False

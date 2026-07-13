@@ -1044,6 +1044,12 @@ async def verify_imported_files_task() -> None:
         mismatched,
         skipped_stale,
     )
+    if mismatched:
+        # Surface the new corrupt-file rows on the imports page without waiting
+        # for the next full queue rebuild.
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
 
 
 _integrity_interval_hours = max(

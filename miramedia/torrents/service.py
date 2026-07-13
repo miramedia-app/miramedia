@@ -1988,6 +1988,7 @@ class TorrentService:
             show_service=show_service,
             movie_service=movie_service,
         )
+        self._schedule_integrity_queue_refresh()
         return IntegrityActionResult(ok=True)
 
     async def dismiss_mismatch(
@@ -2006,7 +2007,15 @@ class TorrentService:
             show_service=show_service,
             movie_service=movie_service,
         )
+        self._schedule_integrity_queue_refresh()
         return IntegrityActionResult(ok=True)
+
+    @staticmethod
+    def _schedule_integrity_queue_refresh() -> None:
+        """Drop the resolved mismatch from the imports queue (debounced rebuild)."""
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
 
     async def _clear_integrity_state(
         self,

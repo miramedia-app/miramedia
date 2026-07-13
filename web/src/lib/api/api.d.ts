@@ -3903,6 +3903,25 @@ export interface components {
             ok: boolean;
         };
         /**
+         * IntegrityImportItem
+         * @description An imported library file the integrity audit flagged as corrupt.
+         *
+         *     Superuser-only: excluded from the queue page/counts for ordinary users at
+         *     the SQL layer. Resolution goes through the existing
+         *     ``/torrents/integrity/{media_type}/{file_id}/(rebaseline|dismiss)``
+         *     endpoints, not ``/imports/resolve``.
+         */
+        IntegrityImportItem: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "integrity";
+            /** Id */
+            id: string;
+            mismatch: components["schemas"]["IntegrityMismatch"];
+        };
+        /**
          * IntegrityMismatch
          * @description An imported file whose on-disk SHA1 no longer matches the stored hash.
          */
@@ -4555,7 +4574,7 @@ export interface components {
         /** PaginatedImports */
         PaginatedImports: {
             /** Items */
-            items: (components["schemas"]["TorrentImportItem"] | components["schemas"]["ScanImportItem"] | components["schemas"]["MediaImportItem"])[];
+            items: (components["schemas"]["TorrentImportItem"] | components["schemas"]["ScanImportItem"] | components["schemas"]["MediaImportItem"] | components["schemas"]["IntegrityImportItem"])[];
             /** Total */
             total: number;
             /** Offset */

@@ -5,6 +5,7 @@ Preloaded with popular public indexer sites and supports custom Torznab
 endpoints. Optionally integrates an in-process Cloudflare bypass.
 """
 
+import asyncio
 import concurrent.futures
 import logging
 import os
@@ -35,6 +36,10 @@ def get_native_indexer(db_sites: list[IndexerSiteRead]) -> "NativeIndexer":
     global _cached_indexer
     if _cached_indexer is None:
         _cached_indexer = NativeIndexer(db_sites=db_sites)
+    try:
+        _cached_indexer._loop = asyncio.get_running_loop()
+    except RuntimeError:
+        pass
     return _cached_indexer
 
 
@@ -52,6 +57,11 @@ class NativeIndexer(GenericIndexer):
 
     def __init__(self, db_sites: list[IndexerSiteRead]) -> None:
         super().__init__(name="native")
+        self._loop: asyncio.AbstractEventLoop | None = None
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
         indexers_cfg = MiraMediaConfig().indexers
         config = indexers_cfg.native
         timeout_seconds = indexers_cfg.timeout_seconds
@@ -221,11 +231,9 @@ class NativeIndexer(GenericIndexer):
         Schedule the write back on the main event loop so it doesn't hold up
         the search response. Silently no-ops if no loop is running (CLI use).
         """
-        import asyncio
-
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            log.debug("No event loop captured; skipping site success stamps")
             return
 
         async def _do_record() -> None:
@@ -243,10 +251,7 @@ class NativeIndexer(GenericIndexer):
                 log.exception("Failed to record site success timestamps")
 
         try:
-            if loop.is_running():
-                asyncio.run_coroutine_threadsafe(_do_record(), loop)
-            else:
-                loop.run_until_complete(_do_record())
+            asyncio.run_coroutine_threadsafe(_do_record(), loop)
         except Exception:
             log.exception("Failed to schedule site success recording")
 

@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
+  Check,
   EllipsisVertical,
   FolderInput,
   LoaderCircle,
@@ -14,13 +15,13 @@ import {
   ScanLine,
   Trash2,
   TriangleAlert,
+  X,
 } from "lucide-react";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { StatusPill } from "@/components/ui/status-pill";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
-import { IntegritySection } from "@/components/imports/integrity-section";
-import { getTorrentStatusString } from "@/lib/utils";
+import { getTorrentStatusString, qualityToString } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -35,14 +36,16 @@ import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/d
 import { useEventStream } from "@/hooks/use-event-stream";
 import {
   BUCKET_ORDER,
+  CORRUPT_LABEL,
   KIND_LABELS,
   KIND_ORDER,
   bucketOf,
   importsListViewState,
+  isIntegrity,
   isMedia,
   isTorrent,
 } from "@/lib/imports";
-import type { ImportItem, ScanImport, TorrentImport } from "@/lib/imports";
+import type { ImportItem, IntegrityImport, ScanImport, TorrentImport } from "@/lib/imports";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
 import type { components } from "@/lib/api/api";
@@ -380,9 +383,45 @@ export default function ImportsPage() {
     }
   }
 
+  // Corrupt-file rows resolve through the dedicated integrity endpoints, not
+  // /imports/resolve: "rebaseline" accepts the on-disk file (checksum re-read
+  // next audit), "dismiss" keeps the original checksum and re-verifies.
+  async function resolveIntegrity(item: IntegrityImport, action: "rebaseline" | "dismiss") {
+    const m = item.mismatch;
+    const msg =
+      action === "rebaseline"
+        ? `Accept the current file for "${m.media_title}"? Its checksum will be re-baselined from disk on the next audit.`
+        : `Dismiss the mismatch for "${m.media_title}"? The original checksum is kept and re-verified on the next audit.`;
+    if (!confirm(msg)) return;
+    setBusyId(item.id);
+    try {
+      const params = { path: { media_type: m.media_type, file_id: m.file_id } };
+      const { error } =
+        action === "rebaseline"
+          ? await apiClient.POST("/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline", {
+              params,
+            })
+          : await apiClient.POST("/api/v1/torrents/integrity/{media_type}/{file_id}/dismiss", {
+              params,
+            });
+      if (error) throw new Error("action failed");
+      toast.success(
+        action === "rebaseline"
+          ? `Accepted current file for "${m.media_title}".`
+          : `Dismissed mismatch for "${m.media_title}".`,
+      );
+      refreshAll();
+    } catch {
+      toast.error("Action failed.");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
   async function ignoreItem(item: ImportItem) {
-    // Media rows (torrent-independent Done) are read-only — no ignore.
-    if (isMedia(item)) return;
+    // Media rows (torrent-independent Done) and integrity rows (own actions)
+    // have no ignore.
+    if (isMedia(item) || isIntegrity(item)) return;
     const isTor = isTorrent(item);
     const label = isTor ? item.entry.torrent_title : item.result.detected_name;
     const msg = isTor
@@ -522,6 +561,18 @@ export default function ImportsPage() {
               </span>
             );
           }
+          if (isIntegrity(it)) {
+            // The corrupt file itself, not a source directory.
+            const file = it.mismatch.path?.split("/").filter(Boolean).pop() ?? "—";
+            return (
+              <span
+                className="truncate pr-3 font-mono text-xs text-muted-foreground"
+                title={it.mismatch.path ?? undefined}
+              >
+                {file}
+              </span>
+            );
+          }
           const folder = isTorrent(it)
             ? it.entry.source_dir
             : isMedia(it)
@@ -560,6 +611,18 @@ export default function ImportsPage() {
               <span className="truncate pr-3 text-sm">
                 {it.media_name}
                 {it.media_year ? ` (${it.media_year})` : ""}
+              </span>
+            );
+          }
+          if (isIntegrity(it)) {
+            return (
+              <span className="truncate pr-3 text-sm">
+                {it.mismatch.media_title}
+                {it.mismatch.episode ? (
+                  <span className="ml-1.5 font-mono text-xs text-muted-foreground">
+                    {it.mismatch.episode}
+                  </span>
+                ) : null}
               </span>
             );
           }
@@ -610,7 +673,11 @@ export default function ImportsPage() {
         id: "kind",
         header: "Type",
         width: "92px",
-        render: (it) => <TypePill>{it.kind === "scan" ? "Scan" : "Torrent"}</TypePill>,
+        render: (it) => (
+          <TypePill>
+            {it.kind === "scan" ? "Scan" : it.kind === "integrity" ? "Integrity" : "Torrent"}
+          </TypePill>
+        ),
       },
       {
         id: "progress",
@@ -625,6 +692,16 @@ export default function ImportsPage() {
                 <MetaPill className="tabular-nums">
                   {p.imported}/{p.total}
                 </MetaPill>
+              </div>
+            );
+          }
+          if (isIntegrity(it)) {
+            return (
+              <div className="flex flex-wrap items-center gap-1">
+                <MetaPill className="uppercase">{qualityToString(it.mismatch.quality)}</MetaPill>
+                {it.mismatch.variant_tag ? (
+                  <MetaPill className="font-mono">{it.mismatch.variant_tag}</MetaPill>
+                ) : null}
               </div>
             );
           }
@@ -671,6 +748,17 @@ export default function ImportsPage() {
             return (
               <div className="flex flex-wrap items-center gap-1">
                 <StatusPill status={status} />
+              </div>
+            );
+          }
+          if (isIntegrity(it)) {
+            return (
+              <div className="flex flex-wrap items-center gap-1">
+                <StatusPill
+                  status="corrupt"
+                  label={CORRUPT_LABEL}
+                  title={it.mismatch.import_error}
+                />
               </div>
             );
           }
@@ -739,6 +827,37 @@ export default function ImportsPage() {
     (it: ImportItem) => {
       const busy = busyId === it.id;
       if (isMedia(it)) return null;
+      if (isIntegrity(it)) {
+        return (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void resolveIntegrity(it, "rebaseline")}
+              title="Re-baseline the checksum from the file on disk next audit"
+            >
+              {busy ? (
+                <LoaderCircle className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Check className="mr-1 h-3.5 w-3.5" />
+              )}
+              Accept current
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-muted-foreground"
+              disabled={busy}
+              onClick={() => void resolveIntegrity(it, "dismiss")}
+              title="Keep the original checksum; re-verify next audit"
+            >
+              <X className="mr-1 h-3.5 w-3.5" />
+              Dismiss
+            </Button>
+          </>
+        );
+      }
       if (isTorrent(it)) {
         return (
           <>
@@ -907,7 +1026,6 @@ export default function ImportsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Imports" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <IntegritySection />
         {listView === "error" ? (
           <DataListEmpty
             icon={<TriangleAlert />}
@@ -937,6 +1055,12 @@ export default function ImportsPage() {
                 return (
                   it.media_name.toLowerCase().includes(q) ||
                   it.torrent_title.toLowerCase().includes(q)
+                );
+              }
+              if (isIntegrity(it)) {
+                return (
+                  it.mismatch.media_title.toLowerCase().includes(q) ||
+                  (it.mismatch.path ?? "").toLowerCase().includes(q)
                 );
               }
               return (
@@ -987,6 +1111,27 @@ export default function ImportsPage() {
             }
             bulkActions={bulkActions}
             expandedContent={(it) => {
+              if (isIntegrity(it)) {
+                const m = it.mismatch;
+                return (
+                  <div className="flex flex-wrap items-center gap-2 bg-black/30 px-3 py-2 text-xs">
+                    <StatusPill status="corrupt" label={CORRUPT_LABEL} className="shrink-0" />
+                    <span className="truncate font-mono" title={m.path ?? undefined}>
+                      {m.path ?? "—"}
+                    </span>
+                    {m.detected_at ? (
+                      <MetaPill title="Detected">
+                        {new Date(m.detected_at).toLocaleDateString()}
+                      </MetaPill>
+                    ) : null}
+                    {m.import_error ? (
+                      <span className="ml-auto truncate text-red-500" title={m.import_error}>
+                        {m.import_error}
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              }
               if (isTorrent(it) || isMedia(it)) {
                 const files = isTorrent(it) ? it.entry.files : it.files;
                 if (files.length === 0) return null;

@@ -8,7 +8,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from miramedia.auth.users import current_active_user, current_superuser
+from miramedia.auth.users import (
+    CurrentUserDep,
+    current_active_user,
+    current_superuser,
+)
 from miramedia.imports.dependencies import imports_repository_dep, imports_service_dep
 from miramedia.imports.repository import ScanClaimResult
 from miramedia.imports.scan_resolve import (
@@ -33,24 +37,28 @@ router = APIRouter(prefix="/imports", tags=["imports"])
 @router.get(
     "",
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(current_active_user)],
 )
 async def list_imports(
     service: imports_service_dep,
+    user: CurrentUserDep,
     tab: Annotated[ImportTab, Query()] = ImportTab.review,
     offset: Annotated[int, Query(ge=0)] = 0,
     limit: Annotated[int, Query(gt=0, le=200)] = 50,
 ) -> PaginatedImports:
-    return await service.list_imports(tab=tab, offset=offset, limit=limit)
+    # Integrity (corrupt-file) rows are superuser-only.
+    return await service.list_imports(
+        tab=tab, offset=offset, limit=limit, include_integrity=user.is_superuser
+    )
 
 
 @router.get(
     "/counts",
     status_code=status.HTTP_200_OK,
-    dependencies=[Depends(current_active_user)],
 )
-async def get_counts(service: imports_service_dep) -> ImportCounts:
-    return await service.get_counts()
+async def get_counts(
+    service: imports_service_dep, user: CurrentUserDep
+) -> ImportCounts:
+    return await service.get_counts(include_integrity=user.is_superuser)
 
 
 @router.post(

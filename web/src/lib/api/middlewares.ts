@@ -29,6 +29,13 @@ export const loggingMiddleware: Middleware = {
     return response;
   },
   async onError({ request, error }) {
+    // An aborted request is not a failure: TanStack cancels in-flight queries at
+    // auth boundaries (and on unmount) via the `signal` it passes to fetch.
+    // Rewrapping the AbortError hides the abort from TanStack, which then treats
+    // the cancellation as a real error and retries it.
+    if (error instanceof Error && (request.signal?.aborted || error.name === "AbortError")) {
+      return error;
+    }
     console.error(`Fetch to ${request.url} failed:`, error);
     return new Error(
       `Fetch to ${request.url} failed: ${error instanceof Error ? error.message : String(error)}`,

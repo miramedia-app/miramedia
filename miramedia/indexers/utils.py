@@ -384,7 +384,17 @@ def search_name_variants(media_name: str) -> list[str]:
     return variants
 
 
-def _is_title_relevant(title: str, media_name: str) -> bool:
+def _normalized_name_variants(media_name: str) -> list[str]:
+    """Normalized, lowercased search-name variants; empty entries dropped."""
+    out = []
+    for variant in search_name_variants(media_name):
+        norm = sanitize_search_query(variant).lower()
+        if norm:
+            out.append(norm)
+    return out
+
+
+def _is_title_relevant(title: str, norm_variants: list[str]) -> bool:
     """Reject torrent titles whose leading segment doesn't equal the media name.
 
     A loose substring check accepted things like ``Masha and the Bear`` when
@@ -404,10 +414,7 @@ def _is_title_relevant(title: str, media_name: str) -> bool:
     """
     norm_title = sanitize_search_query(title).lower()
 
-    for variant in search_name_variants(media_name):
-        norm_name = sanitize_search_query(variant).lower()
-        if not norm_name:
-            continue
+    for norm_name in norm_variants:
         if norm_title == norm_name:
             return True
         if not norm_title.startswith(norm_name + " "):
@@ -524,8 +531,9 @@ def evaluate_indexer_query_results(
 
     # Filter out results that don't contain the media name at all
     before_count = len(query_results)
+    norm_name_variants = _normalized_name_variants(media.name)
     query_results = [
-        r for r in query_results if _is_title_relevant(r.title, media.name)
+        r for r in query_results if _is_title_relevant(r.title, norm_name_variants)
     ]
     filtered = before_count - len(query_results)
     if filtered:

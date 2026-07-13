@@ -15,6 +15,11 @@ log = logging.getLogger(__name__)
 
 _MAX_POSTER_DOWNLOAD_BYTES = 50 * 1024 * 1024
 
+# Refuse decompression-bomb posters (PIL default is ~178M pixels but can be
+# disabled globally elsewhere; pin an explicit ceiling for this decode path).
+_MAX_POSTER_PIXELS = 64_000_000
+Image.MAX_IMAGE_PIXELS = _MAX_POSTER_PIXELS
+
 
 def get_year_from_date(first_air_date: str | None) -> int | None:
     if first_air_date:
@@ -105,13 +110,32 @@ def download_poster_image(storage_path: Path, poster_url: str, uuid: UUID) -> bo
                 pass
 
         image_file_path = storage_path.joinpath(str(uuid)).with_suffix(".jpg")
+        bytes_written = 0
         with image_file_path.open("wb") as f:
             for chunk in res.iter_content(chunk_size=1 << 20):
                 if chunk:
+                    if bytes_written + len(chunk) > _MAX_POSTER_DOWNLOAD_BYTES:
+                        log.warning(
+                            "Skipping poster download for %s: streamed body exceeds 50 MiB",
+                            uuid,
+                        )
+                        res.close()
+                        image_file_path.unlink(missing_ok=True)
+                        return False
                     f.write(chunk)
+                    bytes_written += len(chunk)
 
-        original_image = Image.open(image_file_path)
-        original_image.save(image_file_path.with_suffix(".avif"), quality=50)
-        original_image.save(image_file_path.with_suffix(".webp"), quality=50)
+        try:
+            original_image = Image.open(image_file_path)
+            original_image.save(image_file_path.with_suffix(".avif"), quality=50)
+            original_image.save(image_file_path.with_suffix(".webp"), quality=50)
+        except (
+            Image.DecompressionBombError,
+            OSError,
+            Image.UnidentifiedImageError,
+        ) as exc:
+            log.warning("Skipping poster decode for %s: %s", uuid, exc)
+            image_file_path.unlink(missing_ok=True)
+            return False
         return True
     return False

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.9"
+    "version": "1.0.10"
   },
   "paths": {
     "/api/v1/health": {
@@ -11842,6 +11842,30 @@
         "type": "object",
         "title": "IntegrityActionResult"
       },
+      "IntegrityImportItem": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "integrity",
+            "title": "Kind",
+            "default": "integrity"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "mismatch": {
+            "$ref": "#/components/schemas/IntegrityMismatch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "mismatch"
+        ],
+        "title": "IntegrityImportItem",
+        "description": "An imported library file the integrity audit flagged as corrupt.\n\nSuperuser-only: excluded from the queue page/counts for ordinary users at\nthe SQL layer. Resolution goes through the existing\n``/torrents/integrity/{media_type}/{file_id}/(rebaseline|dismiss)``\nendpoints, not ``/imports/resolve``."
+      },
       "IntegrityMismatch": {
         "properties": {
           "file_id": {
@@ -14003,11 +14027,15 @@
                 },
                 {
                   "$ref": "#/components/schemas/MediaImportItem"
+                },
+                {
+                  "$ref": "#/components/schemas/IntegrityImportItem"
                 }
               ],
               "discriminator": {
                 "propertyName": "kind",
                 "mapping": {
+                  "integrity": "#/components/schemas/IntegrityImportItem",
                   "media": "#/components/schemas/MediaImportItem",
                   "scan": "#/components/schemas/ScanImportItem",
                   "torrent": "#/components/schemas/TorrentImportItem"

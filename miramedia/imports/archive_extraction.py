@@ -296,10 +296,12 @@ def _create_staging_dir(parent_fd: int) -> BoundStagingDirectory:
                 current.st_dev == created_stat.st_dev
                 and current.st_ino == created_stat.st_ino
             ):
+                # Pass `current`, not `created_stat`: whatever wrote the
+                # unexpected entries also bumped the directory's ctime.
                 quarantine_owned_directory(
                     parent_fd,
                     staging_name,
-                    created_stat,
+                    current,
                     allow_recursive_cleanup=True,
                 )
             else:
@@ -325,10 +327,12 @@ def _cleanup_staging(
     from miramedia.imports.archive_publication import quarantine_owned_directory
 
     try:
+        # Extracting into staging bumps its ctime, so staging.stat is stale;
+        # the still-open fd gives the current identity to match against.
         quarantine_owned_directory(
             staging.parent_fd,
             staging.name,
-            staging.stat,
+            os.fstat(staging.fd),
             allow_recursive_cleanup=True,
         )
     except OSError as cleanup_error:
