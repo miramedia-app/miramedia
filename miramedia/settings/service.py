@@ -78,29 +78,11 @@ DEPRECATED_FIELDS: set[tuple[str, ...]] = {
 
 
 def get_effective_config(overrides: dict) -> dict:
-    """Load config from TOML and merge DB overrides on top."""
-    config = MiraMediaConfig()
-    # Sections we expose (excluding database)
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
-    result = {}
-    for section in sections:
-        section_config = getattr(config, section)
-        section_dict = _config_to_dict(section_config)
-        if section in overrides:
-            section_dict = deep_merge(section_dict, overrides[section])
-        # Remove sensitive fields
+    """Build effective settings from one TOML+DB snapshot, not the live singleton."""
+    isolated = build_isolated_config(overrides)
+    result: dict = {}
+    for section in SETTINGS_SECTIONS:
+        section_dict = _config_to_dict(getattr(isolated, section))
         for field in REDACTED_FIELDS.get(section, set()):
             section_dict.pop(field, None)
         result[section] = section_dict

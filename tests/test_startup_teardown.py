@@ -9,6 +9,7 @@ import miramedia.startup as startup
 
 def test_shutdown_startup_cancels_outstanding_startup_tasks() -> None:
     async def run() -> None:
+        startup.reset_startup_shutdown_state_for_tests()
         started = asyncio.Event()
 
         async def long_running() -> None:

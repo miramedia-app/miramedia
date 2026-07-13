@@ -37,6 +37,7 @@ config = MiraMediaConfig()
 # weak reference to the task, so without this the task could be GC'd before
 # it finishes. add_done_callback(discard) drops the reference once it's done.
 _startup_tasks: set[asyncio.Task] = set()
+_shutdown_complete = False
 
 
 @dataclass
@@ -424,6 +425,11 @@ async def shutdown_startup(
     native_client: NativeDownloadClient | None,
     event_bridge_started: bool,
 ) -> None:
+    """Tear down startup acquisitions; safe to call multiple times."""
+    global _shutdown_complete
+    if _shutdown_complete:
+        return
+    _shutdown_complete = True
     # All scheduler-related vars stay None when scheduler_disabled is
     # true, so these branches no-op naturally on API-only workers.
     if ctx.startup_kick_task is not None and not ctx.startup_kick_task.done():
@@ -513,3 +519,9 @@ async def shutdown_startup(
             await get_event_bus().stop_postgres_bridge()
         except Exception:
             log.exception("Postgres event bridge shutdown failed")
+
+
+def reset_startup_shutdown_state_for_tests() -> None:
+    """Reset shutdown idempotency guard (tests only)."""
+    global _shutdown_complete
+    _shutdown_complete = False

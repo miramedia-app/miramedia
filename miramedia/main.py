@@ -92,15 +92,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         warm_cloudflare_bypass,
     )
 
-    configure_threadpool()
-    event_bridge_started = await start_persistence()
-    start_library_watcher()
-    schedule_import_queue_warmup()
-    native_client = await start_native_torrent_client()
-    warm_cloudflare_bypass()
-
     scheduler_ctx = SchedulerContext()
+    event_bridge_started = False
+    native_client = None
     try:
+        configure_threadpool()
+        event_bridge_started = await start_persistence()
+        start_library_watcher()
+        schedule_import_queue_warmup()
+        native_client = await start_native_torrent_client()
+        warm_cloudflare_bypass()
+
         if is_scheduler_disabled():
             log.info(
                 "MIRAMEDIA_SCHEDULER_DISABLED=true — taskiq brokers, receivers, "
