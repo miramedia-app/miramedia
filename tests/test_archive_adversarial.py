@@ -5,8 +5,8 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
-import lzma
 import os
+import struct
 import tarfile
 import zipfile
 from pathlib import Path
@@ -16,9 +16,10 @@ import pytest
 
 from miramedia.imports.archive_extraction import (
     ArchiveExtractionError,
+    classify_archive,
     extract_archive_to_directory,
-    is_archive_mime,
 )
+from tests.archive_test_helpers import container_paths, payload_file
 
 
 def _write_zip(path: Path, entries: dict[str, bytes]) -> None:
@@ -55,6 +56,20 @@ def _write_oversize_tar_member(path: Path, *, size: int) -> None:
         tf.addfile(info, io.BytesIO(b"x" * size))
 
 
+def _write_forged_directory_tar(path: Path, *, payload_size: int) -> None:
+    header = bytearray(512)
+    name = b"dir/"
+    header[0 : len(name)] = name
+    size_field = f"{payload_size:o}".encode("ascii")
+    if len(size_field) > 11:
+        size_field = size_field[-11:]
+    header[124:136] = size_field.rjust(11, b"0") + b"\0"
+    header[156:157] = tarfile.DIRTYPE
+    chksum, _ = tarfile.calc_chksums(header)
+    header[148:156] = f"{chksum:06o}\0 ".encode("ascii")
+    path.write_bytes(bytes(header))
+
+
 def test_tar_rejects_large_pax_header_with_tiny_limit(tmp_path: Path) -> None:
     archive = tmp_path / "pax.tar"
     dest = tmp_path / "import"
@@ -68,7 +83,7 @@ def test_tar_rejects_large_pax_header_with_tiny_limit(tmp_path: Path) -> None:
         with pytest.raises(ArchiveExtractionError, match="pax"):
             extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
+    assert container_paths(dest) == []
 
 
 def test_zip_rejects_five_directory_entries_with_limit_one(tmp_path: Path) -> None:
@@ -84,7 +99,7 @@ def test_zip_rejects_five_directory_entries_with_limit_one(tmp_path: Path) -> No
         with pytest.raises(ArchiveExtractionError):
             extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
+    assert container_paths(dest) == []
 
 
 def test_tar_rejects_five_directory_entries_with_limit_one(tmp_path: Path) -> None:
@@ -104,7 +119,37 @@ def test_tar_rejects_five_directory_entries_with_limit_one(tmp_path: Path) -> No
         with pytest.raises(ArchiveExtractionError):
             extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
+    assert container_paths(dest) == []
+
+
+def test_tar_rejects_directory_with_payload_plain(tmp_path: Path) -> None:
+    archive = tmp_path / "dirpayload.tar"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_forged_directory_tar(archive, payload_size=4096)
+
+    with pytest.raises(
+        ArchiveExtractionError, match="directory entry declares payload"
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+
+
+def test_tar_rejects_directory_with_payload_compressed(tmp_path: Path) -> None:
+    archive = tmp_path / "dirpayload.tar.gz"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    plain = archive.with_suffix(".tar")
+    _write_forged_directory_tar(plain, payload_size=4096)
+    archive.write_bytes(gzip.compress(plain.read_bytes()))
+
+    with pytest.raises(
+        ArchiveExtractionError, match="directory entry declares payload"
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
 
 
 def test_compressed_tar_rejects_oversize_first_member_before_write(
@@ -123,10 +168,10 @@ def test_compressed_tar_rejects_oversize_first_member_before_write(
         with pytest.raises(ArchiveExtractionError, match="expanded-byte limit"):
             extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
+    assert container_paths(dest) == []
 
 
-def test_promotion_parent_symlink_swap_blocks_write(tmp_path: Path) -> None:
+def test_publication_parent_symlink_swap_blocks_root_open(tmp_path: Path) -> None:
     archive = tmp_path / "release.zip"
     root = tmp_path / "import"
     outside = tmp_path / "outside"
@@ -134,48 +179,40 @@ def test_promotion_parent_symlink_swap_blocks_write(tmp_path: Path) -> None:
     outside_file = outside / "secret.mkv"
     outside_file.write_bytes(b"outside")
     root.mkdir()
-    alias = root / "alias"
-    alias.symlink_to(outside)
-    _write_zip(archive, {"alias/clip.mkv": b"new-bytes"})
+    _write_zip(archive, {"clip.mkv": b"new-bytes"})
 
-    with pytest.raises(ArchiveExtractionError):
+    from miramedia.imports import archive_publication as publication
+
+    real_publish = publication.publish_staging_tree
+
+    def _swap_destination_then_publish(
+        staging: Path,
+        destination_dir: Path,
+        *,
+        digest: str,
+        destination_stat: os.stat_result,
+    ) -> Path:
+        root.rmdir()
+        root.symlink_to(outside)
+        return real_publish(
+            staging,
+            destination_dir,
+            digest=digest,
+            destination_stat=destination_stat,
+        )
+
+    with (
+        patch.object(
+            publication,
+            "publish_staging_tree",
+            side_effect=_swap_destination_then_publish,
+        ),
+        pytest.raises(ArchiveExtractionError, match="redirected"),
+    ):
         extract_archive_to_directory(archive, root)
 
     assert outside_file.read_bytes() == b"outside"
-    assert not (outside / "clip.mkv").exists()
-    assert list(root.iterdir()) == [alias]
-
-
-def test_staging_replacement_before_staging_unlink_rolls_back(tmp_path: Path) -> None:
-    archive = tmp_path / "release.zip"
-    dest = tmp_path / "import"
-    dest.mkdir()
-    _write_zip(archive, {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"})
-
-    real_unlink = os.unlink
-    staging_unlinks = {"second": 0}
-
-    def _fail_first_staging_second_unlink(
-        name: str,
-        *args: object,
-        **kwargs: object,
-    ) -> None:
-        if name == "second.mkv" and kwargs.get("dir_fd") is not None:
-            staging_unlinks["second"] += 1
-            if staging_unlinks["second"] == 1:
-                (dest / "first.mkv").write_bytes(b"replaced-after-link")
-                msg = "simulated staging unlink failure"
-                raise OSError(msg)
-        real_unlink(name, *args, **kwargs)
-
-    with (
-        patch.object(os, "unlink", _fail_first_staging_second_unlink),
-        pytest.raises(ArchiveExtractionError, match="staged source"),
-    ):
-        extract_archive_to_directory(archive, dest)
-
-    assert not (dest / "first.mkv").exists()
-    assert not (dest / "second.mkv").exists()
+    assert container_paths(root) == []
 
 
 @pytest.mark.parametrize(
@@ -200,7 +237,7 @@ def test_malformed_archives_raise_archive_extraction_error(
     with pytest.raises(ArchiveExtractionError):
         extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
+    assert container_paths(dest) == []
 
 
 def test_gzip_writer_never_exceeds_patched_cap(tmp_path: Path) -> None:
@@ -216,25 +253,15 @@ def test_gzip_writer_never_exceeds_patched_cap(tmp_path: Path) -> None:
         with pytest.raises(ArchiveExtractionError, match="expanded-byte limit"):
             extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
-    assert not list(dest.glob("**/*"))
+    assert container_paths(dest) == []
 
 
-def test_rar_mime_alias_fails_closed(tmp_path: Path) -> None:
+def test_rar_mime_alias_classified_unsupported(tmp_path: Path) -> None:
     archive = tmp_path / "release.bin"
     archive.write_bytes(b"fake")
-    dest = tmp_path / "import"
-    dest.mkdir()
-
-    with patch(
-        "miramedia.imports.archive_extraction._guess_mime_encoding",
-        return_value=("application/vnd.rar", None),
-    ):
-        assert is_archive_mime("application/vnd.rar")
-        with pytest.raises(ArchiveExtractionError, match="not supported"):
-            extract_archive_to_directory(archive, dest)
-
-    assert list(dest.iterdir()) == []
+    classification = classify_archive(archive.with_suffix(".rar"))
+    assert classification is not None
+    assert classification.disposition == "unsupported"
 
 
 def test_clip_mkv_gz_routes_to_gzip_single_file(tmp_path: Path) -> None:
@@ -245,7 +272,7 @@ def test_clip_mkv_gz_routes_to_gzip_single_file(tmp_path: Path) -> None:
 
     extract_archive_to_directory(archive, dest)
 
-    assert (dest / "clip.mkv").read_bytes() == b"gz-video"
+    assert payload_file(dest, "clip.mkv").read_bytes() == b"gz-video"
 
 
 def test_bz2_single_file_routing(tmp_path: Path) -> None:
@@ -256,10 +283,12 @@ def test_bz2_single_file_routing(tmp_path: Path) -> None:
 
     extract_archive_to_directory(archive, dest)
 
-    assert (dest / "clip.mkv").read_bytes() == b"bz2-video"
+    assert payload_file(dest, "clip.mkv").read_bytes() == b"bz2-video"
 
 
 def test_tar_xz_explicitly_rejected(tmp_path: Path) -> None:
+    import lzma
+
     archive = tmp_path / "release.tar.xz"
     dest = tmp_path / "import"
     dest.mkdir()
@@ -272,39 +301,109 @@ def test_tar_xz_explicitly_rejected(tmp_path: Path) -> None:
     with pytest.raises(ArchiveExtractionError, match="not supported"):
         extract_archive_to_directory(archive, dest)
 
-    assert list(dest.iterdir()) == []
+    assert container_paths(dest) == []
 
 
-def test_rollback_continues_after_unlink_error(tmp_path: Path) -> None:
-    archive = tmp_path / "release.zip"
+def test_zip_rejects_low_eocd_count_with_many_records(tmp_path: Path) -> None:
+    archive = tmp_path / "lowcount.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {f"f{i}.txt": b"x" for i in range(4)})
+    data = bytearray(archive.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    struct.pack_into("<H", data, eocd + 10, 1)
+    struct.pack_into("<H", data, eocd + 12, 1)
+    archive.write_bytes(data)
+
+    with pytest.raises(ArchiveExtractionError):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+
+
+def test_zip_rejects_fake_eocd_signature_inside_comment(tmp_path: Path) -> None:
+    archive = tmp_path / "fake-eocd.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"clip.mkv": b"x"})
+    data = bytearray(archive.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    comment = b"decoy" + b"PK\x05\x06" + b"0000"
+    struct.pack_into("<H", data, eocd + 20, len(comment))
+    data.extend(comment)
+    archive.write_bytes(data)
+
+    with pytest.raises(ArchiveExtractionError):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+
+
+def test_zip_rejects_truncated_central_directory_filename(tmp_path: Path) -> None:
+    archive = tmp_path / "truncated.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"clip.mkv": b"x"})
+    data = bytearray(archive.read_bytes())
+    eocd = data.rfind(b"PK\x05\x06")
+    cd_size = struct.unpack_from("<I", data, eocd + 12)[0]
+    struct.pack_into("<I", data, eocd + 12, cd_size - 1)
+    archive.write_bytes(data)
+
+    with pytest.raises(ArchiveExtractionError):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+
+
+def test_reserved_windows_names_rejected(tmp_path: Path) -> None:
+    archive = tmp_path / "reserved.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"CON.txt": b"x"})
+
+    with pytest.raises(ArchiveExtractionError, match="reserved windows"):
+        extract_archive_to_directory(archive, dest)
+
+    assert container_paths(dest) == []
+
+
+def test_duplicate_logical_paths_rejected(tmp_path: Path) -> None:
+    archive = tmp_path / "dup.zip"
     dest = tmp_path / "import"
     dest.mkdir()
     with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("first.mkv", b"first")
-        zf.writestr("second.mkv", b"second")
+        zf.writestr("File.txt", b"one")
+        zf.writestr("file.txt", b"two")
 
-    from miramedia.imports import archive_promotion as promo
+    with pytest.raises(ArchiveExtractionError, match="duplicate archive entry path"):
+        extract_archive_to_directory(archive, dest)
 
-    real_unlink_at = promo._unlink_at_if_owned
-    calls = {"count": 0}
+    assert container_paths(dest) == []
 
-    def _fail_first_rollback(artifact: promo._PromotedArtifact) -> None:
-        calls["count"] += 1
-        if calls["count"] == 1:
-            msg = "simulated rollback unlink failure"
-            raise OSError(msg)
-        real_unlink_at(artifact)
+
+def test_publication_reservation_failure_leaves_destination_unchanged(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    keeper = dest / "keeper.mkv"
+    keeper.write_bytes(b"keeper")
+    keeper_inode = keeper.stat().st_ino
+    _write_zip(archive, {"clip.mkv": b"x"})
+
+    from miramedia.imports import archive_publication as publication
 
     with (
-        patch.object(promo, "_unlink_at_if_owned", side_effect=_fail_first_rollback),
         patch.object(
-            promo,
-            "_atomic_link_at",
-            side_effect=OSError("simulated promotion failure"),
+            publication,
+            "_reserve_container_directory",
+            side_effect=ArchiveExtractionError("simulated reservation failure"),
         ),
-        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+        pytest.raises(ArchiveExtractionError, match="reservation failure"),
     ):
         extract_archive_to_directory(archive, dest)
 
-    assert not (dest / "first.mkv").exists()
-    assert not (dest / "second.mkv").exists()
+    assert keeper.stat().st_ino == keeper_inode
+    assert container_paths(dest) == []
