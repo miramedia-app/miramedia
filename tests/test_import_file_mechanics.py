@@ -18,6 +18,7 @@ from miramedia.imports.files import (
     ensure_free_space,
     extract_archives,
     find_renamed_duplicate,
+    get_files_for_import,
     import_file,
     link_video_into_slot,
     rename_media_slot,
@@ -227,7 +228,7 @@ def test_extract_archives_recognizes_zip_mime_types(
     tmp_path: Path,
     mime_type: str,
 ) -> None:
-    """ZIP archives guessed as Windows-style MIME types are routed to patoolib."""
+    """ZIP archives guessed as Windows-style MIME types are routed to safe extraction."""
     archive = tmp_path / "release.zip"
     archive.write_bytes(b"fake zip content")
 
@@ -235,12 +236,54 @@ def test_extract_archives_recognizes_zip_mime_types(
         return (mime_type, None)
 
     with (
-        patch("miramedia.imports.files.mimetypes.guess_type", _guess_type),
-        patch("miramedia.imports.files.patoolib.extract_archive") as extract_mock,
+        patch("mimetypes.guess_type", _guess_type),
+        patch("miramedia.imports.files.extract_archive_to_directory") as extract_mock,
     ):
         extract_archives([archive])
 
-    extract_mock.assert_called_once_with(str(archive), outdir=str(archive.parent))
+    extract_mock.assert_called_once_with(archive, archive.parent)
+
+
+def test_extract_archives_extracts_mkv_gz_end_to_end(tmp_path: Path) -> None:
+    import gzip
+
+    from tests.archive_test_helpers import payload_file
+
+    archive = tmp_path / "clip.mkv.gz"
+    archive.write_bytes(gzip.compress(b"gz-video"))
+
+    extract_archives([archive])
+
+    assert payload_file(tmp_path, "clip.mkv").read_bytes() == b"gz-video"
+
+
+def test_extract_archives_skips_unsupported_rar(tmp_path: Path) -> None:
+    archive = tmp_path / "release.rar"
+    archive.write_bytes(b"fake-rar")
+    keeper = tmp_path / "keeper.mkv"
+    keeper.write_bytes(b"keeper")
+
+    with patch("miramedia.imports.files.extract_archive_to_directory") as extract_mock:
+        extract_archives([archive])
+
+    extract_mock.assert_not_called()
+    assert keeper.read_bytes() == b"keeper"
+
+
+def test_get_files_for_import_routes_mkv_gz(tmp_path: Path) -> None:
+    import gzip
+
+    from tests.archive_test_helpers import payload_file
+
+    archive = tmp_path / "clip.mkv.gz"
+    archive.write_bytes(gzip.compress(b"gz-video"))
+
+    video_files, _subtitle_files, all_files = get_files_for_import(tmp_path)
+
+    published = payload_file(tmp_path, "clip.mkv")
+    assert published.read_bytes() == b"gz-video"
+    assert published in all_files
+    assert video_files == [published]
 
 
 # ---------------------------------------------------------------------------

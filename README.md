@@ -43,6 +43,10 @@ get started. Plug in external services later if you want them.
 
 **Import & library management**
 - Robust import pipeline with `guessit` filename parsing + mediainfo analysis
+- Safe archive extraction for imports: ZIP, TAR, TAR.GZ, TAR.BZ2, GZIP, and BZIP2
+  are supported; RAR, 7z, FreeArc, TAR.XZ, and ZIP64 are intentionally rejected
+  because they are not bounded by the fail-closed parser policy (convert these
+  archives to a supported format before import)
 - Per-file import status with automatic retry (exponential backoff)
 - Import recovery dashboard: inspect, remap, retry, or ignore failed/ambiguous imports
 - Library scanner to ingest existing on-disk media
