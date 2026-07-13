@@ -9,10 +9,10 @@ COPY web/ ./
 
 ARG VERSION
 ARG BASE_PATH=""
-# `next build` generates the Fumadocs collections (.source, via createMDX in
-# next.config.ts) and Next's type declarations itself, so no pre-build generation
-# step: adding one would just run Fumadocs twice. Both artifacts are gitignored
-# and .dockerignore'd, so they are always produced in-image, never inherited.
+# The `build` script generates the Fumadocs collections (.source) and Next's type
+# declarations itself, deterministically, before compiling — so no pre-build
+# generation step here: adding one would just run Fumadocs twice. Both artifacts
+# are gitignored and .dockerignore'd, so they are always produced in-image.
 RUN env PUBLIC_VERSION=${VERSION} PUBLIC_API_URL=${BASE_PATH} BASE_PATH=${BASE_PATH} pnpm build
 RUN node - <<'NODE'
 const { brotliCompressSync, gzipSync, constants } = require('node:zlib');

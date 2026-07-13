@@ -10,14 +10,14 @@
   ],
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "fumadocs-mdx && _FUMADOCS_MDX=1 next build",
     "start": "next start",
     "lint": "oxlint",
     "typecheck": "pnpm run generate && tsgo --noEmit",
     "typecheck:generated": "tsgo --noEmit",
     "format": "oxfmt",
     "openapi": "openapi-typescript http://localhost:8001/openapi.json --root-types --root-types-no-schema-prefix -o src/lib/api/api.d.ts",
-    "generate": "fumadocs-mdx && next typegen",
+    "generate": "fumadocs-mdx && _FUMADOCS_MDX=1 next typegen",
     "docs:gen": "fumadocs-mdx"
   },
   "dependencies": {

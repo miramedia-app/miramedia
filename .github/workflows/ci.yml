@@ -84,13 +84,12 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # Typecheck-only path: nothing here runs `next build`, so the generated
-      # collections + type declarations must be produced explicitly. Build paths
-      # must NOT do this — `next build` generates them itself.
+      # Typecheck-only path: nothing here compiles, so the generated collections +
+      # type declarations must be produced explicitly. One MDX run; `typecheck`
+      # would generate a second time, so use the already-generated variant. Build
+      # paths must NOT do this — the `build` script generates on its own.
       - name: Generate types (fumadocs source + next typegen)
         run: pnpm run generate
-      # Already generated above, so use the bare typecheck (`pnpm run typecheck`
-      # would generate a second time).
       - name: Typecheck
         run: pnpm run typecheck:generated
 

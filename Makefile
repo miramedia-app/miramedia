@@ -88,15 +88,17 @@ format-check:
 ty:
 	@uv run --python 3.13 ty check miramedia
 
-# Canonical frontend generation step, for workflows that need the generated
-# artifacts WITHOUT running a build: `web/src` imports the Fumadocs collections
+# Canonical frontend generation, for workflows that need the generated artifacts
+# WITHOUT running a build: `web/src` imports the Fumadocs collections
 # (`collections/*` -> `web/.source`) and Next's generated type declarations, both
 # gitignored, so a bare `tsgo --noEmit` on a fresh clone would fail without this.
 #
-# Do NOT chain this before `pnpm build`: next.config.ts wraps the config in
-# fumadocs-mdx's `createMDX`, so `next build` generates `.source` itself. Calling
-# both makes Fumadocs run twice per build. The command lives in web/package.json
-# ("generate") so Make and CI share one definition.
+# Do NOT wrap this around `pnpm build` — the build script generates on its own
+# (see web/package.json). Both scripts run `fumadocs-mdx` explicitly and then set
+# _FUMADOCS_MDX=1, which is Fumadocs' own guard sentinel: it suppresses the
+# fire-and-forget re-init inside createMDX, whose write is NOT awaited and races
+# the compile on a clean tree ("Can't resolve 'collections/server'"). Net effect:
+# exactly one MDX run per path, deterministically ordered before compilation.
 # Assumes dependencies are already installed (see frontend-bootstrap).
 frontend-generate:
 	@cd web && pnpm run generate
@@ -120,8 +122,8 @@ check: lint format-check ty test tsc
 tsc:
 	@cd web && pnpm run typecheck
 
-# `next build` runs fumadocs-mdx's createMDX and Next's typegen intrinsically —
-# no separate generation step, or Fumadocs runs twice.
+# The `build` script is self-sufficient: it generates, then compiles. Do not add
+# a generation step here — it would just run Fumadocs twice.
 frontend-build:
 	@cd web && pnpm build
 
