@@ -2,6 +2,7 @@ import asyncio
 import os
 import shutil
 import threading
+from collections import defaultdict
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from functools import partial
@@ -99,6 +100,10 @@ from miramedia.naming import (  # noqa: E402
     old_movie_folder_name,
 )
 from miramedia.notifications.service import NotificationService  # noqa: E402
+from miramedia.torrents.integrity import (  # noqa: E402
+    list_video_files_in_directory,
+    resolve_movie_file_path_in_memory,
+)
 from miramedia.torrents.mediainfo import analyze_async  # noqa: E402
 from miramedia.torrents.parsing import (  # noqa: E402
     is_video_file,
@@ -1110,25 +1115,39 @@ class MovieService(MediaService[Movie, MovieId]):
         except NotFoundError:
             return None
         movie_root = self.get_movie_root_path(movie=movie)
-        if not movie_root.exists():
-            return None
-        stems = movie_file_stem_candidates(
-            movie, movie_file.quality, NameParts.from_row(movie_file)
+        return resolve_movie_file_path_in_memory(
+            movie=movie,
+            movie_file=movie_file,
+            movie_root=movie_root,
         )
-        for stem in stems:
-            for candidate in files_matching_stem(movie_root, stem):
-                if candidate.suffix.lower() in {
-                    ".mkv",
-                    ".mp4",
-                    ".avi",
-                    ".mov",
-                    ".m4v",
-                    ".webm",
-                    ".ts",
-                    ".wmv",
-                }:
-                    return candidate
-        return None
+
+    async def batch_resolve_movie_file_paths(
+        self,
+        rows: list[MovieFile],
+        movies: dict[MovieId, Movie],
+    ) -> dict[UUID, Path | None]:
+        """Resolve on-disk paths for a batch with one directory scan per movie."""
+        grouped: dict[MovieId, list[MovieFile]] = defaultdict(list)
+        for row in rows:
+            grouped[row.movie_id].append(row)
+
+        paths: dict[UUID, Path | None] = {row.id: None for row in rows}
+        for movie_id, items in grouped.items():
+            movie = movies.get(movie_id)
+            if movie is None:
+                continue
+            movie_root = self.get_movie_root_path(movie=movie)
+            video_files = await asyncio.to_thread(
+                list_video_files_in_directory, movie_root
+            )
+            for row in items:
+                paths[row.id] = resolve_movie_file_path_in_memory(
+                    movie=movie,
+                    movie_file=row,
+                    movie_root=movie_root,
+                    video_files=video_files,
+                )
+        return paths
 
     async def import_movie_from_file(
         self,
