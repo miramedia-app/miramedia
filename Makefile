@@ -13,7 +13,8 @@ APP_SVC ?= api
 FRONTEND_SVC ?= web
 
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
-	lint format format-check ty test check audit frontend-bootstrap frontend-generate \
+	lint format format-check ty test integration-test migration-head-audit check audit \
+	frontend-bootstrap frontend-generate \
 	tsc frontend-build
 
 help:
@@ -29,6 +30,7 @@ help:
 	@echo "  make app                    # Shell into $(APP_SVC) container"
 	@echo "  make frontend               # Shell into $(FRONTEND_SVC) container"
 	@echo "  make test                   # Run the backend test suite on the host (no docker needed)"
+	@echo "  make integration-test       # PostgreSQL integration suite (requires MIRAMEDIA_TEST_DATABASE_URL)"
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
 	@echo "  make check                  # lint + format-check + ty + test + tsc (CI parity minus OpenAPI drift)"
 	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
@@ -119,3 +121,10 @@ frontend-build: frontend-generate
 # Run the backend test suite on the host (no docker needed).
 test:
 	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest
+
+# PostgreSQL integration suite — not collected by `make test`.
+integration-test:
+	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest -m integration tests/integration
+
+migration-head-audit:
+	@uv run --python 3.13 python scripts/migration_head_audit.py

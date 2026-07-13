@@ -1,3 +1,4 @@
+import os
 from logging.config import fileConfig
 
 from sqlalchemy import (
@@ -87,17 +88,28 @@ __all__ = [
 
 from miramedia.database import render_db_url  # noqa: E402
 
-db_config = MiraMediaConfig().database
-db_url = render_db_url(
-    db_config.user,
-    db_config.password,
-    db_config.host,
-    db_config.port,
-    db_config.dbname,
-    driver="psycopg",
-)
 
-config.set_main_option("sqlalchemy.url", db_url)
+def _resolve_migration_url() -> str:
+    """Prefer an explicit ``DATABASE_URL`` for CI/ephemeral databases.
+
+    Alembic's config parser treats ``%`` as interpolation syntax, so literal
+    percent signs in passwords must be doubled before ``set_main_option``.
+    """
+    explicit = os.environ.get("DATABASE_URL")
+    if explicit:
+        return explicit.replace("%", "%%")
+    db_config = MiraMediaConfig().database
+    return render_db_url(
+        db_config.user,
+        db_config.password,
+        db_config.host,
+        db_config.port,
+        db_config.dbname,
+        driver="psycopg",
+    )
+
+
+config.set_main_option("sqlalchemy.url", _resolve_migration_url())
 
 
 def run_migrations_offline() -> None:
