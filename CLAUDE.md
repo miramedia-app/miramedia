@@ -11,6 +11,8 @@
 | Format check | `make format-check` |
 | Typecheck (backend) | `make ty` |
 | Typecheck (frontend) | `make tsc` |
+| Frontend tests | `make frontend-test` (= `cd web && pnpm test`; vitest, Node-only, no backend) |
+| Frontend lint + format check | `make frontend-lint` |
 | Frontend bootstrap | `make frontend-bootstrap` |
 | Frontend generate (non-build paths only) | `make frontend-generate` (= `cd web && pnpm run generate`) |
 | OpenAPI regen | `make openapi` (backend must be importable; writes `web/src/lib/api/api.d.ts`) |
@@ -57,7 +59,10 @@ Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/con
   - `pnpm run generate` = `fumadocs-mdx && _FUMADOCS_MDX=1 next typegen` — for non-build paths
     (`make frontend-generate`, `make tsc`, CI's typecheck-only job).
 
-  Each path runs MDX exactly once.
+  Each path runs MDX exactly once. CI's frontend job generates **once** up front and then runs the
+  already-generated variants (`typecheck:generated`, `build:generated`) plus `test` / `lint` /
+  `format:check`, so the whole job also invokes `fumadocs-mdx` exactly once. Dockerfile and the docs
+  workflow keep calling the self-contained `pnpm build` — never prepend a generate step there.
 - **ty config**: lives in `pyproject.toml` under `[tool.ty]`. Don't bulk-suppress diagnostics in
   new code — fix real bugs, configure stub noise specifically.
 - **YAML folded scalars**: `#` inside a YAML folded/literal block is NOT a comment — it is literal

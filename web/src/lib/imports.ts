@@ -133,6 +133,36 @@ export function shouldStepBack(args: { offset: number; count: number }): boolean
   return args.offset > 0 && args.count === 0;
 }
 
+/**
+ * What the imports list renders. A failed fetch with nothing cached must not be
+ * dressed up as "No imports yet" — an empty library and an unreachable API are
+ * different facts. Rows we already hold survive a failed refetch: the list stays
+ * usable and the staleness is the lesser evil.
+ */
+export function importsListViewState(args: { isError: boolean; count: number }): "error" | "list" {
+  return args.isError && args.count === 0 ? "error" : "list";
+}
+
+/**
+ * What the integrity section renders. Its states are independent of the import
+ * list on purpose: a failing audit fetch shows `error` here and leaves the
+ * scan/torrent rows alone. `hidden` outranks everything — an unauthorized user
+ * renders no privileged markup, not even an error.
+ */
+export type IntegrityViewState = "hidden" | "error" | "pending" | "empty" | "rows";
+
+export function integrityViewState(args: {
+  canSee: boolean;
+  isError: boolean;
+  isPending: boolean;
+  count: number;
+}): IntegrityViewState {
+  if (!args.canSee) return "hidden";
+  if (args.isError) return "error";
+  if (args.isPending) return "pending";
+  return args.count === 0 ? "empty" : "rows";
+}
+
 /** Counts by media type for the fetched page. Explicitly page-scoped, not global. */
 export function mismatchPageCounts(
   rows: IntegrityMismatch[],

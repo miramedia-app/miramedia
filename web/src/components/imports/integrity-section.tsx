@@ -18,6 +18,7 @@ import {
   MISMATCH_MEDIA_ORDER,
   canActOnMismatch,
   canQueryIntegrity,
+  integrityViewState,
   mismatchPageCounts,
   mismatchRowId,
   pageRangeLabel,
@@ -163,6 +164,12 @@ export function IntegritySection() {
   const range = pageRangeLabel({ offset: renderedOffset, count: rows.length, total });
   const counts = mismatchPageCounts(rows);
   const busy = busyId !== null;
+  const view = integrityViewState({
+    canSee,
+    isError: query.isError,
+    isPending: query.isPending,
+    count: rows.length,
+  });
   const paging = query.isFetching || busy;
   const canPrev = offset > 0 && !paging;
   const canNext = page?.next_offset != null && !paging;
@@ -193,7 +200,7 @@ export function IntegritySection() {
         <p className="ml-auto text-xs text-muted-foreground tabular-nums">{range}</p>
       </div>
 
-      {query.isError ? (
+      {view === "error" ? (
         <div
           role="alert"
           className="flex flex-wrap items-center justify-between gap-3 px-4 py-6 text-sm"
@@ -209,12 +216,12 @@ export function IntegritySection() {
             Retry
           </Button>
         </div>
-      ) : query.isPending ? (
+      ) : view === "pending" ? (
         <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
           <LoaderCircle className="h-4 w-4 animate-spin" />
           Checking file integrity…
         </div>
-      ) : rows.length === 0 ? (
+      ) : view === "empty" ? (
         <p className="px-4 py-6 text-sm text-muted-foreground">
           No corrupted files detected by the integrity audit.
         </p>

@@ -126,14 +126,23 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # Typecheck-only path: nothing here compiles, so the generated collections +
-      # type declarations must be produced explicitly. One MDX run; `typecheck`
-      # would generate a second time, so use the already-generated variant. Build
-      # paths must NOT do this — the `build` script generates on its own.
+      # Generate ONCE for the whole job: the collections (`web/.source`) + Next
+      # type declarations are build prerequisites, and the self-contained
+      # `typecheck` / `build` scripts would each run fumadocs-mdx again. Every
+      # gate below therefore uses the `:generated` variant — exactly one MDX run
+      # per job. Developer/Docker/docs paths keep the self-contained scripts.
       - name: Generate types (fumadocs source + next typegen)
         run: pnpm run generate
+      - name: Test
+        run: pnpm test
+      - name: Lint
+        run: pnpm run lint
+      - name: Format check
+        run: pnpm run format:check
       - name: Typecheck
         run: pnpm run typecheck:generated
+      - name: Build
+        run: pnpm run build:generated
 
   # Regenerate the OpenAPI spec + client types on main and commit them if they
   # drift, so the Pages docs site (which renders the committed web/public/openapi.json)

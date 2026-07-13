@@ -15,7 +15,7 @@ FRONTEND_SVC ?= web
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
 	lint format format-check ty test integration-test migration-head-audit check audit \
 	frontend-bootstrap frontend-generate \
-	tsc frontend-build
+	tsc frontend-build frontend-test frontend-lint
 
 help:
 	@echo "Usage:"
@@ -37,6 +37,8 @@ help:
 	@echo "  make frontend-generate      # Generate web build prerequisites (web 'generate' script)"
 	@echo "  make frontend-build         # Generate prerequisites, then build the static export"
 	@echo "  make tsc                    # Type-check the Next.js frontend"
+	@echo "  make frontend-test          # Run the frontend unit tests (vitest, no backend/browser)"
+	@echo "  make frontend-lint          # Frontend lint + format check (oxlint, oxfmt --check)"
 
 # Core lifecycle
 up:
@@ -128,6 +130,14 @@ tsc:
 # a generation step here — it would just run Fumadocs twice.
 frontend-build:
 	@cd web && pnpm build
+
+# Frontend unit tests: pure helpers in Node (vitest). No backend, browser or
+# generated artifacts required — safe on a bare `pnpm install`.
+frontend-test:
+	@cd web && pnpm test
+
+frontend-lint:
+	@cd web && pnpm run lint && pnpm run format:check
 
 # Run the backend test suite on the host (no docker needed).
 test:

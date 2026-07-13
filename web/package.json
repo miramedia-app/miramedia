@@ -11,8 +11,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "fumadocs-mdx && _FUMADOCS_MDX=1 next build",
+    "build:generated": "_FUMADOCS_MDX=1 next build",
     "start": "next start",
+    "test": "vitest run",
     "lint": "oxlint",
+    "format:check": "oxfmt --check .",
     "typecheck": "pnpm run generate && tsgo --noEmit",
     "typecheck:generated": "tsgo --noEmit",
     "format": "oxfmt",
@@ -68,7 +71,8 @@
     "oxfmt": "^0.58.0",
     "oxlint": "^1.73.0",
     "tailwindcss": "^4.3.2",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20"
