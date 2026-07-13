@@ -234,12 +234,31 @@ def _audit_background_session_factory(
     ep_snapshot = list(snapshot_episode_rows or [])
     mv_snapshot = list(snapshot_movie_rows or [])
     write_sessions: list[_CompareAndSetSession] = []
-    call = {"n": 0}
+    planned: list[tuple[str, str, list[_MutableRow]]] = [
+        ("snapshot", "ep", ep_snapshot),
+    ]
+    if ep_snapshot:
+        planned.append(
+            ("write", "ep", list(write_episode_rows or ep_snapshot)),
+        )
+        planned.append(("snapshot", "ep", []))
+    planned.append(("snapshot", "mv", mv_snapshot))
+    if mv_snapshot:
+        planned.append(
+            ("write", "mv", list(write_movie_rows or mv_snapshot)),
+        )
+        planned.append(("snapshot", "mv", []))
+    plan_iter = iter(planned)
 
     @asynccontextmanager
     async def _background_session():
-        call["n"] += 1
-        if call["n"] == 1:
+        try:
+            kind, media, rows = next(plan_iter)
+        except StopIteration as exc:
+            msg = "unexpected background_session call"
+            raise AssertionError(msg) from exc
+
+        if kind == "snapshot":
 
             class _SnapshotSession:
                 async def commit(self) -> None:
@@ -251,18 +270,18 @@ def _audit_background_session_factory(
                 async def execute(self, stmt: Any) -> _SelectExecuteResult:
                     entity = stmt.column_descriptions[0].get("entity")
                     entity_name = getattr(entity, "__name__", "")
-                    if entity_name == "EpisodeFile":
-                        return _SelectExecuteResult(ep_snapshot)
-                    if entity_name == "MovieFile":
-                        return _SelectExecuteResult(mv_snapshot)
+                    if media == "ep" and entity_name == "EpisodeFile":
+                        return _SelectExecuteResult(rows)
+                    if media == "mv" and entity_name == "MovieFile":
+                        return _SelectExecuteResult(rows)
                     return _SelectExecuteResult([])
 
             yield _SnapshotSession()
             return
 
         write = _CompareAndSetSession(
-            episode_rows=list(write_episode_rows or ep_snapshot),
-            movie_rows=list(write_movie_rows or mv_snapshot),
+            episode_rows=list(rows) if media == "ep" else [],
+            movie_rows=list(rows) if media == "mv" else [],
         )
         write_sessions.append(write)
         yield write

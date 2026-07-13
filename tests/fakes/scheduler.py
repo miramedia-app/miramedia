@@ -134,6 +134,18 @@ class FakeShowService:
             return self.path_by_row_id[row.id]
         return getattr(row, "_resolved_path", None)
 
+    async def batch_resolve_episode_file_paths(
+        self,
+        rows: list[Any],
+        episode_context: dict[Any, Any],
+        shows: dict[Any, Any],
+    ) -> dict[UUID, Any]:
+        del episode_context, shows
+        paths: dict[UUID, Any] = {}
+        for row in rows:
+            paths[row.id] = await self.resolve_episode_file_path(row)
+        return paths
+
 
 class FakeMoviePathService:
     def __init__(self, *, path_by_row_id: dict[UUID, Any] | None = None) -> None:
@@ -143,6 +155,17 @@ class FakeMoviePathService:
         if row.id in self.path_by_row_id:
             return self.path_by_row_id[row.id]
         return getattr(row, "_resolved_path", None)
+
+    async def batch_resolve_movie_file_paths(
+        self,
+        rows: list[Any],
+        movies: dict[Any, Any],
+    ) -> dict[UUID, Any]:
+        del movies
+        paths: dict[UUID, Any] = {}
+        for row in rows:
+            paths[row.id] = await self.resolve_movie_file_path(row)
+        return paths
 
 
 def bg_request_service_factory(
@@ -205,4 +228,6 @@ class FakeFileRow:
     id: UUID
     sha1: str | None = None
     import_error: str | None = None
+    episode_id: UUID | None = None
+    movie_id: UUID | None = None
     _resolved_path: Any = None
