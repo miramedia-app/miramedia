@@ -66,11 +66,26 @@ def diff_against_defaults(incoming: dict, defaults: dict) -> dict:
     return result
 
 
+def _materialize_explicit_nulls_inplace(patch: dict, baseline: dict) -> None:
+    """Replace explicit null leaves/sections with true TOML baseline values."""
+    for key, value in list(patch.items()):
+        base_value = baseline.get(key)
+        if value is None:
+            if key in baseline:
+                patch[key] = copy.deepcopy(base_value)
+            else:
+                del patch[key]
+        elif isinstance(value, dict) and isinstance(base_value, dict):
+            _materialize_explicit_nulls_inplace(value, base_value)
+
+
 def compute_mutation_overrides(prior_db_overrides: dict, incoming_patch: dict) -> dict:
     """Derive persisted overrides from true TOML baseline plus authoritative DB state."""
     toml_defaults = get_toml_defaults()
+    resolved_patch = copy.deepcopy(incoming_patch)
+    _materialize_explicit_nulls_inplace(resolved_patch, toml_defaults)
     authoritative_prior = deep_merge(copy.deepcopy(toml_defaults), prior_db_overrides)
-    desired = deep_merge(copy.deepcopy(authoritative_prior), incoming_patch)
+    desired = deep_merge(copy.deepcopy(authoritative_prior), resolved_patch)
     return diff_against_defaults(desired, toml_defaults)
 
 

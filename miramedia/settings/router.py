@@ -80,6 +80,11 @@ async def _commit_settings_mutation(
             db_session=repo.db,
             stage_auth_runtime=_stage_auth_runtime,
         )
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     except SettingsMutationSupersededError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

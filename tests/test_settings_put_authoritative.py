@@ -222,3 +222,85 @@ def test_compute_mutation_overrides_removes_nullable_override_explicitly() -> No
         {"auth": {"cookie_secure": None}},
     )
     assert result == {}
+
+
+def test_compute_mutation_overrides_null_leaf_resets_non_null_default_to_toml() -> None:
+    toml_dev = _toml_development()
+    result = compute_mutation_overrides(
+        {"misc": {"development": not toml_dev}},
+        {"misc": {"development": None}},
+    )
+    assert "misc" not in result or "development" not in result.get("misc", {})
+
+
+def test_explicit_null_leaf_resets_non_null_default_with_stale_live() -> None:
+    toml_dev = _toml_development()
+    repo = FakeSettingsRepository(overrides={"misc": {"development": not toml_dev}})
+    apply_live_config_from_overrides({"misc": {"development": not toml_dev}})
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.put(
+            SETTINGS_PREFIX,
+            json={"misc": {"development": None}},
+        )
+
+    assert response.status_code == 200
+    assert fake_repo.overrides == {}
+    body = response.json()
+    assert body["misc"]["development"] is toml_dev
+    assert body["overrides"] == {}
+    assert MiraMediaConfig().misc.development is toml_dev
+
+
+def test_explicit_null_section_resets_whole_misc_with_stale_live() -> None:
+    toml_dev = _toml_development()
+    defaults = get_toml_defaults()
+    default_url = defaults["misc"]["frontend_url"]
+    repo = FakeSettingsRepository(
+        overrides={
+            "misc": {
+                "development": not toml_dev,
+                "frontend_url": "https://override.example/",
+            }
+        }
+    )
+    apply_live_config_from_overrides(
+        {
+            "misc": {
+                "development": not toml_dev,
+                "frontend_url": "https://stale-live.example/",
+            }
+        }
+    )
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.put(
+            SETTINGS_PREFIX,
+            json={"misc": None},
+        )
+
+    assert response.status_code == 200
+    assert fake_repo.overrides == {}
+    body = response.json()
+    assert body["misc"]["development"] is toml_dev
+    assert body["misc"]["frontend_url"] == default_url
+    assert body["overrides"] == {}
+    assert MiraMediaConfig().misc.development is toml_dev
+    assert str(MiraMediaConfig().misc.frontend_url) == str(default_url)
+
+
+def test_invalid_effective_settings_returns_400_without_mutation() -> None:
+    repo = FakeSettingsRepository(overrides={"misc": {"development": True}})
+    prior_overrides = dict(repo.overrides)
+    prior_live_dev = MiraMediaConfig().misc.development
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.put(
+            SETTINGS_PREFIX,
+            json={"misc": {"frontend_url": "not-a-valid-url"}},
+        )
+
+    assert response.status_code == 400
+    assert "frontend_url" in response.json()["detail"].lower()
+    assert fake_repo.overrides == prior_overrides
+    assert MiraMediaConfig().misc.development is prior_live_dev
