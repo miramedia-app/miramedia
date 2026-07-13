@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import inspect
 import secrets
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status

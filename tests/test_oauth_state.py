@@ -67,6 +67,36 @@ def test_decrypt_rejects_wrong_secret() -> None:
         decrypt_oauth_authorize_snapshot(token, "d" * 64)
 
 
+def test_decrypt_rejects_string_bool_cookie_secure() -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost:8000/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    secret = "f" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    raw = (
+        __import__("miramedia.auth.oauth_state", fromlist=["_fernet_for_state_secret"])
+        ._fernet_for_state_secret(secret)
+        .decrypt(token.encode("ascii"))
+    )
+    data = __import__("json").loads(raw.decode("utf-8"))
+    data["cookie_secure"] = "false"
+    tampered = (
+        __import__("miramedia.auth.oauth_state", fromlist=["_fernet_for_state_secret"])
+        ._fernet_for_state_secret(secret)
+        .encrypt(__import__("json").dumps(data).encode("utf-8"))
+        .decode("ascii")
+    )
+    with pytest.raises(OAuthAuthorizeSnapshotError):
+        decrypt_oauth_authorize_snapshot(tampered, secret)
+
+
 def test_decrypt_rejects_expired_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     snapshot = OAuthAuthorizeSnapshot(
         client_id="client-a",

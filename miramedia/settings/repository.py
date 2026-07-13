@@ -44,6 +44,35 @@ class SettingsRepository:
             return {}, 0
         return normalize_stored_overrides(row.overrides or {}), row.revision
 
+    async def _initial_revision_zero_upsert(
+        self,
+        sanitized: dict,
+    ) -> tuple[dict, int]:
+        """Insert revision 1 or upgrade an existing revision-0 row exactly once."""
+        ins = insert(SystemConfigOverride).values(
+            id=SINGLETON_ID, overrides=sanitized, revision=1
+        )
+        stmt = ins.on_conflict_do_update(
+            index_elements=["id"],
+            set_={
+                "overrides": ins.excluded.overrides,
+                "revision": SystemConfigOverride.revision + 1,
+            },
+            where=(SystemConfigOverride.revision == 0),
+        ).returning(
+            SystemConfigOverride.overrides,
+            SystemConfigOverride.revision,
+        )
+        result = await self.db.execute(stmt)
+        row = result.one_or_none()
+        if row is None:
+            await self.db.rollback()
+            fresh = await self._fetch_row()
+            actual = fresh.revision if fresh is not None else 0
+            raise SettingsRevisionConflictError(0, actual)
+        await self.db.commit()
+        return row.overrides, row.revision
+
     async def save_overrides_cas(
         self,
         overrides: dict,
@@ -52,25 +81,7 @@ class SettingsRepository:
         sanitized = sanitize_persisted_overrides(overrides)
 
         if expected_revision == 0:
-            stmt = (
-                insert(SystemConfigOverride)
-                .values(id=SINGLETON_ID, overrides=sanitized, revision=1)
-                .on_conflict_do_nothing(index_elements=["id"])
-                .returning(
-                    SystemConfigOverride.overrides,
-                    SystemConfigOverride.revision,
-                )
-            )
-            result = await self.db.execute(stmt)
-            inserted = result.one_or_none()
-            if inserted is not None:
-                await self.db.commit()
-                return inserted.overrides, inserted.revision
-
-            await self.db.rollback()
-            fresh = await self._fetch_row()
-            actual = fresh.revision if fresh is not None else 0
-            raise SettingsRevisionConflictError(0, actual)
+            return await self._initial_revision_zero_upsert(sanitized)
 
         stmt = (
             update(SystemConfigOverride)

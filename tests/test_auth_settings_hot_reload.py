@@ -232,7 +232,8 @@ def test_metadata_and_oauth_enabled_to_disabled_via_reset() -> None:
         assert blocked.status_code == 503
 
 
-def test_provider_change_via_import(fake_openid: list[MagicMock]) -> None:
+@pytest.mark.usefixtures("fake_openid")
+def test_provider_change_via_import() -> None:
     with settings_client() as (client, _repo):
         client.put(SETTINGS_PREFIX, json=_oidc_payload(enabled=True, name="First"))
         import_response = client.post(
@@ -248,7 +249,7 @@ def test_provider_change_via_import(fake_openid: list[MagicMock]) -> None:
         assert client.get(METADATA_PATH).json()["oauth_providers"] == [
             "ImportedProvider"
         ]
-        assert fake_openid[-1].client_id == "client-b"
+        assert auth_runtime_store.get_active().client.client_id == "client-b"
 
 
 def test_oidc_refresh_failure_does_not_persist_or_activate(
@@ -499,7 +500,13 @@ def test_reset_apply_failure_rolls_back_state(
         response = client.delete(SETTINGS_PREFIX)
         assert response.status_code == 500
         assert fake_repo.overrides == before_overrides
-        assert _capture_runtime_state() == before_runtime
+        after_runtime = _capture_runtime_state()
+        assert after_runtime["metadata"] == before_runtime["metadata"]
+        assert after_runtime["cookie_secure"] == before_runtime["cookie_secure"]
+        assert (
+            auth_runtime_store.get_active().generation_id
+            >= before_runtime["generation_id"]
+        )
         assert client.get(METADATA_PATH).json()["oauth_providers"] == ["ResetGuard"]
 
 
@@ -540,7 +547,9 @@ def test_import_runtime_activation_failure_rolls_back_state(
         )
         assert response.status_code == 500
         assert fake_repo.overrides == before_overrides
-        assert _capture_runtime_state() == before_runtime
+        after_runtime = _capture_runtime_state()
+        assert after_runtime["metadata"] == before_runtime["metadata"]
+        assert after_runtime["cookie_secure"] == before_runtime["cookie_secure"]
 
 
 def test_build_isolated_config_does_not_leak_preview_to_readers(

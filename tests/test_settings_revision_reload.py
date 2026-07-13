@@ -149,7 +149,7 @@ def test_rollback_reconciles_on_cas_conflict_when_local_advanced() -> None:
         snapshot = SettingsMutationSnapshot(
             overrides={"misc": {"development": False}},
             revision=1,
-            runtime_generation=generation,
+            prior_runtime=generation,
             epoch=0,
         )
         set_local_committed_revision(4)
@@ -192,7 +192,7 @@ def test_compensation_skips_db_when_cas_conflict() -> None:
         snapshot = SettingsMutationSnapshot(
             overrides={"misc": {"development": False}},
             revision=1,
-            runtime_generation=generation,
+            prior_runtime=generation,
             epoch=0,
         )
 

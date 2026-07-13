@@ -473,10 +473,20 @@ class FakeRequestRepository:
 class FakeSettingsRepository:
     """In-memory stand-in for ``SettingsRepository``."""
 
-    def __init__(self, overrides: dict | None = None) -> None:
+    def __init__(
+        self,
+        overrides: dict | None = None,
+        *,
+        revision: int | None = None,
+    ) -> None:
         self.db = FakeDb()
         self.overrides: dict = copy.deepcopy(overrides or {})
-        self.revision = 0 if not self.overrides else 1
+        if revision is not None:
+            self.revision = revision
+        elif self.overrides:
+            self.revision = 1
+        else:
+            self.revision = 0
         self.save_calls: list[dict] = []
         self.cas_calls: list[tuple[dict, int]] = []
         self.reset_called = False
@@ -500,13 +510,20 @@ class FakeSettingsRepository:
     ) -> tuple[dict, int]:
         from miramedia.settings.repository import SettingsRevisionConflictError
 
-        if expected_revision == 0 and self.revision == 0:
-            if self._insert_lost_race:
+        if expected_revision == 0:
+            if self._insert_lost_race and self.revision == 0:
                 self.revision = 1
                 self.overrides = copy.deepcopy(overrides)
                 self.cas_calls.append((copy.deepcopy(overrides), 0))
                 self.save_calls.append(copy.deepcopy(overrides))
                 raise SettingsRevisionConflictError(0, 1)
+            if self.revision == 0:
+                self.cas_calls.append((copy.deepcopy(overrides), 0))
+                self.save_calls.append(copy.deepcopy(overrides))
+                self.overrides = copy.deepcopy(overrides)
+                self.revision = 1
+                return self.overrides, self.revision
+            raise SettingsRevisionConflictError(0, self.revision)
 
         if expected_revision != self.revision:
             raise SettingsRevisionConflictError(expected_revision, self.revision)

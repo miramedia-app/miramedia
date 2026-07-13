@@ -1,14 +1,14 @@
 """Transactional settings mutations with snapshot rollback.
 
 State machine (per worker):
-1. Under coordinator lock: single-row read (overrides + revision), capture snapshot.
-2. Release DB session, release lock: Pydantic validate + OIDC discovery (no DB txn).
+1. Under coordinator lock: single-row read (overrides + revision).
+2. Release DB session, release lock: validate + stage prospective and prior runtimes.
 3. Under coordinator lock: CAS persist -> apply only if not superseded -> publish.
-4. On post-CAS apply failure: keep coordinator held, DB CAS restore + local restore;
-   only release on CAS conflict to cross-process N+1, then reconcile outside lock.
+4. On post-CAS apply failure: keep coordinator held, DB CAS restore using staged
+   prior overrides/runtime; only release on CAS conflict to cross-process N+1.
 
-Process-local ``_mutation_epoch`` guards same-worker interleaving; DB revision CAS
-guards cross-worker writers. Never hold a DB transaction or coordinator lock across OIDC.
+Never bind rollback runtime to the process-active generation; always use the runtime
+staged from the exact DB-prior overrides read under the coordinator.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.auth.runtime import (
     AuthRuntimeGeneration,
-    auth_runtime_store,
     prepare_auth_runtime_for_overrides,
 )
 from miramedia.settings.coordinator import get_settings_coordinator_lock
@@ -60,27 +59,12 @@ class SettingsMutationSupersededError(SettingsMutationError):
 class SettingsMutationSnapshot:
     overrides: dict
     revision: int
-    runtime_generation: AuthRuntimeGeneration
+    prior_runtime: AuthRuntimeGeneration
     epoch: int
 
 
 def _raise_superseded_mutation() -> None:
     raise SettingsMutationSupersededError(SETTINGS_MUTATION_SUPERSEDED_DETAIL)
-
-
-async def capture_mutation_snapshot(
-    overrides: dict,
-    *,
-    revision: int,
-    epoch: int,
-) -> SettingsMutationSnapshot:
-    generation = auth_runtime_store.get_active()
-    return SettingsMutationSnapshot(
-        overrides=copy.deepcopy(overrides),
-        revision=revision,
-        runtime_generation=generation,
-        epoch=epoch,
-    )
 
 
 def _apply_live_mutation_critical_section(
@@ -106,7 +90,9 @@ async def _restore_committed_mutation_snapshot(
         committed_revision,
     )
     apply_live_config_from_overrides(restored_overrides)
-    auth_runtime_store.restore(snapshot.runtime_generation)
+    from miramedia.auth.runtime import commit_auth_runtime_generation
+
+    commit_auth_runtime_generation(snapshot.prior_runtime)
     from miramedia.auth.users import apply_mutable_transport_settings
 
     apply_mutable_transport_settings()
@@ -160,12 +146,8 @@ async def execute_settings_mutation(
     async with coordinator:
         merged_overrides, prior_overrides, expected_revision = await prepare()
         sanitized = sanitize_persisted_overrides(merged_overrides)
+        prior_for_stage = sanitize_persisted_overrides(prior_overrides)
         start_epoch = _mutation_epoch
-        snapshot = await capture_mutation_snapshot(
-            prior_overrides,
-            revision=expected_revision,
-            epoch=start_epoch,
-        )
 
     if db_session is not None:
         from miramedia.database import release_session_before_external_io
@@ -173,6 +155,13 @@ async def execute_settings_mutation(
         await release_session_before_external_io(db_session)
 
     prospective = await stage_auth_runtime(sanitized)
+    prior_runtime = await stage_auth_runtime(prior_for_stage)
+    snapshot = SettingsMutationSnapshot(
+        overrides=copy.deepcopy(prior_overrides),
+        revision=expected_revision,
+        prior_runtime=prior_runtime,
+        epoch=start_epoch,
+    )
 
     needs_reconcile = False
     mutation_error: BaseException | None = None

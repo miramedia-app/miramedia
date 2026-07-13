@@ -11,7 +11,6 @@ from miramedia.auth.runtime import reset_auth_runtime_for_tests
 from miramedia.config import MiraMediaConfig
 from miramedia.settings.mutation import (
     SettingsMutationSnapshot,
-    capture_mutation_snapshot,
     execute_settings_mutation,
     rollback_mutation_snapshot,
 )
@@ -77,7 +76,7 @@ def test_execute_mutation_releases_db_session_before_staging(
 
     asyncio.run(_run())
     assert released == [True]
-    assert staged == [True]
+    assert staged == [True, True]
 
 
 def test_rollback_db_first_on_cas_conflict_reconciles_newer_state(
@@ -92,7 +91,7 @@ def test_rollback_db_first_on_cas_conflict_reconciles_newer_state(
         snapshot = SettingsMutationSnapshot(
             overrides={"misc": {"development": False}},
             revision=0,
-            runtime_generation=generation,
+            prior_runtime=generation,
             epoch=0,
         )
         set_local_committed_revision(1)
@@ -131,11 +130,15 @@ def test_rollback_publishes_compensation_revision_on_success() -> None:
     published: list[int] = []
 
     async def _run() -> None:
+        from miramedia.auth.runtime import build_auth_runtime_generation
         from miramedia.settings.mutation import rollback_mutation_snapshot
 
-        snapshot = await capture_mutation_snapshot(
-            {"misc": {"development": False}},
+        live = MiraMediaConfig()
+        prior_runtime = await build_auth_runtime_generation(live.auth, live.misc)
+        snapshot = SettingsMutationSnapshot(
+            overrides={"misc": {"development": False}},
             revision=0,
+            prior_runtime=prior_runtime,
             epoch=0,
         )
         set_local_committed_revision(1)
@@ -285,7 +288,7 @@ def test_rollback_reconcile_stages_outside_coordinator_lock(
         snapshot = SettingsMutationSnapshot(
             overrides={"misc": {"development": False}},
             revision=0,
-            runtime_generation=generation,
+            prior_runtime=generation,
             epoch=0,
         )
         set_local_committed_revision(1)
@@ -381,5 +384,89 @@ def test_apply_failure_rollback_holds_lock_against_same_revision_reload() -> Non
 
         assert get_local_committed_revision() == 2
         assert MiraMediaConfig().misc.development is False
+
+    asyncio.run(_run())
+
+
+def test_failed_mutation_rollback_restores_staged_prior_runtime_not_active_store() -> (
+    None
+):
+    from miramedia.auth.runtime import (
+        auth_runtime_store,
+        build_auth_runtime_generation,
+        commit_auth_runtime_generation,
+    )
+    from miramedia.settings.mutation import SettingsMutationError
+    from miramedia.settings.service import build_isolated_config
+
+    async def _stage_from_overrides(overrides: dict) -> Any:
+        config = build_isolated_config(overrides)
+        return await build_auth_runtime_generation(config.auth, config.misc)
+
+    async def _run() -> None:
+        prior_overrides = {
+            "misc": {
+                "development": True,
+                "frontend_url": "http://prior-b.example/",
+            }
+        }
+        repo = FakeSettingsRepository(overrides=prior_overrides, revision=2)
+
+        stale_overrides = {
+            "misc": {
+                "development": False,
+                "frontend_url": "http://stale-a.example/",
+            }
+        }
+        apply_live_config_from_overrides(stale_overrides)
+        stale_runtime = await _stage_from_overrides(stale_overrides)
+        commit_auth_runtime_generation(stale_runtime)
+        set_local_committed_revision(1)
+
+        original_apply = __import__(
+            "miramedia.settings.mutation",
+            fromlist=["_apply_live_mutation_critical_section"],
+        )._apply_live_mutation_critical_section
+
+        def _boom_apply(overrides: dict, prospective: Any) -> None:
+            original_apply(overrides, prospective)
+            msg = "apply failed"
+            raise RuntimeError(msg)
+
+        import miramedia.settings.mutation as mutation_mod
+
+        mutation_mod._apply_live_mutation_critical_section = _boom_apply
+        try:
+
+            async def _prepare() -> tuple[dict, dict, int]:
+                prior, revision = await repo.get_overrides_with_revision()
+                return (
+                    {
+                        "misc": {
+                            "development": False,
+                            "frontend_url": "http://prospective-c.example/",
+                        }
+                    },
+                    prior,
+                    revision,
+                )
+
+            async def _fetch() -> tuple[dict, int]:
+                return await repo.get_overrides_with_revision()
+
+            with pytest.raises(SettingsMutationError):
+                await execute_settings_mutation(
+                    prepare=_prepare,
+                    persist_overrides_cas=repo.save_overrides_cas,
+                    fetch_current=_fetch,
+                    stage_auth_runtime=_stage_from_overrides,
+                )
+        finally:
+            mutation_mod._apply_live_mutation_critical_section = original_apply
+
+        assert MiraMediaConfig().misc.development is True
+        assert str(MiraMediaConfig().misc.frontend_url) == "http://prior-b.example/"
+        assert auth_runtime_store.get_active().frontend_url == "http://prior-b.example/"
+        assert get_local_committed_revision() == 4
 
     asyncio.run(_run())

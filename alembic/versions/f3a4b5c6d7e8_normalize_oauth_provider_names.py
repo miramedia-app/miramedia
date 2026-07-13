@@ -19,7 +19,34 @@ _CANONICAL = "oidc"
 
 
 def upgrade() -> None:
-    # Rename legacy display-name provider keys when no cross-user conflict exists.
+    # Drop legacy duplicates when canonical already exists for same account+user.
+    op.execute(
+        f"""
+        DELETE FROM oauth_account AS legacy
+        WHERE legacy.oauth_name <> '{_CANONICAL}'
+          AND EXISTS (
+            SELECT 1
+            FROM oauth_account AS canonical
+            WHERE canonical.oauth_name = '{_CANONICAL}'
+              AND canonical.account_id = legacy.account_id
+              AND canonical.user_id = legacy.user_id
+          )
+        """
+    )
+    # Keep one deterministic legacy row per account+user before rename.
+    op.execute(
+        f"""
+        DELETE FROM oauth_account AS duplicate
+        WHERE duplicate.oauth_name <> '{_CANONICAL}'
+          AND duplicate.id NOT IN (
+            SELECT MIN(id)
+            FROM oauth_account
+            WHERE oauth_name <> '{_CANONICAL}'
+            GROUP BY account_id, user_id
+          )
+        """
+    )
+    # Rename remaining legacy rows only when no cross-user canonical conflict exists.
     op.execute(
         f"""
         UPDATE oauth_account AS legacy

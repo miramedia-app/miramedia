@@ -13,20 +13,23 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from fastapi_users.jwt import SecretType
+from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 
-from miramedia.auth.config import OpenIdConfig
+from miramedia.auth.config import AuthConfig, OpenIdConfig
 from miramedia.auth.runtime import (
     OAUTH_ROUTE_NAME,
     AuthRuntimeGeneration,
     _build_openid_client_sync,
 )
+from miramedia.config import BasicConfig
 
 log = logging.getLogger(__name__)
 
 OAUTH_GENERATION_STATE_KEY = "generation_snapshot"
 OAUTH_STATE_GENERATION_TTL_SECONDS = 3600
+_MAX_SESSION_LIFETIME_SECONDS = 60 * 60 * 24 * 366
 _OAUTH_SNAPSHOT_KDF_INFO = b"miramedia-oauth-generation-snapshot-v1"
-
+_HTTP_URL_ADAPTER: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 
 _OIDC_NOT_ENABLED = "OIDC is not enabled"
 _SNAPSHOT_INVALID = "snapshot invalid or expired"
@@ -68,6 +71,83 @@ def _fernet_for_state_secret(secret: SecretType) -> Fernet:
         info=_OAUTH_SNAPSHOT_KDF_INFO,
     ).derive(_secret_bytes(secret))
     return Fernet(base64.urlsafe_b64encode(derived))
+
+
+def _strict_bool(value: Any, field: str) -> bool:  # noqa: ANN401
+    if type(value) is bool:
+        return value
+    msg = f"{field} must be a boolean"
+    raise ValueError(msg)
+
+
+def _strict_positive_int(value: Any, field: str) -> int:  # noqa: ANN401
+    if type(value) is not int or isinstance(value, bool):
+        msg = f"{field} must be an integer"
+        raise ValueError(msg)
+    if value <= 0 or value > _MAX_SESSION_LIFETIME_SECONDS:
+        msg = f"{field} out of allowed range"
+        raise ValueError(msg)
+    return value
+
+
+def _nonempty_str(value: Any, field: str) -> str:  # noqa: ANN401
+    if not isinstance(value, str):
+        msg = f"{field} must be a string"
+        raise TypeError(msg)
+    stripped = value.strip()
+    if not stripped:
+        msg = f"{field} must be non-empty"
+        raise ValueError(msg)
+    return stripped
+
+
+def _validate_snapshot_payload(data: dict[str, Any]) -> OAuthAuthorizeSnapshot:
+    try:
+        cookie_secure = _strict_bool(data["cookie_secure"], "cookie_secure")
+        oidc_enabled = _strict_bool(data.get("oidc_enabled", True), "oidc_enabled")
+        session_lifetime = _strict_positive_int(
+            data["session_lifetime"], "session_lifetime"
+        )
+        client_id = _nonempty_str(data["client_id"], "client_id")
+        client_secret = _nonempty_str(data["client_secret"], "client_secret")
+        configuration_endpoint = _nonempty_str(
+            data["configuration_endpoint"], "configuration_endpoint"
+        )
+        provider_name = _nonempty_str(data["provider_name"], "provider_name")
+        account_provider_name = _nonempty_str(
+            data["account_provider_name"], "account_provider_name"
+        )
+        frontend_url = _nonempty_str(data["frontend_url"], "frontend_url")
+        frontend_http_url = _HTTP_URL_ADAPTER.validate_python(frontend_url)
+        OpenIdConfig(
+            enabled=True,
+            name=provider_name,
+            client_id=client_id,
+            client_secret=client_secret,
+            configuration_endpoint=configuration_endpoint,
+        )
+        BasicConfig(frontend_url=frontend_http_url)
+        AuthConfig(
+            session_lifetime=session_lifetime,
+            cookie_secure=cookie_secure,
+        )
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        msg = _SNAPSHOT_MALFORMED
+        raise OAuthAuthorizeSnapshotError(msg) from exc
+    if not oidc_enabled:
+        msg = _SNAPSHOT_DISABLED
+        raise OAuthAuthorizeSnapshotError(msg)
+    return OAuthAuthorizeSnapshot(
+        client_id=client_id,
+        client_secret=client_secret,
+        configuration_endpoint=configuration_endpoint,
+        provider_name=provider_name,
+        account_provider_name=account_provider_name,
+        frontend_url=str(frontend_http_url),
+        cookie_secure=cookie_secure,
+        session_lifetime=session_lifetime,
+        oidc_enabled=True,
+    )
 
 
 def snapshot_from_generation(
@@ -112,24 +192,13 @@ def decrypt_oauth_authorize_snapshot(
         raise OAuthAuthorizeSnapshotError(msg) from exc
     try:
         data: dict[str, Any] = json.loads(raw.decode("utf-8"))
-        snapshot = OAuthAuthorizeSnapshot(
-            client_id=str(data["client_id"]),
-            client_secret=str(data["client_secret"]),
-            configuration_endpoint=str(data["configuration_endpoint"]),
-            provider_name=str(data["provider_name"]),
-            account_provider_name=str(data["account_provider_name"]),
-            frontend_url=str(data["frontend_url"]),
-            cookie_secure=bool(data["cookie_secure"]),
-            session_lifetime=int(data["session_lifetime"]),
-            oidc_enabled=bool(data.get("oidc_enabled", True)),
-        )
-    except (KeyError, TypeError, ValueError) as exc:
+    except (json.JSONDecodeError, ValueError) as exc:
         msg = _SNAPSHOT_MALFORMED
         raise OAuthAuthorizeSnapshotError(msg) from exc
-    if not snapshot.oidc_enabled:
-        msg = _SNAPSHOT_DISABLED
+    if not isinstance(data, dict):
+        msg = _SNAPSHOT_MALFORMED
         raise OAuthAuthorizeSnapshotError(msg)
-    return snapshot
+    return _validate_snapshot_payload(data)
 
 
 async def auth_runtime_generation_from_snapshot(
@@ -157,6 +226,7 @@ async def auth_runtime_generation_from_snapshot(
         provider_name=snapshot.provider_name,
         account_provider_name=snapshot.account_provider_name or OAUTH_ROUTE_NAME,
         client=client,
+        configuration_endpoint=snapshot.configuration_endpoint,
         cookie_secure=snapshot.cookie_secure,
         frontend_url=snapshot.frontend_url,
         session_lifetime=snapshot.session_lifetime,

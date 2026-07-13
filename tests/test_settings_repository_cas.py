@@ -40,16 +40,40 @@ def test_normalize_stored_overrides_strips_token_secret() -> None:
     assert normalized["auth"]["email_password_resets"] is True
 
 
-def test_initial_insert_cas_uses_on_conflict_shape() -> None:
-    stmt = (
-        insert(SystemConfigOverride)
-        .values(id=1, overrides={"misc": {"development": True}}, revision=1)
-        .on_conflict_do_nothing(index_elements=["id"])
-        .returning(SystemConfigOverride.overrides, SystemConfigOverride.revision)
+def test_initial_revision_zero_upsert_sql_shape() -> None:
+    ins = insert(SystemConfigOverride).values(
+        id=1, overrides={"misc": {"development": True}}, revision=1
     )
+    stmt = ins.on_conflict_do_update(
+        index_elements=["id"],
+        set_={
+            "overrides": ins.excluded.overrides,
+            "revision": SystemConfigOverride.revision + 1,
+        },
+        where=(SystemConfigOverride.revision == 0),
+    ).returning(SystemConfigOverride.overrides, SystemConfigOverride.revision)
     compiled = str(stmt.compile(dialect=postgresql.dialect()))
-    assert "ON CONFLICT" in compiled.upper()
-    assert "DO NOTHING" in compiled.upper()
+    upper = compiled.upper()
+    assert "ON CONFLICT" in upper
+    assert "DO UPDATE" in upper
+    assert "REVISION" in upper
+    assert "WHERE" in upper
+
+
+def test_fake_repository_revision_zero_inserts_or_upgrades_once() -> None:
+    async def _run() -> None:
+        repo = FakeSettingsRepository(revision=0)
+        saved, revision = await repo.save_overrides_cas(
+            {"misc": {"development": True}}, 0
+        )
+        assert revision == 1
+        assert saved["misc"]["development"] is True
+
+        with pytest.raises(SettingsRevisionConflictError) as exc_info:
+            await repo.save_overrides_cas({"misc": {"development": False}}, 0)
+        assert exc_info.value.actual_revision == 1
+
+    asyncio.run(_run())
 
 
 def test_fake_repository_initial_insert_lost_race_raises_conflict() -> None:
