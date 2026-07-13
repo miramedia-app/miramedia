@@ -16,8 +16,11 @@ import pytest
 from miramedia.imports.archive_extraction import (
     MAX_ARCHIVE_ENTRIES,
     MAX_EXPANDED_BYTES,
+    RETAINED_ARCHIVE_FORMATS,
+    UNSUPPORTED_ARCHIVE_FORMATS,
     ArchiveExtractionError,
     extract_archive_to_directory,
+    is_archive_mime,
 )
 
 
@@ -36,6 +39,35 @@ def _write_tar(
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             tf.addfile(info, io.BytesIO(data))
+
+
+# ---------------------------------------------------------------------------
+# Format matrix
+# ---------------------------------------------------------------------------
+
+
+def test_format_matrix_documents_retained_and_unsupported() -> None:
+    assert RETAINED_ARCHIVE_FORMATS == frozenset(
+        {"zip", "tar", "tar.gz", "tar.bz2", "gzip", "bzip2"}
+    )
+    assert UNSUPPORTED_ARCHIVE_FORMATS == frozenset({"rar", "7z", "freearc"})
+    assert is_archive_mime("application/vnd.rar")
+    assert is_archive_mime("application/zip")
+
+
+@pytest.mark.parametrize("filename", ["release.rar", "release.7z", "release.arc"])
+def test_unsupported_formats_fail_closed(tmp_path: Path, filename: str) -> None:
+    archive = tmp_path / filename
+    archive.write_bytes(b"not-a-real-archive")
+    dest = tmp_path / "import"
+    dest.mkdir()
+
+    with pytest.raises(
+        ArchiveExtractionError, match="not supported for safe extraction"
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert list(dest.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +228,44 @@ def test_zip_rejects_expanded_size_limit(tmp_path: Path) -> None:
     assert list(dest.iterdir()) == []
 
 
+def test_gzip_compression_bomb_capped_by_stream_limit(tmp_path: Path) -> None:
+    archive = tmp_path / "bomb.mkv.gz"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    archive.write_bytes(gzip.compress(b"X" * 256))
+
+    with patch(
+        "miramedia.imports.archive_extraction.MAX_EXPANDED_BYTES",
+        64,
+    ):
+        with pytest.raises(ArchiveExtractionError, match="expanded-byte limit"):
+            extract_archive_to_directory(archive, dest)
+
+    assert list(dest.iterdir()) == []
+    assert not list(tmp_path.glob(".mm-extract-*"))
+
+
+def test_zip_metadata_lie_capped_by_bounded_copy(tmp_path: Path) -> None:
+    archive = tmp_path / "lie.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("bomb.bin")
+        info.compress_type = zipfile.ZIP_STORED
+        info.file_size = 1
+        zf.writestr(info, b"B" * 128)
+
+    with patch(
+        "miramedia.imports.archive_extraction.MAX_EXPANDED_BYTES",
+        32,
+    ):
+        with pytest.raises(ArchiveExtractionError, match="expanded-byte limit"):
+            extract_archive_to_directory(archive, dest)
+
+    assert list(dest.iterdir()) == []
+    assert not list(tmp_path.glob(".mm-extract-*"))
+
+
 # ---------------------------------------------------------------------------
 # Failure cleanup and collision policy
 # ---------------------------------------------------------------------------
@@ -228,6 +298,53 @@ def test_promotion_rejects_name_collision(tmp_path: Path) -> None:
         extract_archive_to_directory(archive, dest)
 
     assert existing.read_bytes() == b"original"
+
+
+def test_promotion_late_collision_rolls_back_first_file(tmp_path: Path) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    existing = dest / "second.mkv"
+    existing.write_bytes(b"original")
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    with pytest.raises(ArchiveExtractionError):
+        extract_archive_to_directory(archive, dest)
+
+    assert existing.read_bytes() == b"original"
+    assert not (dest / "first.mkv").exists()
+
+
+def test_promotion_mid_failure_rolls_back(tmp_path: Path) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    real_replace = Path.replace
+    calls = {"count": 0}
+
+    def _flaky_replace(self: Path, target: Path) -> Path:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            msg = "simulated promotion failure"
+            raise OSError(msg)
+        return real_replace(self, target)
+
+    with (
+        patch.object(Path, "replace", _flaky_replace),
+        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert not (dest / "first.mkv").exists()
+    assert not (dest / "second.mkv").exists()
 
 
 def test_staging_cleaned_up_after_success(tmp_path: Path) -> None:
@@ -279,30 +396,19 @@ def test_staging_cleaned_up_after_failure(tmp_path: Path) -> None:
     assert not created[0].exists()
 
 
-def test_extractor_timeout_reports_and_cleans_up(tmp_path: Path) -> None:
-    archive = tmp_path / "slow.rar"
-    archive.write_bytes(b"not a real rar")
+def test_cleanup_failure_preserves_primary_exception(tmp_path: Path) -> None:
+    archive = tmp_path / "bad.zip"
     dest = tmp_path / "import"
     dest.mkdir()
+    _write_zip(archive, {"../escape.mkv": b"x"})
 
-    def _timeout(archive: Path, staging: Path) -> None:  # noqa: ARG001
-        msg = "archive extraction timed out"
-        raise ArchiveExtractionError(msg)
+    from miramedia.imports import archive_extraction as mod
 
     with (
-        patch(
-            "miramedia.imports.archive_extraction._detect_format",
-            return_value="rar",
-        ),
-        patch(
-            "miramedia.imports.archive_extraction._extract_with_patool_subprocess",
-            side_effect=_timeout,
-        ),
-        pytest.raises(ArchiveExtractionError, match="timed out"),
+        patch.object(mod.shutil, "rmtree", side_effect=OSError("cleanup failed")),
+        pytest.raises(ArchiveExtractionError, match="traversal"),
     ):
         extract_archive_to_directory(archive, dest)
-
-    assert list(dest.iterdir()) == []
 
 
 # ---------------------------------------------------------------------------

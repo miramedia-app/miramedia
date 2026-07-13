@@ -227,7 +227,7 @@ def test_extract_archives_recognizes_zip_mime_types(
     tmp_path: Path,
     mime_type: str,
 ) -> None:
-    """ZIP archives guessed as Windows-style MIME types are routed to patoolib."""
+    """ZIP archives guessed as Windows-style MIME types are routed to safe extraction."""
     archive = tmp_path / "release.zip"
     archive.write_bytes(b"fake zip content")
 
