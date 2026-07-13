@@ -128,6 +128,13 @@ def reject_restart_only_incoming(overrides: dict) -> None:
             raise SettingsValidationError(msg)
 
 
+def reject_restart_only_clear_path(path: list[str]) -> None:
+    if tuple(path) in RESTART_ONLY_OVERRIDE_PATHS:
+        dotted = ".".join(path)
+        msg = f"Setting {dotted} cannot be changed at runtime"
+        raise SettingsValidationError(msg)
+
+
 def validate_incoming_settings_update(data: dict) -> dict:
     model = SystemSettingsUpdate.model_validate(data)
     return model.model_dump(mode="json", exclude_none=True)

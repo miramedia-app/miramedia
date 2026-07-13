@@ -97,6 +97,7 @@ def settings_client(
     def _repo_dep() -> FakeSettingsRepository:
         return fake_repo
 
+    prior_overrides = dict(app.dependency_overrides)
     app.dependency_overrides[get_session] = _stub_session
     app.dependency_overrides[current_superuser] = _superuser
     app.dependency_overrides[get_settings_repository] = _repo_dep
@@ -112,9 +113,13 @@ def settings_client(
             ),
         ):
             client = TestClient(app, raise_server_exceptions=False)
-            yield client, fake_repo
+            try:
+                yield client, fake_repo
+            finally:
+                client.close()
     finally:
         app.dependency_overrides.clear()
+        app.dependency_overrides.update(prior_overrides)
 
 
 def _oidc_payload(
@@ -535,6 +540,48 @@ def test_import_runtime_activation_failure_rolls_back_state(
         assert response.status_code == 500
         assert fake_repo.overrides == before_overrides
         assert _capture_runtime_state() == before_runtime
+
+
+def test_build_isolated_config_does_not_leak_preview_to_readers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    from miramedia.config import BasicConfig, MiraMediaConfig
+    from miramedia.settings.service import build_isolated_config
+
+    live_before = MiraMediaConfig()
+    original_dev = live_before.misc.development
+    started = threading.Event()
+    release = threading.Event()
+    observed: list[bool] = []
+
+    original_validate = BasicConfig.model_validate
+
+    @classmethod
+    def _slow_validate(
+        _cls: type[BasicConfig], merged: dict, **kwargs: object
+    ) -> BasicConfig:
+        if kwargs.get("strict") and merged.get("development") is True:
+            started.set()
+            assert release.wait(timeout=2)
+        return original_validate(merged, **kwargs)
+
+    monkeypatch.setattr(BasicConfig, "model_validate", _slow_validate)
+
+    def _reader() -> None:
+        assert started.wait(timeout=2)
+        observed.append(MiraMediaConfig().misc.development)
+        release.set()
+
+    thread = threading.Thread(target=_reader)
+    thread.start()
+    isolated = build_isolated_config({"misc": {"development": True}})
+    thread.join(timeout=3)
+
+    assert observed == [original_dev]
+    assert MiraMediaConfig().misc.development == original_dev
+    assert isolated.misc.development is True
 
 
 def test_load_isolated_config_leaves_singleton_intact() -> None:

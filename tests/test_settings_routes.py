@@ -49,6 +49,7 @@ def settings_client(
     def _repo_dep() -> FakeSettingsRepository:
         return fake_repo
 
+    prior_overrides = dict(app.dependency_overrides)
     app.dependency_overrides[get_session] = _stub_session
     app.dependency_overrides[current_superuser] = _superuser
     app.dependency_overrides[get_settings_repository] = _repo_dep
@@ -59,9 +60,13 @@ def settings_client(
             create=True,
         ):
             client = TestClient(app, raise_server_exceptions=False)
-            yield client, fake_repo
+            try:
+                yield client, fake_repo
+            finally:
+                client.close()
     finally:
         app.dependency_overrides.clear()
+        app.dependency_overrides.update(prior_overrides)
 
 
 def test_get_settings_returns_200() -> None:

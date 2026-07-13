@@ -42,6 +42,7 @@ from miramedia.settings.service import (
 )
 from miramedia.settings.validation import (
     SettingsValidationError,
+    reject_restart_only_clear_path,
     reject_restart_only_incoming,
     sanitize_export_overrides,
     validate_incoming_settings_update,
@@ -362,6 +363,12 @@ async def clear_override_path(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid section: {body.path[0]}",
         )
+    try:
+        reject_restart_only_clear_path(body.path)
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     async def _prepare() -> tuple[dict, dict, int]:
         prior = await repo.get_overrides()

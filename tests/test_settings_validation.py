@@ -90,6 +90,16 @@ def test_validate_incoming_settings_update_rejects_unknown_section_key() -> None
         validate_incoming_settings_update({"bogus": {"x": 1}})
 
 
+def test_clear_path_rejects_restart_only_token_secret() -> None:
+    from miramedia.settings.validation import (
+        SettingsValidationError,
+        reject_restart_only_clear_path,
+    )
+
+    with pytest.raises(SettingsValidationError, match="cannot be changed at runtime"):
+        reject_restart_only_clear_path(["auth", "token_secret"])
+
+
 def test_restart_only_paths_include_token_secret() -> None:
     assert ("auth", "token_secret") in RESTART_ONLY_OVERRIDE_PATHS
 
