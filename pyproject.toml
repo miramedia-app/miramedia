@@ -111,7 +111,7 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Path", "taskiq.TaskiqDepen
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --ignore=tests/integration"
+addopts = "-q --ignore=tests/integration -m 'not postgresql'"
 markers = [
     "integration: PostgreSQL integration tests (require MIRAMEDIA_TEST_DATABASE_URL)",
     "postgresql: tests that require MIRAMEDIA_TEST_DATABASE_URL disposable PostgreSQL",

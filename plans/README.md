@@ -52,7 +52,7 @@ Ephemeral database only (`127.0.0.1:55432/miramedia_integration_test` — never
 export MIRAMEDIA_TEST_DATABASE_URL='postgresql+asyncpg://test:test@127.0.0.1:55432/miramedia_integration_test'
 uv sync --frozen
 make lint && make format-check && make ty
-make test                    # 927 passed, 14 skipped (DB-free)
+make test                    # 926 passed, 15 postgresql deselected (DB-free)
 make integration-test        # 28 integration + 15 postgresql
 uv run python scripts/migration_head_audit.py --verify-db  # head f3a4b5c6d7e8
 ```
