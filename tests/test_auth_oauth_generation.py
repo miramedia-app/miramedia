@@ -25,9 +25,13 @@ from tests.fakes.repositories import FakeSettingsRepository
 from tests.oauth_test_helpers import (
     ENDPOINT_A,
     ENDPOINT_B,
+    ENDPOINT_DEFAULT,
+    ISSUER_A,
+    ISSUER_B,
     KEY_A,
     KEY_B,
     KEY_DEFAULT,
+    build_openid_client_mock,
 )
 
 SETTINGS_PREFIX = "/api/v1/system/settings"
@@ -63,24 +67,13 @@ def fake_openid(monkeypatch: pytest.MonkeyPatch) -> list[MagicMock]:
     created: list[MagicMock] = []
 
     def _factory(**kwargs: object) -> MagicMock:
-        client = MagicMock()
-        client.client_id = kwargs.get("client_id")
-        client.client_secret = kwargs.get("client_secret")
-        client.name = kwargs.get("name", "Provider")
-
-        async def _authorize_url(
-            redirect_url: str, state: str, *_args: object, **_kwargs: object
-        ) -> str:
-            return (
-                f"https://idp.example/authorize?state={state}"
-                f"&redirect_uri={redirect_url}"
-            )
-
-        client.get_authorization_url = AsyncMock(side_effect=_authorize_url)
-        client.get_access_token = AsyncMock(
-            return_value={"access_token": "access-token", "token_type": "bearer"}
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        client = build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id", "client-a")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
         )
-        client.get_id_email = AsyncMock(return_value=("account-1", "user@example.com"))
         created.append(client)
         return client
 
@@ -186,10 +179,19 @@ def _jwt_lifetime_from_callback_response(response: object) -> int:
     return int(payload["exp"]) - int(time.time())
 
 
-def _enable_oidc(client: TestClient, *, name: str = "ConfiguredProvider") -> None:
+def _enable_oidc(
+    client: TestClient,
+    *,
+    name: str = "ConfiguredProvider",
+    configuration_endpoint: str = ENDPOINT_DEFAULT,
+) -> None:
     response = client.put(
         SETTINGS_PREFIX,
-        json=_oidc_payload(enabled=True, name=name),
+        json=_oidc_payload(
+            enabled=True,
+            name=name,
+            configuration_endpoint=configuration_endpoint,
+        ),
     )
     assert response.status_code == 200
 
@@ -485,18 +487,13 @@ def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_re
     token_clients: list[str] = []
 
     def _tracking_factory(**kwargs: object) -> MagicMock:
-        client = MagicMock()
-        client.client_id = kwargs.get("client_id")
-        client.client_secret = kwargs.get("client_secret")
-        client.name = kwargs.get("name", "Provider")
-
-        async def _authorize_url(
-            redirect_url: str, state: str, *_args: object, **_kwargs: object
-        ) -> str:
-            return (
-                f"https://idp.example/authorize?state={state}"
-                f"&redirect_uri={redirect_url}"
-            )
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        client = build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id", "client-a")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
+        )
 
         async def _exchange(
             _code: str,
@@ -506,9 +503,7 @@ def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_re
             token_clients.append(str(client.client_id))
             return {"access_token": "access-token", "token_type": "bearer"}
 
-        client.get_authorization_url = AsyncMock(side_effect=_authorize_url)
         client.get_access_token = AsyncMock(side_effect=_exchange)
-        client.get_id_email = AsyncMock(return_value=("account-1", "user@example.com"))
         fake_openid.append(client)
         return client
 
@@ -648,6 +643,7 @@ def test_oauth_callback_uses_authorize_issuer_after_runtime_switches_to_issuer_b
         )
         assert swap.status_code == 200
         assert auth_runtime_store.get_active().account_provider_name == KEY_B
+        assert auth_runtime_store.get_active().openid_issuer == ISSUER_B
 
         callback = client.get(
             OIDC_CALLBACK_PATH,
@@ -665,36 +661,18 @@ def test_invalid_issuer_rejects_activation_without_mutating_prior_runtime(
     monkeypatch: pytest.MonkeyPatch,
     fake_openid: list[MagicMock],  # noqa: ARG001
 ) -> None:
-    from miramedia.auth.oauth_identity import (
-        OpenIdIssuerResolutionError,
-        provider_key_from_issuer,
-    )
-    from tests.oauth_test_helpers import (
-        ENDPOINT_A,
-        ENDPOINT_B,
-        ENDPOINT_DEFAULT,
-        ISSUER_DEFAULT,
-    )
+    def _factory(**kwargs: object) -> MagicMock:
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        if "broken.example" in endpoint:
+            return build_openid_client_mock(endpoint=endpoint, issuer="")
+        return build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id", "client-a")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
+        )
 
-    async def _resolve(configuration_endpoint: str) -> str:
-        if "broken.example" in configuration_endpoint:
-            msg = "missing issuer"
-            raise OpenIdIssuerResolutionError(msg)
-        mapping = {
-            ENDPOINT_A: "https://issuer-a.example/",
-            ENDPOINT_B: "https://issuer-b.example/",
-            ENDPOINT_DEFAULT: ISSUER_DEFAULT,
-        }
-        issuer = mapping.get(configuration_endpoint)
-        if issuer is None:
-            msg = "unknown configuration endpoint"
-            raise OpenIdIssuerResolutionError(msg)
-        return provider_key_from_issuer(issuer)
-
-    monkeypatch.setattr(
-        "miramedia.auth.runtime.resolve_openid_provider_key",
-        _resolve,
-    )
+    monkeypatch.setattr("miramedia.auth.runtime.OpenID", _factory)
 
     with settings_client() as (client, _repo):
         good = client.put(
@@ -703,6 +681,7 @@ def test_invalid_issuer_rejects_activation_without_mutating_prior_runtime(
         )
         assert good.status_code == 200
         prior_key = auth_runtime_store.get_active().account_provider_name
+        prior_issuer = auth_runtime_store.get_active().openid_issuer
 
         bad = client.put(
             SETTINGS_PREFIX,
@@ -714,3 +693,45 @@ def test_invalid_issuer_rejects_activation_without_mutating_prior_runtime(
         )
         assert bad.status_code == 400
         assert auth_runtime_store.get_active().account_provider_name == prior_key
+        assert auth_runtime_store.get_active().openid_issuer == prior_issuer
+
+
+def test_callback_rejects_issuer_flip_on_same_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openid: list[MagicMock],
+) -> None:
+    call_count = 0
+
+    def _factory(**kwargs: object) -> MagicMock:
+        nonlocal call_count
+        call_count += 1
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        issuer = ISSUER_A if call_count == 1 else ISSUER_B
+        client = build_openid_client_mock(endpoint=endpoint, issuer=issuer)
+        fake_openid.append(client)
+        return client
+
+    monkeypatch.setattr("miramedia.auth.runtime.OpenID", _factory)
+
+    with settings_client() as (client, _repo):
+        _enable_oidc(client, name="IssuerA", configuration_endpoint=ENDPOINT_A)
+        authorize = client.get(OIDC_AUTHORIZE_PATH)
+        assert authorize.status_code == 200
+        csrf_match = re.search(
+            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
+            authorize.headers.get("set-cookie", ""),
+            re.IGNORECASE,
+        )
+        assert csrf_match is not None
+        state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+
+        callback = client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state},
+            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+            follow_redirects=False,
+        )
+
+    assert callback.status_code == 400

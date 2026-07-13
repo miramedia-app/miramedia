@@ -137,7 +137,7 @@ def reject_restart_only_clear_path(path: list[str]) -> None:
 
 def validate_incoming_settings_update(data: dict) -> dict:
     model = SystemSettingsUpdate.model_validate(data)
-    return model.model_dump(mode="json", exclude_none=True)
+    return model.model_dump(mode="json", exclude_unset=True)
 
 
 def preserve_live_token_secret(config: MiraMediaConfig) -> MiraMediaConfig:

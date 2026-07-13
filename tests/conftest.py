@@ -6,12 +6,12 @@ from collections.abc import Generator
 
 import pytest
 
-from tests.oauth_test_helpers import install_issuer_resolver
+from tests.oauth_test_helpers import install_openid_client_factory
 
 
 @pytest.fixture(autouse=True)
-def _mock_oidc_issuer_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
-    install_issuer_resolver(monkeypatch)
+def _mock_oidc_openid_client_factory(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_openid_client_factory(monkeypatch)
 
 
 @pytest.fixture(autouse=True)

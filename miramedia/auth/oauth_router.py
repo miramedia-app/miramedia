@@ -29,6 +29,7 @@ from httpx_oauth.oauth2 import GetAccessTokenError, OAuth2Token
 
 from miramedia.auth.oauth_provider import (
     OAuthProviderConflictError,
+    OAuthProviderReconciliationError,
     reconcile_legacy_oauth_account,
 )
 from miramedia.auth.oauth_state import (
@@ -250,7 +251,10 @@ def get_dynamic_oauth_router(
                     display_name=generation.provider_name,
                     provider_key=generation.account_provider_name,
                 )
-            except OAuthProviderConflictError as exc:
+            except (
+                OAuthProviderConflictError,
+                OAuthProviderReconciliationError,
+            ) as exc:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=ErrorCode.OAUTH_INVALID_STATE,

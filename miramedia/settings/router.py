@@ -36,7 +36,6 @@ from miramedia.settings.service import (
     get_effective_config,
     get_settings_schema,
     get_toml_defaults,
-    strip_none,
 )
 from miramedia.settings.validation import (
     SettingsValidationError,
@@ -198,9 +197,10 @@ async def update_system_settings(
     to the in-memory config singleton so changes take effect immediately.
     Interval-driven scheduler tasks are also re-synced on save.
     """
-    new_overrides = strip_none(data.model_dump(mode="json"))
     try:
-        incoming_patch = validate_incoming_settings_update(new_overrides)
+        incoming_patch = validate_incoming_settings_update(
+            data.model_dump(mode="json", exclude_unset=True)
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)

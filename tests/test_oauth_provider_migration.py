@@ -169,6 +169,7 @@ def test_migration_contains_uuid_safe_dedupe_and_exact_pair_preflight() -> None:
     assert "ORDER BY id::text ASC" in source
     assert "MIN(id)" not in source
     assert "assert_no_cross_user_provider_account_conflicts" in source
+    assert "_oauth_account_unique_index_columns" in source
     assert "uq_oauth_account_oauth_name_account_id" in source
     assert 'canonical="oidc"' not in source
     assert "rename_remaining_legacy_rows" not in source
@@ -347,14 +348,5 @@ def test_downgrade_drops_unique_index(pg_oauth_schema) -> None:
     _run_migration(conn, migration, direction="upgrade")
     _run_migration(conn, migration, direction="downgrade")
 
-    exists = conn.execute(
-        text(
-            """
-            SELECT 1
-            FROM pg_class
-            WHERE relname = 'uq_oauth_account_oauth_name_account_id'
-              AND relkind = 'i'
-            """
-        )
-    ).scalar()
-    assert exists is None
+    columns = migration._oauth_account_unique_index_columns(conn)
+    assert columns is None

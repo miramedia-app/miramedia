@@ -20,7 +20,7 @@ from starlette.responses import Response
 from miramedia.auth.config import AuthConfig, OpenIdConfig
 from miramedia.auth.oauth_identity import (
     OpenIdIssuerResolutionError,
-    resolve_openid_provider_key,
+    provider_identity_from_openid_configuration,
 )
 from miramedia.config import BasicConfig, MiraMediaConfig
 from miramedia.settings.service import build_isolated_config
@@ -49,6 +49,7 @@ class AuthRuntimeGeneration:
     oidc_enabled: bool
     provider_name: str
     account_provider_name: str
+    openid_issuer: str = ""
     client: OpenID | None = None
     configuration_endpoint: str = ""
     cookie_secure: bool = False
@@ -72,6 +73,7 @@ class AuthRuntimeStore:
             oidc_enabled=False,
             provider_name="",
             account_provider_name="",
+            openid_issuer="",
             client=None,
             configuration_endpoint="",
             cookie_secure=False,
@@ -102,6 +104,7 @@ class AuthRuntimeStore:
                 oidc_enabled=False,
                 provider_name="",
                 account_provider_name="",
+                openid_issuer="",
                 client=None,
                 cookie_secure=False,
                 frontend_url="",
@@ -154,6 +157,7 @@ async def build_auth_runtime_generation(
             oidc_enabled=False,
             provider_name="",
             account_provider_name="",
+            openid_issuer="",
             client=None,
             cookie_secure=cookie_secure,
             frontend_url=frontend_url,
@@ -161,7 +165,9 @@ async def build_auth_runtime_generation(
         )
     try:
         client = await asyncio.to_thread(_build_openid_client_sync, oidc)
-        provider_key = await resolve_openid_provider_key(oidc.configuration_endpoint)
+        openid_issuer, provider_key = provider_identity_from_openid_configuration(
+            client.openid_configuration
+        )
     except OpenIdIssuerResolutionError as exc:
         raise AuthRuntimeActivationError() from exc
     except AuthRuntimeActivationError:
@@ -177,6 +183,7 @@ async def build_auth_runtime_generation(
         oidc_enabled=True,
         provider_name=oidc.name,
         account_provider_name=provider_key,
+        openid_issuer=openid_issuer,
         client=client,
         configuration_endpoint=oidc.configuration_endpoint,
         cookie_secure=cookie_secure,

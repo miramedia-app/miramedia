@@ -3,16 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import logging
+import ipaddress
 from typing import Any
 from urllib.parse import urlparse
 
-import httpx
-
-log = logging.getLogger(__name__)
-
 ISSUER_DERIVED_PREFIX = "oidc:"
-_ISSUER_FETCH_TIMEOUT_SECONDS = 15.0
 
 
 class OpenIdIssuerResolutionError(Exception):
@@ -30,52 +25,73 @@ def provider_key_from_issuer(issuer: str) -> str:
     )
 
 
+def _is_loopback_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def validate_discovery_issuer(value: Any) -> str:  # noqa: ANN401
     if not isinstance(value, str):
         msg = "OIDC discovery issuer must be a string"
         raise OpenIdIssuerResolutionError(msg)
-    issuer = value.strip()
-    if not issuer:
+    if not value:
         msg = "OIDC discovery metadata missing issuer"
         raise OpenIdIssuerResolutionError(msg)
-    parsed = urlparse(issuer)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if value != value.strip():
         msg = "OIDC discovery issuer is invalid"
         raise OpenIdIssuerResolutionError(msg)
-    return issuer
+    parsed = urlparse(value)
+    if parsed.username or parsed.password:
+        msg = "OIDC discovery issuer is invalid"
+        raise OpenIdIssuerResolutionError(msg)
+    if parsed.query or parsed.fragment:
+        msg = "OIDC discovery issuer is invalid"
+        raise OpenIdIssuerResolutionError(msg)
+    if not parsed.scheme or not parsed.netloc:
+        msg = "OIDC discovery issuer is invalid"
+        raise OpenIdIssuerResolutionError(msg)
+    if parsed.scheme == "https":
+        return value
+    if parsed.scheme == "http" and _is_loopback_host(parsed.hostname):
+        return value
+    msg = "OIDC discovery issuer is invalid"
+    raise OpenIdIssuerResolutionError(msg)
 
 
-def _fetch_openid_discovery_issuer_sync(configuration_endpoint: str) -> str:
-    try:
-        response = httpx.get(
-            configuration_endpoint,
-            timeout=_ISSUER_FETCH_TIMEOUT_SECONDS,
-            follow_redirects=True,
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as exc:
-        log.warning(
-            "OpenID Connect discovery failed: %s",
-            type(exc).__name__,
-        )
-        msg = "OIDC discovery failed"
-        raise OpenIdIssuerResolutionError(msg) from exc
-    if not isinstance(payload, dict):
+def provider_identity_from_openid_configuration(
+    openid_configuration: dict[str, Any],
+) -> tuple[str, str]:
+    """Return the exact issuer and derived provider key from one discovery document."""
+    if not isinstance(openid_configuration, dict):
         msg = "OIDC discovery metadata is malformed"
         raise OpenIdIssuerResolutionError(msg)
-    return validate_discovery_issuer(payload.get("issuer"))
+    issuer = validate_discovery_issuer(openid_configuration.get("issuer"))
+    return issuer, provider_key_from_issuer(issuer)
 
 
-async def resolve_openid_provider_key(configuration_endpoint: str) -> str:
-    """Resolve the persisted provider key for one OIDC configuration endpoint."""
-    import asyncio
-
-    issuer = await asyncio.to_thread(
-        _fetch_openid_discovery_issuer_sync,
-        configuration_endpoint,
+def assert_snapshot_provider_identity(
+    *,
+    snapshot_issuer: str,
+    snapshot_provider_key: str,
+    openid_configuration: dict[str, Any],
+) -> str:
+    """Validate callback-time discovery matches the authorize snapshot."""
+    client_issuer, client_key = provider_identity_from_openid_configuration(
+        openid_configuration
     )
-    return provider_key_from_issuer(issuer)
+    if client_issuer != snapshot_issuer:
+        msg = "snapshot issuer mismatch"
+        raise ValueError(msg)
+    if client_key != snapshot_provider_key:
+        msg = "snapshot provider key mismatch"
+        raise ValueError(msg)
+    return client_issuer
 
 
 def validate_provider_key_for_snapshot(oauth_name: str) -> str:

@@ -27,6 +27,7 @@ from miramedia.auth.runtime import (
 )
 from miramedia.config import MiraMediaConfig
 from tests.fakes.repositories import FakeSettingsRepository
+from tests.oauth_test_helpers import ENDPOINT_DEFAULT, build_openid_client_mock
 
 SETTINGS_PREFIX = "/api/v1/system/settings"
 OIDC_AUTHORIZE_PATH = "/api/v1/auth/oauth/authorize"
@@ -54,15 +55,13 @@ def fake_openid(monkeypatch: pytest.MonkeyPatch) -> list[MagicMock]:
     created: list[MagicMock] = []
 
     def _factory(**kwargs: object) -> MagicMock:
-        client = MagicMock()
-        client.client_id = kwargs.get("client_id")
-        client.client_secret = kwargs.get("client_secret")
-        client.name = kwargs.get("name", "Provider")
-        client.get_authorization_url = AsyncMock(
-            return_value="https://idp.example/authorize"
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        client = build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id", "client-a")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
         )
-        client.get_access_token = AsyncMock(return_value={"access_token": "at"})
-        client.get_id_email = AsyncMock(return_value=("sub-1", "user@example.com"))
         created.append(client)
         return client
 
@@ -211,7 +210,9 @@ def test_metadata_and_oauth_disabled_to_enabled_via_put(
 
         authorize = client.get(OIDC_AUTHORIZE_PATH, follow_redirects=False)
         assert authorize.status_code == 200
-        assert authorize.json()["authorization_url"] == "https://idp.example/authorize"
+        assert authorize.json()["authorization_url"].startswith(
+            "https://idp.example/authorize"
+        )
         assert fake_openid[-1].client_id == "client-a"
 
 
@@ -399,12 +400,13 @@ def test_clear_staging_failure_leaves_state_unchanged(
         if not kwargs.get("client_id"):
             msg = "OIDC client_id required when enabled"
             raise RuntimeError(msg)
-        client = MagicMock()
-        client.client_id = kwargs.get("client_id")
-        client.get_authorization_url = AsyncMock(
-            return_value="https://idp.example/authorize"
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        return build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
         )
-        return client
 
     monkeypatch.setattr(
         "miramedia.auth.runtime.OpenID",
@@ -685,9 +687,13 @@ def test_authorize_uses_request_generation_under_concurrent_swap(
     release = threading.Event()
 
     def _blocking_factory(**kwargs: object) -> MagicMock:
-        client = MagicMock()
-        client.client_id = kwargs.get("client_id")
-        client.name = kwargs.get("name", "Provider")
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        client = build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id", "client-a")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
+        )
 
         async def _slow_authorize(*_args: object, **_kwargs: object) -> str:
             entered.set()

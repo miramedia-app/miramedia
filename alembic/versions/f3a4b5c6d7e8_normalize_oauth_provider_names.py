@@ -17,6 +17,7 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 _UNIQUE_INDEX = "uq_oauth_account_oauth_name_account_id"
+_EXPECTED_COLUMNS = ("oauth_name", "account_id")
 _CROSS_USER_CONFLICT_MSG = (
     "OAuth provider migration blocked: one or more (oauth_name, account_id) pairs are "
     "bound to multiple users. Resolve the conflicting oauth_account rows manually, "
@@ -74,20 +75,44 @@ def delete_duplicate_rows_same_user(conn) -> None:
     )
 
 
-def ensure_unique_oauth_name_account_id(conn) -> None:
-    exists = conn.execute(
+def _oauth_account_unique_index_columns(conn) -> tuple[str, ...] | None:
+    row = conn.execute(
         text(
             """
-            SELECT 1
-            FROM pg_class
-            WHERE relname = :index_name
-              AND relkind = 'i'
+            SELECT array_agg(a.attname ORDER BY x.ordinality) AS columns
+            FROM pg_index i
+            JOIN pg_class t ON t.oid = i.indrelid
+            JOIN pg_namespace n ON n.oid = t.relnamespace
+            JOIN pg_class ix ON ix.oid = i.indexrelid
+            JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS x(attnum, ordinality) ON true
+            JOIN pg_attribute a
+              ON a.attrelid = t.oid
+             AND a.attnum = x.attnum
+             AND a.attnum > 0
+            WHERE t.relname = 'oauth_account'
+              AND n.nspname = current_schema()
+              AND ix.relname = :index_name
+              AND i.indisunique
+            GROUP BY ix.relname, i.indisunique
             """
         ),
         {"index_name": _UNIQUE_INDEX},
-    ).scalar()
-    if exists:
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return tuple(row[0])
+
+
+def ensure_unique_oauth_name_account_id(conn) -> None:
+    columns = _oauth_account_unique_index_columns(conn)
+    if columns == _EXPECTED_COLUMNS:
         return
+    if columns is not None:
+        msg = (
+            f"Existing index {_UNIQUE_INDEX} on oauth_account has unexpected "
+            f"columns {columns}; expected {_EXPECTED_COLUMNS}"
+        )
+        raise RuntimeError(msg)
     conn.execute(
         text(
             f"""
@@ -107,4 +132,13 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     conn = op.get_bind()
-    conn.execute(text(f"DROP INDEX IF EXISTS {_UNIQUE_INDEX}"))
+    columns = _oauth_account_unique_index_columns(conn)
+    if columns is None:
+        return
+    if columns != _EXPECTED_COLUMNS:
+        msg = (
+            f"Refusing to drop index {_UNIQUE_INDEX}: oauth_account index has "
+            f"unexpected columns {columns}"
+        )
+        raise RuntimeError(msg)
+    conn.execute(text(f"DROP INDEX {_UNIQUE_INDEX}"))

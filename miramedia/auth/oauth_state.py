@@ -16,7 +16,13 @@ from fastapi_users.jwt import SecretType
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 
 from miramedia.auth.config import OpenIdConfig, validate_session_lifetime_value
-from miramedia.auth.oauth_identity import validate_provider_key_for_snapshot
+from miramedia.auth.oauth_identity import (
+    OpenIdIssuerResolutionError,
+    assert_snapshot_provider_identity,
+    provider_key_from_issuer,
+    validate_discovery_issuer,
+    validate_provider_key_for_snapshot,
+)
 from miramedia.auth.runtime import (
     AuthRuntimeGeneration,
     _build_openid_client_sync,
@@ -49,6 +55,7 @@ class OAuthAuthorizeSnapshot:
     client_secret: str
     configuration_endpoint: str
     provider_name: str
+    openid_issuer: str
     account_provider_name: str
     frontend_url: str
     cookie_secure: bool
@@ -123,9 +130,13 @@ def _validate_snapshot_payload(data: dict[str, Any]) -> OAuthAuthorizeSnapshot:
             data["configuration_endpoint"], "configuration_endpoint"
         )
         provider_name = _nonempty_str(data["provider_name"], "provider_name")
+        openid_issuer = validate_discovery_issuer(data["openid_issuer"])
         account_provider_name = validate_provider_key_for_snapshot(
             _nonempty_str(data["account_provider_name"], "account_provider_name")
         )
+        if provider_key_from_issuer(openid_issuer) != account_provider_name:
+            msg = _SNAPSHOT_MALFORMED
+            raise OAuthAuthorizeSnapshotError(msg)
         frontend_url = _nonempty_str(data["frontend_url"], "frontend_url")
         frontend_http_url = _HTTP_URL_ADAPTER.validate_python(frontend_url)
         OpenIdConfig(
@@ -147,6 +158,7 @@ def _validate_snapshot_payload(data: dict[str, Any]) -> OAuthAuthorizeSnapshot:
         client_secret=client_secret,
         configuration_endpoint=configuration_endpoint,
         provider_name=provider_name,
+        openid_issuer=openid_issuer,
         account_provider_name=account_provider_name,
         frontend_url=str(frontend_http_url),
         cookie_secure=cookie_secure,
@@ -167,6 +179,7 @@ def snapshot_from_generation(
         client_secret=str(client.client_secret),
         configuration_endpoint=str(generation.configuration_endpoint),
         provider_name=generation.provider_name,
+        openid_issuer=generation.openid_issuer,
         account_provider_name=generation.account_provider_name,
         frontend_url=generation.frontend_url,
         cookie_secure=generation.cookie_secure,
@@ -218,6 +231,18 @@ async def auth_runtime_generation_from_snapshot(
     )
     try:
         client = await asyncio.to_thread(_build_openid_client_sync, oidc)
+        assert_snapshot_provider_identity(
+            snapshot_issuer=snapshot.openid_issuer,
+            snapshot_provider_key=snapshot.account_provider_name,
+            openid_configuration=client.openid_configuration,
+        )
+    except (ValueError, OpenIdIssuerResolutionError) as exc:
+        log.warning(
+            "OAuth authorize snapshot issuer validation failed: %s",
+            type(exc).__name__,
+        )
+        msg = _SNAPSHOT_CLIENT_INVALID
+        raise OAuthAuthorizeSnapshotError(msg) from exc
     except Exception as exc:
         log.warning(
             "OAuth authorize snapshot client activation failed: %s",
@@ -230,6 +255,7 @@ async def auth_runtime_generation_from_snapshot(
         oidc_enabled=True,
         provider_name=snapshot.provider_name,
         account_provider_name=snapshot.account_provider_name,
+        openid_issuer=snapshot.openid_issuer,
         client=client,
         configuration_endpoint=snapshot.configuration_endpoint,
         cookie_secure=snapshot.cookie_secure,

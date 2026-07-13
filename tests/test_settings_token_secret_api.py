@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from miramedia.config import MiraMediaConfig
 from tests.fakes.repositories import FakeSettingsRepository
+from tests.oauth_test_helpers import ENDPOINT_DEFAULT, build_openid_client_mock
 
 SETTINGS_PREFIX = "/api/v1/system/settings"
 
@@ -135,11 +136,12 @@ def fake_openid(monkeypatch: pytest.MonkeyPatch) -> list[MagicMock]:
     created: list[MagicMock] = []
 
     def _factory(**kwargs: object) -> MagicMock:
-        client = MagicMock()
-        client.client_id = kwargs.get("client_id")
-        client.name = kwargs.get("name", "Provider")
-        client.get_authorization_url = AsyncMock(
-            return_value="https://idp.example/authorize"
+        endpoint = str(kwargs.get("openid_configuration_endpoint", ENDPOINT_DEFAULT))
+        client = build_openid_client_mock(
+            endpoint=endpoint,
+            name=str(kwargs.get("name", "Provider")),
+            client_id=str(kwargs.get("client_id", "client-a")),
+            client_secret=str(kwargs.get("client_secret", "secret")),
         )
         created.append(client)
         return client

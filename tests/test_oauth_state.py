@@ -12,7 +12,7 @@ from miramedia.auth.oauth_state import (
     decrypt_oauth_authorize_snapshot,
     encrypt_oauth_authorize_snapshot,
 )
-from tests.oauth_test_helpers import KEY_DEFAULT
+from tests.oauth_test_helpers import ISSUER_DEFAULT, KEY_DEFAULT
 
 
 def test_encrypt_decrypt_round_trip_preserves_opaque_credential_whitespace() -> None:
@@ -21,6 +21,7 @@ def test_encrypt_decrypt_round_trip_preserves_opaque_credential_whitespace() -> 
         client_secret=" secret-with-spaces ",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,
@@ -42,6 +43,7 @@ def test_decrypt_does_not_generate_ephemeral_token_secret(
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,
@@ -73,6 +75,7 @@ def test_snapshot_session_lifetime_boundaries(
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,
@@ -94,6 +97,7 @@ def test_encrypt_decrypt_round_trip() -> None:
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,
@@ -111,6 +115,7 @@ def test_decrypt_rejects_tampered_snapshot() -> None:
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,
@@ -130,6 +135,7 @@ def test_decrypt_rejects_wrong_secret() -> None:
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,
@@ -146,6 +152,7 @@ def test_decrypt_rejects_string_bool_cookie_secure() -> None:
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost:8000/",
         cookie_secure=False,
@@ -176,6 +183,7 @@ def test_decrypt_rejects_expired_snapshot(monkeypatch: pytest.MonkeyPatch) -> No
         client_secret="secret-a",
         configuration_endpoint="https://idp.example/.well-known/openid-configuration",
         provider_name="Display",
+        openid_issuer=ISSUER_DEFAULT,
         account_provider_name=KEY_DEFAULT,
         frontend_url="http://localhost/",
         cookie_secure=False,

@@ -187,3 +187,38 @@ def test_failed_put_rollback_preserves_prior_overrides(
 
     assert response.status_code == 500
     assert fake_repo.overrides == {"misc": {"development": True}}
+
+
+def test_explicit_nullable_removes_authoritative_override() -> None:
+    repo = FakeSettingsRepository(overrides={"auth": {"cookie_secure": True}})
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.put(
+            SETTINGS_PREFIX,
+            json={"auth": {"cookie_secure": None}},
+        )
+
+    assert response.status_code == 200
+    assert fake_repo.overrides == {}
+    assert response.json()["auth"]["cookie_secure"] is None
+
+
+def test_omitted_nullable_preserves_authoritative_override() -> None:
+    repo = FakeSettingsRepository(overrides={"auth": {"cookie_secure": True}})
+
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.put(
+            SETTINGS_PREFIX,
+            json={"misc": {"development": True}},
+        )
+
+    assert response.status_code == 200
+    assert fake_repo.overrides["auth"]["cookie_secure"] is True
+
+
+def test_compute_mutation_overrides_removes_nullable_override_explicitly() -> None:
+    result = compute_mutation_overrides(
+        {"auth": {"cookie_secure": True}},
+        {"auth": {"cookie_secure": None}},
+    )
+    assert result == {}
