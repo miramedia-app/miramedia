@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
@@ -48,14 +49,23 @@ class _IntegrityShowRepo(FakeShowRepository):
         ]
 
     async def clear_file_integrity_state(
-        self, file_id: uuid.UUID, *, reset_sha1: bool
+        self,
+        file_id: uuid.UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
     ) -> bool:
         row = self.episode_files.get(file_id)
         if row is None:
             return False
-        if row.import_status != ImportOutcome.imported or not (
-            row.import_error or ""
-        ).startswith("sha1 mismatch"):
+        import_error = row.import_error or ""
+        if (
+            row.import_status != ImportOutcome.imported
+            or not import_error.startswith("sha1 mismatch")
+            or row.sha1 != expected_sha1
+            or import_error != expected_import_error
+        ):
             return False
         update: dict[str, Any] = {"import_error": None}
         if reset_sha1:
@@ -77,14 +87,23 @@ class _IntegrityMovieRepo(FakeMovieRepository):
         ]
 
     async def clear_file_integrity_state(
-        self, file_id: uuid.UUID, *, reset_sha1: bool
+        self,
+        file_id: uuid.UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
     ) -> bool:
         row = self.movie_files.get(file_id)
         if row is None:
             return False
-        if row.import_status != ImportOutcome.imported or not (
-            row.import_error or ""
-        ).startswith("sha1 mismatch"):
+        import_error = row.import_error or ""
+        if (
+            row.import_status != ImportOutcome.imported
+            or not import_error.startswith("sha1 mismatch")
+            or row.sha1 != expected_sha1
+            or import_error != expected_import_error
+        ):
             return False
         update: dict[str, Any] = {"import_error": None}
         if reset_sha1:
@@ -485,6 +504,117 @@ def test_integrity_404_unknown_id() -> None:
     with integrity_client() as (client, _, _):
         r = client.post(f"{PREFIX}/integrity/show/{uuid.uuid4()}/rebaseline")
     assert r.status_code == 404
+
+
+class _RacyDismissShowRepo(_IntegrityShowRepo):
+    async def clear_file_integrity_state(
+        self,
+        file_id: uuid.UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
+    ) -> bool:
+        row = self.episode_files.get(file_id)
+        if row is not None:
+            self.episode_files[file_id] = row.model_copy(
+                update={
+                    "sha1": "cccccccccccccccccccccccccccccccccccccccc",
+                    "import_error": "sha1 mismatch (expected c…, got d…)",
+                }
+            )
+        return await super().clear_file_integrity_state(
+            file_id,
+            expected_sha1=expected_sha1,
+            expected_import_error=expected_import_error,
+            reset_sha1=reset_sha1,
+        )
+
+
+class _RacyDismissMovieRepo(_IntegrityMovieRepo):
+    async def clear_file_integrity_state(
+        self,
+        file_id: uuid.UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
+    ) -> bool:
+        row = self.movie_files.get(file_id)
+        if row is not None:
+            self.movie_files[file_id] = row.model_copy(
+                update={
+                    "sha1": "cccccccccccccccccccccccccccccccccccccccc",
+                    "import_error": "sha1 mismatch (expected c…, got d…)",
+                }
+            )
+        return await super().clear_file_integrity_state(
+            file_id,
+            expected_sha1=expected_sha1,
+            expected_import_error=expected_import_error,
+            reset_sha1=reset_sha1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("media_type", "endpoint_action", "repo_cls"),
+    [
+        ("show", "dismiss", _RacyDismissShowRepo),
+        ("show", "rebaseline", _RacyDismissShowRepo),
+        ("movie", "dismiss", _RacyDismissMovieRepo),
+        ("movie", "rebaseline", _RacyDismissMovieRepo),
+    ],
+)
+def test_integrity_action_409_when_row_changes_after_read(
+    media_type: str, endpoint_action: str, repo_cls
+) -> None:
+    sha1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    import_error = "sha1 mismatch (expected a…, got b…)"
+    if media_type == "show":
+        show = make_show()
+        repo = repo_cls()
+        repo.add_show(show)
+        episode = show.seasons[0].episodes[0]
+        fid = uuid.uuid4()
+        repo.episode_files[fid] = EpisodeFile(
+            id=fid,
+            episode_id=episode.id,
+            quality=Quality.hd,
+            torrent_id=None,
+            import_status=ImportOutcome.imported,
+            import_error=import_error,
+            sha1=sha1,
+        )
+        with integrity_client(show_repo=repo) as (client, _, _):
+            r = client.post(f"{PREFIX}/integrity/show/{fid}/{endpoint_action}")
+        assert r.status_code == 409, r.text
+        assert (
+            repo.episode_files[fid].import_error
+            == "sha1 mismatch (expected c…, got d…)"
+        )
+        assert (
+            repo.episode_files[fid].sha1 == "cccccccccccccccccccccccccccccccccccccccc"
+        )
+    else:
+        movie = make_movie()
+        repo = repo_cls()
+        repo.add_movie(movie)
+        mid = uuid.uuid4()
+        repo.movie_files[mid] = MovieFile(
+            id=mid,
+            movie_id=movie.id,
+            quality=Quality.hd,
+            import_status=ImportOutcome.imported,
+            import_error=import_error,
+            sha1=sha1,
+        )
+        with integrity_client(movie_repo=repo) as (client, _, _):
+            r = client.post(f"{PREFIX}/integrity/movie/{mid}/{endpoint_action}")
+        assert r.status_code == 409, r.text
+        assert (
+            repo.movie_files[mid].import_error == "sha1 mismatch (expected c…, got d…)"
+        )
+        assert repo.movie_files[mid].sha1 == "cccccccccccccccccccccccccccccccccccccccc"
 
 
 def test_integrity_requires_superuser() -> None:

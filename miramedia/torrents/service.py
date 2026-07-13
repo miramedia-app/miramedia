@@ -1956,16 +1956,36 @@ class TorrentService:
             if row is None:
                 msg = f"File {file_id} not found"
                 raise NotFoundError(msg)
+            import_error = row.import_error or ""
+            if (
+                row.import_status != ImportOutcome.imported
+                or not import_error.startswith("sha1 mismatch")
+            ):
+                msg = "Integrity mismatch is no longer present for this file"
+                raise ConflictError(msg)
             cleared = await show_service.show_repository.clear_file_integrity_state(
-                file_id, reset_sha1=reset_sha1
+                file_id,
+                expected_sha1=row.sha1,
+                expected_import_error=import_error,
+                reset_sha1=reset_sha1,
             )
         elif media_type == MediaType.movie:
             row = await movie_service.movie_repository.get_movie_file_by_id(file_id)
             if row is None:
                 msg = f"File {file_id} not found"
                 raise NotFoundError(msg)
+            import_error = row.import_error or ""
+            if (
+                row.import_status != ImportOutcome.imported
+                or not import_error.startswith("sha1 mismatch")
+            ):
+                msg = "Integrity mismatch is no longer present for this file"
+                raise ConflictError(msg)
             cleared = await movie_service.movie_repository.clear_file_integrity_state(
-                file_id, reset_sha1=reset_sha1
+                file_id,
+                expected_sha1=row.sha1,
+                expected_import_error=import_error,
+                reset_sha1=reset_sha1,
             )
         else:
             msg = f"File {file_id} not found"

@@ -70,6 +70,27 @@ def integrity_mismatch_action_where(
     )
 
 
+def integrity_mismatch_action_snapshot_where(
+    file_table: IntegrityFileModel,
+    file_id: UUID,
+    *,
+    expected_sha1: str | None,
+    expected_import_error: str,
+) -> ColumnElement[bool]:
+    """Row must still match the mismatch fields observed when the action started."""
+    if expected_sha1 is None:
+        sha_predicate = file_table.sha1.is_(None)
+    else:
+        sha_predicate = file_table.sha1.is_not_distinct_from(expected_sha1)
+    return and_(
+        file_table.id == file_id,
+        file_table.import_status == ImportOutcome.imported,
+        file_table.import_error.like(_MISMATCH_ERROR_PREFIX),
+        file_table.import_error.is_not_distinct_from(expected_import_error),
+        sha_predicate,
+    )
+
+
 _CHUNK = 1024 * 1024  # 1 MiB
 
 

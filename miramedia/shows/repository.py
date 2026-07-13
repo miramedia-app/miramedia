@@ -28,7 +28,7 @@ from miramedia.shows.schemas import Season as SeasonSchema
 from miramedia.shows.schemas import Show as ShowSchema
 from miramedia.torrents.integrity import (
     integrity_audit_snapshot_where,
-    integrity_mismatch_action_where,
+    integrity_mismatch_action_snapshot_where,
 )
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
@@ -923,13 +923,17 @@ class ShowRepository:
             raise
 
     async def clear_file_integrity_state(
-        self, file_id: UUID, *, reset_sha1: bool
+        self,
+        file_id: UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
     ) -> bool:
-        """Clear mismatch state when the row still has an active SHA1 mismatch.
+        """Clear mismatch state when the row still matches the action snapshot.
 
         Returns ``True`` when a row was updated. Returns ``False`` when the row
-        is unknown or no longer has a mismatch stamp. Does not change
-        ``import_status``.
+        is unknown or no longer matches the observed mismatch fields.
         """
         values: dict[str, object] = {"import_error": None}
         if reset_sha1:
@@ -937,7 +941,14 @@ class ShowRepository:
         try:
             stmt = (
                 update(EpisodeFile)
-                .where(integrity_mismatch_action_where(EpisodeFile, file_id))
+                .where(
+                    integrity_mismatch_action_snapshot_where(
+                        EpisodeFile,
+                        file_id,
+                        expected_sha1=expected_sha1,
+                        expected_import_error=expected_import_error,
+                    )
+                )
                 .values(**values)
             )
             result = await self.db.execute(stmt)

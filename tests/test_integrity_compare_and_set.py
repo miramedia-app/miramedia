@@ -19,17 +19,19 @@ from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.models import MovieFile
 from miramedia.movies.repository import MovieRepository
+from miramedia.movies.schemas import MovieFile as MovieFileSchema
 from miramedia.shows.models import EpisodeFile
 from miramedia.shows.repository import ShowRepository
 from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.torrents.integrity import (
     integrity_audit_snapshot_where,
+    integrity_mismatch_action_snapshot_where,
     integrity_mismatch_action_where,
 )
 from miramedia.torrents.schemas import MediaType, Quality
 from miramedia.torrents.service import TorrentService
 from tests.fakes.config import fake_scheduler_config
-from tests.fakes.repositories import FakeTorrentRepository, make_show
+from tests.fakes.repositories import FakeTorrentRepository, make_movie, make_show
 from tests.fakes.scheduler import (
     FakeMoviePathService,
     FakeShowService,
@@ -524,6 +526,202 @@ def test_current_audit_baseline_and_mismatch_still_apply(
     assert baseline_row.sha1 == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     assert (mismatch_row.import_error or "").startswith("sha1 mismatch")
     assert len(write_session.updates) == 2
+
+
+def test_mismatch_action_snapshot_predicate_requires_exact_sha1_and_error() -> None:
+    file_id = uuid.uuid4()
+    sha1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    error = "sha1 mismatch (expected aaaaaaaa…, got bbbbbbbb…)"
+    where = integrity_mismatch_action_snapshot_where(
+        EpisodeFile,
+        file_id,
+        expected_sha1=sha1,
+        expected_import_error=error,
+    )
+    sql = _compile_sql(where)
+    assert f"episode_file.id = '{file_id}'" in sql
+    assert "episode_file.import_error LIKE" in sql
+    assert sql.count("IS NOT DISTINCT FROM") == 2
+    assert sha1 in sql
+    assert error in sql
+
+
+class _InterleavedShowRepo(_IntegrityShowRepo):
+    async def clear_file_integrity_state(
+        self,
+        file_id: uuid.UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
+    ) -> bool:
+        row = self.episode_files.get(file_id)
+        if row is not None:
+            self.episode_files[file_id] = row.model_copy(
+                update={
+                    "sha1": "cccccccccccccccccccccccccccccccccccccccc",
+                    "import_error": "sha1 mismatch (expected cccccccc…, got dddddddd…)",
+                }
+            )
+        return await super().clear_file_integrity_state(
+            file_id,
+            expected_sha1=expected_sha1,
+            expected_import_error=expected_import_error,
+            reset_sha1=reset_sha1,
+        )
+
+
+class _InterleavedMovieRepo(_IntegrityMovieRepo):
+    async def clear_file_integrity_state(
+        self,
+        file_id: uuid.UUID,
+        *,
+        expected_sha1: str | None,
+        expected_import_error: str,
+        reset_sha1: bool,
+    ) -> bool:
+        row = self.movie_files.get(file_id)
+        if row is not None:
+            self.movie_files[file_id] = row.model_copy(
+                update={
+                    "sha1": "cccccccccccccccccccccccccccccccccccccccc",
+                    "import_error": "sha1 mismatch (expected cccccccc…, got dddddddd…)",
+                }
+            )
+        return await super().clear_file_integrity_state(
+            file_id,
+            expected_sha1=expected_sha1,
+            expected_import_error=expected_import_error,
+            reset_sha1=reset_sha1,
+        )
+
+
+def _mismatch_episode_file(show, *, sha1: str, import_error: str) -> EpisodeFileSchema:
+    episode = show.seasons[0].episodes[0]
+    return EpisodeFileSchema(
+        id=uuid.uuid4(),
+        episode_id=episode.id,
+        quality=Quality.hd,
+        torrent_id=None,
+        import_status=ImportOutcome.imported,
+        import_error=import_error,
+        sha1=sha1,
+    )
+
+
+def _mismatch_movie_file(movie, *, sha1: str, import_error: str) -> MovieFileSchema:
+    return MovieFileSchema(
+        id=uuid.uuid4(),
+        movie_id=movie.id,
+        quality=Quality.hd,
+        import_status=ImportOutcome.imported,
+        import_error=import_error,
+        sha1=sha1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("media_type", "action", "reset_sha1", "repo_factory", "file_factory"),
+    [
+        (
+            MediaType.show,
+            "rebaseline",
+            True,
+            _InterleavedShowRepo,
+            lambda show, sha1, err: _mismatch_episode_file(
+                show, sha1=sha1, import_error=err
+            ),
+        ),
+        (
+            MediaType.show,
+            "dismiss",
+            False,
+            _InterleavedShowRepo,
+            lambda show, sha1, err: _mismatch_episode_file(
+                show, sha1=sha1, import_error=err
+            ),
+        ),
+        (
+            MediaType.movie,
+            "rebaseline",
+            True,
+            _InterleavedMovieRepo,
+            lambda movie, sha1, err: _mismatch_movie_file(
+                movie, sha1=sha1, import_error=err
+            ),
+        ),
+        (
+            MediaType.movie,
+            "dismiss",
+            False,
+            _InterleavedMovieRepo,
+            lambda movie, sha1, err: _mismatch_movie_file(
+                movie, sha1=sha1, import_error=err
+            ),
+        ),
+    ],
+)
+def test_action_conflict_when_row_changes_after_read(
+    media_type: MediaType,
+    action: str,
+    reset_sha1: bool,
+    repo_factory,
+    file_factory,
+) -> None:
+    sha1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    import_error = "sha1 mismatch (expected aaaaaaaa…, got bbbbbbbb…)"
+    svc = TorrentService(torrent_repository=FakeTorrentRepository())  # type: ignore[arg-type]
+
+    if media_type == MediaType.show:
+        show = make_show()
+        repo = repo_factory()
+        repo.add_show(show)
+        row = file_factory(show, sha1, import_error)
+        repo.episode_files[row.id] = row
+        show_svc = _show_service(repo, {})
+        movie_svc = _movie_service(_IntegrityMovieRepo(), {})
+    else:
+        movie = make_movie()
+        repo = repo_factory()
+        repo.add_movie(movie)
+        row = file_factory(movie, sha1, import_error)
+        repo.movie_files[row.id] = row
+        show_svc = _show_service(_IntegrityShowRepo(), {})
+        movie_svc = _movie_service(repo, {})
+
+    def _invoke_action() -> None:
+        if action == "rebaseline":
+            _run(
+                svc.rebaseline_file(
+                    media_type=media_type,
+                    file_id=row.id,
+                    show_service=show_svc,
+                    movie_service=movie_svc,
+                )
+            )
+            return
+        _run(
+            svc.dismiss_mismatch(
+                media_type=media_type,
+                file_id=row.id,
+                show_service=show_svc,
+                movie_service=movie_svc,
+            )
+        )
+
+    with pytest.raises(ConflictError):
+        _invoke_action()
+
+    stored = (
+        repo.episode_files[row.id]
+        if media_type == MediaType.show
+        else repo.movie_files[row.id]
+    )
+    assert stored.sha1 == "cccccccccccccccccccccccccccccccccccccccc"
+    assert stored.import_error == "sha1 mismatch (expected cccccccc…, got dddddddd…)"
+    if reset_sha1:
+        assert stored.sha1 is not None
+    assert (stored.import_error or "").startswith("sha1 mismatch")
 
 
 def test_rebaseline_conflict_when_mismatch_already_cleared() -> None:
