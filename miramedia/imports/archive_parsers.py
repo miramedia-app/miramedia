@@ -3,21 +3,22 @@
 from __future__ import annotations
 
 import bz2
+import contextlib
 import gzip
-import lzma
 import stat as stat_mod
 import struct
 import tarfile
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import IO, cast
+from typing import IO, NamedTuple, cast
 
 from miramedia.imports.archive_extraction import (
     ArchiveExtractionError,
     _copy_stream_bounded,
     _enforce_entry_count,
     _enforce_limits,
+    _EntryPathRegistry,
     _ExpandedByteBudget,
     _safe_relative_path,
     _validate_entry_name,
@@ -28,6 +29,8 @@ _MAX_ZIP_CENTRAL_DIRECTORY_BYTES = 64 * 1024 * 1024
 _EOCD_STRUCT = struct.Struct("<4sHHHHIIH")
 _EOCD_SIGNATURE = b"PK\x05\x06"
 _ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
+_CD_HEADER_STRUCT = struct.Struct("<4sHHHHHHIIIHHHHHII")
+_CD_HEADER_SIGNATURE = b"PK\x01\x02"
 _APPROVED_TAR_TYPES = frozenset(
     {
         tarfile.REGTYPE,
@@ -38,56 +41,171 @@ _APPROVED_TAR_TYPES = frozenset(
 )
 
 
-def preflight_zip_archive(archive: Path) -> None:
-    size = archive.stat().st_size
-    if size < _EOCD_STRUCT.size:
+class _ZipCentralDirectoryPreflight(NamedTuple):
+    entry_count: int
+    central_directory_offset: int
+    central_directory_size: int
+
+
+def preflight_zip_archive(archive: Path) -> _ZipCentralDirectoryPreflight:
+    file_size = archive.stat().st_size
+    if file_size < _EOCD_STRUCT.size:
         msg = "malformed zip archive"
         raise ArchiveExtractionError(msg)
+
     with archive.open("rb") as handle:
-        handle.seek(max(0, size - 65557))
+        handle.seek(max(0, file_size - 65557))
         tail = handle.read()
     if _ZIP64_LOCATOR_SIGNATURE in tail:
         msg = "zip64 archives are not supported"
         raise ArchiveExtractionError(msg)
-    offset = tail.rfind(_EOCD_SIGNATURE)
-    if offset < 0 or len(tail) - offset < _EOCD_STRUCT.size:
-        msg = "malformed zip archive"
-        raise ArchiveExtractionError(msg)
+
+    eocd_offset, fields = _locate_eocd_at_eof(archive, file_size)
     (
         _signature,
-        _disk_no,
-        _disk_with_cd,
+        disk_no,
+        disk_with_cd,
         entries_on_disk,
         entry_count,
         central_directory_size,
-        _cd_offset,
-        comment_length,
-    ) = _EOCD_STRUCT.unpack(tail[offset : offset + _EOCD_STRUCT.size])
+        central_directory_offset,
+        _comment_length,
+    ) = fields
+
+    if disk_no != 0 or disk_with_cd != 0:
+        msg = "multi-disk zip archives are not supported"
+        raise ArchiveExtractionError(msg)
     if entries_on_disk == 0xFFFF or entry_count == 0xFFFF:
         msg = "zip64 archives are not supported"
         raise ArchiveExtractionError(msg)
-    if central_directory_size == 0xFFFFFFFF:
+    if central_directory_size == 0xFFFFFFFF or central_directory_offset == 0xFFFFFFFF:
         msg = "zip64 archives are not supported"
         raise ArchiveExtractionError(msg)
-    _enforce_entry_count(max(entry_count, entries_on_disk))
+    if entries_on_disk != entry_count:
+        msg = "zip central directory entry counts disagree"
+        raise ArchiveExtractionError(msg)
     if central_directory_size > _MAX_ZIP_CENTRAL_DIRECTORY_BYTES:
         msg = "zip central directory exceeds size limit"
         raise ArchiveExtractionError(msg)
-    if comment_length and offset + _EOCD_STRUCT.size + comment_length > len(tail):
-        msg = "malformed zip archive"
+    if central_directory_offset > file_size:
+        msg = "zip central directory offset out of bounds"
         raise ArchiveExtractionError(msg)
+    if central_directory_offset + central_directory_size != eocd_offset:
+        msg = "zip central directory is not adjacent to end-of-central-directory"
+        raise ArchiveExtractionError(msg)
+
+    actual_count = _parse_zip_central_directory(
+        archive,
+        central_directory_offset,
+        central_directory_size,
+    )
+    if actual_count != entry_count:
+        msg = (
+            "zip central directory record count disagrees with end-of-central-directory"
+        )
+        raise ArchiveExtractionError(msg)
+    _enforce_entry_count(actual_count)
+    return _ZipCentralDirectoryPreflight(
+        actual_count,
+        central_directory_offset,
+        central_directory_size,
+    )
+
+
+def _locate_eocd_at_eof(archive: Path, file_size: int) -> tuple[int, tuple]:
+    max_comment = 0xFFFF
+    read_size = min(file_size, _EOCD_STRUCT.size + max_comment)
+    with archive.open("rb") as handle:
+        handle.seek(file_size - read_size)
+        tail = handle.read()
+    for pos in range(len(tail) - _EOCD_STRUCT.size, -1, -1):
+        if tail[pos : pos + 4] != _EOCD_SIGNATURE:
+            continue
+        if len(tail) - pos < _EOCD_STRUCT.size:
+            continue
+        fields = _EOCD_STRUCT.unpack(tail[pos : pos + _EOCD_STRUCT.size])
+        comment_length = fields[-1]
+        record_end = pos + _EOCD_STRUCT.size + comment_length
+        if record_end != len(tail):
+            continue
+        absolute_offset = file_size - read_size + pos
+        return absolute_offset, fields
+    msg = "malformed zip archive"
+    raise ArchiveExtractionError(msg)
+
+
+def _parse_zip_central_directory(
+    archive: Path,
+    offset: int,
+    size: int,
+) -> int:
+    actual_count = 0
+    with archive.open("rb") as handle:
+        handle.seek(offset)
+        end = offset + size
+        while handle.tell() < end:
+            header = handle.read(_CD_HEADER_STRUCT.size)
+            if len(header) != _CD_HEADER_STRUCT.size:
+                msg = "truncated zip central directory header"
+                raise ArchiveExtractionError(msg)
+            (
+                signature,
+                _version_made,
+                _version_needed,
+                _flags,
+                _compression,
+                _mtime,
+                _mdate,
+                _crc,
+                _compressed_size,
+                _uncompressed_size,
+                filename_length,
+                extra_length,
+                comment_length,
+                disk_start,
+                _internal_attr,
+                _external_attr,
+                _local_header_offset,
+            ) = _CD_HEADER_STRUCT.unpack(header)
+            if signature != _CD_HEADER_SIGNATURE:
+                msg = "malformed zip central directory header"
+                raise ArchiveExtractionError(msg)
+            if disk_start != 0:
+                msg = "multi-disk zip archives are not supported"
+                raise ArchiveExtractionError(msg)
+            variable_length = filename_length + extra_length + comment_length
+            if handle.tell() + variable_length > end:
+                msg = "truncated zip central directory entry"
+                raise ArchiveExtractionError(msg)
+            filename = handle.read(filename_length)
+            if len(filename) != filename_length:
+                msg = "truncated zip central directory filename"
+                raise ArchiveExtractionError(msg)
+            handle.read(extra_length + comment_length)
+            entry_name = filename.decode("utf-8", errors="surrogateescape")
+            _validate_entry_name(entry_name)
+            actual_count += 1
+            _enforce_entry_count(actual_count)
+        if handle.tell() != end:
+            msg = "zip central directory size mismatch"
+            raise ArchiveExtractionError(msg)
+    return actual_count
 
 
 def extract_zip_archive(
     archive: Path,
     staging: Path,
     budget: _ExpandedByteBudget,
+    path_registry: _EntryPathRegistry,
 ) -> None:
-    preflight_zip_archive(archive)
+    preflight = preflight_zip_archive(archive)
     try:
         with zipfile.ZipFile(archive) as zf:
             infos = list(zf.infolist())
-            _validate_zip_entries(infos)
+            if len(infos) != preflight.entry_count:
+                msg = "zip entry list size disagrees with central directory"
+                raise ArchiveExtractionError(msg)
+            _validate_zip_entries(infos, path_registry)
             for info in infos:
                 if info.is_dir():
                     _safe_relative_path(staging, info.filename).mkdir(
@@ -112,12 +230,15 @@ def extract_zip_archive(
         raise
 
 
-def _validate_zip_entries(infos: Iterable[zipfile.ZipInfo]) -> None:
+def _validate_zip_entries(
+    infos: Iterable[zipfile.ZipInfo],
+    path_registry: _EntryPathRegistry,
+) -> None:
     entry_count = 0
     total_bytes = 0
     for info in infos:
         entry_count += 1
-        _validate_entry_name(info.filename)
+        path_registry.register(info.filename)
         if info.is_dir():
             _enforce_entry_count(entry_count)
             continue
@@ -132,37 +253,42 @@ def extract_tar_archive(
     archive: Path,
     staging: Path,
     budget: _ExpandedByteBudget,
+    path_registry: _EntryPathRegistry,
     *,
     compression: str | None,
 ) -> None:
     try:
         with _open_tar_stream(archive, compression) as stream:
-            _parse_tar_stream(stream, staging, budget)
+            _parse_tar_stream(stream, staging, budget, path_registry)
     except ArchiveExtractionError:
         raise
-    except (tarfile.TarError, OSError, lzma.LZMAError, EOFError) as exc:
+    except (tarfile.TarError, OSError, EOFError) as exc:
         msg = f"tar extraction failed: {exc}"
         raise ArchiveExtractionError(msg) from exc
 
 
-def _open_tar_stream(archive: Path, compression: str | None) -> IO[bytes]:
-    raw = archive.open("rb")
+@contextlib.contextmanager
+def _open_tar_stream(archive: Path, compression: str | None) -> Iterator[IO[bytes]]:
     if compression is None:
-        return raw
+        with archive.open("rb") as stream:
+            yield stream
+        return
     if compression == "gz":
-        return cast(IO[bytes], gzip.GzipFile(fileobj=raw))
-    if compression == "bz2":
-        return cast(IO[bytes], bz2.BZ2File(raw))
-    if compression == "xz":
-        return cast(IO[bytes], lzma.LZMAFile(raw))
-    msg = f"unsupported tar compression: {compression}"
-    raise ArchiveExtractionError(msg)
+        opener = gzip.open
+    elif compression == "bz2":
+        opener = bz2.open
+    else:
+        msg = f"unsupported tar compression: {compression}"
+        raise ArchiveExtractionError(msg)
+    with opener(archive, "rb") as stream:
+        yield cast(IO[bytes], stream)
 
 
 def _parse_tar_stream(
     stream: IO[bytes],
     staging: Path,
     budget: _ExpandedByteBudget,
+    path_registry: _EntryPathRegistry,
 ) -> None:
     entry_count = 0
     while True:
@@ -183,13 +309,15 @@ def _parse_tar_stream(
             raise ArchiveExtractionError(msg) from exc
         entry_count += 1
         _enforce_entry_count(entry_count)
-        _validate_entry_name(member.name)
+        path_registry.register(member.name)
         if member.isdir():
+            if member.size != 0:
+                msg = "tar directory entry declares payload"
+                raise ArchiveExtractionError(msg)
             _safe_relative_path(staging, member.name).mkdir(
                 parents=True,
                 exist_ok=True,
             )
-            _skip_tar_payload(stream, member.size)
             continue
         if not member.isreg():
             msg = f"unsupported tar entry type: {member.type!r}"
@@ -227,17 +355,6 @@ def _copy_tar_payload(
         remaining -= len(chunk)
 
 
-def _skip_tar_payload(stream: IO[bytes], size: int) -> None:
-    remaining = size
-    while remaining > 0:
-        skipped = stream.read(min(64 * 1024, remaining))
-        if not skipped:
-            msg = "unexpected end of tar archive"
-            raise ArchiveExtractionError(msg)
-        remaining -= len(skipped)
-    _skip_tar_padding(stream, size)
-
-
 def _skip_tar_padding(stream: IO[bytes], size: int) -> None:
     padding = (_TAR_BLOCK - (size % _TAR_BLOCK)) % _TAR_BLOCK
     if padding:
@@ -248,10 +365,11 @@ def extract_gzip_archive(
     archive: Path,
     staging: Path,
     budget: _ExpandedByteBudget,
+    path_registry: _EntryPathRegistry,
     *,
     out_name: str,
 ) -> None:
-    _validate_entry_name(out_name)
+    path_registry.register(out_name)
     _enforce_entry_count(1)
     rel = _safe_relative_path(staging, out_name)
     rel.parent.mkdir(parents=True, exist_ok=True)
@@ -267,10 +385,11 @@ def extract_bzip2_archive(
     archive: Path,
     staging: Path,
     budget: _ExpandedByteBudget,
+    path_registry: _EntryPathRegistry,
     *,
     out_name: str,
 ) -> None:
-    _validate_entry_name(out_name)
+    path_registry.register(out_name)
     _enforce_entry_count(1)
     rel = _safe_relative_path(staging, out_name)
     rel.parent.mkdir(parents=True, exist_ok=True)

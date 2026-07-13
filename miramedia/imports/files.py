@@ -9,7 +9,6 @@ domain, not the torrents domain.
 """
 
 import logging
-import mimetypes
 import re
 import shutil
 from collections.abc import Iterable, Mapping
@@ -17,8 +16,8 @@ from pathlib import Path, UnsupportedOperation
 
 from miramedia.imports.archive_extraction import (
     ArchiveExtractionError,
+    classify_archive,
     extract_archive_to_directory,
-    is_archive_mime,
 )
 from miramedia.torrents.parsing import (
     is_sample_or_extra,
@@ -126,25 +125,33 @@ def list_files_recursively(path: Path = Path()) -> list[Path]:
 
 def extract_archives(files: list) -> None:
     for file in files:
-        file_type = mimetypes.guess_type(file)
+        classification = classify_archive(file)
+        if classification is None:
+            continue
         if log.isEnabledFor(logging.DEBUG):
             log.debug(
-                "File: %s, Size: %d bytes, Type: %s",
+                "File: %s, Size: %d bytes, classification: %s",
                 file,
                 file.stat().st_size,
-                file_type,
+                classification,
             )
-
-        if is_archive_mime(file_type[0]):
-            log.info(
-                "File %s is a compressed file, extracting it safely into directory %s",
+        if classification.disposition == "unsupported":
+            log.warning(
+                "Skipping unsupported archive %s (format=%s)",
                 file,
-                file.parent,
+                classification.format,
             )
-            try:
-                extract_archive_to_directory(file, file.parent)
-            except ArchiveExtractionError:
-                log.exception("Failed to safely extract archive %s", file)
+            continue
+        log.info(
+            "File %s is archive format %s, extracting safely into directory %s",
+            file,
+            classification.format,
+            file.parent,
+        )
+        try:
+            extract_archive_to_directory(file, file.parent)
+        except ArchiveExtractionError:
+            log.exception("Failed to safely extract archive %s", file)
 
 
 def import_file(

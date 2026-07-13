@@ -2,7 +2,8 @@
 
 Untrusted archives are never extracted directly into import directories.
 Extraction happens in a restrictive staging area; entries are validated for
-containment, regular-file policy, and resource limits before promotion.
+containment, regular-file policy, and resource limits before publication
+into a digest-named container beneath the destination.
 
 Format policy
 -------------
@@ -21,12 +22,14 @@ Unsupported (fail closed):
 from __future__ import annotations
 
 import logging
+import ntpath
 import re
 import shutil
 import stat
 import tempfile
+import unicodedata
 from pathlib import Path, PurePosixPath
-from typing import Protocol
+from typing import Literal, NamedTuple, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -37,32 +40,6 @@ _COPY_CHUNK_SIZE = 64 * 1024
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:", re.ASCII)
 _FORBIDDEN_PERCENT_SEQUENCES = ("%2f", "%5c", "%2e%2e", "%00")
-_RESERVED_WINDOWS_NAMES = frozenset(
-    {
-        "CON",
-        "PRN",
-        "AUX",
-        "NUL",
-        "COM1",
-        "COM2",
-        "COM3",
-        "COM4",
-        "COM5",
-        "COM6",
-        "COM7",
-        "COM8",
-        "COM9",
-        "LPT1",
-        "LPT2",
-        "LPT3",
-        "LPT4",
-        "LPT5",
-        "LPT6",
-        "LPT7",
-        "LPT8",
-        "LPT9",
-    },
-)
 
 RETAINED_ARCHIVE_FORMATS = frozenset(
     {"zip", "tar", "tar.gz", "tar.bz2", "gzip", "bzip2"},
@@ -99,6 +76,13 @@ class ArchiveExtractionError(Exception):
     """Raised when an archive cannot be extracted safely."""
 
 
+class ArchiveClassification(NamedTuple):
+    """Public archive classification for import routing."""
+
+    format: str
+    disposition: Literal["retained", "unsupported"]
+
+
 class _ExpandedByteBudget:
     def __init__(self, limit: int | None = None) -> None:
         self._limit = MAX_EXPANDED_BYTES if limit is None else limit
@@ -119,6 +103,19 @@ class _ExpandedByteBudget:
             raise ArchiveExtractionError(msg)
 
 
+class _EntryPathRegistry:
+    def __init__(self) -> None:
+        self._seen: set[str] = set()
+
+    def register(self, name: str) -> None:
+        _validate_entry_name(name)
+        key = _logical_entry_key(name)
+        if key in self._seen:
+            msg = f"duplicate archive entry path: {name!r}"
+            raise ArchiveExtractionError(msg)
+        self._seen.add(key)
+
+
 class _Readable(Protocol):
     def read(self, size: int = -1, /) -> bytes: ...
 
@@ -131,40 +128,83 @@ def is_archive_mime(mime: str | None) -> bool:
     return mime in _ARCHIVE_MIME_TYPES
 
 
-def extract_archive_to_directory(archive: Path, destination_dir: Path) -> None:
-    """Extract ``archive`` into ``destination_dir`` after staging validation."""
+def classify_archive(path: Path) -> ArchiveClassification | None:
+    """Classify ``path`` using extension, MIME type, and content encoding.
+
+    Returns ``None`` when the path is ordinary media rather than a known
+    archive family (retained or explicitly unsupported).
+    """
+    archive_format = _identify_archive_format(path)
+    if archive_format is None:
+        return None
+    if archive_format in RETAINED_ARCHIVE_FORMATS:
+        return ArchiveClassification(archive_format, "retained")
+    return ArchiveClassification(archive_format, "unsupported")
+
+
+def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
+    """Extract ``archive`` into a digest container beneath ``destination_dir``."""
     archive = archive.resolve()
     destination_dir = destination_dir.resolve()
     if not archive.is_file():
         msg = f"archive does not exist: {archive}"
         raise ArchiveExtractionError(msg)
-    if not destination_dir.is_dir():
+    if destination_dir.is_symlink():
+        msg = f"destination must not be a symlink: {destination_dir}"
+        raise ArchiveExtractionError(msg)
+    destination_stat = destination_dir.lstat()
+    if not stat.S_ISDIR(destination_stat.st_mode):
         msg = f"destination is not a directory: {destination_dir}"
         raise ArchiveExtractionError(msg)
 
-    staging = _create_staging_dir(destination_dir.parent)
-    primary_error: BaseException | None = None
-    try:
-        archive_format = _detect_format(archive)
-        _extract_to_staging(archive, staging, archive_format)
-        files = _collect_validated_regular_files(staging)
-        from miramedia.imports.archive_promotion import promote_files
+    classification = classify_archive(archive)
+    if classification is None:
+        msg = f"unsupported archive format: {archive.name}"
+        raise ArchiveExtractionError(msg)
+    if classification.disposition == "unsupported":
+        raise _unsupported_format_error(classification.format)
 
-        promote_files(files, staging, destination_dir)
+    staging: Path | None = None
+    primary_error: BaseException | None = None
+    published = False
+    try:
+        staging = _create_staging_dir(destination_dir.parent)
+        _extract_to_staging(archive, staging, classification.format)
+        _collect_validated_regular_files(staging)
+        from miramedia.imports.archive_publication import (
+            publish_staging_tree,
+            staging_content_digest,
+        )
+
+        digest = staging_content_digest(staging)
+        container_path = publish_staging_tree(
+            staging,
+            destination_dir,
+            digest=digest,
+            destination_stat=destination_stat,
+        )
+        published = True
     except Exception as exc:
         primary_error = exc
         if not isinstance(exc, ArchiveExtractionError):
             msg = f"archive extraction failed: {exc}"
             raise ArchiveExtractionError(msg) from exc
         raise
+    else:
+        return container_path
     finally:
-        _cleanup_staging(staging, primary_error=primary_error)
+        if staging is not None and not published:
+            _cleanup_staging(staging, primary_error=primary_error)
 
 
 def _create_staging_dir(parent: Path) -> Path:
     parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent)))
-    staging.chmod(STAGING_DIR_MODE)
+    try:
+        staging.chmod(STAGING_DIR_MODE)
+    except OSError:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     return staging
 
 
@@ -188,7 +228,7 @@ def _cleanup_staging(
         raise ArchiveExtractionError(msg) from cleanup_error
 
 
-def _detect_format(archive: Path) -> str:
+def _identify_archive_format(archive: Path) -> str | None:
     name = archive.name.lower()
     if name.endswith(_TAR_XZ_EXTENSIONS):
         return "tar.xz"
@@ -238,9 +278,7 @@ def _detect_format(archive: Path) -> str:
         return "tar"
     if mime == "application/x-xz":
         return "tar.xz"
-
-    msg = f"unsupported archive format: {archive.name}"
-    raise ArchiveExtractionError(msg)
+    return None
 
 
 def _guess_mime_encoding(archive: Path) -> tuple[str | None, str | None]:
@@ -267,19 +305,39 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
     from miramedia.imports import archive_parsers as parsers
 
     budget = _ExpandedByteBudget()
+    path_registry = _EntryPathRegistry()
     if archive_format == "zip":
-        parsers.extract_zip_archive(archive, staging, budget)
+        parsers.extract_zip_archive(archive, staging, budget, path_registry)
     elif archive_format == "tar":
-        parsers.extract_tar_archive(archive, staging, budget, compression=None)
+        parsers.extract_tar_archive(
+            archive,
+            staging,
+            budget,
+            path_registry,
+            compression=None,
+        )
     elif archive_format == "tar.gz":
-        parsers.extract_tar_archive(archive, staging, budget, compression="gz")
+        parsers.extract_tar_archive(
+            archive,
+            staging,
+            budget,
+            path_registry,
+            compression="gz",
+        )
     elif archive_format == "tar.bz2":
-        parsers.extract_tar_archive(archive, staging, budget, compression="bz2")
+        parsers.extract_tar_archive(
+            archive,
+            staging,
+            budget,
+            path_registry,
+            compression="bz2",
+        )
     elif archive_format == "gzip":
         parsers.extract_gzip_archive(
             archive,
             staging,
             budget,
+            path_registry,
             out_name=_gzip_output_name(archive),
         )
     elif archive_format == "bzip2":
@@ -287,6 +345,7 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
             archive,
             staging,
             budget,
+            path_registry,
             out_name=_bzip2_output_name(archive),
         )
     else:
@@ -320,6 +379,12 @@ def _copy_stream_bounded(
         dst.write(chunk)
 
 
+def _logical_entry_key(name: str) -> str:
+    normalized = name.rstrip("/")
+    parts = PurePosixPath(normalized).parts
+    return "/".join(unicodedata.normalize("NFC", part).casefold() for part in parts)
+
+
 def _validate_entry_name(name: str) -> None:
     if not name or name in {".", ".."}:
         msg = f"unsafe archive entry name: {name!r}"
@@ -339,24 +404,30 @@ def _validate_entry_name(name: str) -> None:
     if "\\" in name:
         msg = f"mixed-separator archive entry name: {name!r}"
         raise ArchiveExtractionError(msg)
+    if any(char in name for char in "*?:"):
+        msg = f"wildcard archive entry name is not allowed: {name!r}"
+        raise ArchiveExtractionError(msg)
     lowered = name.lower()
     for sequence in _FORBIDDEN_PERCENT_SEQUENCES:
         if sequence in lowered:
             msg = f"encoded archive entry name is not allowed: {name!r}"
+            raise ArchiveExtractionError(msg)
+    for char in name:
+        codepoint = ord(char)
+        if codepoint <= 0x1F or 0x7F <= codepoint <= 0x9F:
+            msg = f"control-character archive entry name is not allowed: {name!r}"
             raise ArchiveExtractionError(msg)
     parts = PurePosixPath(name).parts
     if ".." in parts:
         msg = f"traversal archive entry name: {name!r}"
         raise ArchiveExtractionError(msg)
     for part in parts:
-        if _is_reserved_windows_name(part):
+        if part.endswith((" ", ".")):
+            msg = f"trailing dot/space archive entry name is not allowed: {name!r}"
+            raise ArchiveExtractionError(msg)
+        if ntpath.isreserved(part):
             msg = f"reserved windows archive entry name: {name!r}"
             raise ArchiveExtractionError(msg)
-
-
-def _is_reserved_windows_name(part: str) -> bool:
-    stem = part.split(".", 1)[0].upper()
-    return stem in _RESERVED_WINDOWS_NAMES
 
 
 def _enforce_entry_count(file_count: int) -> None:
