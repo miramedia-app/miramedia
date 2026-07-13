@@ -26,6 +26,10 @@ from miramedia.movies.schemas import (
 from miramedia.movies.schemas import (
     MovieId,
 )
+from miramedia.torrents.integrity import (
+    integrity_audit_snapshot_where,
+    integrity_mismatch_action_where,
+)
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
@@ -658,19 +662,88 @@ class MovieRepository:
         rows = (await self.db.execute(stmt)).all()
         return {MovieId(movie_id): name for movie_id, name in rows}
 
+    async def apply_integrity_baseline_if_current(
+        self,
+        file_id: UUID,
+        *,
+        expected_sha1: None,
+        expected_import_error: str | None,
+        new_sha1: str,
+    ) -> bool:
+        """Set ``sha1`` when the row still matches the pre-hash snapshot."""
+        try:
+            stmt = (
+                update(MovieFile)
+                .where(
+                    integrity_audit_snapshot_where(
+                        MovieFile,
+                        file_id,
+                        expected_sha1=expected_sha1,
+                        expected_import_error=expected_import_error,
+                    )
+                )
+                .values(sha1=new_sha1)
+            )
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to baseline integrity sha1 for movie_file %s", file_id
+            )
+            raise
+
+    async def stamp_integrity_mismatch_if_current(
+        self,
+        file_id: UUID,
+        *,
+        expected_sha1: str,
+        expected_import_error: str | None,
+        import_error: str,
+    ) -> bool:
+        """Stamp a mismatch error when the row still matches the pre-hash snapshot."""
+        try:
+            stmt = (
+                update(MovieFile)
+                .where(
+                    integrity_audit_snapshot_where(
+                        MovieFile,
+                        file_id,
+                        expected_sha1=expected_sha1,
+                        expected_import_error=expected_import_error,
+                    )
+                )
+                .values(import_error=import_error)
+            )
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to stamp integrity mismatch for movie_file %s", file_id
+            )
+            raise
+
     async def clear_file_integrity_state(
         self, file_id: UUID, *, reset_sha1: bool
     ) -> bool:
-        """Clear ``import_error`` (and optionally ``sha1``) on a movie file.
+        """Clear mismatch state when the row still has an active SHA1 mismatch.
 
-        Returns ``True`` when a row was updated, ``False`` when ``file_id`` is
-        unknown. Does not change ``import_status``.
+        Returns ``True`` when a row was updated. Returns ``False`` when the row
+        is unknown or no longer has a mismatch stamp. Does not change
+        ``import_status``.
         """
         values: dict[str, object] = {"import_error": None}
         if reset_sha1:
             values["sha1"] = None
         try:
-            stmt = update(MovieFile).where(MovieFile.id == file_id).values(**values)
+            stmt = (
+                update(MovieFile)
+                .where(integrity_mismatch_action_where(MovieFile, file_id))
+                .values(**values)
+            )
             result = await self.db.execute(stmt)
             await self.db.flush()
             return bool(result.rowcount)

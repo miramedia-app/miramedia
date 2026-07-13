@@ -21,7 +21,7 @@ from fastapi import (
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
 from miramedia.auth.users import current_active_user, current_superuser
-from miramedia.exceptions import NotFoundError
+from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.imports.matching import find_candidate_media_matches
 from miramedia.imports.schemas import ManualParseCandidate, ManualParseResponse
 from miramedia.indexers.dependencies import indexer_service_dep
@@ -787,6 +787,8 @@ async def rebaseline_integrity_file(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.post(
@@ -811,6 +813,8 @@ async def dismiss_integrity_mismatch(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.post(

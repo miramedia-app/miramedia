@@ -758,16 +758,18 @@ async def verify_imported_files_task() -> None:
     )
     from miramedia.file_status import ImportOutcome
     from miramedia.movies.models import MovieFile
+    from miramedia.movies.repository import MovieRepository
     from miramedia.shows.models import EpisodeFile
+    from miramedia.shows.repository import ShowRepository
 
     baselined = 0
     verified = 0
     mismatched = 0
+    skipped_stale = 0
 
     # Snapshot work-list under a short session, then drop the session before
-    # any disk hashing. Each list entry is a tuple of the surrogate row id +
-    # the pre-existing sha1 + the resolved on-disk path. Rows are addressed by
-    # id throughout — the (quality, variant) tuple no longer uniquely keys a row.
+    # any disk hashing. Each list entry is the surrogate row id + the
+    # pre-existing sha1 + import_error + the resolved on-disk path.
     ep_targets: list[tuple] = []
     mv_targets: list[tuple] = []
     async with background_session() as db:
@@ -782,7 +784,7 @@ async def verify_imported_files_task() -> None:
                 target = await show_service.resolve_episode_file_path(row)
                 if target is None or not target.exists():
                     continue
-                ep_targets.append((row.id, row.sha1, target))
+                ep_targets.append((row.id, row.sha1, row.import_error, target))
         mv_result = await db.execute(
             select(MovieFile).where(MovieFile.import_status == ImportOutcome.imported)
         )
@@ -792,83 +794,112 @@ async def verify_imported_files_task() -> None:
                 target = await movie_service.resolve_movie_file_path(row)
                 if target is None or not target.exists():
                     continue
-                mv_targets.append((row.id, row.sha1, target))
+                mv_targets.append((row.id, row.sha1, row.import_error, target))
 
     # Hash everything with NO DB session held — this is the heavy walltime.
     ep_results: list[tuple] = []
-    for file_id, prior, target in ep_targets:
+    for file_id, prior, prior_error, target in ep_targets:
         sha = await _compute_sha1_async(target)
         if sha is None:
             continue
-        ep_results.append((file_id, prior, sha, target))
+        ep_results.append((file_id, prior, prior_error, sha, target))
     mv_results: list[tuple] = []
-    for file_id, prior, target in mv_targets:
+    for file_id, prior, prior_error, target in mv_targets:
         sha = await _compute_sha1_async(target)
         if sha is None:
             continue
-        mv_results.append((file_id, prior, sha, target))
-
-    from sqlalchemy import update
+        mv_results.append((file_id, prior, prior_error, sha, target))
 
     async with background_session() as db:
-        for file_id, prior, sha, target in ep_results:
+        show_repo = ShowRepository(db)
+        movie_repo = MovieRepository(db)
+        for file_id, prior, prior_error, sha, target in ep_results:
             if prior is None:
-                await db.execute(
-                    update(EpisodeFile)
-                    .where(EpisodeFile.id == file_id)
-                    .values(sha1=sha)
-                )
-                baselined += 1
-            elif prior != sha:
-                mismatched += 1
-                await db.execute(
-                    update(EpisodeFile)
-                    .where(EpisodeFile.id == file_id)
-                    .values(
-                        import_error=(
-                            f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
-                        )
-                    )
-                )
-                log.warning(
-                    "integrity audit: episode_file sha1 mismatch %s (%s)",
-                    target,
+                if await show_repo.apply_integrity_baseline_if_current(
                     file_id,
+                    expected_sha1=None,
+                    expected_import_error=prior_error,
+                    new_sha1=sha,
+                ):
+                    baselined += 1
+                else:
+                    skipped_stale += 1
+                    log.debug(
+                        "integrity audit: skipped stale baseline for episode_file %s",
+                        file_id,
+                    )
+            elif prior != sha:
+                mismatch_error = (
+                    f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
                 )
+                if await show_repo.stamp_integrity_mismatch_if_current(
+                    file_id,
+                    expected_sha1=prior,
+                    expected_import_error=prior_error,
+                    import_error=mismatch_error,
+                ):
+                    mismatched += 1
+                    log.warning(
+                        "integrity audit: episode_file sha1 mismatch %s (%s)",
+                        target,
+                        file_id,
+                    )
+                else:
+                    skipped_stale += 1
+                    log.debug(
+                        "integrity audit: skipped stale mismatch for episode_file %s",
+                        file_id,
+                    )
             else:
                 verified += 1
 
-        for file_id, prior, sha, target in mv_results:
+        for file_id, prior, prior_error, sha, target in mv_results:
             if prior is None:
-                await db.execute(
-                    update(MovieFile).where(MovieFile.id == file_id).values(sha1=sha)
-                )
-                baselined += 1
-            elif prior != sha:
-                mismatched += 1
-                await db.execute(
-                    update(MovieFile)
-                    .where(MovieFile.id == file_id)
-                    .values(
-                        import_error=(
-                            f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
-                        )
-                    )
-                )
-                log.warning(
-                    "integrity audit: movie_file sha1 mismatch %s (%s)",
-                    target,
+                if await movie_repo.apply_integrity_baseline_if_current(
                     file_id,
+                    expected_sha1=None,
+                    expected_import_error=prior_error,
+                    new_sha1=sha,
+                ):
+                    baselined += 1
+                else:
+                    skipped_stale += 1
+                    log.debug(
+                        "integrity audit: skipped stale baseline for movie_file %s",
+                        file_id,
+                    )
+            elif prior != sha:
+                mismatch_error = (
+                    f"sha1 mismatch (expected {prior[:10]}…, got {sha[:10]}…)"
                 )
+                if await movie_repo.stamp_integrity_mismatch_if_current(
+                    file_id,
+                    expected_sha1=prior,
+                    expected_import_error=prior_error,
+                    import_error=mismatch_error,
+                ):
+                    mismatched += 1
+                    log.warning(
+                        "integrity audit: movie_file sha1 mismatch %s (%s)",
+                        target,
+                        file_id,
+                    )
+                else:
+                    skipped_stale += 1
+                    log.debug(
+                        "integrity audit: skipped stale mismatch for movie_file %s",
+                        file_id,
+                    )
             else:
                 verified += 1
         await db.commit()
 
     log.info(
-        "integrity audit: %d baselined, %d verified, %d MISMATCH",
+        "integrity audit: %d baselined, %d verified, %d MISMATCH, %d stale skipped",
         baselined,
         verified,
         mismatched,
+        skipped_stale,
     )
 
 

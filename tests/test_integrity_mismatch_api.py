@@ -36,6 +36,9 @@ def _run(coro):
 
 
 class _IntegrityShowRepo(FakeShowRepository):
+    async def get_episode_file_by_id(self, file_id: uuid.UUID):
+        return self.episode_files.get(file_id)
+
     async def list_sha1_mismatch_files(self) -> list[EpisodeFile]:
         return [
             f
@@ -50,6 +53,10 @@ class _IntegrityShowRepo(FakeShowRepository):
         row = self.episode_files.get(file_id)
         if row is None:
             return False
+        if row.import_status != ImportOutcome.imported or not (
+            row.import_error or ""
+        ).startswith("sha1 mismatch"):
+            return False
         update: dict[str, Any] = {"import_error": None}
         if reset_sha1:
             update["sha1"] = None
@@ -58,6 +65,9 @@ class _IntegrityShowRepo(FakeShowRepository):
 
 
 class _IntegrityMovieRepo(FakeMovieRepository):
+    async def get_movie_file_by_id(self, file_id: uuid.UUID):
+        return self.movie_files.get(file_id)
+
     async def list_sha1_mismatch_files(self) -> list[MovieFile]:
         return [
             f
@@ -71,6 +81,10 @@ class _IntegrityMovieRepo(FakeMovieRepository):
     ) -> bool:
         row = self.movie_files.get(file_id)
         if row is None:
+            return False
+        if row.import_status != ImportOutcome.imported or not (
+            row.import_error or ""
+        ).startswith("sha1 mismatch"):
             return False
         update: dict[str, Any] = {"import_error": None}
         if reset_sha1:

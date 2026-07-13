@@ -204,4 +204,5 @@ def background_session_factory(
 class FakeFileRow:
     id: UUID
     sha1: str | None = None
+    import_error: str | None = None
     _resolved_path: Any = None
