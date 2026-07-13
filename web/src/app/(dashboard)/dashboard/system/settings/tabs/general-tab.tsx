@@ -629,8 +629,7 @@ export function GeneralTab({
             {(["show", "movie"] as const).map((kind) => {
               const libKey = `${kind}_libraries`;
               const dirKey = `${kind}_directory`;
-              const libs =
-                (m[libKey] as Keyed<{ name: string; path: string }>[] | undefined) ?? [];
+              const libs = (m[libKey] as Keyed<{ name: string; path: string }>[] | undefined) ?? [];
               return (
                 <div key={kind} className="space-y-3">
                   <Label>
@@ -714,10 +713,10 @@ export function GeneralTab({
                     variant="outline"
                     size="sm"
                     onClick={() =>
-                      setMiscPath([libKey], [
-                        ...libs,
-                        { _key: crypto.randomUUID(), name: "", path: "" },
-                      ])
+                      setMiscPath(
+                        [libKey],
+                        [...libs, { _key: crypto.randomUUID(), name: "", path: "" }],
+                      )
                     }
                   >
                     <Plus className="mr-1 h-4 w-4" />
