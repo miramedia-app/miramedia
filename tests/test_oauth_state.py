@@ -1,0 +1,86 @@
+"""OAuth authorize snapshot encryption tests."""
+
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from miramedia.auth.oauth_state import (
+    OAuthAuthorizeSnapshot,
+    OAuthAuthorizeSnapshotError,
+    decrypt_oauth_authorize_snapshot,
+    encrypt_oauth_authorize_snapshot,
+)
+from miramedia.auth.runtime import OAUTH_ROUTE_NAME
+
+
+def test_encrypt_decrypt_round_trip() -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    secret = "a" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    restored = decrypt_oauth_authorize_snapshot(token, secret)
+    assert restored == snapshot
+
+
+def test_decrypt_rejects_tampered_snapshot() -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    secret = "b" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    with pytest.raises(OAuthAuthorizeSnapshotError):
+        decrypt_oauth_authorize_snapshot(
+            token[:-1] + ("x" if token[-1] != "x" else "y"), secret
+        )
+
+
+def test_decrypt_rejects_wrong_secret() -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    token = encrypt_oauth_authorize_snapshot(snapshot, "c" * 64)
+    with pytest.raises(OAuthAuthorizeSnapshotError):
+        decrypt_oauth_authorize_snapshot(token, "d" * 64)
+
+
+def test_decrypt_rejects_expired_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    snapshot = OAuthAuthorizeSnapshot(
+        client_id="client-a",
+        client_secret="secret-a",
+        configuration_endpoint="https://idp.example/.well-known/openid-configuration",
+        provider_name="Display",
+        account_provider_name=OAUTH_ROUTE_NAME,
+        frontend_url="http://localhost/",
+        cookie_secure=False,
+        session_lifetime=3600,
+    )
+    secret = "e" * 64
+    token = encrypt_oauth_authorize_snapshot(snapshot, secret)
+    issued_at = time.time()
+    monkeypatch.setattr(time, "time", lambda: issued_at + 7200)
+    with pytest.raises(OAuthAuthorizeSnapshotError):
+        decrypt_oauth_authorize_snapshot(token, secret)

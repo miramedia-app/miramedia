@@ -306,3 +306,80 @@ def test_rollback_reconcile_stages_outside_coordinator_lock(
         assert get_local_committed_revision() == 2
 
     asyncio.run(_run())
+
+
+def test_apply_failure_rollback_holds_lock_against_same_revision_reload() -> None:
+    from miramedia.settings.coordinator import get_settings_coordinator_lock
+    from miramedia.settings.mutation import SettingsMutationError
+    from miramedia.settings.reload import reload_committed_settings
+
+    reload_entered = asyncio.Event()
+    rollback_finished = asyncio.Event()
+
+    original_apply = __import__(
+        "miramedia.settings.mutation",
+        fromlist=["_apply_live_mutation_critical_section"],
+    )._apply_live_mutation_critical_section
+
+    def _boom_apply(overrides: dict, prospective: Any) -> None:
+        original_apply(overrides, prospective)
+        msg = "apply failed"
+        raise RuntimeError(msg)
+
+    async def _run() -> None:
+        repo = FakeSettingsRepository()
+        coordinator = get_settings_coordinator_lock()
+
+        async def _prepare() -> tuple[dict, dict, int]:
+            return {"misc": {"development": True}}, {}, 0
+
+        async def _fetch() -> tuple[dict, int]:
+            return {"misc": {"development": True}}, 1
+
+        async def _stage(_overrides: dict) -> Any:
+            from miramedia.auth.runtime import build_auth_runtime_generation
+
+            live = MiraMediaConfig()
+            return await build_auth_runtime_generation(live.auth, live.misc)
+
+        import miramedia.settings.mutation as mutation_mod
+
+        mutation_mod._apply_live_mutation_critical_section = _boom_apply
+        original_restore = mutation_mod._restore_committed_mutation_snapshot
+
+        async def _slow_restore(*args: Any, **kwargs: Any) -> int:
+            reload_entered.set()
+            await rollback_finished.wait()
+            return await original_restore(*args, **kwargs)
+
+        mutation_mod._restore_committed_mutation_snapshot = _slow_restore
+        try:
+            mutation_task = asyncio.create_task(
+                execute_settings_mutation(
+                    prepare=_prepare,
+                    persist_overrides_cas=repo.save_overrides_cas,
+                    fetch_current=_fetch,
+                    stage_auth_runtime=_stage,
+                )
+            )
+            reload_task = asyncio.create_task(
+                reload_committed_settings(
+                    {"misc": {"development": False}},
+                    revision=1,
+                )
+            )
+            await reload_entered.wait()
+            assert coordinator.locked()
+            assert not reload_task.done()
+            rollback_finished.set()
+            with pytest.raises(SettingsMutationError):
+                await mutation_task
+            await reload_task
+        finally:
+            mutation_mod._apply_live_mutation_critical_section = original_apply
+            mutation_mod._restore_committed_mutation_snapshot = original_restore
+
+        assert get_local_committed_revision() == 2
+        assert MiraMediaConfig().misc.development is False
+
+    asyncio.run(_run())

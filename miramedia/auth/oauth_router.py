@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+import inspect
 import secrets
-from typing import Literal
+from typing import Any, Literal, cast
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -26,14 +27,33 @@ from fastapi_users.router.oauth import (
 )
 from httpx_oauth.oauth2 import GetAccessTokenError, OAuth2Token
 
-from miramedia.auth.runtime import (
+from miramedia.auth.oauth_provider import (
+    OAuthProviderConflictError,
+    reconcile_legacy_oauth_account,
+)
+from miramedia.auth.oauth_state import (
     OAUTH_GENERATION_STATE_KEY,
+    OAuthAuthorizeSnapshotError,
+    auth_runtime_generation_from_snapshot,
+    decrypt_oauth_authorize_snapshot,
+    encrypt_oauth_authorize_snapshot,
+    snapshot_from_generation,
+)
+from miramedia.auth.runtime import (
     OAUTH_ROUTE_NAME,
     bind_oauth_runtime_generation,
     current_oauth_runtime_generation,
     dynamic_oauth_client,
-    lookup_retained_auth_runtime_generation,
 )
+
+
+async def _resolve_backend_strategy(
+    backend: AuthenticationBackend[models.UP, models.ID],
+) -> Strategy[models.UP, models.ID]:
+    result = backend.get_strategy()
+    if inspect.isawaitable(result):
+        return cast(Strategy[models.UP, models.ID], await result)
+    return cast(Strategy[models.UP, models.ID], result)
 
 
 def get_dynamic_oauth_router(
@@ -69,9 +89,20 @@ def get_dynamic_oauth_router(
             authorize_redirect_url = str(request.url_for(callback_route_name))
 
         csrf_token = generate_csrf_token()
+        try:
+            snapshot_token = encrypt_oauth_authorize_snapshot(
+                snapshot_from_generation(generation),
+                state_secret,
+            )
+        except OAuthAuthorizeSnapshotError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OpenID Connect is not enabled",
+            ) from exc
+
         state_data: dict[str, str] = {
             CSRF_TOKEN_KEY: csrf_token,
-            OAUTH_GENERATION_STATE_KEY: str(generation.generation_id),
+            OAUTH_GENERATION_STATE_KEY: snapshot_token,
         }
         state = generate_state_token(state_data, state_secret)
         authorization_url = await dynamic_oauth_client.get_authorization_url(
@@ -123,7 +154,6 @@ def get_dynamic_oauth_router(
         state: str | None = None,
         error: str | None = None,
         user_manager: BaseUserManager[models.UP, models.ID] = Depends(get_user_manager),
-        strategy: Strategy[models.UP, models.ID] = Depends(backend.get_strategy),
     ):
         if code is None or error is not None:
             raise HTTPException(
@@ -149,26 +179,24 @@ def get_dynamic_oauth_router(
                 detail=ErrorCode.ACCESS_TOKEN_ALREADY_EXPIRED,
             ) from None
 
-        generation_id_raw = state_data.get(OAUTH_GENERATION_STATE_KEY)
-        if generation_id_raw is None:
+        snapshot_token = state_data.get(OAUTH_GENERATION_STATE_KEY)
+        if not snapshot_token:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ErrorCode.OAUTH_INVALID_STATE,
             )
-        try:
-            generation_id = int(generation_id_raw)
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ErrorCode.OAUTH_INVALID_STATE,
-            ) from None
 
-        generation = lookup_retained_auth_runtime_generation(generation_id)
-        if generation is None:
+        try:
+            authorize_snapshot = decrypt_oauth_authorize_snapshot(
+                str(snapshot_token),
+                state_secret,
+            )
+            generation = await auth_runtime_generation_from_snapshot(authorize_snapshot)
+        except OAuthAuthorizeSnapshotError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ErrorCode.OAUTH_INVALID_STATE,
-            )
+            ) from exc
 
         if redirect_url is not None:
             callback_redirect_url = redirect_url
@@ -215,6 +243,18 @@ def get_dynamic_oauth_router(
                     detail=ErrorCode.OAUTH_NOT_AVAILABLE_EMAIL,
                 )
 
+            try:
+                await reconcile_legacy_oauth_account(
+                    user_manager.user_db,
+                    account_id=str(account_id),
+                    display_name=generation.provider_name,
+                )
+            except OAuthProviderConflictError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=ErrorCode.OAUTH_INVALID_STATE,
+                ) from exc
+
             provider_name = generation.account_provider_name
             try:
                 user = await user_manager.oauth_callback(  # ty: ignore[invalid-argument-type]
@@ -240,6 +280,7 @@ def get_dynamic_oauth_router(
                     detail=ErrorCode.LOGIN_BAD_CREDENTIALS,
                 )
 
+            strategy = await _resolve_backend_strategy(backend)
             response = await backend.login(strategy, user)
             await user_manager.on_after_login(user, request, response)
             return response

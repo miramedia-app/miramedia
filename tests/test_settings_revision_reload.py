@@ -130,16 +130,17 @@ def test_save_overrides_cas_statement_checks_revision() -> None:
     assert "system_config_override" in compiled
 
 
-def test_rollback_skips_when_local_revision_advanced() -> None:
+def test_rollback_reconciles_on_cas_conflict_when_local_advanced() -> None:
     from miramedia.auth.runtime import (
-        auth_runtime_store,
         build_auth_runtime_generation,
         reset_auth_runtime_for_tests,
     )
+    from miramedia.config import MiraMediaConfig
     from miramedia.settings.mutation import (
         SettingsMutationSnapshot,
         rollback_mutation_snapshot,
     )
+    from miramedia.settings.repository import SettingsRevisionConflictError
 
     async def _run() -> None:
         reset_auth_runtime_for_tests()
@@ -151,12 +152,12 @@ def test_rollback_skips_when_local_revision_advanced() -> None:
             runtime_generation=generation,
             epoch=0,
         )
-        set_local_committed_revision(5)
+        set_local_committed_revision(4)
         save_calls: list[int] = []
 
         async def _save(_overrides: dict, _expected_revision: int) -> tuple[dict, int]:
             save_calls.append(1)
-            return _overrides, 6
+            raise SettingsRevisionConflictError(_expected_revision, 5)
 
         async def _fetch() -> tuple[dict, int]:
             return {"misc": {"development": True}}, 5
@@ -167,8 +168,9 @@ def test_rollback_skips_when_local_revision_advanced() -> None:
             committed_revision=3,
             fetch_current=_fetch,
         )
-        assert not save_calls
-        assert auth_runtime_store.get_active().generation_id == generation.generation_id
+        assert save_calls == [1]
+        assert MiraMediaConfig().misc.development is True
+        assert get_local_committed_revision() == 5
 
     asyncio.run(_run())
 

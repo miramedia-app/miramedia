@@ -29,6 +29,14 @@ OIDC_CALLBACK_PATH = "/api/v1/auth/oauth/callback"
 
 
 @pytest.fixture(autouse=True)
+def _noop_legacy_oauth_reconcile(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "miramedia.auth.oauth_router.reconcile_legacy_oauth_account",
+        AsyncMock(),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_auth_state() -> Generator[None]:
     from miramedia.auth.runtime import reset_auth_runtime_for_tests
     from miramedia.settings.mutation import reset_settings_mutation_state_for_tests
@@ -143,6 +151,31 @@ def _oidc_payload(
 
 def _set_cookie_secure_flag(set_cookie: str) -> bool:
     return any(part.strip().lower() == "secure" for part in set_cookie.split(";"))
+
+
+def _jwt_lifetime_from_callback_response(response: object) -> int:
+    import jwt
+
+    from miramedia.auth.users import SECRET, openid_cookie_transport
+
+    headers = getattr(response, "headers", {})
+    set_cookie = headers.get("set-cookie", "")
+    cookie_name = openid_cookie_transport.cookie_name
+    match = re.search(
+        rf"{re.escape(cookie_name)}=([^;]+)",
+        set_cookie,
+        re.IGNORECASE,
+    )
+    assert match is not None, set_cookie
+    payload = jwt.decode(
+        match.group(1),
+        SECRET,
+        algorithms=["HS256"],
+        options={"verify_aud": False},
+    )
+    import time
+
+    return int(payload["exp"]) - int(time.time())
 
 
 def _enable_oidc(client: TestClient, *, name: str = "ConfiguredProvider") -> None:
@@ -548,4 +581,6 @@ def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_re
     assert captured_login == [("http://gen-a.example.com/", 3600, False)]
     assert auth_runtime_store.get_active().frontend_url == "https://gen-b.example.com/"
     assert auth_runtime_store.get_active().session_lifetime == 7200
-    assert fake_openid[-1].client_id == "client-b"
+
+    jwt_lifetime = _jwt_lifetime_from_callback_response(callback)
+    assert 3590 <= jwt_lifetime <= 3610

@@ -45,6 +45,7 @@ dependencies = [
     "guessit>=3.8.0,<4",
     "pymediainfo>=7.0.1",
     "curl-cffi>=0.7",
+    "cryptography>=44.0.0",
     "defusedxml>=0.7.1",
     "sse-starlette>=3.4.4",
     "prometheus-fastapi-instrumentator>=8.0.1",

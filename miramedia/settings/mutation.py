@@ -3,10 +3,9 @@
 State machine (per worker):
 1. Under coordinator lock: single-row read (overrides + revision), capture snapshot.
 2. Release DB session, release lock: Pydantic validate + OIDC discovery (no DB txn).
-3. Under coordinator lock: CAS persist (always with expected_revision) -> apply/swap
-   only if not superseded -> publish.
-4. On post-CAS apply failure: DB CAS restore first (under lock, no OIDC); on success
-   apply snapshot + publish rollback revision; on CAS conflict exit lock then reconcile.
+3. Under coordinator lock: CAS persist -> apply only if not superseded -> publish.
+4. On post-CAS apply failure: keep coordinator held, DB CAS restore + local restore;
+   only release on CAS conflict to cross-process N+1, then reconcile outside lock.
 
 Process-local ``_mutation_epoch`` guards same-worker interleaving; DB revision CAS
 guards cross-worker writers. Never hold a DB transaction or coordinator lock across OIDC.
@@ -95,6 +94,27 @@ def _apply_live_mutation_critical_section(
     commit_auth_runtime_generation(prospective)
 
 
+async def _restore_committed_mutation_snapshot(
+    snapshot: SettingsMutationSnapshot,
+    *,
+    committed_revision: int,
+    restore_overrides_cas: Callable[[dict, int], Awaitable[tuple[dict, int]]],
+) -> int:
+    """DB-authoritative restore for one committed revision (caller holds coordinator)."""
+    restored_overrides, rollback_revision = await restore_overrides_cas(
+        snapshot.overrides,
+        committed_revision,
+    )
+    apply_live_config_from_overrides(restored_overrides)
+    auth_runtime_store.restore(snapshot.runtime_generation)
+    from miramedia.auth.users import apply_mutable_transport_settings
+
+    apply_mutable_transport_settings()
+    set_local_committed_revision(rollback_revision)
+    publish_settings_revision_changed(rollback_revision)
+    return rollback_revision
+
+
 async def rollback_mutation_snapshot(
     snapshot: SettingsMutationSnapshot,
     *,
@@ -102,41 +122,22 @@ async def rollback_mutation_snapshot(
     committed_revision: int,
     fetch_current: Callable[[], Awaitable[tuple[dict, int]]],
 ) -> None:
-    """DB-authoritative rollback: short CAS under coordinator lock, reconcile outside."""
+    """Restore a committed revision; reconcile outside lock only on CAS conflict."""
     needs_reconcile = False
     coordinator = get_settings_coordinator_lock()
     async with coordinator:
-        if get_local_committed_revision() > committed_revision:
-            needs_reconcile = True
-        elif (
-            auth_runtime_store.get_active().generation_id
-            > snapshot.runtime_generation.generation_id
-        ):
+        try:
+            await _restore_committed_mutation_snapshot(
+                snapshot,
+                committed_revision=committed_revision,
+                restore_overrides_cas=restore_overrides_cas,
+            )
+        except SettingsRevisionConflictError:
             log.warning(
-                "Skipping settings rollback: runtime advanced past snapshot revision %s",
-                snapshot.revision,
+                "Settings DB rollback conflict at revision %s; reconciling from DB",
+                committed_revision,
             )
             needs_reconcile = True
-        else:
-            try:
-                restored_overrides, rollback_revision = await restore_overrides_cas(
-                    snapshot.overrides,
-                    committed_revision,
-                )
-            except SettingsRevisionConflictError:
-                log.warning(
-                    "Settings DB rollback conflict at revision %s; reconciling from DB",
-                    committed_revision,
-                )
-                needs_reconcile = True
-            else:
-                apply_live_config_from_overrides(restored_overrides)
-                auth_runtime_store.restore(snapshot.runtime_generation)
-                from miramedia.auth.users import apply_mutable_transport_settings
-
-                apply_mutable_transport_settings()
-                set_local_committed_revision(rollback_revision)
-                publish_settings_revision_changed(rollback_revision)
 
     if needs_reconcile:
         await reconcile_settings_revision_from_db(fetch_current)
@@ -173,13 +174,13 @@ async def execute_settings_mutation(
 
     prospective = await stage_auth_runtime(sanitized)
 
-    committed_revision: int | None = None
+    needs_reconcile = False
     mutation_error: BaseException | None = None
-    rollback_needed = False
 
     async with coordinator:
         if _mutation_epoch != start_epoch:
             raise SettingsMutationSupersededError(SETTINGS_MUTATION_SUPERSEDED_DETAIL)
+        committed_revision: int | None = None
         try:
             _overrides, committed_revision = await persist_overrides_cas(
                 sanitized,
@@ -187,37 +188,56 @@ async def execute_settings_mutation(
             )
             if committed_revision <= get_local_committed_revision():
                 _raise_superseded_mutation()
-            _apply_live_mutation_critical_section(sanitized, prospective)
-            _mutation_epoch += 1
-            set_local_committed_revision(committed_revision)
-            publish_settings_revision_changed(committed_revision)
+            try:
+                _apply_live_mutation_critical_section(sanitized, prospective)
+            except Exception as apply_exc:
+                mutation_error = apply_exc
+                try:
+                    await _restore_committed_mutation_snapshot(
+                        snapshot,
+                        committed_revision=committed_revision,
+                        restore_overrides_cas=persist_overrides_cas,
+                    )
+                except SettingsRevisionConflictError:
+                    needs_reconcile = True
+                except Exception:
+                    log.exception("Settings mutation rollback failed")
+                    raise SettingsMutationError(
+                        SETTINGS_MUTATION_ROLLBACK_INCOMPLETE_DETAIL
+                    ) from apply_exc
+                else:
+                    log.exception(
+                        "Settings mutation failed; rolled back committed revision %s",
+                        committed_revision,
+                    )
+                    raise SettingsMutationError(
+                        SETTINGS_MUTATION_FAILED_DETAIL
+                    ) from apply_exc
+            else:
+                _mutation_epoch += 1
+                set_local_committed_revision(committed_revision)
+                publish_settings_revision_changed(committed_revision)
         except SettingsRevisionConflictError as exc:
             raise SettingsMutationSupersededError(
                 SETTINGS_MUTATION_SUPERSEDED_DETAIL
             ) from exc
         except SettingsMutationSupersededError:
             raise
+        except SettingsMutationError:
+            raise
         except Exception as exc:
-            if committed_revision is not None:
-                rollback_needed = True
-                mutation_error = exc
-            else:
+            if committed_revision is None:
                 raise SettingsMutationError(SETTINGS_MUTATION_FAILED_DETAIL) from exc
+            mutation_error = exc
 
-    if rollback_needed:
-        log.exception("Settings mutation failed; rolling back to prior snapshot")
+    if needs_reconcile:
         try:
-            await rollback_mutation_snapshot(
-                snapshot,
-                restore_overrides_cas=persist_overrides_cas,
-                committed_revision=committed_revision,  # type: ignore[arg-type]
-                fetch_current=fetch_current,
-            )
-        except Exception as rollback_exc:
-            log.exception("Settings mutation rollback failed")
+            await reconcile_settings_revision_from_db(fetch_current)
+        except Exception:
+            log.exception("Settings mutation reconcile after rollback conflict failed")
             raise SettingsMutationError(
                 SETTINGS_MUTATION_ROLLBACK_INCOMPLETE_DETAIL
-            ) from rollback_exc
+            ) from mutation_error
         raise SettingsMutationError(SETTINGS_MUTATION_FAILED_DETAIL) from mutation_error
 
     return sanitized
