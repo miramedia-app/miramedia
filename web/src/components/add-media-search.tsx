@@ -23,17 +23,21 @@ async function fetchMedia(
   mediaType: "show" | "movie",
   query: string,
   skip: number,
+  signal?: AbortSignal,
 ): Promise<SearchResult[]> {
   // Provider precedence (TMDB → TVDB → Cinemeta → TVMaze) is resolved
   // server-side; the client no longer pins a single provider.
   const { data, error } =
     query.length > 0
       ? mediaType === "show"
-        ? await apiClient.GET("/api/v1/shows/search", { params: { query: { query } } })
-        : await apiClient.GET("/api/v1/movies/search", { params: { query: { query } } })
+        ? await apiClient.GET("/api/v1/shows/search", { params: { query: { query } }, signal })
+        : await apiClient.GET("/api/v1/movies/search", { params: { query: { query } }, signal })
       : mediaType === "show"
-        ? await apiClient.GET("/api/v1/shows/recommended", { params: { query: { skip } } })
-        : await apiClient.GET("/api/v1/movies/recommended", { params: { query: { skip } } });
+        ? await apiClient.GET("/api/v1/shows/recommended", { params: { query: { skip } }, signal })
+        : await apiClient.GET("/api/v1/movies/recommended", {
+            params: { query: { skip } },
+            signal,
+          });
   if (error) throw new Error("Metadata provider request failed");
   return data ?? [];
 }
@@ -68,7 +72,7 @@ export function AddMediaSearch({
   // StrictMode double-mount and caches pages across back/forward navigation.
   const browseQuery = useInfiniteQuery({
     queryKey: ["media-browse", mediaType],
-    queryFn: ({ pageParam }) => fetchMedia(mediaType, "", pageParam),
+    queryFn: ({ pageParam, signal }) => fetchMedia(mediaType, "", pageParam, signal),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) =>
       lastPage.length < PAGE_SIZE ? undefined : allPages.reduce((n, p) => n + p.length, 0),
@@ -83,7 +87,7 @@ export function AddMediaSearch({
   // Search mode = single (non-paginated) lookup keyed on the submitted query.
   const searchQuery = useQuery({
     queryKey: ["media-search", mediaType, submittedQuery],
-    queryFn: () => fetchMedia(mediaType, submittedQuery, 0),
+    queryFn: ({ signal }) => fetchMedia(mediaType, submittedQuery, 0, signal),
     enabled: !browseMode,
     staleTime: 60 * 1000,
     refetchOnMount: "always",

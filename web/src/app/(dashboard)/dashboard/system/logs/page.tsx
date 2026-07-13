@@ -103,8 +103,9 @@ function LogsPageInner() {
 
   const logsQuery = useQuery({
     queryKey: ["system", "logs", level, moduleFilter, search, offset, limit],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } = await apiClient.GET("/api/v1/system/logs", {
+        signal,
         params: {
           query: {
             offset,

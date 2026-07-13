@@ -22,8 +22,9 @@ export default function SeasonDetailClientPage() {
 
   const showQuery = useQuery({
     queryKey: ["show", showId],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data, error } = await apiClient.GET("/api/v1/shows/{show_id}", {
+        signal,
         params: { path: { show_id: showId! } },
       });
       if (error) throw error;

@@ -7,8 +7,8 @@ import { SignupCard } from "@/components/auth/signup-card";
 export default function SignupPage() {
   const { data } = useQuery({
     queryKey: ["auth", "metadata"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/auth/metadata");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/auth/metadata", { signal });
       return data ?? { oauth_providers: [] };
     },
   });

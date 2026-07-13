@@ -86,7 +86,7 @@ export default function TorrentsPage() {
   const qc = useQueryClient();
   const torrentsQuery = useQuery({
     queryKey: [...qk.torrents.list(), "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const PAGE = 500; // server cap (le=500)
       const items: RichTorrent[] = [];
       let offset = 0;
@@ -95,6 +95,7 @@ export default function TorrentsPage() {
       // hitting this means something is wrong — bail with what we have.
       for (let i = 0; i < 20; i++) {
         const listRes = await apiClient.GET("/api/v1/torrents", {
+          signal,
           params: { query: { limit: PAGE, offset } },
         });
         if (listRes.error) throw listRes.error;

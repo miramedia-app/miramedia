@@ -27,8 +27,9 @@ export function sortShowSeasons(show: Show): Show {
 export function showDetailBundleQueryOptions(showId: string) {
   return {
     queryKey: ["show", showId, "bundle"] as const,
-    queryFn: async () => {
+    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
       const { data, error } = await apiClient.GET("/api/v1/shows/{show_id}/detail-bundle", {
+        signal,
         params: { path: { show_id: showId } },
       });
       if (error) throw error;
@@ -44,8 +45,9 @@ export function showDetailBundleQueryOptions(showId: string) {
 export function movieDetailBundleQueryOptions(movieId: string) {
   return {
     queryKey: ["movie", movieId, "bundle"] as const,
-    queryFn: async () => {
+    queryFn: async ({ signal }: { signal?: AbortSignal }) => {
       const { data, error } = await apiClient.GET("/api/v1/movies/{movie_id}/detail-bundle", {
+        signal,
         params: { path: { movie_id: movieId } },
       });
       if (error) throw error;
