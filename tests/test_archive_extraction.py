@@ -448,12 +448,12 @@ def test_promotion_mid_failure_rolls_back(tmp_path: Path) -> None:
     real_atomic = mod._atomic_promote_file
     calls = {"count": 0}
 
-    def _flaky_atomic(src: Path, dst: Path) -> None:
+    def _flaky_atomic(src: Path, dst: Path) -> mod._PromotedIdentity:
         calls["count"] += 1
         if calls["count"] == 2:
             msg = "simulated promotion failure"
             raise OSError(msg)
-        real_atomic(src, dst)
+        return real_atomic(src, dst)
 
     with (
         patch.object(mod, "_atomic_promote_file", side_effect=_flaky_atomic),
@@ -481,11 +481,11 @@ def test_promotion_toctou_collision_preserves_existing_and_rolls_back(
     real_atomic = mod._atomic_promote_file
     calls = {"count": 0}
 
-    def _race_atomic(src: Path, dst: Path) -> None:
+    def _race_atomic(src: Path, dst: Path) -> mod._PromotedIdentity:
         calls["count"] += 1
         if calls["count"] == 2:
             dst.write_bytes(b"raced-in")
-        real_atomic(src, dst)
+        return real_atomic(src, dst)
 
     with (
         patch.object(mod, "_atomic_promote_file", side_effect=_race_atomic),
@@ -495,6 +495,91 @@ def test_promotion_toctou_collision_preserves_existing_and_rolls_back(
 
     assert not (dest / "first.mkv").exists()
     assert (dest / "second.mkv").read_bytes() == b"raced-in"
+
+
+def test_promotion_unlink_failure_rolls_back_linked_destination(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    keeper = dest / "keeper.mkv"
+    keeper.write_bytes(b"keeper")
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    from miramedia.imports import archive_extraction as mod
+
+    created: list[Path] = []
+    real_create = mod._create_staging_dir
+    real_unlink = Path.unlink
+
+    def _track(parent: Path) -> Path:
+        staging = real_create(parent)
+        created.append(staging)
+        return staging
+
+    def _fail_second_staging_unlink(
+        self: Path, *args: object, **kwargs: object
+    ) -> None:
+        if self.name == "second.mkv" and any(
+            ".mm-extract" in part for part in self.parts
+        ):
+            msg = "simulated staging unlink failure"
+            raise OSError(msg)
+        real_unlink(self, *args, **kwargs)
+
+    with (
+        patch.object(mod, "_create_staging_dir", side_effect=_track),
+        patch.object(Path, "unlink", _fail_second_staging_unlink),
+        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert keeper.read_bytes() == b"keeper"
+    assert not (dest / "first.mkv").exists()
+    assert not (dest / "second.mkv").exists()
+    assert created
+    assert not created[0].exists()
+
+
+def test_rollback_skips_destination_replaced_during_failure(tmp_path: Path) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    real_unlink = Path.unlink
+
+    def _race_then_fail_second_staging_unlink(
+        self: Path,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        if self.name == "second.mkv" and any(
+            ".mm-extract" in part for part in self.parts
+        ):
+            first = dest / "first.mkv"
+            if first.exists():
+                first.unlink()
+            first.write_bytes(b"post-promotion-replacement")
+            msg = "simulated staging unlink failure"
+            raise OSError(msg)
+        real_unlink(self, *args, **kwargs)
+
+    with (
+        patch.object(Path, "unlink", _race_then_fail_second_staging_unlink),
+        pytest.raises(ArchiveExtractionError, match="promotion failed"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert (dest / "first.mkv").read_bytes() == b"post-promotion-replacement"
+    assert not (dest / "second.mkv").exists()
 
 
 def test_staging_cleaned_up_after_success(tmp_path: Path) -> None:

@@ -30,7 +30,7 @@ import tempfile
 import zipfile
 from collections.abc import Iterable, Iterator
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +92,12 @@ _ARCHIVE_MIME_TYPES = frozenset(
 
 class ArchiveExtractionError(Exception):
     """Raised when an archive cannot be extracted safely."""
+
+
+class _PromotedIdentity(NamedTuple):
+    path: Path
+    st_ino: int
+    st_dev: int
 
 
 class _ExpandedByteBudget:
@@ -529,14 +535,13 @@ def _preflight_promotion(
 def _promote_files(files: Iterable[Path], staging: Path, destination_dir: Path) -> None:
     destination_root = destination_dir.resolve()
     plan = _preflight_promotion(files, staging, destination_dir)
-    promoted_files: list[Path] = []
+    promoted_files: list[_PromotedIdentity] = []
     created_dirs: list[Path] = []
 
     try:
         for src, dst in plan:
             created_dirs.extend(_create_parent_dirs(dst.parent, destination_root))
-            _atomic_promote_file(src, dst)
-            promoted_files.append(dst)
+            promoted_files.append(_atomic_promote_file(src, dst))
     except (ArchiveExtractionError, OSError) as exc:
         _rollback_promotion(promoted_files, created_dirs, destination_root)
         if isinstance(exc, ArchiveExtractionError):
@@ -545,13 +550,33 @@ def _promote_files(files: Iterable[Path], staging: Path, destination_dir: Path) 
         raise ArchiveExtractionError(msg) from exc
 
 
-def _atomic_promote_file(src: Path, dst: Path) -> None:
+def _atomic_promote_file(src: Path, dst: Path) -> _PromotedIdentity:
     try:
         os.link(src, dst)
     except FileExistsError as exc:
         msg = f"destination file already exists: {dst}"
         raise ArchiveExtractionError(msg) from exc
-    src.unlink()
+    identity = _promoted_identity(dst)
+    try:
+        src.unlink()
+    except OSError:
+        _unlink_if_owned(identity)
+        raise
+    return identity
+
+
+def _promoted_identity(path: Path) -> _PromotedIdentity:
+    stat_result = path.stat()
+    return _PromotedIdentity(path, stat_result.st_ino, stat_result.st_dev)
+
+
+def _unlink_if_owned(identity: _PromotedIdentity) -> None:
+    try:
+        current = identity.path.stat()
+    except OSError:
+        return
+    if current.st_ino == identity.st_ino and current.st_dev == identity.st_dev:
+        identity.path.unlink()
 
 
 def _create_parent_dirs(leaf: Path, destination_root: Path) -> list[Path]:
@@ -580,13 +605,12 @@ def _missing_parent_dirs(start: Path, stop: Path) -> Iterator[Path]:
 
 
 def _rollback_promotion(
-    promoted_files: list[Path],
+    promoted_files: list[_PromotedIdentity],
     created_dirs: list[Path],
     destination_root: Path,
 ) -> None:
-    for promoted in reversed(promoted_files):
-        if promoted.exists():
-            promoted.unlink()
+    for identity in reversed(promoted_files):
+        _unlink_if_owned(identity)
     for directory in sorted(created_dirs, key=lambda p: len(p.parts), reverse=True):
         if (
             directory.exists()
