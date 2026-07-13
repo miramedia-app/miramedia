@@ -1,19 +1,20 @@
 import type { Middleware } from "openapi-fetch";
 
-// Keep the logout handler on `globalThis` so HMR-driven module
-// re-evaluation in dev doesn't reset it back to the noop until the
-// dashboard layout's effect re-runs.
-const HANDLER_KEY = Symbol.for("mm.api.logoutHandler");
-type HandlerHolder = { [HANDLER_KEY]?: () => Promise<void> | void };
-const holder = globalThis as unknown as HandlerHolder;
-if (!holder[HANDLER_KEY]) holder[HANDLER_KEY] = () => {};
+import { authCoordinator } from "@/lib/auth-generation";
+import type { AuthGeneration, UnauthorizedHandler } from "@/lib/auth-generation";
 
-export function registerLogoutHandler(fn: () => Promise<void> | void) {
-  holder[HANDLER_KEY] = fn;
+export function registerLogoutHandler(fn: UnauthorizedHandler) {
+  authCoordinator.setUnauthorizedHandler(fn);
 }
+
+// The generation each outgoing request was sent under. A 401 is only allowed to
+// trigger an auth exit if its request's generation is still current, so a slow
+// request from a previous session cannot log out the account that replaced it.
+const requestGeneration = new WeakMap<Request, AuthGeneration>();
 
 export const loggingMiddleware: Middleware = {
   async onRequest({ request }) {
+    requestGeneration.set(request, authCoordinator.current());
     if (process.env.NODE_ENV !== "production") {
       console.log(`Requesting ${request.method} ${request.url}`);
     }
@@ -39,8 +40,13 @@ export const loggingMiddleware: Middleware = {
 export const autoLogoutMiddleware: Middleware = {
   async onResponse({ request, response }) {
     if (response.status === 401 && !request.url.endsWith("/auth/cookie/logout")) {
-      console.log(`Request to ${request.url} returned 401, logging out...`);
-      await holder[HANDLER_KEY]!();
+      // Requests that predate the middleware (none today) are treated as current.
+      const token = requestGeneration.get(request) ?? authCoordinator.current();
+      console.log(`Request to ${request.url} returned 401 (auth generation ${token})`);
+      // The coordinator decides whether this 401 still speaks for the live
+      // session: concurrent 401s collapse into one exit, and a 401 answering a
+      // request from a previous session is ignored.
+      await authCoordinator.reportUnauthorized(token);
     }
     if (response.status === 403) {
       console.log(`Request to ${request.url} returned 403; consider opening a bug report.`);

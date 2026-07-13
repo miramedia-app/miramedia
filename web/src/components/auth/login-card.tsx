@@ -13,7 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
-import { handleOauth, resetAuthCache } from "@/lib/auth";
+import { beginAuthTransition, handleOauth } from "@/lib/auth";
 
 type Props = {
   oauthProviderNames: string[];
@@ -45,10 +45,11 @@ export function LoginCard({ oauthProviderNames }: Props) {
       });
 
       if (!error) {
-        // New session, new identity: drop anything the previous account left in
-        // the shared cache so the dashboard cannot render with a stale
-        // `users/me` (and its `is_superuser`) before the fresh one arrives.
-        await resetAuthCache(qc);
+        // New session, new identity. Establish a fresh auth generation, wait for
+        // any older 401 exit to finish, and drop everything the previous account
+        // left behind — all before navigating, so a stale handler can neither
+        // clear this session's cache nor beat us to the router.
+        await beginAuthTransition(qc);
         const message = "Login successful! Redirecting...";
         setSuccessMessage(message);
         toast.success(message);
@@ -132,7 +133,7 @@ export function LoginCard({ oauthProviderNames }: Props) {
               <Button
                 className="mt-2 w-full"
                 variant="outline"
-                onClick={() => handleOauth((msg) => toast.error(msg))}
+                onClick={() => void handleOauth(qc, (msg) => toast.error(msg))}
               >
                 Login with {name}
               </Button>

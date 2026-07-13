@@ -18,8 +18,10 @@ const UserContext = React.createContext<UserContextValue | null>(null);
 export function UserProvider({ children }: { children: React.ReactNode }) {
   const query = useQuery({
     queryKey: ["users", "me"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/users/me");
+    // Pass TanStack's signal through to fetch so `cancelQueries` at an auth
+    // boundary aborts the request in transport, not just in the cache.
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/users/me", { signal });
       if (error) throw error;
       return data;
     },
@@ -30,8 +32,8 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   // second waterfall (static export cannot forward cookies for RSC fetches).
   useQuery({
     queryKey: ["dashboard", "summary"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/dashboard/summary");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/dashboard/summary", { signal });
       if (error) throw error;
       return data;
     },

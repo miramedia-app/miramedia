@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { registerLogoutHandler } from "@/lib/api/middlewares";
+import { authCoordinator } from "@/lib/auth-generation";
 import { resetAuthCache } from "@/lib/auth";
 import { UserProvider, useUser } from "@/components/providers/user-provider";
 import { FeaturesProvider } from "@/components/providers/features-provider";
@@ -28,9 +29,12 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const qcRef = React.useRef(qc);
   qcRef.current = qc;
   React.useEffect(() => {
-    registerLogoutHandler(async () => {
+    registerLogoutHandler(async (token) => {
       await resetAuthCache(qcRef.current);
-      routerRef.current.push("/login");
+      // A login may have won while we were clearing. Its generation supersedes
+      // ours, so skip the redirect rather than bouncing the new account to
+      // /login. The coordinator guarantees exactly one exit per generation.
+      if (authCoordinator.isCurrent(token)) routerRef.current.push("/login");
     });
   }, []);
 

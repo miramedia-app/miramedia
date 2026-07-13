@@ -207,8 +207,12 @@ export default function ImportsPage() {
   const canSeeIntegrity = user?.is_superuser === true;
   const mismatchesQuery = useQuery({
     queryKey: qk.imports.integrity(),
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches");
+    // Signal-aware: when authorization drops we `cancelQueries` this key, and the
+    // privileged request is aborted in transport rather than being left to land.
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches", {
+        signal,
+      });
       if (error) throw error;
       return data ?? [];
     },
