@@ -398,7 +398,7 @@ def test_publication_reservation_failure_leaves_destination_unchanged(
     with (
         patch.object(
             publication,
-            "_reserve_container_directory",
+            "reserve_container_directory",
             side_effect=ArchiveExtractionError("simulated reservation failure"),
         ),
         pytest.raises(ArchiveExtractionError, match="reservation failure"),

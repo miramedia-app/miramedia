@@ -1,27 +1,8 @@
-"""Publish validated archive staging trees as isolated digest containers.
-
-Publication policy
-------------------
-
-Validated extraction output is published as a single container directory
-beneath the import destination::
-
-    <destination>/.mm-archive-<sha256>/
-        payload/          # renamed staging tree (videos, subtitles, …)
-
-- Containers are named from a SHA-256 digest of the validated payload tree.
-- Publication is one atomic ``renameat`` of the staging directory into
-  ``payload/`` after an exclusive ``mkdir`` of the outer container.
-- Re-publishing the same content is idempotent when the existing container
-  matches the digest.
-- Symlinks, incomplete containers, or digest mismatches fail closed.
-- Pre-existing destination files outside the container are never modified.
-- There is no destructive per-file rollback after a failed rename attempt;
-  only the empty reserved container directory is removed.
-"""
+"""Publish validated archive staging trees as isolated digest containers."""
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
@@ -45,7 +26,7 @@ PUBLISHED_DIR_MODE = 0o755
 def staging_content_digest(staging: Path) -> str:
     """Return a SHA-256 hex digest of the validated staging tree."""
     digest = hashlib.sha256()
-    staging_root = staging.resolve()
+    staging_root = staging.absolute()
     for path in sorted(staging_root.rglob("*")):
         try:
             info = path.lstat()
@@ -78,45 +59,171 @@ def publish_staging_tree(
     destination_stat: os.stat_result,
 ) -> Path:
     """Publish ``staging`` under ``destination_dir`` and return the container path."""
-    destination_dir = destination_dir.resolve()
-    staging = staging.resolve()
-    parent_dir = destination_dir.parent
+    staging = staging.absolute()
+    destination_abs = destination_dir.absolute()
+    parent_abs = destination_abs.parent
     container_name = container_name_for_digest(digest)
-    container_path = destination_dir / container_name
+    container_path = destination_abs / container_name
 
-    parent_fd = _open_directory_path(parent_dir)
-    destination_fd = _open_directory_component(parent_fd, destination_dir.name)
+    parent_fd = bind_directory(parent_abs)
     try:
-        _assert_opened_directory(destination_fd, destination_stat)
-        existing_fd = _try_open_container(destination_fd, container_name)
-        if existing_fd is not None:
-            try:
-                if _container_matches_digest(container_path, digest):
-                    shutil.rmtree(staging)
-                    return container_path
-            finally:
-                os.close(existing_fd)
-            msg = f"archive container collision: {container_name}"
-            raise ArchiveExtractionError(msg)
-
-        reserved_fd = _reserve_container_directory(destination_fd, container_name)
+        destination_fd = open_directory_under(
+            parent_fd,
+            destination_abs.name,
+            destination_stat,
+        )
         try:
-            _rename_staging_into_container(
-                staging,
-                parent_fd=parent_fd,
-                container_fd=reserved_fd,
+            existing_fd = _try_open_container(destination_fd, container_name)
+            if existing_fd is not None:
+                try:
+                    if _container_matches_digest(container_path, digest):
+                        shutil.rmtree(staging)
+                        return container_path
+                finally:
+                    os.close(existing_fd)
+                msg = f"archive container collision: {container_name}"
+                raise ArchiveExtractionError(msg)
+
+            reserved_fd, reserved_stat = reserve_container_directory(
+                destination_fd,
+                container_name,
             )
-        except Exception:
-            _remove_reserved_container(destination_fd, container_name, reserved_fd)
-            raise
-        else:
-            os.close(reserved_fd)
-            _apply_importable_modes(container_path / PAYLOAD_DIR_NAME)
-            os.chmod(container_name, CONTAINER_DIR_MODE, dir_fd=destination_fd)
-            return container_path
+            try:
+                _rename_staging_into_container(
+                    staging,
+                    parent_fd=parent_fd,
+                    container_fd=reserved_fd,
+                )
+            except Exception:
+                remove_reserved_container(
+                    destination_fd,
+                    container_name,
+                    reserved_stat,
+                )
+                raise
+            else:
+                os.close(reserved_fd)
+                _apply_importable_modes(container_path / PAYLOAD_DIR_NAME)
+                os.chmod(container_name, CONTAINER_DIR_MODE, dir_fd=destination_fd)
+                return container_path
+        finally:
+            os.close(destination_fd)
     finally:
-        os.close(destination_fd)
         os.close(parent_fd)
+
+
+def bind_directory(path: Path) -> int:
+    """Open ``path`` with ``O_NOFOLLOW`` and verify it matches a fresh ``lstat``."""
+    absolute = path.absolute()
+    try:
+        expected = os.lstat(absolute)
+    except OSError as exc:
+        msg = f"failed to stat directory: {absolute}"
+        raise ArchiveExtractionError(msg) from exc
+    if stat.S_ISLNK(expected.st_mode):
+        msg = f"directory path is a symlink: {absolute}"
+        raise ArchiveExtractionError(msg)
+    if not stat.S_ISDIR(expected.st_mode):
+        msg = f"path is not a directory: {absolute}"
+        raise ArchiveExtractionError(msg)
+    fd = _walk_open_directory(absolute.parts)
+    try:
+        _assert_opened_directory(fd, expected)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_directory_under(
+    parent_fd: int,
+    name: str,
+    expected_stat: os.stat_result,
+) -> int:
+    try:
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
+            msg = "directory path was redirected during publication"
+            raise ArchiveExtractionError(msg) from exc
+        msg = f"failed to open directory component: {name!r}"
+        raise ArchiveExtractionError(msg) from exc
+    try:
+        _assert_opened_directory(fd, expected_stat)
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def reserve_container_directory(
+    parent_fd: int,
+    container_name: str,
+) -> tuple[int, os.stat_result]:
+    try:
+        os.mkdir(container_name, mode=CONTAINER_DIR_MODE, dir_fd=parent_fd)
+    except FileExistsError as exc:
+        msg = f"archive container already exists: {container_name}"
+        raise ArchiveExtractionError(msg) from exc
+    except OSError as exc:
+        msg = f"failed to reserve archive container: {container_name}"
+        raise ArchiveExtractionError(msg) from exc
+    try:
+        fd = os.open(
+            container_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        remove_reserved_container_on_mkdir_failure(parent_fd, container_name)
+        msg = f"failed to open reserved archive container: {container_name}"
+        raise ArchiveExtractionError(msg) from exc
+    return fd, os.fstat(fd)
+
+
+def remove_reserved_container(
+    parent_fd: int,
+    container_name: str,
+    reserved_stat: os.stat_result,
+) -> None:
+    try:
+        current = os.stat(
+            container_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        msg = f"failed to stat reserved container during cleanup: {container_name}"
+        raise ArchiveExtractionError(msg) from exc
+    if current.st_ino != reserved_stat.st_ino or current.st_dev != reserved_stat.st_dev:
+        msg = "reserved container was replaced before cleanup"
+        raise ArchiveExtractionError(msg)
+    if not stat.S_ISDIR(current.st_mode):
+        msg = f"reserved container is not a directory: {container_name}"
+        raise ArchiveExtractionError(msg)
+    try:
+        os.rmdir(container_name, dir_fd=parent_fd)
+    except OSError as exc:
+        msg = f"failed to remove reserved archive container: {container_name}"
+        raise ArchiveExtractionError(msg) from exc
+
+
+def remove_reserved_container_on_mkdir_failure(
+    parent_fd: int,
+    container_name: str,
+) -> None:
+    try:
+        os.rmdir(container_name, dir_fd=parent_fd)
+    except OSError as exc:
+        log.warning(
+            "Failed to remove reserved archive container after open failure %s: %s",
+            container_name,
+            exc,
+        )
 
 
 def _assert_opened_directory(fd: int, expected: os.stat_result) -> None:
@@ -156,22 +263,6 @@ def _try_open_container(parent_fd: int, container_name: str) -> int | None:
         raise ArchiveExtractionError(msg) from exc
 
 
-def _reserve_container_directory(parent_fd: int, container_name: str) -> int:
-    try:
-        os.mkdir(container_name, mode=CONTAINER_DIR_MODE, dir_fd=parent_fd)
-    except FileExistsError as exc:
-        msg = f"archive container already exists: {container_name}"
-        raise ArchiveExtractionError(msg) from exc
-    except OSError as exc:
-        msg = f"failed to reserve archive container: {container_name}"
-        raise ArchiveExtractionError(msg) from exc
-    return os.open(
-        container_name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-
-
 def _rename_staging_into_container(
     staging: Path,
     *,
@@ -191,25 +282,6 @@ def _rename_staging_into_container(
         raise ArchiveExtractionError(msg) from exc
 
 
-def _remove_reserved_container(
-    destination_fd: int,
-    container_name: str,
-    container_fd: int,
-) -> None:
-    try:
-        os.close(container_fd)
-    except OSError:
-        pass
-    try:
-        os.rmdir(container_name, dir_fd=destination_fd)
-    except OSError as exc:
-        log.warning(
-            "Failed to remove reserved archive container %s: %s",
-            container_name,
-            exc,
-        )
-
-
 def _apply_importable_modes(payload_root: Path) -> None:
     for path in sorted(payload_root.rglob("*")):
         try:
@@ -225,24 +297,26 @@ def _apply_importable_modes(payload_root: Path) -> None:
     payload_root.chmod(PUBLISHED_DIR_MODE)
 
 
-def _open_directory_path(path: Path) -> int:
-    resolved = path.resolve()
-    if not resolved.is_absolute():
-        msg = f"path is not absolute: {path}"
-        raise ArchiveExtractionError(msg)
-    parts = resolved.parts
+def _walk_open_directory(parts: tuple[str, ...]) -> int:
     if not parts:
-        msg = f"path is empty: {path}"
+        msg = "directory path is empty"
         raise ArchiveExtractionError(msg)
     current_fd = os.open(parts[0], os.O_RDONLY | os.O_DIRECTORY)
     opened: list[int] = [current_fd]
     try:
         for part in parts[1:]:
-            next_fd = os.open(
-                part,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                dir_fd=current_fd,
-            )
+            try:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current_fd,
+                )
+            except OSError as exc:
+                if exc.errno in {errno.ENOTDIR, errno.ELOOP}:
+                    msg = "directory path was redirected during publication"
+                    raise ArchiveExtractionError(msg) from exc
+                msg = f"failed to open directory component: {part!r}"
+                raise ArchiveExtractionError(msg) from exc
             opened.append(next_fd)
             os.close(current_fd)
             opened.pop(0)
@@ -256,15 +330,3 @@ def _open_directory_path(path: Path) -> int:
         raise
     else:
         return current_fd
-
-
-def _open_directory_component(parent_fd: int, name: str) -> int:
-    try:
-        return os.open(
-            name,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-            dir_fd=parent_fd,
-        )
-    except OSError as exc:
-        msg = f"failed to open directory component: {name!r}"
-        raise ArchiveExtractionError(msg) from exc

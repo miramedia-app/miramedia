@@ -31,6 +31,8 @@ _EOCD_SIGNATURE = b"PK\x05\x06"
 _ZIP64_LOCATOR_SIGNATURE = b"PK\x06\x07"
 _CD_HEADER_STRUCT = struct.Struct("<4sHHHHHHIIIHHHHHII")
 _CD_HEADER_SIGNATURE = b"PK\x01\x02"
+_ZIP_UTF8_FLAG = 0x800
+_ZIP64_EXTRA_HEADER_ID = 0x0001
 _APPROVED_TAR_TYPES = frozenset(
     {
         tarfile.REGTYPE,
@@ -152,7 +154,7 @@ def _parse_zip_central_directory(
                 signature,
                 _version_made,
                 _version_needed,
-                _flags,
+                flags,
                 _compression,
                 _mtime,
                 _mdate,
@@ -181,8 +183,17 @@ def _parse_zip_central_directory(
             if len(filename) != filename_length:
                 msg = "truncated zip central directory filename"
                 raise ArchiveExtractionError(msg)
-            handle.read(extra_length + comment_length)
-            entry_name = filename.decode("utf-8", errors="surrogateescape")
+            extra = handle.read(extra_length)
+            if len(extra) != extra_length:
+                msg = "truncated zip central directory extra field"
+                raise ArchiveExtractionError(msg)
+            _reject_zip64_extra_field(extra)
+            if comment_length:
+                comment = handle.read(comment_length)
+                if len(comment) != comment_length:
+                    msg = "truncated zip central directory comment"
+                    raise ArchiveExtractionError(msg)
+            entry_name = _decode_zip_filename(flags, filename)
             _validate_entry_name(entry_name)
             actual_count += 1
             _enforce_entry_count(actual_count)
@@ -190,6 +201,25 @@ def _parse_zip_central_directory(
             msg = "zip central directory size mismatch"
             raise ArchiveExtractionError(msg)
     return actual_count
+
+
+def _decode_zip_filename(flags: int, raw: bytes) -> str:
+    if flags & _ZIP_UTF8_FLAG:
+        return raw.decode("utf-8")
+    return raw.decode("cp437")
+
+
+def _reject_zip64_extra_field(extra: bytes) -> None:
+    offset = 0
+    while offset + 4 <= len(extra):
+        header_id, data_size = struct.unpack_from("<HH", extra, offset)
+        if header_id == _ZIP64_EXTRA_HEADER_ID:
+            msg = "zip64 extra fields are not supported"
+            raise ArchiveExtractionError(msg)
+        offset += 4 + data_size
+        if offset > len(extra):
+            msg = "truncated zip extra field"
+            raise ArchiveExtractionError(msg)
 
 
 def extract_zip_archive(
@@ -329,7 +359,7 @@ def _parse_tar_stream(
         rel.parent.mkdir(parents=True, exist_ok=True)
         with rel.open("wb") as dst:
             _copy_tar_payload(stream, dst, member.size, budget=budget)
-        _skip_tar_padding(stream, member.size)
+        _debit_tar_padding(stream, member.size, budget=budget)
 
 
 def _read_exact(stream: IO[bytes], size: int) -> bytes:
@@ -355,10 +385,17 @@ def _copy_tar_payload(
         remaining -= len(chunk)
 
 
-def _skip_tar_padding(stream: IO[bytes], size: int) -> None:
+def _debit_tar_padding(
+    stream: IO[bytes],
+    size: int,
+    *,
+    budget: _ExpandedByteBudget,
+) -> None:
     padding = (_TAR_BLOCK - (size % _TAR_BLOCK)) % _TAR_BLOCK
-    if padding:
-        _read_exact(stream, padding)
+    if not padding:
+        return
+    data = _read_exact(stream, padding)
+    budget.consume(len(data))
 
 
 def extract_gzip_archive(

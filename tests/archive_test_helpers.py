@@ -17,7 +17,12 @@ def payload_root(destination: Path) -> Path:
 
 
 def payload_file(destination: Path, *parts: str) -> Path:
-    return payload_root(destination).joinpath(*parts)
+    for container in container_paths(destination):
+        candidate = container / PAYLOAD_DIR_NAME / Path(*parts)
+        if candidate.exists():
+            return candidate
+    msg = f"payload file not found under {destination}: {'/'.join(parts)}"
+    raise AssertionError(msg)
 
 
 def container_paths(destination: Path) -> list[Path]:

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import ntpath
+import os
 import re
 import shutil
 import stat
@@ -145,14 +146,21 @@ def classify_archive(path: Path) -> ArchiveClassification | None:
 def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     """Extract ``archive`` into a digest container beneath ``destination_dir``."""
     archive = archive.resolve()
-    destination_dir = destination_dir.resolve()
     if not archive.is_file():
         msg = f"archive does not exist: {archive}"
         raise ArchiveExtractionError(msg)
+    destination_dir = Path(destination_dir)
     if destination_dir.is_symlink():
         msg = f"destination must not be a symlink: {destination_dir}"
         raise ArchiveExtractionError(msg)
-    destination_stat = destination_dir.lstat()
+    try:
+        destination_stat = os.lstat(destination_dir)
+    except OSError as exc:
+        msg = f"destination is not accessible: {destination_dir}"
+        raise ArchiveExtractionError(msg) from exc
+    if stat.S_ISLNK(destination_stat.st_mode):
+        msg = f"destination must not be a symlink: {destination_dir}"
+        raise ArchiveExtractionError(msg)
     if not stat.S_ISDIR(destination_stat.st_mode):
         msg = f"destination is not a directory: {destination_dir}"
         raise ArchiveExtractionError(msg)
@@ -168,7 +176,7 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     primary_error: BaseException | None = None
     published = False
     try:
-        staging = _create_staging_dir(destination_dir.parent)
+        staging = _create_staging_dir(destination_dir.absolute().parent)
         _extract_to_staging(archive, staging, classification.format)
         _collect_validated_regular_files(staging)
         from miramedia.imports.archive_publication import (
@@ -198,13 +206,19 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
 
 
 def _create_staging_dir(parent: Path) -> Path:
-    parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent)))
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        staging_path = tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent))
+        staging = Path(staging_path)
+    except OSError as exc:
+        msg = f"failed to create staging directory under {parent}"
+        raise ArchiveExtractionError(msg) from exc
     try:
         staging.chmod(STAGING_DIR_MODE)
-    except OSError:
+    except OSError as exc:
         shutil.rmtree(staging, ignore_errors=True)
-        raise
+        msg = f"failed to secure staging directory permissions: {staging}"
+        raise ArchiveExtractionError(msg) from exc
     return staging
 
 
