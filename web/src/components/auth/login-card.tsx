@@ -1,7 +1,6 @@
 "use client";
 
 import * as React from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { toast } from "sonner";
@@ -20,7 +19,6 @@ type Props = {
 };
 
 export function LoginCard({ oauthProviderNames }: Props) {
-  const router = useRouter();
   const qc = useQueryClient();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -56,7 +54,7 @@ export function LoginCard({ oauthProviderNames }: Props) {
         toast.success(message);
         // Full document load: no QueryObserver from the previous session can
         // survive into the new one.
-        hardNavigate("/dashboard", (p) => router.push(p));
+        hardNavigate("/dashboard");
       } else {
         toast.error("Login failed!");
         setErrorMessage("Login failed! Please check your credentials and try again.");

@@ -19,10 +19,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
   const { user, isLoading } = useUser();
   const verifyToastShown = React.useRef(false);
 
-  // Register the handler once. Read the latest router via ref so a hypothetical
-  // router identity change doesn't re-register on every render.
-  const routerRef = React.useRef(router);
-  routerRef.current = router;
+  // Register the handler once.
   // A 401 (session expiry) is an auth exit just like an explicit logout: drop the
   // shared cache before redirecting, or the expired user's identity and data stay
   // warm for whoever logs in next in this tab.
@@ -42,7 +39,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         // /login. The coordinator guarantees exactly one exit at a time.
         if (authCoordinator.isCurrent(token)) {
           // Full document load so no observer from the dead session survives.
-          hardNavigate("/login", (p) => routerRef.current.push(p));
+          hardNavigate("/login");
         }
       }
     });

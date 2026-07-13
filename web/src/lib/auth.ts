@@ -49,41 +49,58 @@ export async function beginAuthTransition(queryClient: QueryClient) {
 }
 
 /**
- * Leave the SPA via a full document load.
+ * Leave the SPA via a full document load — never an SPA navigation.
  *
- * A client-side `router.push` keeps the JS context — and every live
- * QueryObserver — alive. Replacing the document is the only way to guarantee no
- * observer from the previous session survives. `replace` (not `assign`) so the
- * dead session is not reachable via Back.
+ * A client-side `router.push` keeps the JS context, and with it every live
+ * QueryObserver from the dead session. Replacing the document is the only thing
+ * that guarantees none survives, so all three attempts here are full-document:
+ * `replace` first (the dead session must not be reachable via Back), then
+ * `assign`, then `href`.
  *
- * If `location` is stubbed or throws, fall back to the router; the tree stays
- * blank either way because the transition flag is never cleared.
+ * If every full-document mechanism throws, we deliberately do NOT fall back to
+ * the router. The tree stays blank — `authTransition` is never reset — which is
+ * the safe end state: no identity, no privileged UI, no navigation that would
+ * quietly keep the old observers alive.
+ *
+ * @returns true if a full-document navigation was initiated.
  */
-export function hardNavigate(path: string, fallback?: (path: string) => void) {
-  try {
-    window.location.replace(path);
-  } catch {
-    fallback?.(path);
+export function hardNavigate(path: string): boolean {
+  const attempts: ((p: string) => void)[] = [
+    (p) => window.location.replace(p),
+    (p) => window.location.assign(p),
+    (p) => {
+      window.location.href = p;
+    },
+  ];
+  for (const attempt of attempts) {
+    try {
+      attempt(path);
+      return true;
+    } catch {
+      // Try the next full-document mechanism.
+    }
   }
+  return false;
 }
 
 /**
- * Log out: blank, clear, then leave via a full document load.
+ * Log out: blank and clear FIRST, then post, then leave via a full document load.
  *
- * Nested `finally` — a logout POST that throws (offline, proxy error) and a
- * cancellation that throws must both still blank the tree, clear the cache, and
- * navigate. A half-exited session is exactly when a stale identity is most
- * dangerous.
+ * The transition runs before the POST, not after: a stalled logout request would
+ * otherwise leave the old authenticated (possibly admin) UI painted and
+ * interactive for as long as the request hangs. Transitioning first also advances
+ * the auth generation before the request, so a 401 racing it cannot open a second
+ * exit.
+ *
+ * `finally` — a logout POST that throws (offline, proxy error) must still leave.
+ * The session is already blanked and cleared by then.
  */
-export async function handleLogout(queryClient: QueryClient, redirect: (path: string) => void) {
+export async function handleLogout(queryClient: QueryClient) {
   try {
+    await beginAuthTransition(queryClient);
     await apiClient.POST("/api/v1/auth/cookie/logout");
   } finally {
-    try {
-      await beginAuthTransition(queryClient);
-    } finally {
-      hardNavigate("/login", redirect);
-    }
+    hardNavigate("/login");
   }
 }
 

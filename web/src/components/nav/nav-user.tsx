@@ -105,7 +105,7 @@ export function NavUser() {
               <span>{isDark ? "Light Mode" : "Dark Mode"}</span>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => handleLogout(qc, (p) => router.push(p))}>
+            <DropdownMenuItem onClick={() => void handleLogout(qc)}>
               <LogOut />
               Log Out
             </DropdownMenuItem>
