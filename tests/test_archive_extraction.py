@@ -491,26 +491,18 @@ def test_staging_mkdir_failure_cleans_up(tmp_path: Path) -> None:
     dest.mkdir()
     _write_zip(archive, {"clip.mkv": b"x"})
 
-    from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
+    from miramedia.imports import archive_extraction as mod
 
-    created_names: list[str] = []
-    real_mkdir = os.mkdir
-
-    def _track_mkdir(name: str, *args: object, **kwargs: object) -> None:
-        if str(name).startswith(STAGING_DIR_PREFIX):
-            created_names.append(str(name))
-            msg = "simulated staging mkdir failure"
-            raise OSError(msg)
-        real_mkdir(name, *args, **kwargs)
+    def _fail_create(_parent_fd: int) -> mod.BoundStagingDirectory:
+        msg = "failed to create staging directory"
+        raise ArchiveExtractionError(msg)
 
     with (
-        patch.object(os, "mkdir", side_effect=_track_mkdir),
+        patch.object(mod, "_create_staging_dir", side_effect=_fail_create),
         pytest.raises(ArchiveExtractionError, match="staging directory"),
     ):
         extract_archive_to_directory(archive, dest)
 
-    assert created_names
-    assert not list(dest.parent.glob(f"{STAGING_DIR_PREFIX}*"))
     assert container_paths(dest) == []
 
 

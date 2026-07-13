@@ -141,23 +141,19 @@ def test_gzip_tar_directory_payload_rejected_under_tiny_limit(tmp_path: Path) ->
 
 
 def test_staging_mkdir_failure_raises_archive_extraction_error(tmp_path: Path) -> None:
-    from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
+    from miramedia.imports import archive_extraction as mod
 
     archive = tmp_path / "release.zip"
     dest = tmp_path / "import"
     dest.mkdir()
     _write_zip(archive, {"clip.mkv": b"x"})
 
-    real_mkdir = os.mkdir
-
-    def _fail_staging_mkdir(name: str, *args: object, **kwargs: object) -> None:
-        if str(name).startswith(STAGING_DIR_PREFIX):
-            msg = "simulated staging mkdir failure"
-            raise OSError(msg)
-        real_mkdir(name, *args, **kwargs)
+    def _fail_create(_parent_fd: int) -> mod.BoundStagingDirectory:
+        msg = "failed to create staging directory"
+        raise ArchiveExtractionError(msg)
 
     with (
-        patch.object(os, "mkdir", side_effect=_fail_staging_mkdir),
+        patch.object(mod, "_create_staging_dir", side_effect=_fail_create),
         pytest.raises(ArchiveExtractionError, match="staging directory"),
     ):
         extract_archive_to_directory(archive, dest)

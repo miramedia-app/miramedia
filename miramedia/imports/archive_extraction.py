@@ -190,7 +190,6 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
 
         require_descriptor_staging_supported()
         parent_path = destination_dir.parent
-        parent_path.mkdir(parents=True, exist_ok=True)
         parent_fd = bind_directory(parent_path)
         staging = _create_staging_dir(parent_fd)
         parent_fd = None
@@ -228,8 +227,14 @@ def _create_staging_dir(parent_fd: int) -> BoundStagingDirectory:
     from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
 
     staging_name = f"{STAGING_DIR_PREFIX}{secrets.token_hex(16)}"
+    created_stat: os.stat_result | None = None
     try:
         os.mkdir(staging_name, mode=STAGING_DIR_MODE, dir_fd=parent_fd)
+        created_stat = os.stat(
+            staging_name,
+            dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
     except FileExistsError as exc:
         msg = "failed to allocate unique staging directory name"
         raise ArchiveExtractionError(msg) from exc
@@ -243,21 +248,35 @@ def _create_staging_dir(parent_fd: int) -> BoundStagingDirectory:
             dir_fd=parent_fd,
         )
     except OSError as exc:
-        try:
-            staging_stat = os.stat(
-                staging_name,
-                dir_fd=parent_fd,
-                follow_symlinks=False,
-            )
-        except OSError:
-            msg = "failed to bind staging directory"
-            raise ArchiveExtractionError(msg) from exc
-        quarantine_owned_directory(
-            parent_fd,
-            staging_name,
-            staging_stat,
-            allow_recursive_cleanup=True,
-        )
+        if created_stat is not None:
+            try:
+                current = os.stat(
+                    staging_name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as stat_exc:
+                log.warning(
+                    "Failed to stat staging directory %s after bind failure: %s",
+                    staging_name,
+                    stat_exc,
+                )
+            else:
+                if (
+                    current.st_dev == created_stat.st_dev
+                    and current.st_ino == created_stat.st_ino
+                ):
+                    quarantine_owned_directory(
+                        parent_fd,
+                        staging_name,
+                        created_stat,
+                        allow_recursive_cleanup=True,
+                    )
+                else:
+                    log.warning(
+                        "Staging directory %s was replaced before bind; leaving it in place",
+                        staging_name,
+                    )
         msg = "failed to bind staging directory"
         raise ArchiveExtractionError(msg) from exc
     staging_stat = os.fstat(staging_fd)
