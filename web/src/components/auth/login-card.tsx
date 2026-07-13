@@ -11,8 +11,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
+import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
-import { handleOauth } from "@/lib/auth";
+import { handleOauth, resetAuthCache } from "@/lib/auth";
 
 type Props = {
   oauthProviderNames: string[];
@@ -20,6 +21,7 @@ type Props = {
 
 export function LoginCard({ oauthProviderNames }: Props) {
   const router = useRouter();
+  const qc = useQueryClient();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [errorMessage, setErrorMessage] = React.useState("");
@@ -43,6 +45,10 @@ export function LoginCard({ oauthProviderNames }: Props) {
       });
 
       if (!error) {
+        // New session, new identity: drop anything the previous account left in
+        // the shared cache so the dashboard cannot render with a stale
+        // `users/me` (and its `is_superuser`) before the fresh one arrives.
+        await resetAuthCache(qc);
         const message = "Login successful! Redirecting...";
         setSuccessMessage(message);
         toast.success(message);

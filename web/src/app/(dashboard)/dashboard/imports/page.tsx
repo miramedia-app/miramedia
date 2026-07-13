@@ -1094,7 +1094,11 @@ export default function ImportsPage() {
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
         {integrityFailed && (
-          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+          <div
+            role="alert"
+            aria-live="polite"
+            className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm"
+          >
             <div className="flex items-center gap-2">
               <AlertOctagon className="h-4 w-4 text-destructive" />
               <span>Corruption data could not be loaded. Other imports are unaffected.</span>
