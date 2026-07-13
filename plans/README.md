@@ -13,7 +13,7 @@ Final integration branch for plans **072–086** (excluding `main`).
 | `bd4c953` | above + `abf7a24` | `advisor086-safe-archive-extraction` (086) |
 | `d364211` | above | PG lane wiring (`disposable_database_sync_url`, CI postgresql step) |
 | `7a9dc9c` | above | Default `make test` excludes `postgresql` marker (DB-free) |
-| *(this merge)* | above + `653ba1f` | `plan-085-frontend-workflow-tests` (Vitest, frontend CI gates) |
+| `a8ffdc0` | above + `653ba1f` | `plan-085-frontend-workflow-tests` (Vitest, frontend CI gates) |
 
 ## Per-plan status
 
