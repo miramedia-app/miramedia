@@ -30,6 +30,9 @@ from miramedia.torrents.schemas import TorrentHistoryOutcome, TorrentId, Torrent
 
 log = logging.getLogger(__name__)
 
+# Statuses the minute-level finished-download detector can still transition.
+ACTIVE_TORRENT_STATUSES = (TorrentStatus.downloading, TorrentStatus.unknown)
+
 
 class TorrentRepository:
     def __init__(self, db: DbSessionDependency) -> None:
@@ -107,6 +110,17 @@ class TorrentRepository:
         return [
             TorrentSchema.model_validate(torrent_schema) for torrent_schema in result
         ]
+
+    async def get_active_torrents(self) -> list[TorrentSchema]:
+        """Torrents the finished-download detector may still transition.
+
+        Excludes terminal or inactive statuses (``finished``, ``paused``,
+        ``error``) so the minute scheduler does not materialize the whole
+        library.
+        """
+        stmt = select(Torrent).where(Torrent.status.in_(ACTIVE_TORRENT_STATUSES))
+        result = (await self.db.execute(stmt)).scalars().all()
+        return [TorrentSchema.model_validate(row) for row in result]
 
     # ---- torrent history (durable download log) -------------------------
 

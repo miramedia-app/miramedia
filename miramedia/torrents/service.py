@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from miramedia.events.bus import Event, get_event_bus
-from miramedia.exceptions import MediaSkippedError, NotFoundError, NoVideoFilesError
+from miramedia.exceptions import (
+    ConflictError,
+    MediaSkippedError,
+    NotFoundError,
+    NoVideoFilesError,
+)
 from miramedia.file_status import ImportOutcome
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.movies.schemas import Movie, MovieFile
@@ -1910,16 +1915,13 @@ class TorrentService:
         movie_service: "MovieService",
     ) -> IntegrityActionResult:
         """Accept the on-disk file: clear error + sha1 so the next audit re-baselines."""
-        cleared = await self._clear_integrity_state(
+        await self._clear_integrity_state(
             media_type=media_type,
             file_id=file_id,
             reset_sha1=True,
             show_service=show_service,
             movie_service=movie_service,
         )
-        if not cleared:
-            msg = f"File {file_id} not found"
-            raise NotFoundError(msg)
         return IntegrityActionResult(ok=True)
 
     async def dismiss_mismatch(
@@ -1931,16 +1933,13 @@ class TorrentService:
         movie_service: "MovieService",
     ) -> IntegrityActionResult:
         """Clear the mismatch error only; keep sha1 so the next audit re-verifies."""
-        cleared = await self._clear_integrity_state(
+        await self._clear_integrity_state(
             media_type=media_type,
             file_id=file_id,
             reset_sha1=False,
             show_service=show_service,
             movie_service=movie_service,
         )
-        if not cleared:
-            msg = f"File {file_id} not found"
-            raise NotFoundError(msg)
         return IntegrityActionResult(ok=True)
 
     async def _clear_integrity_state(
@@ -1951,13 +1950,47 @@ class TorrentService:
         reset_sha1: bool,
         show_service: "ShowService",
         movie_service: "MovieService",
-    ) -> bool:
+    ) -> None:
         if media_type == MediaType.show:
-            return await show_service.show_repository.clear_file_integrity_state(
-                file_id, reset_sha1=reset_sha1
+            row = await show_service.show_repository.get_episode_file_by_id(file_id)
+            if row is None:
+                msg = f"File {file_id} not found"
+                raise NotFoundError(msg)
+            import_error = row.import_error or ""
+            if (
+                row.import_status != ImportOutcome.imported
+                or not import_error.startswith("sha1 mismatch")
+            ):
+                msg = "Integrity mismatch is no longer present for this file"
+                raise ConflictError(msg)
+            cleared = await show_service.show_repository.clear_file_integrity_state(
+                file_id,
+                expected_sha1=row.sha1,
+                expected_import_error=import_error,
+                reset_sha1=reset_sha1,
             )
-        if media_type == MediaType.movie:
-            return await movie_service.movie_repository.clear_file_integrity_state(
-                file_id, reset_sha1=reset_sha1
+        elif media_type == MediaType.movie:
+            row = await movie_service.movie_repository.get_movie_file_by_id(file_id)
+            if row is None:
+                msg = f"File {file_id} not found"
+                raise NotFoundError(msg)
+            import_error = row.import_error or ""
+            if (
+                row.import_status != ImportOutcome.imported
+                or not import_error.startswith("sha1 mismatch")
+            ):
+                msg = "Integrity mismatch is no longer present for this file"
+                raise ConflictError(msg)
+            cleared = await movie_service.movie_repository.clear_file_integrity_state(
+                file_id,
+                expected_sha1=row.sha1,
+                expected_import_error=import_error,
+                reset_sha1=reset_sha1,
             )
-        return False
+        else:
+            msg = f"File {file_id} not found"
+            raise NotFoundError(msg)
+
+        if not cleared:
+            msg = "Integrity mismatch is no longer present for this file"
+            raise ConflictError(msg)

@@ -39,6 +39,7 @@ class _ScalarResult:
 @dataclass
 class _ExecuteResult:
     rows: list[Any]
+    rowcount: int = 0
 
     def scalars(self) -> _ScalarResult:
         return _ScalarResult(self.rows)
@@ -58,6 +59,9 @@ class RecordingSession:
     async def rollback(self) -> None:
         return None
 
+    async def flush(self) -> None:
+        return None
+
     async def execute(self, stmt: Any) -> _ExecuteResult:
         self.executes.append(stmt)
         if isinstance(stmt, Select):
@@ -68,6 +72,8 @@ class RecordingSession:
             if entity_name == "MovieFile":
                 return _ExecuteResult(self.movie_rows)
             return _ExecuteResult([])
+        if isinstance(stmt, Update):
+            return _ExecuteResult([], rowcount=1)
         return _ExecuteResult([])
 
     @property
