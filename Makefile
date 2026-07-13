@@ -32,7 +32,7 @@ help:
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
 	@echo "  make check                  # lint + format-check + ty + test + tsc (CI parity minus OpenAPI drift)"
 	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
-	@echo "  make frontend-generate      # Generate web build prerequisites (fumadocs-mdx + next typegen)"
+	@echo "  make frontend-generate      # Generate web build prerequisites (web 'generate' script)"
 	@echo "  make frontend-build         # Generate prerequisites, then build the static export"
 	@echo "  make tsc                    # Type-check the Next.js frontend"
 
@@ -90,11 +90,12 @@ ty:
 
 # Canonical frontend generation step. `web/src` imports the Fumadocs collections
 # (`collections/*` -> `web/.source`) and Next's generated type declarations, both
-# of which are gitignored — so every build path must generate them first. Extend
-# this target rather than adding one-off generation commands elsewhere.
+# of which are gitignored — so every build path must generate them first.
+# The command itself lives in web/package.json ("generate") so the Makefile and
+# the Dockerfile share one definition; extend that script, not this target.
 # Assumes dependencies are already installed (see frontend-bootstrap).
 frontend-generate:
-	@cd web && pnpm exec fumadocs-mdx && pnpm exec next typegen
+	@cd web && pnpm run generate
 
 frontend-bootstrap:
 	@cd web && pnpm install --frozen-lockfile
