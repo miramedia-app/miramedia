@@ -15,8 +15,11 @@ import shutil
 from collections.abc import Iterable, Mapping
 from pathlib import Path, UnsupportedOperation
 
-import patoolib
-
+from miramedia.imports.archive_extraction import (
+    ArchiveExtractionError,
+    extract_archive_to_directory,
+    is_archive_mime,
+)
 from miramedia.torrents.parsing import (
     is_sample_or_extra,
     is_subtitle_file,
@@ -122,19 +125,6 @@ def list_files_recursively(path: Path = Path()) -> list[Path]:
 
 
 def extract_archives(files: list) -> None:
-    archive_types = {
-        "application/zip",
-        "application/x-zip-compressed",
-        "application/x-compressed",
-        "application/vnd.rar",
-        "application/x-7z-compressed",
-        "application/x-freearc",
-        "application/x-bzip",
-        "application/x-bzip2",
-        "application/gzip",
-        "application/x-gzip",
-        "application/x-tar",
-    }
     for file in files:
         file_type = mimetypes.guess_type(file)
         if log.isEnabledFor(logging.DEBUG):
@@ -145,14 +135,16 @@ def extract_archives(files: list) -> None:
                 file_type,
             )
 
-        if file_type[0] in archive_types:
+        if is_archive_mime(file_type[0]):
             log.info(
-                f"File {file} is a compressed file, extracting it into directory {file.parent}"
+                "File %s is a compressed file, extracting it safely into directory %s",
+                file,
+                file.parent,
             )
             try:
-                patoolib.extract_archive(str(file), outdir=str(file.parent))
-            except patoolib.util.PatoolError:
-                log.exception(f"Failed to extract archive {file}")
+                extract_archive_to_directory(file, file.parent)
+            except ArchiveExtractionError:
+                log.exception("Failed to safely extract archive %s", file)
 
 
 def import_file(

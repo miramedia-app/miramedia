@@ -236,11 +236,11 @@ def test_extract_archives_recognizes_zip_mime_types(
 
     with (
         patch("miramedia.imports.files.mimetypes.guess_type", _guess_type),
-        patch("miramedia.imports.files.patoolib.extract_archive") as extract_mock,
+        patch("miramedia.imports.files.extract_archive_to_directory") as extract_mock,
     ):
         extract_archives([archive])
 
-    extract_mock.assert_called_once_with(str(archive), outdir=str(archive.parent))
+    extract_mock.assert_called_once_with(archive, archive.parent)
 
 
 # ---------------------------------------------------------------------------
