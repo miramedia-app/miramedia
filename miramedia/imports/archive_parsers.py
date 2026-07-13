@@ -175,6 +175,13 @@ def _parse_zip_central_directory(
             if disk_start != 0:
                 msg = "multi-disk zip archives are not supported"
                 raise ArchiveExtractionError(msg)
+            if (
+                _compressed_size == 0xFFFFFFFF
+                or _uncompressed_size == 0xFFFFFFFF
+                or _local_header_offset == 0xFFFFFFFF
+            ):
+                msg = "zip64 sentinel values are not supported"
+                raise ArchiveExtractionError(msg)
             variable_length = filename_length + extra_length + comment_length
             if handle.tell() + variable_length > end:
                 msg = "truncated zip central directory entry"
@@ -204,9 +211,13 @@ def _parse_zip_central_directory(
 
 
 def _decode_zip_filename(flags: int, raw: bytes) -> str:
-    if flags & _ZIP_UTF8_FLAG:
-        return raw.decode("utf-8")
-    return raw.decode("cp437")
+    try:
+        if flags & _ZIP_UTF8_FLAG:
+            return raw.decode("utf-8")
+        return raw.decode("cp437")
+    except UnicodeDecodeError as exc:
+        msg = "zip filename is not valid text"
+        raise ArchiveExtractionError(msg) from exc
 
 
 def _reject_zip64_extra_field(extra: bytes) -> None:
@@ -220,6 +231,9 @@ def _reject_zip64_extra_field(extra: bytes) -> None:
         if offset > len(extra):
             msg = "truncated zip extra field"
             raise ArchiveExtractionError(msg)
+    if offset != len(extra):
+        msg = "malformed zip extra field"
+        raise ArchiveExtractionError(msg)
 
 
 def extract_zip_archive(

@@ -64,30 +64,26 @@ def test_bind_directory_rejects_root_swapped_to_symlink(tmp_path: Path) -> None:
         publication.bind_directory(root)
 
 
-def test_remove_reserved_container_skips_replaced_inode(tmp_path: Path) -> None:
+def test_quarantine_cleanup_leaves_replaced_private(tmp_path: Path) -> None:
     from miramedia.imports import archive_publication as publication
 
     parent = tmp_path / "import"
     parent.mkdir()
-    container_name = publication.container_name_for_digest("abc")
-    container_path = parent / container_name
-    container_path.mkdir()
-    reserved_stat = container_path.lstat()
-    container_path.rmdir()
+    private_name = f"{publication.PRIVATE_BUILD_PREFIX}abc"
+    private_path = parent / private_name
+    private_path.mkdir()
+    private_stat = private_path.lstat()
+    private_path.rmdir()
     replacement = parent / "replacement"
     replacement.mkdir()
     (replacement / "marker").write_bytes(b"safe")
-    replacement.rename(container_path)
+    replacement.rename(private_path)
 
     parent_fd = publication.bind_directory(parent)
     try:
-        with pytest.raises(ArchiveExtractionError, match="replaced"):
-            publication.remove_reserved_container(
-                parent_fd,
-                container_name,
-                reserved_stat,
-            )
-        assert (container_path / "marker").read_bytes() == b"safe"
+        publication._quarantine_private_build(parent_fd, private_name, private_stat)
+        assert (private_path / "marker").read_bytes() == b"safe"
+        assert list(parent.glob(f"{publication.QUARANTINE_PREFIX}*")) == []
     finally:
         os.close(parent_fd)
 

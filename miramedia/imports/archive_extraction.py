@@ -179,16 +179,11 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
         staging = _create_staging_dir(destination_dir.absolute().parent)
         _extract_to_staging(archive, staging, classification.format)
         _collect_validated_regular_files(staging)
-        from miramedia.imports.archive_publication import (
-            publish_staging_tree,
-            staging_content_digest,
-        )
+        from miramedia.imports.archive_publication import publish_staging_tree
 
-        digest = staging_content_digest(staging)
         container_path = publish_staging_tree(
             staging,
             destination_dir,
-            digest=digest,
             destination_stat=destination_stat,
         )
         published = True

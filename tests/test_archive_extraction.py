@@ -456,7 +456,7 @@ def test_publication_failure_leaves_no_container(tmp_path: Path) -> None:
     with (
         patch.object(
             publication,
-            "_rename_staging_into_container",
+            "_install_staging_payload",
             side_effect=OSError("simulated rename failure"),
         ),
         pytest.raises(ArchiveExtractionError, match="rename failure"),

@@ -189,7 +189,6 @@ def test_publication_parent_symlink_swap_blocks_root_open(tmp_path: Path) -> Non
         staging: Path,
         destination_dir: Path,
         *,
-        digest: str,
         destination_stat: os.stat_result,
     ) -> Path:
         root.rmdir()
@@ -197,7 +196,6 @@ def test_publication_parent_symlink_swap_blocks_root_open(tmp_path: Path) -> Non
         return real_publish(
             staging,
             destination_dir,
-            digest=digest,
             destination_stat=destination_stat,
         )
 
@@ -382,7 +380,7 @@ def test_duplicate_logical_paths_rejected(tmp_path: Path) -> None:
     assert container_paths(dest) == []
 
 
-def test_publication_reservation_failure_leaves_destination_unchanged(
+def test_publication_private_build_failure_leaves_destination_unchanged(
     tmp_path: Path,
 ) -> None:
     archive = tmp_path / "release.zip"
@@ -398,10 +396,10 @@ def test_publication_reservation_failure_leaves_destination_unchanged(
     with (
         patch.object(
             publication,
-            "reserve_container_directory",
-            side_effect=ArchiveExtractionError("simulated reservation failure"),
+            "_install_staging_payload",
+            side_effect=ArchiveExtractionError("simulated private build failure"),
         ),
-        pytest.raises(ArchiveExtractionError, match="reservation failure"),
+        pytest.raises(ArchiveExtractionError, match="private build failure"),
     ):
         extract_archive_to_directory(archive, dest)
 
