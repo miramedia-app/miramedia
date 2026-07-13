@@ -1,0 +1,201 @@
+"""Custom OAuth router with request-scoped generation settings."""
+
+# Mirrors fastapi-users oauth router patterns; keep lint parity with upstream.
+# ruff: noqa: FAST002, B008, S107, ANN202
+
+from __future__ import annotations
+
+import secrets
+from typing import Literal
+
+import jwt
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi_users import models
+from fastapi_users.authentication import AuthenticationBackend, Strategy
+from fastapi_users.exceptions import UserAlreadyExists
+from fastapi_users.jwt import SecretType, decode_jwt
+from fastapi_users.manager import BaseUserManager, UserManagerDependency
+from fastapi_users.router.common import ErrorCode, ErrorModel
+from fastapi_users.router.oauth import (
+    CSRF_TOKEN_COOKIE_NAME,
+    CSRF_TOKEN_KEY,
+    STATE_TOKEN_AUDIENCE,
+    OAuth2AuthorizeResponse,
+    generate_csrf_token,
+    generate_state_token,
+)
+from httpx_oauth.integrations.fastapi import OAuth2AuthorizeCallback
+from httpx_oauth.oauth2 import OAuth2Token
+
+from miramedia.auth.runtime import (
+    OAUTH_ROUTE_NAME,
+    current_oauth_runtime_generation,
+    dynamic_oauth_client,
+)
+
+
+def get_dynamic_oauth_router(
+    backend: AuthenticationBackend[models.UP, models.ID],
+    get_user_manager: UserManagerDependency[models.UP, models.ID],
+    state_secret: SecretType,
+    redirect_url: str | None = None,
+    associate_by_email: bool = False,
+    is_verified_by_default: bool = False,
+    *,
+    csrf_token_cookie_name: str = CSRF_TOKEN_COOKIE_NAME,
+    csrf_token_cookie_path: str = "/",
+    csrf_token_cookie_domain: str | None = None,
+    csrf_token_cookie_httponly: bool = True,
+    csrf_token_cookie_samesite: Literal["lax", "strict", "none"] = "lax",
+) -> APIRouter:
+    """OAuth routes with stable mount names and generation-scoped CSRF/provider identity."""
+    router = APIRouter()
+    callback_route_name = f"oauth:{OAUTH_ROUTE_NAME}.{backend.name}.callback"
+
+    if redirect_url is not None:
+        oauth2_authorize_callback = OAuth2AuthorizeCallback(
+            dynamic_oauth_client,
+            redirect_url=redirect_url,
+        )
+    else:
+        oauth2_authorize_callback = OAuth2AuthorizeCallback(
+            dynamic_oauth_client,
+            route_name=callback_route_name,
+        )
+
+    @router.get(
+        "/authorize",
+        name=f"oauth:{OAUTH_ROUTE_NAME}.{backend.name}.authorize",
+        response_model=OAuth2AuthorizeResponse,
+    )
+    async def authorize(
+        request: Request, response: Response, scopes: list[str] = Query(None)
+    ) -> OAuth2AuthorizeResponse:
+        generation = current_oauth_runtime_generation()
+        if redirect_url is not None:
+            authorize_redirect_url = redirect_url
+        else:
+            authorize_redirect_url = str(request.url_for(callback_route_name))
+
+        csrf_token = generate_csrf_token()
+        state_data: dict[str, str] = {CSRF_TOKEN_KEY: csrf_token}
+        state = generate_state_token(state_data, state_secret)
+        authorization_url = await dynamic_oauth_client.get_authorization_url(
+            authorize_redirect_url,
+            state,
+            scopes,
+        )
+
+        response.set_cookie(
+            csrf_token_cookie_name,
+            csrf_token,
+            max_age=3600,
+            path=csrf_token_cookie_path,
+            domain=csrf_token_cookie_domain,
+            secure=generation.cookie_secure,
+            httponly=csrf_token_cookie_httponly,
+            samesite=csrf_token_cookie_samesite,
+        )
+
+        return OAuth2AuthorizeResponse(authorization_url=authorization_url)
+
+    @router.get(
+        "/callback",
+        name=callback_route_name,
+        description="The response varies based on the authentication backend used.",
+        responses={
+            status.HTTP_400_BAD_REQUEST: {
+                "model": ErrorModel,
+                "content": {
+                    "application/json": {
+                        "examples": {
+                            "INVALID_STATE_TOKEN": {
+                                "summary": "Invalid state token.",
+                                "value": None,
+                            },
+                            ErrorCode.LOGIN_BAD_CREDENTIALS: {
+                                "summary": "User is inactive.",
+                                "value": {"detail": ErrorCode.LOGIN_BAD_CREDENTIALS},
+                            },
+                        }
+                    }
+                },
+            },
+        },
+    )
+    async def callback(
+        request: Request,
+        access_token_state: tuple[OAuth2Token, str] = Depends(
+            oauth2_authorize_callback
+        ),
+        user_manager: BaseUserManager[models.UP, models.ID] = Depends(get_user_manager),
+        strategy: Strategy[models.UP, models.ID] = Depends(backend.get_strategy),
+    ):
+        generation = current_oauth_runtime_generation()
+        token, state = access_token_state
+
+        try:
+            state_data = decode_jwt(state, state_secret, [STATE_TOKEN_AUDIENCE])
+        except jwt.DecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.ACCESS_TOKEN_DECODE_ERROR,
+            ) from None
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.ACCESS_TOKEN_ALREADY_EXPIRED,
+            ) from None
+
+        cookie_csrf_token = request.cookies.get(csrf_token_cookie_name)
+        state_csrf_token = state_data.get(CSRF_TOKEN_KEY)
+        if (
+            not cookie_csrf_token
+            or not state_csrf_token
+            or not secrets.compare_digest(cookie_csrf_token, state_csrf_token)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.OAUTH_INVALID_STATE,
+            )
+
+        account_id, account_email = await dynamic_oauth_client.get_id_email(
+            token["access_token"]
+        )
+
+        if account_email is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.OAUTH_NOT_AVAILABLE_EMAIL,
+            )
+
+        provider_name = generation.account_provider_name or generation.provider_name
+        try:
+            user = await user_manager.oauth_callback(  # ty: ignore[invalid-argument-type]
+                str(provider_name),
+                token["access_token"],
+                account_id,
+                account_email,
+                token.get("expires_at"),
+                token.get("refresh_token"),
+                request,
+                associate_by_email=associate_by_email,
+                is_verified_by_default=is_verified_by_default,
+            )
+        except UserAlreadyExists:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.OAUTH_USER_ALREADY_EXISTS,
+            ) from None
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ErrorCode.LOGIN_BAD_CREDENTIALS,
+            )
+
+        response = await backend.login(strategy, user)
+        await user_manager.on_after_login(user, request, response)
+        return response
+
+    return router

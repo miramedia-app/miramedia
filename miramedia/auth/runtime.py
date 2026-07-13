@@ -18,7 +18,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.responses import Response
 
 from miramedia.auth.config import AuthConfig, OpenIdConfig
-from miramedia.config import MiraMediaConfig
+from miramedia.config import BasicConfig, MiraMediaConfig
 from miramedia.settings.service import build_isolated_config
 
 log = logging.getLogger(__name__)
@@ -44,7 +44,10 @@ class AuthRuntimeGeneration:
     generation_id: int
     oidc_enabled: bool
     provider_name: str
+    account_provider_name: str
     client: OpenID | None = None
+    cookie_secure: bool = False
+    frontend_url: str = ""
 
 
 class AuthRuntimeStore:
@@ -57,7 +60,10 @@ class AuthRuntimeStore:
             generation_id=0,
             oidc_enabled=False,
             provider_name="",
+            account_provider_name="",
             client=None,
+            cookie_secure=False,
+            frontend_url="",
         )
 
     def get_active(self) -> AuthRuntimeGeneration:
@@ -82,7 +88,10 @@ class AuthRuntimeStore:
                 generation_id=0,
                 oidc_enabled=False,
                 provider_name="",
+                account_provider_name="",
                 client=None,
+                cookie_secure=False,
+                frontend_url="",
             )
             return self._active
 
@@ -110,17 +119,29 @@ def _build_openid_client_sync(oidc: OpenIdConfig) -> OpenID:
     )
 
 
+def _cookie_secure_from_config(auth: AuthConfig, misc: BasicConfig) -> bool:
+    if auth.cookie_secure is not None:
+        return auth.cookie_secure
+    return str(misc.frontend_url).startswith("https://")
+
+
 async def build_auth_runtime_generation(
     auth_config: AuthConfig,
+    misc_config: BasicConfig,
 ) -> AuthRuntimeGeneration:
     """Validate/build a prospective OIDC runtime off the async event loop."""
+    cookie_secure = _cookie_secure_from_config(auth_config, misc_config)
+    frontend_url = str(misc_config.frontend_url)
     oidc = auth_config.openid_connect
     if not oidc.enabled:
         return AuthRuntimeGeneration(
             generation_id=0,
             oidc_enabled=False,
             provider_name="",
+            account_provider_name="",
             client=None,
+            cookie_secure=cookie_secure,
+            frontend_url=frontend_url,
         )
     try:
         client = await asyncio.to_thread(_build_openid_client_sync, oidc)
@@ -134,7 +155,10 @@ async def build_auth_runtime_generation(
         generation_id=0,
         oidc_enabled=True,
         provider_name=oidc.name,
+        account_provider_name=oidc.name,
         client=client,
+        cookie_secure=cookie_secure,
+        frontend_url=frontend_url,
     )
 
 
@@ -142,8 +166,8 @@ async def prepare_auth_runtime_for_overrides(
     overrides: dict,
 ) -> AuthRuntimeGeneration:
     """Stage a runtime generation from prospective overrides before persistence."""
-    auth_config = preview_auth_config(overrides)
-    return await build_auth_runtime_generation(auth_config)
+    config = build_isolated_config(overrides)
+    return await build_auth_runtime_generation(config.auth, config.misc)
 
 
 def commit_auth_runtime_generation(
@@ -151,15 +175,16 @@ def commit_auth_runtime_generation(
 ) -> AuthRuntimeGeneration:
     """Atomically activate a pre-validated runtime generation."""
     activated = auth_runtime_store.swap(prospective)
-    from miramedia.auth.users import apply_mutable_transport_settings
+    from miramedia.auth.users import restore_mutable_transport_settings
 
-    apply_mutable_transport_settings()
+    restore_mutable_transport_settings(prospective.cookie_secure)
     return activated
 
 
 async def initialize_auth_runtime() -> AuthRuntimeGeneration:
     """Initialize/refresh auth runtime from the live config singleton."""
-    prospective = await build_auth_runtime_generation(get_live_auth_config())
+    live = MiraMediaConfig()
+    prospective = await build_auth_runtime_generation(live.auth, live.misc)
     return commit_auth_runtime_generation(prospective)
 
 

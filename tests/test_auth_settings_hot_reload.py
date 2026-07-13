@@ -302,7 +302,9 @@ def test_token_secret_remains_restart_only_after_runtime_refresh() -> None:
 
 def test_request_snapshot_is_immutable_across_runtime_swap() -> None:
     from miramedia.auth.config import AuthConfig, OpenIdConfig
+    from miramedia.config import BasicConfig
 
+    misc = BasicConfig(frontend_url="https://app.example.com/")
     auth_a = AuthConfig(
         openid_connect=OpenIdConfig(
             enabled=True,
@@ -323,8 +325,8 @@ def test_request_snapshot_is_immutable_across_runtime_swap() -> None:
     )
 
     async def _run() -> None:
-        gen_a = await build_auth_runtime_generation(auth_a)
-        gen_b = await build_auth_runtime_generation(auth_b)
+        gen_a = await build_auth_runtime_generation(auth_a, misc)
+        gen_b = await build_auth_runtime_generation(auth_b, misc)
         commit_auth_runtime_generation(gen_a)
 
         async with oauth_runtime_request_scope():
@@ -441,12 +443,14 @@ def test_put_persist_failure_rolls_back_state(
 ) -> None:
     repo = FakeSettingsRepository()
 
-    async def _boom_save(_overrides: dict) -> dict:
+    async def _boom_save(
+        _overrides: dict, _expected_revision: int | None = None
+    ) -> tuple[dict, int]:
         msg = "db write failed"
         raise RuntimeError(msg)
 
     with settings_client(repo=repo) as (client, fake_repo):
-        monkeypatch.setattr(fake_repo, "save_overrides", _boom_save)
+        monkeypatch.setattr(fake_repo, "save_overrides_cas", _boom_save)
         before_runtime = _capture_runtime_state()
         response = client.put(
             SETTINGS_PREFIX,
@@ -518,7 +522,7 @@ def test_import_runtime_activation_failure_rolls_back_state(
         before_runtime = _capture_runtime_state()
 
         monkeypatch.setattr(
-            "miramedia.settings.mutation.commit_auth_runtime_generation",
+            "miramedia.auth.runtime.commit_auth_runtime_generation",
             _flaky_commit,
         )
         response = client.post(

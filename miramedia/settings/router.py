@@ -40,6 +40,12 @@ from miramedia.settings.service import (
     get_toml_defaults,
     strip_none,
 )
+from miramedia.settings.validation import (
+    SettingsValidationError,
+    reject_restart_only_incoming,
+    sanitize_export_overrides,
+    validate_incoming_settings_update,
+)
 from miramedia.shows.cleanup import cleanup_stale_show_preferences
 
 if TYPE_CHECKING:
@@ -62,13 +68,13 @@ async def _stage_auth_runtime(
 
 async def _commit_settings_mutation(
     *,
-    prepare: Callable[[], Awaitable[tuple[dict, dict]]],
-    persist_overrides: Callable[[dict], Awaitable[object]],
+    prepare: Callable[[], Awaitable[tuple[dict, dict, int]]],
+    persist_overrides_cas: Callable[[dict, int | None], Awaitable[tuple[dict, int]]],
 ) -> dict:
     try:
         return await execute_settings_mutation(
             prepare=prepare,
-            persist_overrides=persist_overrides,
+            persist_overrides_cas=persist_overrides_cas,
             stage_auth_runtime=_stage_auth_runtime,
         )
     except SettingsMutationSupersededError as exc:
@@ -189,6 +195,12 @@ async def update_system_settings(
     Interval-driven scheduler tasks are also re-synced on save.
     """
     new_overrides = strip_none(data.model_dump(mode="json"))
+    try:
+        new_overrides = validate_incoming_settings_update(new_overrides)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
 
     # Diff against TOML defaults so only real changes are stored as overrides
     # Use json_mode so enum/Path serialization matches the incoming data
@@ -199,13 +211,18 @@ async def update_system_settings(
     }
     new_overrides = diff_against_defaults(new_overrides, toml_defaults)
 
-    async def _prepare() -> tuple[dict, dict]:
-        existing_overrides = await repo.get_overrides()
-        return deep_merge(existing_overrides, new_overrides), existing_overrides
+    async def _prepare() -> tuple[dict, dict, int]:
+        prior_overrides = await repo.get_overrides()
+        _overrides, revision = await repo.get_overrides_with_revision()
+        return (
+            deep_merge(prior_overrides, new_overrides),
+            prior_overrides,
+            revision,
+        )
 
     merged_overrides = await _commit_settings_mutation(
         prepare=_prepare,
-        persist_overrides=repo.save_overrides,
+        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     # Clear per-show/movie overrides that reference now-disabled options
@@ -229,13 +246,14 @@ async def reset_system_settings(
 ) -> None:
     """Reset all system settings to TOML defaults (removes all DB overrides)."""
 
-    async def _prepare() -> tuple[dict, dict]:
+    async def _prepare() -> tuple[dict, dict, int]:
         prior_overrides = await repo.get_overrides()
-        return {}, prior_overrides
+        _overrides, revision = await repo.get_overrides_with_revision()
+        return {}, prior_overrides, revision
 
     await _commit_settings_mutation(
         prepare=_prepare,
-        persist_overrides=repo.save_overrides,
+        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     await _cleanup_stale_media_preferences(repo.db)
@@ -269,7 +287,7 @@ async def export_settings(repo: settings_repository_dep) -> SettingsExport:
     """Download every DB override as JSON for backup or transfer."""
     return SettingsExport(
         exported_at=datetime.now(UTC),
-        overrides=await repo.get_overrides(),
+        overrides=sanitize_export_overrides(await repo.get_overrides()),
     )
 
 
@@ -285,6 +303,12 @@ async def import_settings(
     against the known set so a malformed file can't poison the singleton.
     """
     incoming = body.overrides or {}
+    try:
+        reject_restart_only_incoming(incoming)
+    except SettingsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     for key in incoming:
         if key not in _ALLOWED_SECTIONS:
             raise HTTPException(
@@ -296,17 +320,18 @@ async def import_settings(
     else:
         incoming_merged = None
 
-    async def _prepare() -> tuple[dict, dict]:
+    async def _prepare() -> tuple[dict, dict, int]:
         existing = await repo.get_overrides()
+        _overrides, revision = await repo.get_overrides_with_revision()
         if incoming_merged is not None:
             merged = incoming_merged
         else:
             merged = deep_merge(existing, incoming)
-        return merged, existing
+        return merged, existing, revision
 
     merged = await _commit_settings_mutation(
         prepare=_prepare,
-        persist_overrides=repo.save_overrides,
+        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     await _cleanup_stale_media_preferences(repo.db)
@@ -338,13 +363,14 @@ async def clear_override_path(
             detail=f"Invalid section: {body.path[0]}",
         )
 
-    async def _prepare() -> tuple[dict, dict]:
+    async def _prepare() -> tuple[dict, dict, int]:
         prior = await repo.get_overrides()
-        return compute_clear_override_path(prior, body.path), prior
+        _overrides, revision = await repo.get_overrides_with_revision()
+        return compute_clear_override_path(prior, body.path), prior, revision
 
     updated_overrides = await _commit_settings_mutation(
         prepare=_prepare,
-        persist_overrides=repo.save_overrides,
+        persist_overrides_cas=repo.save_overrides_cas,
     )
 
     await _cleanup_stale_media_preferences(repo.db)

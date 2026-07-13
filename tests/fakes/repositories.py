@@ -476,19 +476,40 @@ class FakeSettingsRepository:
     def __init__(self, overrides: dict | None = None) -> None:
         self.db = FakeDb()
         self.overrides: dict = copy.deepcopy(overrides or {})
+        self.revision = 0
         self.save_calls: list[dict] = []
+        self.cas_calls: list[tuple[dict, int]] = []
         self.reset_called = False
         self.clear_path_calls: list[list[str]] = []
 
     async def get_overrides(self) -> dict:
         return copy.deepcopy(self.overrides)
 
+    async def get_overrides_with_revision(self) -> tuple[dict, int]:
+        return copy.deepcopy(self.overrides), self.revision
+
     async def save_overrides(self, overrides: dict) -> dict:
+        saved, _revision = await self.save_overrides_cas(
+            overrides, expected_revision=self.revision
+        )
+        return saved
+
+    async def save_overrides_cas(
+        self,
+        overrides: dict,
+        expected_revision: int | None = None,
+    ) -> tuple[dict, int]:
+        from miramedia.settings.repository import SettingsRevisionConflictError
+
+        if expected_revision is not None and expected_revision != self.revision:
+            raise SettingsRevisionConflictError(expected_revision, self.revision)
+        self.cas_calls.append((copy.deepcopy(overrides), expected_revision or 0))
         self.save_calls.append(copy.deepcopy(overrides))
         self.overrides = copy.deepcopy(overrides)
+        self.revision += 1
         if not overrides:
             self.reset_called = True
-        return self.overrides
+        return self.overrides, self.revision
 
     async def reset_overrides(self) -> None:
         self.reset_called = True

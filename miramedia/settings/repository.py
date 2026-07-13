@@ -1,13 +1,27 @@
 import logging
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.settings.models import SystemConfigOverride
 from miramedia.settings.service import compute_clear_override_path
+from miramedia.settings.validation import sanitize_persisted_overrides
 
 log = logging.getLogger(__name__)
 
 SINGLETON_ID = 1
+
+
+class SettingsRevisionConflictError(Exception):
+    """Optimistic concurrency check failed for settings persistence."""
+
+    def __init__(self, expected_revision: int, actual_revision: int) -> None:
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
+        super().__init__(
+            f"Settings revision conflict: expected {expected_revision}, "
+            f"found {actual_revision}"
+        )
 
 
 class SettingsRepository:
@@ -143,16 +157,60 @@ class SettingsRepository:
 
         return overrides
 
+    async def get_overrides_with_revision(self) -> tuple[dict, int]:
+        overrides = await self.get_overrides()
+        row = await self.db.get(SystemConfigOverride, SINGLETON_ID)
+        revision = row.revision if row is not None else 0
+        return overrides, revision
+
     async def save_overrides(self, overrides: dict) -> dict:
+        _overrides, _revision = await self.save_overrides_cas(
+            overrides, expected_revision=None
+        )
+        return _overrides
+
+    async def save_overrides_cas(
+        self,
+        overrides: dict,
+        expected_revision: int | None = None,
+    ) -> tuple[dict, int]:
+        sanitized = sanitize_persisted_overrides(overrides)
         row = await self.db.get(SystemConfigOverride, SINGLETON_ID)
         if row is None:
-            row = SystemConfigOverride(id=SINGLETON_ID, overrides=overrides)
+            if expected_revision not in (None, 0):
+                raise SettingsRevisionConflictError(expected_revision or 0, 0)
+            row = SystemConfigOverride(id=SINGLETON_ID, overrides=sanitized, revision=1)
             self.db.add(row)
-        else:
-            row.overrides = overrides
+            await self.db.commit()
+            await self.db.refresh(row)
+            return row.overrides, row.revision
+
+        if expected_revision is None:
+            row.overrides = sanitized
+            row.revision = row.revision + 1
+            await self.db.commit()
+            await self.db.refresh(row)
+            return row.overrides, row.revision
+
+        stmt = (
+            update(SystemConfigOverride)
+            .where(SystemConfigOverride.id == SINGLETON_ID)
+            .where(SystemConfigOverride.revision == expected_revision)
+            .values(
+                overrides=sanitized,
+                revision=SystemConfigOverride.revision + 1,
+            )
+            .returning(SystemConfigOverride.overrides, SystemConfigOverride.revision)
+        )
+        result = await self.db.execute(stmt)
+        updated = result.one_or_none()
+        if updated is None:
+            await self.db.rollback()
+            fresh = await self.db.get(SystemConfigOverride, SINGLETON_ID)
+            actual = fresh.revision if fresh is not None else 0
+            raise SettingsRevisionConflictError(expected_revision, actual)
         await self.db.commit()
-        await self.db.refresh(row)
-        return row.overrides
+        return updated.overrides, updated.revision
 
     async def reset_overrides(self) -> None:
         row = await self.db.get(SystemConfigOverride, SINGLETON_ID)

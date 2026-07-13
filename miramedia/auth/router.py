@@ -2,13 +2,13 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi_users.router import get_oauth_router
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from miramedia.auth.api_tokens import UserApiToken, generate_token
 from miramedia.auth.db import User
-from miramedia.auth.runtime import auth_runtime_store, dynamic_oauth_client
+from miramedia.auth.oauth_router import get_dynamic_oauth_router
+from miramedia.auth.runtime import auth_runtime_store
 from miramedia.auth.schemas import AuthMetadata, UserRead
 from miramedia.auth.users import (
     SECRET,
@@ -26,8 +26,7 @@ auth_metadata_router = APIRouter(tags=["openid"])
 
 
 def get_openid_router() -> APIRouter:
-    return get_oauth_router(
-        oauth_client=dynamic_oauth_client,
+    return get_dynamic_oauth_router(
         backend=openid_cookie_auth_backend,
         get_user_manager=fastapi_users.get_user_manager,
         state_secret=SECRET,

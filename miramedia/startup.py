@@ -115,18 +115,24 @@ async def start_persistence() -> bool:
     # is irrelevant.
     from miramedia.indexers.seed import seed_preloaded_sites
     from miramedia.movies.cleanup import cleanup_stale_movie_preferences
+    from miramedia.settings.reload import (
+        set_local_committed_revision,
+        start_settings_revision_subscriber,
+    )
     from miramedia.settings.repository import SettingsRepository
-    from miramedia.settings.service import apply_overrides_to_config
+    from miramedia.settings.service import apply_live_config_from_overrides
     from miramedia.shows.cleanup import cleanup_stale_show_preferences
     from miramedia.torrents.repository import TorrentRepository
 
     assert SessionLocalBackground is not None  # noqa: S101 — invariant guard
+    overrides: dict = {}
+    revision = 0
     async with SessionLocalBackground() as db:
         await seed_preloaded_sites(db)
         await TorrentRepository(db).delete_orphaned_torrents()
-        overrides = await SettingsRepository(db).get_overrides()
+        overrides, revision = await SettingsRepository(db).get_overrides_with_revision()
         if overrides:
-            apply_overrides_to_config(config, overrides)
+            apply_live_config_from_overrides(overrides)
             log.info(
                 "Applied %d config override section(s) from database",
                 len(overrides),
@@ -138,6 +144,8 @@ async def start_persistence() -> bool:
     from miramedia.auth.runtime import initialize_auth_runtime
 
     await initialize_auth_runtime()
+    set_local_committed_revision(revision)
+    await start_settings_revision_subscriber()
 
     # config.misc.development is now final (config.toml + any DB override).
     # Force DEBUG end-to-end so the toggle actually surfaces debug logs —
