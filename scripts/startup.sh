@@ -22,6 +22,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     echo "Config file not found. Copying example config to: $CONFIG_FILE"
     if [ -f "$EXAMPLE_CONFIG" ]; then
         cp "$EXAMPLE_CONFIG" "$CONFIG_FILE"
+        GENERATED_SECRET=$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -A n -t x1 | tr -d ' \n')
+        sed -i "s/CHANGE_ME_GENERATE_RANDOM_STRING/${GENERATED_SECRET}/" "$CONFIG_FILE"
+        echo "Generated a random auth token_secret."
         echo "Example config copied successfully!"
         echo "Please edit $CONFIG_FILE to configure MiraMedia for your environment."
         echo "Important: Make sure to change the token_secret value!"

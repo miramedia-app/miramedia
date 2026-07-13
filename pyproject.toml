@@ -1,16 +1,11 @@
 [project]
 name = "miramedia"
-version = "1.0.6"
+version = "1.0.7"
 description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [
     "cachetools>=6.0.0",
-    # Upper bound: FastAPI 0.137 stores included routers as `_IncludedRouter`
-    # objects (no `.path`) in `app.routes`, which crashes
-    # prometheus-fastapi-instrumentator 8.0.0 (`route.path` -> AttributeError ->
-    # HTTP 500 on every request). Lift once the instrumentator ships a fix.
-    # https://github.com/trallnag/prometheus-fastapi-instrumentator/issues/370
-    "fastapi[standard]>=0.115.12,<0.137",
+    "fastapi[standard]>=0.115.12",
     "fastapi-users[sqlalchemy]>=15.0.2",
     "httpx>=0.28.1",
     "httpx-oauth>=0.16.1",
@@ -50,8 +45,9 @@ dependencies = [
     "guessit>=3.8.0,<4",
     "pymediainfo>=7.0.1",
     "curl-cffi>=0.7",
+    "defusedxml>=0.7.1",
     "sse-starlette>=3.4.4",
-    "prometheus-fastapi-instrumentator>=7.0.0",
+    "prometheus-fastapi-instrumentator>=8.0.1",
 ]
 
 [dependency-groups]
@@ -145,6 +141,8 @@ invalid-parameter-default = "ignore"
 # attribute access is an unresolved-attribute false-positive.
 # Also: NativeDownloadClient singleton __new__ emits call-non-callable once
 # for the `cls._instance` path that ty can't narrow past None.
+# apply_settings(dict) and torrent_info(bdecode(...)) are valid at runtime but
+# stricter than the libtorrent stub overloads.
 [[tool.ty.overrides]]
 include = [
     "miramedia/torrents/backends/native.py",
@@ -154,6 +152,26 @@ include = [
 [tool.ty.overrides.rules]
 unresolved-attribute = "ignore"
 call-non-callable = "ignore"
+invalid-argument-type = "ignore"
+no-matching-overload = "ignore"
+
+# core/router.py: QueuePool.size/checkedout/overflow are real methods but the
+# SQLAlchemy Pool stub lacks them; health-check connect() is guarded non-None
+# at runtime; PIL Image.save(**params) stub is imprecise for keyword args.
+[[tool.ty.overrides]]
+include = ["miramedia/core/router.py"]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
+invalid-argument-type = "ignore"
+
+# startup.py: anyio.to_thread.current_default_thread_limiter resolves against
+# type[BrokenWorkerInterpreter] in the anyio stub — a false positive.
+[[tool.ty.overrides]]
+include = ["miramedia/startup.py"]
+
+[tool.ty.overrides.rules]
+unresolved-attribute = "ignore"
 
 # SubtitleService holds ShowService/MovieService as `service: ShowService | None`
 # module-level singletons initialised lazily at startup. ty sees `| None` on every

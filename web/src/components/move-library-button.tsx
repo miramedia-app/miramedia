@@ -44,19 +44,20 @@ export function MoveLibraryButton({
   function move() {
     startBusy(async () => {
       try {
-        const path =
+        const { response } =
           mediaType === "show"
-            ? "/api/v1/shows/{show_id}/move-library"
-            : "/api/v1/movies/{movie_id}/move-library";
-        const idKey = mediaType === "show" ? "show_id" : "movie_id";
-
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const { response } = await (apiClient as any).POST(path, {
-          params: {
-            path: { [idKey]: mediaId },
-            query: { target_library: target, delete_source: deleteSource },
-          },
-        });
+            ? await apiClient.POST("/api/v1/shows/{show_id}/move-library", {
+                params: {
+                  path: { show_id: mediaId },
+                  query: { target_library: target, delete_source: deleteSource },
+                },
+              })
+            : await apiClient.POST("/api/v1/movies/{movie_id}/move-library", {
+                params: {
+                  path: { movie_id: mediaId },
+                  query: { target_library: target, delete_source: deleteSource },
+                },
+              });
         if (!response.ok) {
           const body = await response.text();
           throw new Error(body || response.statusText);

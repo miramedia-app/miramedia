@@ -3,10 +3,11 @@ import os
 import pprint
 import shutil
 import threading
+from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import overload
+from typing import cast, overload
 from uuid import UUID
 
 from cachetools import TTLCache
@@ -55,9 +56,8 @@ def _as_utc(dt: datetime) -> datetime:
 
 
 # These imports intentionally follow the module-level scan-cache setup above.
-from miramedia.config import MiraMediaConfig  # noqa: E402
+from miramedia.config import LibraryItem, MiraMediaConfig  # noqa: E402
 from miramedia.exceptions import (  # noqa: E402
-    BadRequestError,
     NotFoundError,
     RenameError,
 )
@@ -65,11 +65,12 @@ from miramedia.file_status import ImportOutcome  # noqa: E402
 from miramedia.imports.files import (  # noqa: E402
     DiskSpaceError,
     ImportConflictError,
-    ensure_free_space,
+    delete_files_matching_stems,
     files_matching_stem,
     find_renamed_duplicate,
     get_files_for_import,
     import_file,
+    link_video_into_slot,
     rename_media_slot,
 )
 from miramedia.indexers.schemas import (  # noqa: E402
@@ -78,6 +79,12 @@ from miramedia.indexers.schemas import (  # noqa: E402
 )
 from miramedia.indexers.service import IndexerService  # noqa: E402
 from miramedia.indexers.utils import evaluate_indexer_query_results  # noqa: E402
+from miramedia.media_service import (  # noqa: E402
+    BgMediaSessionProtocol,
+    MediaFileRowProtocol,
+    MediaService,
+)
+from miramedia.media_state import ProgressStatus  # noqa: E402
 from miramedia.media_status import MediaStatus  # noqa: E402
 from miramedia.metadata.backends.generic import AbstractMetadataProvider  # noqa: E402
 from miramedia.metadata.schemas import MetaDataProviderSearchResult  # noqa: E402
@@ -119,18 +126,38 @@ from miramedia.torrents.parsing import (  # noqa: E402
 )
 from miramedia.torrents.quality_naming import NameParts  # noqa: E402
 from miramedia.torrents.schemas import (  # noqa: E402
+    MediaType,
     Quality,
     RichTorrent,
     Torrent,
     TorrentId,
     TorrentMediaContext,
-    TorrentStatus,
 )
 from miramedia.torrents.service import TorrentService  # noqa: E402
 from miramedia.torrents.utils import get_torrent_filepath  # noqa: E402
 
 
-class ShowService:
+def filter_results_to_episode(
+    torrents: list[IndexerQueryResult],
+    season_number: int,
+    episode_number: int,
+) -> list[IndexerQueryResult]:
+    return [
+        t
+        for t in torrents
+        if (episode_number in t.episode and season_number in t.season)
+        or (not t.episode and season_number in t.season)
+    ]
+
+
+def filter_results_to_season(
+    torrents: list[IndexerQueryResult],
+    season_number: int,
+) -> list[IndexerQueryResult]:
+    return [t for t in torrents if season_number in t.season]
+
+
+class ShowService(MediaService[Show, ShowId]):
     def __init__(
         self,
         show_repository: ShowRepository,
@@ -142,6 +169,179 @@ class ShowService:
         self.torrent_service = torrent_service
         self.indexer_service = indexer_service
         self.notification_service = notification_service
+
+    @property
+    def media_repository(self) -> ShowRepository:
+        return self.show_repository
+
+    async def _update_media_attributes(
+        self, media_id: ShowId, **kwargs: object
+    ) -> tuple[Show, object]:
+        return await self.show_repository.update_show_attributes(
+            show_id=media_id, **kwargs
+        )
+
+    def _media_id(self, media: Show) -> ShowId:
+        return media.id
+
+    def _configured_libraries(self) -> list[LibraryItem]:
+        return MiraMediaConfig().misc.show_libraries
+
+    def _default_media_directory(self) -> Path:
+        return MiraMediaConfig().misc.show_directory
+
+    def _media_library_name(self, media: Show) -> str | None:
+        return media.library
+
+    def _warn_library_not_found(self, media: Show) -> None:
+        log.warning(
+            f"Library '{media.library}' for show '{media.name}' not found in configured show_libraries, falling back to default show directory."
+        )
+
+    def _primary_folder_name(self, media: Show) -> str:
+        return show_folder_name(media)
+
+    def _fallback_folder_names(self, media: Show) -> tuple[str, str]:
+        return default_show_folder_name(media), old_show_folder_name(media)
+
+    async def _native_imdb_index(self) -> dict[str, ShowId]:
+        return await self.show_repository.native_imdb_index()
+
+    def _provider_imdb_lookup(
+        self, provider: AbstractMetadataProvider, external_id: str
+    ) -> str | None:
+        return provider.get_show_imdb_id(external_id)
+
+    async def _existing_by_identifiers(
+        self, imdb_ids: list[str], provider_keys: list[tuple[str, str]]
+    ) -> list[tuple[str | None, str, str, ShowId]]:
+        return await self.show_repository.shows_existing_by_identifiers(
+            imdb_ids, provider_keys
+        )
+
+    def _valid_library_names(self) -> set[str]:
+        misc_config = MiraMediaConfig().misc
+        return {"Default", *(lib.name for lib in misc_config.show_libraries)}
+
+    def _unknown_library_message(self, target_library: str) -> str:
+        return f"Unknown show library '{target_library}'"
+
+    async def _set_media_library(self, media_id: ShowId, library: str) -> None:
+        await self.show_repository.set_show_library(show_id=media_id, library=library)
+
+    def _move_library_log_label(self) -> str:
+        return "move_show_library"
+
+    async def _get_orphaned_failed_files(self) -> list[MediaFileRowProtocol]:
+        files = await self.show_repository.get_orphaned_failed_episode_files()
+        return cast(list[MediaFileRowProtocol], files)
+
+    async def _resolve_media_file_path(
+        self, file_row: MediaFileRowProtocol
+    ) -> Path | None:
+        return await self.resolve_episode_file_path(cast(EpisodeFile, file_row))
+
+    async def _update_media_file_import_status(
+        self, file_id: UUID, status: ImportOutcome, error: str | None
+    ) -> None:
+        await self.show_repository.update_episode_file_import_status(
+            file_id=file_id, status=status, error=error
+        )
+
+    def _reconcile_orphan_log_noun(self) -> str:
+        return "episode"
+
+    def _bg_service(self) -> AbstractAsyncContextManager["ShowService"]:
+        from miramedia.database import bg_show_service
+
+        return bg_show_service()
+
+    async def _iter_torrent_import_files(
+        self, svc: BgMediaSessionProtocol, torrent_id: TorrentId
+    ) -> list[MediaFileRowProtocol]:
+        show_svc = cast(ShowService, svc)
+        files = await show_svc.torrent_service.torrent_repository.get_episode_files_of_torrent(
+            torrent_id=torrent_id
+        )
+        return cast(list[MediaFileRowProtocol], files)
+
+    async def _stamp_file_import_failed(
+        self, svc: BgMediaSessionProtocol, file_id: UUID, error: str
+    ) -> None:
+        show_svc = cast(ShowService, svc)
+        await show_svc.show_repository.update_episode_file_import_status(
+            file_id=file_id, status=ImportOutcome.failed_io, error=error
+        )
+
+    async def _get_media_of_torrent(
+        self, svc: BgMediaSessionProtocol, torrent: Torrent
+    ) -> Show | None:
+        show_svc = cast(ShowService, svc)
+        return await show_svc.torrent_service.get_show_of_torrent(torrent=torrent)
+
+    async def _import_media_from_torrent(
+        self, svc: BgMediaSessionProtocol, torrent: Torrent, media: Show
+    ) -> None:
+        show_svc = cast(ShowService, svc)
+        await show_svc.import_show_from_torrent(torrent=torrent, show=media)
+
+    def _import_all_success_log(self, count: int) -> None:
+        log.info("Imported %d show torrent(s)", count)
+
+    def _log_import_all_failure(
+        self, torrent_title: str, media: Show | None, exc: BaseException
+    ) -> None:
+        show_name = media.name if media is not None else "<unknown>"
+        log.error(
+            "Error importing torrent %s for show %s: %s",
+            torrent_title,
+            show_name,
+            exc,
+            exc_info=True,
+        )
+
+    def _invalidate_disk_scan_cache(self) -> None:
+        invalidate_disk_scan_cache()
+
+    async def _refresh_update_metadata(
+        self,
+        media: Show,
+        metadata_provider: AbstractMetadataProvider,
+        *,
+        fresh_data: Show | None = None,
+    ) -> None:
+        await self.update_show_metadata(
+            db_show=media,
+            metadata_provider=metadata_provider,
+            fresh_show_data=fresh_data,
+        )
+
+    def _metadata_by_imdb(
+        self, provider: AbstractMetadataProvider, imdb_id: str
+    ) -> Show | None:
+        return provider.get_show_metadata_by_imdb(imdb_id)
+
+    def _search_provider(
+        self, provider: AbstractMetadataProvider, query: str
+    ) -> list[MetaDataProviderSearchResult]:
+        return provider.search_show(query)
+
+    def _fetch_metadata(
+        self, provider: AbstractMetadataProvider, external_id: str
+    ) -> Show | None:
+        return provider.get_show_metadata(external_id)
+
+    def _refresh_not_found_message(self, media: Show) -> str:
+        return (
+            f"Cannot refresh metadata: {media.metadata_provider} provider is not "
+            "enabled and could not find a matching show on any enabled provider."
+        )
+
+    def _torrent_media_type(self) -> MediaType:
+        return MediaType.show
+
+    def _torrent_repository_kwargs(self) -> dict[str, object]:
+        return {"show_repository": self.show_repository}
 
     async def add_show(
         self,
@@ -192,6 +392,9 @@ class ShowService:
             saved_show.id,
             metadata_provider.name,
         )
+        from miramedia.database import release_session_before_external_io
+
+        await release_session_before_external_io(self.show_repository.db)
         try:
             await asyncio.to_thread(
                 partial(metadata_provider.download_show_poster_image, show=saved_show)
@@ -283,19 +486,10 @@ class ShowService:
                 parts=NameParts.from_row(row),
             )
 
-            def _delete_files() -> None:
-                for stem in stems:
-                    for f in files_matching_stem(season_dir, stem):
-                        try:
-                            f.unlink(missing_ok=True)
-                            log.info(f"Deleted file: {f}")
-                        except OSError:
-                            log.warning(f"Failed to delete file: {f}", exc_info=True)
-
             # iterdir + unlink are blocking syscalls; running them inline in
             # an ``async def`` freezes the event loop and stalls every other
             # request until the delete finishes.
-            await asyncio.to_thread(_delete_files)
+            await asyncio.to_thread(delete_files_matching_stems, season_dir, stems)
         await self.show_repository.delete_episode_file(file_id=file_id)
         if torrent_id is not None:
             await self.torrent_service.cleanup_torrent_if_orphaned(torrent_id)
@@ -513,7 +707,7 @@ class ShowService:
             show=show, season_number=season_number
         )
 
-        results = [torrent for torrent in torrents if season_number in torrent.season]
+        results = filter_results_to_season(torrents, season_number)
 
         quality_allowed, codec_allowed = self._get_effective_preferences(show)
         return evaluate_indexer_query_results(
@@ -568,12 +762,7 @@ class ShowService:
 
         # Include torrents that contain this specific episode, or season packs
         # for the right season (they contain the episode too)
-        results = [
-            torrent
-            for torrent in torrents
-            if (episode_number in torrent.episode and season_number in torrent.season)
-            or (not torrent.episode and season_number in torrent.season)
-        ]
+        results = filter_results_to_episode(torrents, season_number, episode_number)
 
         quality_allowed, codec_allowed = self._get_effective_preferences(show)
         return evaluate_indexer_query_results(
@@ -646,6 +835,10 @@ class ShowService:
         :return: A list of all shows.
         """
         return await self.show_repository.get_shows()
+
+    async def get_all_show_ids(self) -> list[ShowId]:
+        """Return all show primary keys without loading the full library tree."""
+        return await self.show_repository.get_show_ids()
 
     async def get_all_public_shows(self) -> list[PublicShow]:
         """Return list-view PublicShow objects with computed download/status."""
@@ -737,7 +930,7 @@ class ShowService:
             data["seasons"] = []
             if show.skipped:
                 data["status"] = MediaStatus.skipped
-            elif show.list_progress_status == "complete":
+            elif show.list_progress_status == ProgressStatus.complete:
                 data["status"] = MediaStatus.downloaded
             else:
                 data["status"] = MediaStatus.wanted
@@ -785,97 +978,6 @@ class ShowService:
             )
             for show in shows
         ]
-
-    async def annotate_search_results(
-        self, results: list[MetaDataProviderSearchResult]
-    ) -> list[MetaDataProviderSearchResult]:
-        """Public re-annotation entrypoint for cached search results.
-
-        ``added``/``id`` reflect current library membership, so a cached
-        provider result list (e.g. the ``/recommended`` response cache) MUST be
-        re-annotated per request — otherwise a title imported after the cache
-        was populated keeps showing "Add". Annotation is one bulk DB query (+
-        optional native bridge), cheap next to the cached provider HTTP fan-out.
-        """
-        return await self._annotate_added_status(results)
-
-    async def _annotate_added_status(
-        self, results: list[MetaDataProviderSearchResult]
-    ) -> list[MetaDataProviderSearchResult]:
-        """Mark which search results are already tracked in the DB.
-
-        Uses one bulk query instead of one round-trip per result.
-        """
-        # Three-way match (mirrors the scan's _resolve_existing): a result is
-        # "added" when the library has a row whose imdb_id OR external_id equals
-        # the result's IMDb id, OR whose (external_id, metadata_provider) equals
-        # the result's provider key. The external_id==imdb_id arm is what catches
-        # native/scan-imported rows, which store the IMDb id in external_id and
-        # leave the imdb_id column NULL — an imdb_id-only lookup wrongly showed
-        # those as "Add" instead of "View".
-        imdb_ids = [str(r.imdb_id) for r in results if r.imdb_id]
-        provider_keys = [(r.external_id, r.metadata_provider) for r in results]
-        rows = await self.show_repository.shows_existing_by_identifiers(
-            imdb_ids, provider_keys
-        )
-        by_imdb = {imdb: sid for imdb, _ext, _prov, sid in rows if imdb is not None}
-        by_external = {ext: sid for _imdb, ext, _prov, sid in rows}
-        by_provider = {(ext, prov): sid for _imdb, ext, prov, sid in rows}
-        # The provider search is @cached and returns its list by reference.
-        # Mutating those objects in place would (a) leak one request's
-        # annotation into another's view and (b) persist a stale added=True /
-        # dangling id after the show is deleted, until the TTL expires. Copy and
-        # set both fields unconditionally on the copies.
-        annotated: list[MetaDataProviderSearchResult] = []
-        for result in results:
-            show_id = None
-            if result.imdb_id:
-                imdb = str(result.imdb_id)
-                show_id = by_imdb.get(imdb) or by_external.get(imdb)
-            if show_id is None:
-                show_id = by_provider.get(
-                    (result.external_id, result.metadata_provider)
-                )
-            copy = result.model_copy()
-            copy.added = show_id is not None
-            copy.id = show_id
-            annotated.append(copy)
-
-        await self._bridge_native_added_status(annotated)
-        return annotated
-
-    async def _bridge_native_added_status(
-        self, annotated: list[MetaDataProviderSearchResult]
-    ) -> None:
-        """Second-pass match for IMDb-keyed (native/scan) library rows.
-
-        TMDB/TVDB search results carry no ``imdb_id``, so the three-way match
-        above can't link them to native-provider library rows (keyed on the
-        IMDb id, provider ``native``). Resolve the IMDb id for the still-unmatched
-        results via their provider (one cached call each) and match against the
-        native index. Skipped entirely when the library has no native rows.
-        """
-        from miramedia.metadata.dependencies import get_metadata_provider
-
-        unresolved = [c for c in annotated if not c.added and not c.imdb_id]
-        if not unresolved:
-            return
-        native_index = await self.show_repository.native_imdb_index()
-        if not native_index:
-            return
-
-        async def _resolve(copy: MetaDataProviderSearchResult) -> None:
-            try:
-                provider = get_metadata_provider(copy.metadata_provider)  # type: ignore[arg-type]
-            except Exception:
-                return
-            imdb = await asyncio.to_thread(provider.get_show_imdb_id, copy.external_id)
-            show_id = native_index.get(imdb) if imdb else None
-            if show_id is not None:
-                copy.added = True
-                copy.id = show_id
-
-        await asyncio.gather(*(_resolve(c) for c in unresolved))
 
     async def discover_shows(
         self, query: str | None = None, skip: int = 0
@@ -1369,47 +1471,18 @@ class ShowService:
         *episode_target* pins the link to an explicit ``(season, episode)`` when
         the release title can't be parsed — used for Season 0 specials.
         """
-        from miramedia.torrents.schemas import MediaType
-
-        indexer_result = await self.indexer_service.get_result(
-            result_id=public_indexer_result_id
-        )
-        return await self.torrent_service.download_and_link(
-            indexer_result=indexer_result,
-            media_type=MediaType.show,
-            media_id=show_id,
-            variant=override_variant,
-            show_repository=self.show_repository,
+        return await self._download_and_link_torrent(
+            public_indexer_result_id,
+            show_id,
+            override_variant,
             episode_target=episode_target,
         )
 
     def _show_library_parent(self, show: Show) -> Path:
-        misc_config = MiraMediaConfig().misc
-        if show.library and show.library != "Default":
-            for library in misc_config.show_libraries:
-                if library.name == show.library:
-                    return Path(library.path)
-            log.warning(
-                f"Library '{show.library}' for show '{show.name}' not found in configured show_libraries, falling back to default show directory."
-            )
-        return misc_config.show_directory
+        return self._library_parent(show)
 
     def get_root_show_directory(self, show: Show, *, write: bool = False) -> Path:
-        show_directory_name = show_folder_name(show)
-        parent = self._show_library_parent(show)
-        new_path = parent / show_directory_name
-        if write or new_path.exists():
-            return new_path
-
-        default_directory_name = default_show_folder_name(show)
-        old_directory_name = old_show_folder_name(show)
-        for fallback_name in (default_directory_name, old_directory_name):
-            if fallback_name == show_directory_name:
-                continue
-            old_path = parent / fallback_name
-            if old_path.exists():
-                return old_path
-        return new_path
+        return self.get_root_media_directory(show, write=write)
 
     def get_root_season_directory(
         self, show: Show, season_number: int, *, write: bool = False
@@ -1437,89 +1510,9 @@ class ShowService:
         rewrites ``show.library`` so future writes land under the new root.
         Source files are removed when ``delete_source=True``.
         """
-        misc_config = MiraMediaConfig().misc
-        valid = {"Default", *(lib.name for lib in misc_config.show_libraries)}
-        if target_library not in valid:
-            msg = f"Unknown show library '{target_library}'"
-            raise ValueError(msg)
-
-        if show.library == target_library:
-            return {"moved": 0, "skipped": True, "reason": "already in target library"}
-
-        old_root = self.get_root_show_directory(show)
-        # Compute the new root with the target library; restore the original
-        # in-memory value so a partial failure doesn't leave the Pydantic
-        # object out of sync with the DB row.
-        original_library = show.library
-        show.library = target_library
-        try:
-            new_root = self.get_root_show_directory(show)
-        finally:
-            show.library = original_library
-
-        if not old_root.exists():
-            await self.show_repository.set_show_library(
-                show_id=show.id, library=target_library
-            )
-            return {"moved": 0, "skipped": True, "reason": "source directory missing"}
-
-        new_root.mkdir(parents=True, exist_ok=True)
-
-        def _link_tree(src_root: Path, dst_root: Path) -> tuple[int, list[str]]:
-            local_moved = 0
-            local_errors: list[str] = []
-            for source in src_root.rglob("*"):
-                if not source.is_file():
-                    continue
-                rel = source.relative_to(src_root)
-                target = dst_root / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    ensure_free_space(target.parent, source.stat().st_size)
-                    import_file(target_file=target, source_file=source)
-                    local_moved += 1
-                except (DiskSpaceError, ImportConflictError, OSError) as exc:
-                    local_errors.append(f"{rel}: {exc}")
-            return local_moved, local_errors
-
-        # Releasing before the copy: _link_tree hardlinks/copies the whole show
-        # tree (minutes, multi-GB on the NAS). Without this the asyncpg conn
-        # sits idle-in-transaction for the duration and can exhaust the small
-        # request pool — the same failure class fixed across the import paths.
-        from miramedia.database import release_session_before_external_io
-
-        await release_session_before_external_io(self.show_repository.db)
-        moved, errors = await asyncio.to_thread(_link_tree, old_root, new_root)
-
-        if errors:
-            log.warning("move_show_library partial: %d errors", len(errors))
-            return {
-                "moved": moved,
-                "errors": errors,
-                "old_root": str(old_root),
-                "new_root": str(new_root),
-                "library_changed": False,
-            }
-
-        # Persist the new library *only* after a clean link pass so a partial
-        # failure doesn't leave DB pointing at a directory missing files.
-        await self.show_repository.set_show_library(
-            show_id=show.id, library=target_library
+        return await self.move_media_library(
+            show, target_library, delete_source=delete_source
         )
-
-        if delete_source:
-            try:
-                await asyncio.to_thread(shutil.rmtree, old_root)
-            except OSError as exc:
-                errors.append(f"remove source: {exc}")
-
-        return {
-            "moved": moved,
-            "errors": errors,
-            "old_root": str(old_root),
-            "new_root": str(new_root),
-            "library_changed": True,
-        }
 
     async def resolve_episode_file_path(self, episode_file) -> Path | None:  # noqa: ANN001
         """Find the on-disk video file for an EpisodeFile row, or ``None``.
@@ -1563,30 +1556,6 @@ class ShowService:
                 }:
                     return candidate
         return None
-
-    async def reconcile_orphaned_failed_imports(self) -> int:
-        """Heal "ghost" failed episode files whose library file is on disk.
-
-        A torrent's post-import cleanup can detach an episode file (FK ``ON
-        DELETE SET NULL``) right after an overlapping import stamped it
-        ``failed_io`` — but the winning attempt had already published the real
-        file. Such rows can never be retried (no torrent) and are invisible on
-        the torrent-centric imports page, yet keep the dashboard "failed" badge
-        lit. If the on-disk library file exists, the import genuinely
-        succeeded: flip the row to ``imported`` so the count clears truthfully.
-        """
-        orphans = await self.show_repository.get_orphaned_failed_episode_files()
-        healed = 0
-        for ef in orphans:
-            if await self.resolve_episode_file_path(ef) is None:
-                continue
-            await self.show_repository.update_episode_file_import_status(
-                file_id=ef.id, status=ImportOutcome.imported, error=None
-            )
-            healed += 1
-        if healed:
-            log.info("Reconciled %d ghost failed episode import(s) to imported", healed)
-        return healed
 
     async def import_episode_from_file(
         self,
@@ -1727,11 +1696,8 @@ class ShowService:
             # finalize the existing row. No copy, no duplicate.
             old_stem = dup_stem
 
-            def _rename_slot() -> None:
-                rename_media_slot(season_dir, old_stem, stem)
-
             await release_session_before_external_io(self.show_repository.db)
-            await asyncio.to_thread(_rename_slot)
+            await asyncio.to_thread(rename_media_slot, season_dir, old_stem, stem)
             await self.show_repository.finalize_episode_file_import(
                 file_id=dup_row.id,
                 quality=chosen_quality,
@@ -1750,21 +1716,19 @@ class ShowService:
             log.info("Renamed existing episode slot %r -> %r (dedup)", old_stem, stem)
             return ImportOutcome.imported, None
 
-        def _link_video() -> None:
-            if source_in_place:
-                # Rename the in-library source (and its sibling subtitles) to the
-                # canonical name; no second inode, no leftover original.
-                rename_media_slot(season_dir, source_file.stem, stem)
-                return
-            ensure_free_space(target_video.parent, source_file.stat().st_size)
-            import_file(target_file=target_video, source_file=source_file)
-
         # Hardlink is fast on same FS; cross-FS falls back to copy which
         # can take minutes for multi-GB files. Release session in both
         # cases — the cost is one extra checkout on the next write.
         await release_session_before_external_io(self.show_repository.db)
         try:
-            await asyncio.to_thread(_link_video)
+            await asyncio.to_thread(
+                link_video_into_slot,
+                season_dir,
+                source_file,
+                stem,
+                target_video,
+                source_in_place=source_in_place,
+            )
         except (DiskSpaceError, ImportConflictError) as exc:
             return ImportOutcome.failed_io, str(exc)
 
@@ -2087,68 +2051,6 @@ class ShowService:
             f"Finished importing files for torrent {torrent.title} {'without' if all_imported else 'with'} errors"
         )
 
-    async def refresh_metadata_with_fallback(self, show: Show) -> None:
-        """Refresh a show's metadata using the best enabled provider.
-
-        Order: original provider, then any enabled provider via IMDb ID, then
-        exact-match search by name+year. All sync provider calls run in a
-        thread so the event loop is not blocked. Session is released before
-        each external HTTP fetch so the asyncpg connection doesn't sit
-        idle-in-TX through provider latency.
-        """
-        from miramedia.database import release_session_before_external_io
-        from miramedia.metadata.dependencies import (
-            get_all_enabled_providers,
-            get_metadata_provider,
-        )
-
-        try:
-            provider = get_metadata_provider(show.metadata_provider)
-        except Exception:
-            provider = None
-
-        if provider is not None:
-            await self.update_show_metadata(db_show=show, metadata_provider=provider)
-            return
-
-        if show.imdb_id:
-            for p in get_all_enabled_providers():
-                await release_session_before_external_io(self.show_repository.db)
-                fresh = await asyncio.to_thread(
-                    p.get_show_metadata_by_imdb, show.imdb_id
-                )
-                if fresh:
-                    await self.update_show_metadata(
-                        db_show=show, metadata_provider=p, fresh_show_data=fresh
-                    )
-                    return
-
-        target_name = show.name.lower().strip()
-        for p in get_all_enabled_providers():
-            try:
-                await release_session_before_external_io(self.show_repository.db)
-                results = await asyncio.to_thread(p.search_show, show.name)
-            except Exception:  # noqa: S112 — best-effort provider fan-out, non-fatal; try next provider
-                continue
-            for result in results:
-                if result.name.lower().strip() != target_name:
-                    continue
-                if show.year and result.year and result.year != show.year:
-                    continue
-                await release_session_before_external_io(self.show_repository.db)
-                fresh = await asyncio.to_thread(p.get_show_metadata, result.external_id)
-                if fresh:
-                    await self.update_show_metadata(
-                        db_show=show, metadata_provider=p, fresh_show_data=fresh
-                    )
-                    return
-
-        msg = (
-            f"Cannot refresh metadata: {show.metadata_provider} provider is not "
-            "enabled and could not find a matching show on any enabled provider."
-        )
-        raise BadRequestError(msg)
-
     async def update_show_metadata(
         self,
         db_show: Show,
@@ -2314,6 +2216,7 @@ class ShowService:
                 f"Poster download for {updated_show.name}: "
                 f"new_season={poster_refresh_needed}, missing={not _poster_exists}"
             )
+            await release_session_before_external_io(self.show_repository.db)
             try:
                 await asyncio.to_thread(
                     partial(
@@ -2338,52 +2241,22 @@ class ShowService:
         :param continuous_download: True/False to override, None to use global default.
         :return: The updated Show object.
         """
-        show, _ = await self.show_repository.update_show_attributes(
-            show_id=show.id, continuous_download=continuous_download
-        )
-        return show
+        return await self._set_continuous_download(show, continuous_download)
 
     async def set_show_preferred_quality(
         self, show: Show, preferred_quality: list[str] | None
     ) -> Show:
-        show, _ = await self.show_repository.update_show_attributes(
-            show_id=show.id, preferred_quality=preferred_quality
-        )
-        return show
+        return await self._set_preferred_quality(show, preferred_quality)
 
     async def set_show_preferred_codec(
         self, show: Show, preferred_codec: list[str] | None
     ) -> Show:
-        show, _ = await self.show_repository.update_show_attributes(
-            show_id=show.id, preferred_codec=preferred_codec
-        )
-        return show
+        return await self._set_preferred_codec(show, preferred_codec)
 
     async def set_show_subtitle_languages(
         self, show: Show, subtitle_languages: list[str] | None
     ) -> Show:
-        show, _ = await self.show_repository.update_show_attributes(
-            show_id=show.id, subtitle_languages=subtitle_languages
-        )
-        return show
-
-    def _get_effective_preferences(
-        self, show: Show
-    ) -> tuple[list[str] | None, list[str] | None]:
-        """Return per-show quality/codec preferences.
-
-        Tri-state list semantics:
-          - ``None``: no per-show override — keep every enabled-matching
-            result and apply the option's ``score_modifier`` (the implicit
-            global default derived from the quality/codec rules).
-          - ``[]``: explicit "Any" — keep every enabled-matching result but
-            neutralize quality/codec score contribution.
-          - non-empty list: whitelist those option names; ``score_modifier``
-            still applies.
-        """
-        q = list(show.preferred_quality) if show.preferred_quality is not None else None
-        c = list(show.preferred_codec) if show.preferred_codec is not None else None
-        return q, c
+        return await self._set_subtitle_languages(show, subtitle_languages)
 
     async def import_show_from_directory(
         self, show: Show, source_directory: Path
@@ -2537,102 +2410,6 @@ class ShowService:
             total_matched > 0 and total_skipped_already_imported == total_matched
         )
 
-    async def import_all_torrents(self) -> None:
-        """Iterate ready torrents and import each in a FRESH bg session.
-
-        Session lifetime: ``self`` only spans the brief candidate-list read.
-        Every per-torrent import (libtorrent RPC + mediainfo + hardlink + DB
-        writeback + subtitle HTTP) runs against its own short-lived
-        ``bg_show_service`` session so a slow torrent never pins the outer
-        scheduler session for the whole batch.
-        """
-        from miramedia.database import bg_show_service
-
-        # Heal detached "ghost" failures first, in their own short-lived
-        # session, so the disk globbing never pins the outer scheduler session.
-        async with bg_show_service() as svc:
-            await svc.reconcile_orphaned_failed_imports()
-
-        torrents = await self.torrent_service.get_all_torrents()
-        finished = [t for t in torrents if t.status == TorrentStatus.finished]
-        ready_ids: list[tuple[TorrentId, str]] = []
-        if finished:
-            # Batch the imported-check (2 queries total) instead of 2 per
-            # torrent — this sweep runs every minute and most finished torrents
-            # are already imported, so the old N-query pattern was constant
-            # background DB load on the NAS. Only the non-imported minority pays
-            # the per-torrent is_due_for_retry.
-            imported_map = await self.torrent_service.bulk_check_torrents_imported(
-                [t.id for t in finished]
-            )
-            for t in finished:
-                if imported_map.get(t.id, False):
-                    continue
-                if not await self.torrent_service.is_due_for_retry(t):
-                    continue
-                ready_ids.append((t.id, t.title))
-
-        imported_count = 0
-        for torrent_id, torrent_title in ready_ids:
-            show = None
-            try:
-                async with bg_show_service() as fresh_show_service:
-                    # Re-fetch the torrent on the fresh session so any
-                    # writeback inside ``import_show_from_torrent`` operates
-                    # on a row attached to THIS session (not the stale one).
-                    t = await fresh_show_service.torrent_service.torrent_repository.get_torrent_by_id(
-                        torrent_id=torrent_id
-                    )
-                    if t is None:
-                        continue
-                    show = await fresh_show_service.torrent_service.get_show_of_torrent(
-                        torrent=t
-                    )
-                    if show is None:
-                        continue
-                    await fresh_show_service.import_show_from_torrent(
-                        torrent=t, show=show
-                    )
-                imported_count += 1
-            except Exception as e:
-                # Broad on purpose — see MovieService.import_all_torrents. A
-                # non-RuntimeError raise here used to escape the sweep silently
-                # while leaving files at attempt_count==0, so is_due_for_retry
-                # stayed True forever (a tight retry loop with no diagnostics).
-                show_name = show.name if show is not None else "<unknown>"
-                log.error(
-                    f"Error importing torrent {torrent_title} for show {show_name}: {e}",
-                    exc_info=True,
-                )
-                await self._mark_torrent_import_failed(
-                    torrent_id, "Import raised; see logs."
-                )
-        if imported_count:
-            invalidate_disk_scan_cache()
-            log.info(f"Imported {imported_count} show torrent(s)")
-
-    async def _mark_torrent_import_failed(
-        self, torrent_id: TorrentId, error: str
-    ) -> None:
-        """Stamp every episode file of ``torrent_id`` failed_io in a fresh
-        session so backoff engages after a raising import (see
-        MovieService._mark_torrent_import_failed)."""
-        from miramedia.database import bg_show_service
-
-        try:
-            async with bg_show_service() as svc:
-                files = await svc.torrent_service.torrent_repository.get_episode_files_of_torrent(
-                    torrent_id=torrent_id
-                )
-                for f in files:
-                    if f.import_status == ImportOutcome.imported:
-                        continue
-                    await svc.show_repository.update_episode_file_import_status(
-                        file_id=f.id, status=ImportOutcome.failed_io, error=error
-                    )
-        except Exception:
-            log.exception("Failed to mark torrent %s import failed", torrent_id)
-
     async def update_all_shows_metadata(self) -> None:
         """Thin wrapper around :func:`_update_all_shows_metadata_impl`.
 
@@ -2715,9 +2492,11 @@ async def _auto_download_for_show_impl(show: Show, max_downloads: int) -> None:
             show_id=show.id
         )
         active_count = 0
-        for t in active_torrents:
-            if not await snap.torrent_service.is_torrent_imported(t):
-                active_count += 1
+        if active_torrents:
+            imported_map = await snap.torrent_service.bulk_check_torrents_imported(
+                [t.id for t in active_torrents]
+            )
+            active_count = sum(1 for imported in imported_map.values() if not imported)
         if active_count > 0:
             log.debug(
                 f"Auto-download: show {show.name} has {active_count} active downloads, skipping"
@@ -2739,13 +2518,8 @@ async def _auto_download_for_show_impl(show: Show, max_downloads: int) -> None:
                 if not await snap.is_episode_downloaded(
                     episode=episode, season=season, show=show
                 ):
-                    # Check if there's already an EpisodeFile record (download pending)
-                    existing_files = (
-                        await snap.show_repository.get_episode_files_by_episode_id(
-                            episode_id=episode.id
-                        )
-                    )
-                    if existing_files:
+                    # EpisodeFile rows are eager-loaded with the show tree.
+                    if episode.episode_files:
                         continue
                     missing_by_season.setdefault(season.number, []).append(
                         episode.number
@@ -2913,18 +2687,27 @@ async def _try_auto_download_show_id_impl(
     Swallows iteration errors so callers (loops) don't abort mid-sweep.
     """
     from miramedia.database import bg_show_service
+    from miramedia.scheduler import _import_sweep_lock
 
-    try:
-        async with bg_show_service() as svc:
-            # Re-fetch in this short session so we observe any state
-            # changes (skipped, continuous_download toggled off, ...)
-            # since the snapshot.
-            fresh = await svc.show_repository.get_show_by_id(show_id=show_id)
-        if fresh is None:
-            return
-        await _auto_download_for_show_impl(fresh, max_downloads)
-    except Exception:
-        log.exception("Auto-download: error processing show id=%s", show_id)
+    lock = _import_sweep_lock(f"auto_dl_show:{show_id}")
+    if lock.locked():
+        log.debug(
+            "Auto-download: show id=%s already in progress; skipping overlapping run",
+            show_id,
+        )
+        return
+    async with lock:
+        try:
+            async with bg_show_service() as svc:
+                # Re-fetch in this short session so we observe any state
+                # changes (skipped, continuous_download toggled off, ...)
+                # since the snapshot.
+                fresh = await svc.show_repository.get_show_by_id(show_id=show_id)
+            if fresh is None:
+                return
+            await _auto_download_for_show_impl(fresh, max_downloads)
+        except Exception:
+            log.exception("Auto-download: error processing show id=%s", show_id)
 
 
 async def _auto_download_missing_episodes_impl() -> None:
@@ -2945,28 +2728,28 @@ async def _auto_download_missing_episodes_impl() -> None:
 
     # Phase 1: cheap snapshot of candidate IDs (single short bg session).
     async with bg_show_service() as svc:
-        all_shows = await svc.show_repository.get_shows()
-    candidates = [
-        show
-        for show in all_shows
+        rows = await svc.show_repository.get_show_auto_download_candidate_flags()
+    candidate_ids = [
+        show_id
+        for show_id, skipped, continuous_download in rows
         # Skipped shows are excluded regardless of the continuous_download
         # flag — the "Skip this show (prevent automatic downloads)" toggle
         # is meant to override everything else.
-        if not show.skipped
+        if not skipped
         and (
-            show.continuous_download is True
-            or (show.continuous_download is None and global_default)
+            continuous_download is True
+            or (continuous_download is None and global_default)
         )
     ]
     log.info(
-        f"Auto-download: checking {len(candidates)} shows with continuous_download enabled"
+        f"Auto-download: checking {len(candidate_ids)} shows with continuous_download enabled"
     )
 
     max_downloads_per_show = 5
 
     # Phase 2: per-item processing with a FRESH bg session per iteration.
-    for show in candidates:
-        await _try_auto_download_show_id_impl(show.id, max_downloads_per_show)
+    for show_id in candidate_ids:
+        await _try_auto_download_show_id_impl(show_id, max_downloads_per_show)
 
 
 def _metadata_failure_backoff_until() -> datetime:

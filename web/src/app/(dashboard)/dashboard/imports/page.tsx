@@ -27,6 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ManualMapDialog } from "@/components/imports/manual-map-dialog";
+import { CorruptedFilesPanel } from "@/components/imports/corrupted-files-panel";
 import { MatchConfidencePill } from "@/components/match-confidence-pill";
 import { DataList } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
@@ -115,6 +116,7 @@ export default function ImportsPage() {
   const qc = useQueryClient();
   const searchParams = useSearchParams();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(searchParams.get("f")), [searchParams]);
+  const [view, setView] = React.useState<"imports" | "corrupted">("imports");
   const [currentPage, setCurrentPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(50);
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -203,6 +205,7 @@ export default function ImportsPage() {
   });
   const importing = countsQuery.data?.importing ?? 0;
   const importTotal = countsQuery.data?.import_total ?? 0;
+  const corruptedCount = countsQuery.data?.corrupted ?? 0;
 
   React.useEffect(() => {
     if (importing > 0 && importTotal > 0) {
@@ -930,155 +933,195 @@ export default function ImportsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Imports" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <DataList<ImportItem>
-          data={items}
-          getId={(it) => it.id}
-          columns={columns}
-          pageSize={0}
-          searchPlaceholder="Search imports…"
-          searchMatch={(it, q) => {
-            if (isTorrent(it)) {
-              return (
-                it.entry.torrent_title.toLowerCase().includes(q) ||
-                (it.entry.media?.media_name ?? "").toLowerCase().includes(q)
-              );
-            }
-            if (isMedia(it)) {
-              return (
-                it.media_name.toLowerCase().includes(q) ||
-                it.torrent_title.toLowerCase().includes(q)
-              );
-            }
-            return (
-              it.result.detected_name.toLowerCase().includes(q) ||
-              it.result.directory.toLowerCase().includes(q)
-            );
-          }}
-          loading={isLoading && items.length === 0}
-          density="rich"
-          groupings={groupings}
-          defaultGroupId="bucket"
-          collapseStorageKey="imports"
-          facets={facets}
-          emptyIcon={<FolderInput />}
-          emptyTitle="No imports yet"
-          emptyDescription="Run a scan to surface library candidates."
-          toolbarTrailing={
-            <>
-              <Button
-                size="default"
-                variant="outline"
-                className="text-xs"
-                onClick={() => void triggerScan()}
-                disabled={scanState === "running"}
-              >
-                {scanState === "running" ? (
-                  <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
-                ) : (
-                  <ScanLine className="mr-1 h-4 w-4" />
-                )}
-                Scan
-              </Button>
-              <Button
-                size="default"
-                variant="outline"
-                className="text-xs"
-                onClick={refreshAll}
-                disabled={isLoading}
-              >
-                {isLoading ? (
-                  <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
-                ) : (
-                  <RefreshCw className="mr-1 h-4 w-4" />
-                )}
-                Refresh
-              </Button>
-            </>
-          }
-          bulkActions={bulkActions}
-          expandedContent={(it) => {
-            if (isTorrent(it) || isMedia(it)) {
-              const files = isTorrent(it) ? it.entry.files : it.files;
-              if (files.length === 0) return null;
-              return (
-                <div className="bg-black/30 p-2">
-                  <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
-                    {files.map((file, i) => (
-                      <div
-                        key={`${file.media_label}-${i}`}
-                        className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
-                      >
-                        <StatusPill
-                          status={file.import_status}
-                          label={file.import_status.startsWith("failed") ? "Failed" : undefined}
-                          className="shrink-0"
-                        />
-                        <span className="shrink-0 font-mono">{file.media_label}</span>
-                        {file.variant && (
-                          <span className="shrink-0 font-mono text-muted-foreground">
-                            · {file.variant}
-                          </span>
-                        )}
-                        {file.import_error && (
-                          <span className="ml-auto truncate text-red-500" title={file.import_error}>
-                            {file.import_error}
-                          </span>
-                        )}
+        <div className="flex items-center gap-1 border-b border-border/60">
+          <button
+            type="button"
+            onClick={() => setView("imports")}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
+              view === "imports"
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Imports
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("corrupted")}
+            className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm transition-colors ${
+              view === "corrupted"
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Corrupted
+            {corruptedCount > 0 ? (
+              <MetaPill className="tabular-nums">{corruptedCount}</MetaPill>
+            ) : null}
+          </button>
+        </div>
+        {view === "corrupted" ? (
+          <CorruptedFilesPanel />
+        ) : (
+          <>
+            <DataList<ImportItem>
+              data={items}
+              getId={(it) => it.id}
+              columns={columns}
+              pageSize={0}
+              searchPlaceholder="Search imports…"
+              searchMatch={(it, q) => {
+                if (isTorrent(it)) {
+                  return (
+                    it.entry.torrent_title.toLowerCase().includes(q) ||
+                    (it.entry.media?.media_name ?? "").toLowerCase().includes(q)
+                  );
+                }
+                if (isMedia(it)) {
+                  return (
+                    it.media_name.toLowerCase().includes(q) ||
+                    it.torrent_title.toLowerCase().includes(q)
+                  );
+                }
+                return (
+                  it.result.detected_name.toLowerCase().includes(q) ||
+                  it.result.directory.toLowerCase().includes(q)
+                );
+              }}
+              loading={isLoading && items.length === 0}
+              density="rich"
+              groupings={groupings}
+              defaultGroupId="bucket"
+              collapseStorageKey="imports"
+              facets={facets}
+              emptyIcon={<FolderInput />}
+              emptyTitle="No imports yet"
+              emptyDescription="Run a scan to surface library candidates."
+              toolbarTrailing={
+                <>
+                  <Button
+                    size="default"
+                    variant="outline"
+                    className="text-xs"
+                    onClick={() => void triggerScan()}
+                    disabled={scanState === "running"}
+                  >
+                    {scanState === "running" ? (
+                      <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                    ) : (
+                      <ScanLine className="mr-1 h-4 w-4" />
+                    )}
+                    Scan
+                  </Button>
+                  <Button
+                    size="default"
+                    variant="outline"
+                    className="text-xs"
+                    onClick={refreshAll}
+                    disabled={isLoading}
+                  >
+                    {isLoading ? (
+                      <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="mr-1 h-4 w-4" />
+                    )}
+                    Refresh
+                  </Button>
+                </>
+              }
+              bulkActions={bulkActions}
+              expandedContent={(it) => {
+                if (isTorrent(it) || isMedia(it)) {
+                  const files = isTorrent(it) ? it.entry.files : it.files;
+                  if (files.length === 0) return null;
+                  return (
+                    <div className="bg-black/30 p-2">
+                      <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
+                        {files.map((file, i) => (
+                          <div
+                            key={`${file.media_label}-${i}`}
+                            className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
+                          >
+                            <StatusPill
+                              status={file.import_status}
+                              label={file.import_status.startsWith("failed") ? "Failed" : undefined}
+                              className="shrink-0"
+                            />
+                            <span className="shrink-0 font-mono">{file.media_label}</span>
+                            {file.variant && (
+                              <span className="shrink-0 font-mono text-muted-foreground">
+                                · {file.variant}
+                              </span>
+                            )}
+                            {file.import_error && (
+                              <span
+                                className="ml-auto truncate text-red-500"
+                                title={file.import_error}
+                              >
+                                {file.import_error}
+                              </span>
+                            )}
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            }
-            const r = it.result;
-            const sfiles = r.files ?? [];
-            if (sfiles.length === 0) {
-              return (
-                <div className="flex items-center justify-center bg-black/30 px-4 py-8 text-center text-xs text-muted-foreground">
-                  No files listed — re-run the scan to refresh.
-                </div>
-              );
-            }
-            const scanFileStatus =
-              r.status === "failed" ? "failed" : r.status === "imported" ? "imported" : "pending";
-            return (
-              <div className="bg-black/30 p-2">
-                <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
-                  {sfiles.map((f, i) => (
-                    <div
-                      key={`${f.relative_path}-${i}`}
-                      className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
-                    >
-                      <StatusPill
-                        status={scanFileStatus}
-                        className="h-5 shrink-0 px-1.5 text-[10px]"
-                      />
-                      <span className="truncate font-mono" title={f.relative_path}>
-                        {f.relative_path}
-                      </span>
-                      <TypePill className="ml-auto h-5 shrink-0 px-1.5 text-[10px] uppercase">
-                        {f.is_video ? "video" : "file"}
-                      </TypePill>
                     </div>
-                  ))}
-                </div>
-              </div>
-            );
-          }}
-          rowActions={renderRowActions}
-        />
-        <MediaPagination
-          page={currentPage}
-          totalPages={totalPages}
-          onPageChange={setCurrentPage}
-          total={totalImports}
-          pageSize={pageSize}
-          pageSizeOptions={IMPORT_PAGE_SIZES}
-          onPageSizeChange={(next) => {
-            setPageSize(next);
-            setCurrentPage(1);
-          }}
-        />
+                  );
+                }
+                const r = it.result;
+                const sfiles = r.files ?? [];
+                if (sfiles.length === 0) {
+                  return (
+                    <div className="flex items-center justify-center bg-black/30 px-4 py-8 text-center text-xs text-muted-foreground">
+                      No files listed — re-run the scan to refresh.
+                    </div>
+                  );
+                }
+                const scanFileStatus =
+                  r.status === "failed"
+                    ? "failed"
+                    : r.status === "imported"
+                      ? "imported"
+                      : "pending";
+                return (
+                  <div className="bg-black/30 p-2">
+                    <div className="grid grid-cols-[repeat(auto-fill,minmax(260px,1fr))] gap-2">
+                      {sfiles.map((f, i) => (
+                        <div
+                          key={`${f.relative_path}-${i}`}
+                          className="flex items-center gap-2 rounded-lg border border-border/60 bg-card px-3 py-2 text-xs"
+                        >
+                          <StatusPill
+                            status={scanFileStatus}
+                            className="h-5 shrink-0 px-1.5 text-[10px]"
+                          />
+                          <span className="truncate font-mono" title={f.relative_path}>
+                            {f.relative_path}
+                          </span>
+                          <TypePill className="ml-auto h-5 shrink-0 px-1.5 text-[10px] uppercase">
+                            {f.is_video ? "video" : "file"}
+                          </TypePill>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              }}
+              rowActions={renderRowActions}
+            />
+            <MediaPagination
+              page={currentPage}
+              totalPages={totalPages}
+              onPageChange={setCurrentPage}
+              total={totalImports}
+              pageSize={pageSize}
+              pageSizeOptions={IMPORT_PAGE_SIZES}
+              onPageSizeChange={(next) => {
+                setPageSize(next);
+                setCurrentPage(1);
+              }}
+            />
+          </>
+        )}
       </main>
 
       {mapDialogTorrent && (

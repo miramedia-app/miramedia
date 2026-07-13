@@ -272,6 +272,17 @@ class ShowRepository:
             log.exception("Database error while retrieving all shows")
             raise
 
+    async def get_show_ids(self) -> list[ShowId]:
+        """Return all show primary keys without eager-loading the library tree."""
+        try:
+            return typing_cast(
+                "list[ShowId]",
+                list((await self.db.execute(select(Show.id))).scalars().all()),
+            )
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving all show ids")
+            raise
+
     async def get_shows_paginated(
         self,
         *,
@@ -783,6 +794,62 @@ class ShowRepository:
             log.exception("Failed to set sha1 for episode_file %s", file_id)
             raise
 
+    async def list_sha1_mismatch_files(self) -> list[EpisodeFileSchema]:
+        """Imported episode files whose integrity audit recorded a SHA1 mismatch.
+
+        Contract: ``import_error`` prefix ``sha1 mismatch%`` must stay in sync
+        with ``verify_imported_files_task`` in ``miramedia/scheduler.py``.
+        """
+        stmt = (
+            select(EpisodeFile)
+            .where(
+                EpisodeFile.import_status == ImportOutcome.imported,
+                EpisodeFile.import_error.like("sha1 mismatch%"),
+            )
+            .options(
+                selectinload(EpisodeFile.episode)
+                .selectinload(Episode.season)
+                .selectinload(Season.show),
+            )
+        )
+        rows = (await self.db.execute(stmt)).unique().scalars().all()
+        return [EpisodeFileSchema.model_validate(r) for r in rows]
+
+    async def count_sha1_mismatch_files(self) -> int:
+        """Count imported episode files with a SHA1 mismatch error stamp."""
+        stmt = (
+            select(func.count())
+            .select_from(EpisodeFile)
+            .where(
+                EpisodeFile.import_status == ImportOutcome.imported,
+                EpisodeFile.import_error.like("sha1 mismatch%"),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def clear_file_integrity_state(
+        self, file_id: UUID, *, reset_sha1: bool
+    ) -> bool:
+        """Clear ``import_error`` (and optionally ``sha1``) on an episode file.
+
+        Returns ``True`` when a row was updated, ``False`` when ``file_id`` is
+        unknown. Does not change ``import_status``.
+        """
+        values: dict[str, object] = {"import_error": None}
+        if reset_sha1:
+            values["sha1"] = None
+        try:
+            stmt = update(EpisodeFile).where(EpisodeFile.id == file_id).values(**values)
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to clear integrity state for episode_file %s", file_id
+            )
+            raise
+
     async def remove_episode_files_by_torrent_id(self, torrent_id: TorrentId) -> int:
         """
         Removes episode file records associated with a given torrent ID.
@@ -1107,6 +1174,14 @@ class ShowRepository:
             raise NotFoundError(msg)
         db_season.skipped = skipped
         await self.db.flush()
+
+    async def get_show_auto_download_candidate_flags(
+        self,
+    ) -> list[tuple[ShowId, bool, bool | None]]:
+        """Scalar (id, skipped, continuous_download) rows for sweep candidate selection."""
+        stmt = select(Show.id, Show.skipped, Show.continuous_download)
+        rows = (await self.db.execute(stmt)).all()
+        return [(ShowId(row[0]), row[1], row[2]) for row in rows]
 
     async def get_show_ids_due_for_metadata(
         self, *, older_than: datetime, limit: int = 200

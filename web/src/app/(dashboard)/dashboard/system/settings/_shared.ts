@@ -6,6 +6,11 @@ export type AnyObj = Record<string, unknown>;
 
 export type SetPath = (path: string[], value: unknown) => void;
 
+// Wraps a row shape with a client-only synthetic id used for stable React
+// keys on reorderable/deletable lists. Never sent to the API — stripped in
+// the save/serialize path (see page.tsx saveAllSettings / stableStringify).
+export type Keyed<T> = T & { _key: string };
+
 export type OverrideCtxValue = {
   isOverridden: (section: string, ...path: string[]) => boolean;
   defaults: AnyObj;

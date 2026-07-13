@@ -15,7 +15,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from miramedia.database import Base
-from miramedia.torrents.schemas import Quality, TorrentStatus
+from miramedia.torrents.schemas import Quality, TorrentHistoryOutcome, TorrentStatus
 
 
 class Torrent(Base):
@@ -120,7 +120,7 @@ class TorrentHistory(Base):
     media_year: Mapped[int | None] = mapped_column(default=None, nullable=True)
 
     # downloaded | imported | failed | removed
-    outcome: Mapped[str] = mapped_column(default="downloaded")
+    outcome: Mapped[str] = mapped_column(default=TorrentHistoryOutcome.downloaded)
     files: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     files_total: Mapped[int] = mapped_column(Integer, default=0)
     files_imported: Mapped[int] = mapped_column(Integer, default=0)

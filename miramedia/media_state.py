@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from enum import StrEnum
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, func, select, update
@@ -15,12 +16,18 @@ from miramedia.shows.models import Episode, EpisodeFile, Season, Show
 log = logging.getLogger(__name__)
 
 
-def _progress_status(wanted: int, downloaded: int) -> str:
+class ProgressStatus(StrEnum):
+    none = "none"
+    partial = "partial"
+    complete = "complete"
+
+
+def _progress_status(wanted: int, downloaded: int) -> ProgressStatus:
     if wanted > 0 and downloaded == wanted:
-        return "complete"
+        return ProgressStatus.complete
     if downloaded > 0:
-        return "partial"
-    return "none"
+        return ProgressStatus.partial
+    return ProgressStatus.none
 
 
 async def refresh_movie_downloaded(
@@ -158,7 +165,7 @@ async def refresh_show_progress(
                 .values(
                     wanted_episode_count=0,
                     downloaded_episode_count=0,
-                    list_progress_status="none",
+                    list_progress_status=ProgressStatus.none,
                 )
             )
         return
@@ -171,7 +178,7 @@ async def refresh_show_progress(
             .values(
                 wanted_episode_count=0,
                 downloaded_episode_count=0,
-                list_progress_status="none",
+                list_progress_status=ProgressStatus.none,
             )
         )
     else:
@@ -179,7 +186,7 @@ async def refresh_show_progress(
             update(Show).values(
                 wanted_episode_count=0,
                 downloaded_episode_count=0,
-                list_progress_status="none",
+                list_progress_status=ProgressStatus.none,
             )
         )
 

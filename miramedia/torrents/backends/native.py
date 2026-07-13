@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import threading
 import time
@@ -28,7 +30,7 @@ class NativeDownloadClient(AbstractDownloadClient):
 
     name = "native"
 
-    _instance: "NativeDownloadClient | None" = None
+    _instance: NativeDownloadClient | None = None
     _lock = threading.Lock()
 
     def __new__(cls) -> Self:
@@ -531,7 +533,7 @@ class NativeDownloadClient(AbstractDownloadClient):
         handle.resume()
         log.debug(f"Resumed torrent: {torrent.title}")
 
-    def get_torrent_files(self, torrent: Torrent) -> "list[TorrentFile] | None":
+    def get_torrent_files(self, torrent: Torrent) -> list[TorrentFile] | None:
         from miramedia.torrents.utils import TorrentFile
 
         handle = self._get_handle_by_hash(torrent.hash)

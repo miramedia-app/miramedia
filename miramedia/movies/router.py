@@ -426,7 +426,10 @@ async def set_movie_skipped(
     )
 
 
-@router.post("/{movie_id}/metadata")
+@router.post(
+    "/{movie_id}/metadata",
+    dependencies=[Depends(current_superuser)],
+)
 async def update_movie_metadata(
     movie: movie_dep,
     movie_service: movie_service_dep,

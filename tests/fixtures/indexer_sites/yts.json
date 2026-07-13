@@ -1,0 +1,29 @@
+{
+  "status": "ok",
+  "data": {
+    "movie_count": 1,
+    "movies": [
+      {
+        "id": 1,
+        "title": "Test Movie",
+        "title_long": "Test Movie (2024)",
+        "torrents": [
+          {
+            "hash": "aabbccddeeff00112233445566778899aabbccdd",
+            "quality": "1080p",
+            "type": "bluray",
+            "size_bytes": 1500000000,
+            "seeds": 120
+          },
+          {
+            "hash": "bbccddeeff00112233445566778899aabbccddee",
+            "quality": "720p",
+            "type": "web",
+            "size_bytes": 800000000,
+            "seeds": 45
+          }
+        ]
+      }
+    ]
+  }
+}

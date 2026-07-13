@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy.exc import IntegrityError
 
 from miramedia.events.bus import Event, get_event_bus
-from miramedia.exceptions import MediaSkippedError, NoVideoFilesError
+from miramedia.exceptions import MediaSkippedError, NotFoundError, NoVideoFilesError
 from miramedia.file_status import ImportOutcome
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.movies.schemas import Movie, MovieFile
@@ -21,6 +21,8 @@ from miramedia.torrents.schemas import (
     ImportStatusCounts,
     ImportStatusEntry,
     ImportStatusFilter,
+    IntegrityActionResult,
+    IntegrityMismatch,
     MediaType,
     Quality,
     RichTorrent,
@@ -32,7 +34,9 @@ from miramedia.torrents.schemas import (
 
 if TYPE_CHECKING:
     from miramedia.movies.repository import MovieRepository
+    from miramedia.movies.service import MovieService
     from miramedia.shows.repository import ShowRepository
+    from miramedia.shows.service import ShowService
     from miramedia.torrents.schemas import TorrentSourceFile
 
 log = logging.getLogger(__name__)
@@ -1822,3 +1826,140 @@ class TorrentService:
             variant=variant,
         )
         await movie_repository.add_movie_file(movie_file=movie_file)
+
+    # ---- Integrity mismatch (SHA1 audit) ---------------------------------
+
+    async def list_integrity_mismatches(
+        self,
+        *,
+        show_service: "ShowService",
+        movie_service: "MovieService",
+    ) -> list[IntegrityMismatch]:
+        """List imported files whose integrity audit recorded a SHA1 mismatch."""
+        out: list[IntegrityMismatch] = []
+
+        for row in await show_service.show_repository.list_sha1_mismatch_files():
+            media_title = ""
+            episode_label: str | None = None
+            try:
+                episode = await show_service.show_repository.get_episode(
+                    episode_id=row.episode_id
+                )
+                season = await show_service.show_repository.get_season_by_episode(
+                    episode_id=row.episode_id
+                )
+                show = await show_service.show_repository.get_show_by_id(
+                    show_id=season.show_id
+                )
+                if show is not None:
+                    media_title = show.name
+                episode_label = f"S{season.number:02d}E{episode.number:02d}"
+            except Exception:
+                log.exception(
+                    "Failed to resolve show title for mismatched episode_file %s",
+                    row.id,
+                )
+            path = await show_service.resolve_episode_file_path(row)
+            out.append(
+                IntegrityMismatch(
+                    file_id=row.id,
+                    media_type="show",
+                    media_title=media_title,
+                    episode=episode_label,
+                    path=str(path) if path is not None else None,
+                    quality=Quality(row.quality),
+                    variant_tag=row.variant or "",
+                    import_error=row.import_error or "",
+                    detected_at=row.last_attempt_at,
+                )
+            )
+
+        for row in await movie_service.movie_repository.list_sha1_mismatch_files():
+            media_title = ""
+            try:
+                movie = await movie_service.movie_repository.get_movie_by_id(
+                    movie_id=row.movie_id
+                )
+                media_title = movie.name
+            except Exception:
+                log.exception(
+                    "Failed to resolve movie title for mismatched movie_file %s",
+                    row.id,
+                )
+            path = await movie_service.resolve_movie_file_path(row)
+            out.append(
+                IntegrityMismatch(
+                    file_id=row.id,
+                    media_type="movie",
+                    media_title=media_title,
+                    episode=None,
+                    path=str(path) if path is not None else None,
+                    quality=Quality(row.quality),
+                    variant_tag=row.variant or "",
+                    import_error=row.import_error or "",
+                    detected_at=row.last_attempt_at,
+                )
+            )
+
+        return out
+
+    async def rebaseline_file(
+        self,
+        *,
+        media_type: MediaType,
+        file_id: uuid.UUID,
+        show_service: "ShowService",
+        movie_service: "MovieService",
+    ) -> IntegrityActionResult:
+        """Accept the on-disk file: clear error + sha1 so the next audit re-baselines."""
+        cleared = await self._clear_integrity_state(
+            media_type=media_type,
+            file_id=file_id,
+            reset_sha1=True,
+            show_service=show_service,
+            movie_service=movie_service,
+        )
+        if not cleared:
+            msg = f"File {file_id} not found"
+            raise NotFoundError(msg)
+        return IntegrityActionResult(ok=True)
+
+    async def dismiss_mismatch(
+        self,
+        *,
+        media_type: MediaType,
+        file_id: uuid.UUID,
+        show_service: "ShowService",
+        movie_service: "MovieService",
+    ) -> IntegrityActionResult:
+        """Clear the mismatch error only; keep sha1 so the next audit re-verifies."""
+        cleared = await self._clear_integrity_state(
+            media_type=media_type,
+            file_id=file_id,
+            reset_sha1=False,
+            show_service=show_service,
+            movie_service=movie_service,
+        )
+        if not cleared:
+            msg = f"File {file_id} not found"
+            raise NotFoundError(msg)
+        return IntegrityActionResult(ok=True)
+
+    async def _clear_integrity_state(
+        self,
+        *,
+        media_type: MediaType,
+        file_id: uuid.UUID,
+        reset_sha1: bool,
+        show_service: "ShowService",
+        movie_service: "MovieService",
+    ) -> bool:
+        if media_type == MediaType.show:
+            return await show_service.show_repository.clear_file_integrity_state(
+                file_id, reset_sha1=reset_sha1
+            )
+        if media_type == MediaType.movie:
+            return await movie_service.movie_repository.clear_file_integrity_state(
+                file_id, reset_sha1=reset_sha1
+            )
+        return False

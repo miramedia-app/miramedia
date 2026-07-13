@@ -823,12 +823,9 @@ class SubtitleService:
                 for show in shows:
                     for season in show.seasons:
                         for episode in season.episodes:
-                            episode_files = await svc.show_service.show_repository.get_episode_files_by_episode_id(
-                                episode_id=episode.id
-                            )
                             if not any(
                                 f.import_status == ImportOutcome.imported
-                                for f in episode_files
+                                for f in episode.episode_files
                             ):
                                 continue
                             episode_targets.append(episode.id)

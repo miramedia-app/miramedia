@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from miramedia.file_status import FileStatus, ImportOutcome
+from miramedia.media_state import ProgressStatus
 from miramedia.media_status import MediaStatus
 from miramedia.torrents.models import Quality
 from miramedia.torrents.schemas import TorrentId
@@ -76,7 +77,7 @@ class Show(BaseModel):
     auto_download_backoff_until: datetime | None = None
     wanted_episode_count: int = 0
     downloaded_episode_count: int = 0
-    list_progress_status: str = "none"
+    list_progress_status: ProgressStatus = ProgressStatus.none
 
     seasons: list[Season] = []
 

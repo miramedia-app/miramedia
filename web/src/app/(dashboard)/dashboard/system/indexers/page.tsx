@@ -48,6 +48,7 @@ import type {
   SortOption,
 } from "@/components/data-list";
 import apiClient from "@/lib/api/client";
+import { createManagedEventSource, type ManagedEventSource } from "@/lib/managed-event-source";
 
 type Site = {
   id: string;
@@ -497,7 +498,7 @@ export default function IndexersPage() {
   // Test
   const [testingId, setTestingId] = React.useState<string | null>(null);
   // Active test stream so re-testing / unmount aborts the prior one cleanly.
-  const testStreamRef = React.useRef<EventSource | null>(null);
+  const testStreamRef = React.useRef<ManagedEventSource | null>(null);
   React.useEffect(() => () => testStreamRef.current?.close(), []);
 
   // Stream a site test over SSE. The spinner stays on the row and a single
@@ -513,58 +514,52 @@ export default function IndexersPage() {
       window.location.origin,
     );
     const toastId = toast.loading(`Testing ${site.name}…`);
-    const es = new EventSource(url.toString(), { withCredentials: true });
-    testStreamRef.current = es;
 
     let settled = false;
-    let errorTimer: ReturnType<typeof setTimeout> | null = null;
-    const finish = () => {
-      if (errorTimer) clearTimeout(errorTimer);
-      es.close();
-      if (testStreamRef.current === es) testStreamRef.current = null;
-      setTestingId((cur) => (cur === site.id ? null : cur));
-      void qc.invalidateQueries({ queryKey: ["indexers", "sites"] });
-    };
-
-    es.addEventListener("status", (ev) => {
-      try {
-        const { message } = JSON.parse((ev as MessageEvent).data) as { message?: string };
-        if (message) toast.loading(message, { id: toastId });
-      } catch (err) {
-        console.error("SSE status parse error", err);
-      }
+    const handle = createManagedEventSource(url.toString(), {
+      withCredentials: true,
+      // Cap on the stalled-error state, matching the prior 15s timer. The
+      // readyState CLOSED (terminal) vs CONNECTING (transient) discrimination
+      // now lives in the primitive.
+      timeoutMs: 15000,
+      doneEvent: "done",
+      events: {
+        status: (ev) => {
+          try {
+            const { message } = JSON.parse(ev.data) as { message?: string };
+            if (message) toast.loading(message, { id: toastId });
+          } catch (err) {
+            console.error("SSE status parse error", err);
+          }
+        },
+        result: (ev) => {
+          settled = true;
+          try {
+            const r = JSON.parse(ev.data) as { success?: boolean; message?: string };
+            if (r.success) toast.success(r.message ?? "OK", { id: toastId });
+            else toast.error(r.message ?? "Test failed", { id: toastId });
+          } catch {
+            toast.error("Test failed", { id: toastId });
+          }
+        },
+      },
+      onDone: (outcome) => {
+        // Same terminal toasts as before, keyed off the outcome the primitive
+        // reports: CLOSED → "connection lost", timer cap → "timed out". A
+        // normal "done" event ("completed") leaves the result toast untouched.
+        if (!settled) {
+          if (outcome === "closed") {
+            toast.error("Test failed — connection lost", { id: toastId });
+          } else if (outcome === "timeout") {
+            toast.error("Test timed out", { id: toastId });
+          }
+        }
+        if (testStreamRef.current === handle) testStreamRef.current = null;
+        setTestingId((cur) => (cur === site.id ? null : cur));
+        void qc.invalidateQueries({ queryKey: ["indexers", "sites"] });
+      },
     });
-
-    es.addEventListener("result", (ev) => {
-      settled = true;
-      try {
-        const r = JSON.parse((ev as MessageEvent).data) as {
-          success?: boolean;
-          message?: string;
-        };
-        if (r.success) toast.success(r.message ?? "OK", { id: toastId });
-        else toast.error(r.message ?? "Test failed", { id: toastId });
-      } catch {
-        toast.error("Test failed", { id: toastId });
-      }
-    });
-
-    es.addEventListener("done", finish);
-
-    // EventSource fires onerror on transient reconnects (readyState CONNECTING)
-    // too. Finish immediately only when the browser terminally gave up; else
-    // let it reconnect, but cap the wait so a dead stream can't spin forever.
-    es.onerror = () => {
-      if (es.readyState === EventSource.CLOSED) {
-        if (!settled) toast.error("Test failed — connection lost", { id: toastId });
-        finish();
-      } else if (!errorTimer) {
-        errorTimer = setTimeout(() => {
-          if (!settled) toast.error("Test timed out", { id: toastId });
-          finish();
-        }, 15000);
-      }
-    };
+    testStreamRef.current = handle;
   }
 
   const renderRowActions = React.useCallback(
