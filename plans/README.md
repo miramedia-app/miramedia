@@ -1,8 +1,8 @@
 # Plans 072–086 integration status
 
-Branch: `plans-072-086-integration`
+Branch: `plans-072-086-integration` (integrated tip; `origin/main` fast-forwarded to `d43ec78`)
 
-Final integration branch for plans **072–086** (excluding `main`).
+Final integration branch for plans **072–086**.
 
 ## Integration spine
 
@@ -13,7 +13,7 @@ Final integration branch for plans **072–086** (excluding `main`).
 | `bd4c953` | above + `abf7a24` | `advisor086-safe-archive-extraction` (086) |
 | `d364211` | above | PG lane wiring (`disposable_database_sync_url`, CI postgresql step) |
 | `7a9dc9c` | above | Default `make test` excludes `postgresql` marker (DB-free) |
-| `a8ffdc0` | above + `653ba1f` | `plan-085-frontend-workflow-tests` (Vitest, frontend CI gates) |
+| `a8ffdc0` | above + `653ba1f` | Plan 085 frontend workflow tests (Vitest, frontend CI gates) |
 
 ## Per-plan status
 
@@ -32,7 +32,7 @@ Final integration branch for plans **072–086** (excluding `main`).
 | 082 | Integrity pagination & audit chunking | **DONE** | `53bc362` / `ca56e778` | `tests/integration/test_integrity_*.py` | `make integration-test` |
 | 083 | Auth settings hot-reload | **DONE** | `b5b36c3` | `miramedia/auth/runtime.py`, migration `f3a4b5c6d7e8` | `make test`; `pytest -m postgresql` |
 | 084 | PostgreSQL integration suite | **DONE** | `22c1138`…`77e054f` | `tests/integration/*`, CI `postgres-integration` | `make integration-test` |
-| 085 | Frontend workflow tests | **DONE** | `plan-085-frontend-workflow-tests` → `653ba1f` | Vitest (`web/src/lib/*.test.ts`), CI frontend test/lint/format/build | `make frontend-test`, `make frontend-lint`, `make frontend-build` |
+| 085 | Frontend workflow tests | **DONE** | `653ba1f` | Vitest (`web/src/lib/*.test.ts`), CI frontend test/lint/format/build | `make frontend-test`, `make frontend-lint`, `make frontend-build` |
 | 086 | Safe archive extraction | **DONE** | `abf7a24` | `miramedia/imports/archive_*.py`, `tests/test_archive_*.py` | `make test` |
 
 ## Integrity cache invalidation (Plan 077/082/085)
@@ -69,4 +69,8 @@ uv run python scripts/migration_head_audit.py --verify-db
 
 - Auth/settings **session-level** PostgreSQL integration beyond OAuth migration
   characterization is still deferred.
-- `main` was not touched.
+
+## Release
+
+`d43ec78` (plans 072–086 integration README and status) was fast-forwarded and
+pushed to `origin/main`.
