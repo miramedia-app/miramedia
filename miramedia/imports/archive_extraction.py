@@ -25,8 +25,8 @@ import logging
 import ntpath
 import os
 import re
+import secrets
 import stat
-import tempfile
 import unicodedata
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol
@@ -177,12 +177,25 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     staging: BoundStagingDirectory | None = None
     primary_error: BaseException | None = None
     published = False
+    parent_fd: int | None = None
     try:
-        staging = _create_staging_dir(destination_dir.absolute().parent)
-        _extract_to_staging(archive, staging.path, classification.format)
-        _collect_validated_regular_files(staging.path)
-        from miramedia.imports.archive_publication import publish_staging_tree
+        from miramedia.imports.archive_publication import (
+            bind_directory,
+            publish_staging_tree,
+        )
+        from miramedia.imports.archive_staging_io import (
+            collect_validated_regular_files,
+            require_descriptor_staging_supported,
+        )
 
+        require_descriptor_staging_supported()
+        parent_path = destination_dir.parent
+        parent_path.mkdir(parents=True, exist_ok=True)
+        parent_fd = bind_directory(parent_path)
+        staging = _create_staging_dir(parent_fd)
+        parent_fd = None
+        _extract_to_staging(archive, staging, classification.format)
+        collect_validated_regular_files(staging.fd)
         container_path = publish_staging_tree(
             staging,
             destination_dir,
@@ -198,6 +211,8 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
     else:
         return container_path
     finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
         if staging is not None:
             if published:
                 staging.close()
@@ -205,74 +220,49 @@ def extract_archive_to_directory(archive: Path, destination_dir: Path) -> Path:
                 _cleanup_staging(staging, primary_error=primary_error)
 
 
-def _create_staging_dir(parent: Path) -> BoundStagingDirectory:
+def _create_staging_dir(parent_fd: int) -> BoundStagingDirectory:
     from miramedia.imports.archive_publication import (
         BoundStagingDirectory,
-        bind_directory,
         quarantine_owned_directory,
     )
+    from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
 
+    staging_name = f"{STAGING_DIR_PREFIX}{secrets.token_hex(16)}"
     try:
-        parent.mkdir(parents=True, exist_ok=True)
-        parent_fd = bind_directory(parent)
-    except OSError as exc:
-        msg = f"failed to open staging parent directory under {parent}"
+        os.mkdir(staging_name, mode=STAGING_DIR_MODE, dir_fd=parent_fd)
+    except FileExistsError as exc:
+        msg = "failed to allocate unique staging directory name"
         raise ArchiveExtractionError(msg) from exc
-    try:
-        staging_path = tempfile.mkdtemp(prefix=".mm-extract-", dir=str(parent))
-        staging = Path(staging_path)
     except OSError as exc:
-        os.close(parent_fd)
-        msg = f"failed to create staging directory under {parent}"
-        raise ArchiveExtractionError(msg) from exc
-    try:
-        staging.chmod(STAGING_DIR_MODE)
-    except OSError as exc:
-        try:
-            staging_stat = os.stat(
-                staging.name, dir_fd=parent_fd, follow_symlinks=False
-            )
-        except OSError:
-            os.close(parent_fd)
-            msg = f"failed to secure staging directory permissions: {staging}"
-            raise ArchiveExtractionError(msg) from exc
-        quarantine_owned_directory(
-            parent_fd,
-            staging.name,
-            staging_stat,
-            allow_recursive_cleanup=True,
-        )
-        os.close(parent_fd)
-        msg = f"failed to secure staging directory permissions: {staging}"
+        msg = "failed to create staging directory"
         raise ArchiveExtractionError(msg) from exc
     try:
         staging_fd = os.open(
-            staging.name,
+            staging_name,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
             dir_fd=parent_fd,
         )
     except OSError as exc:
         try:
             staging_stat = os.stat(
-                staging.name, dir_fd=parent_fd, follow_symlinks=False
+                staging_name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
             )
         except OSError:
-            os.close(parent_fd)
-            msg = f"failed to bind staging directory: {staging}"
+            msg = "failed to bind staging directory"
             raise ArchiveExtractionError(msg) from exc
         quarantine_owned_directory(
             parent_fd,
-            staging.name,
+            staging_name,
             staging_stat,
             allow_recursive_cleanup=True,
         )
-        os.close(parent_fd)
-        msg = f"failed to bind staging directory: {staging}"
+        msg = "failed to bind staging directory"
         raise ArchiveExtractionError(msg) from exc
     staging_stat = os.fstat(staging_fd)
     return BoundStagingDirectory(
-        path=staging,
-        name=staging.name,
+        name=staging_name,
         parent_fd=parent_fd,
         fd=staging_fd,
         stat=staging_stat,
@@ -296,10 +286,10 @@ def _cleanup_staging(
     except OSError as cleanup_error:
         log.exception(
             "Failed to quarantine archive staging directory %s",
-            staging.path,
+            staging.name,
         )
         if primary_error is None:
-            msg = f"failed to clean staging directory: {staging.path}"
+            msg = f"failed to clean staging directory: {staging.name}"
             raise ArchiveExtractionError(msg) from cleanup_error
     finally:
         staging.close()
@@ -373,7 +363,11 @@ def _unsupported_format_error(archive_format: str) -> ArchiveExtractionError:
     return ArchiveExtractionError(msg)
 
 
-def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> None:
+def _extract_to_staging(
+    archive: Path,
+    staging: BoundStagingDirectory,
+    archive_format: str,
+) -> None:
     if archive_format in UNSUPPORTED_ARCHIVE_FORMATS:
         raise _unsupported_format_error(archive_format)
     if archive_format not in RETAINED_ARCHIVE_FORMATS:
@@ -383,12 +377,13 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
 
     budget = _ExpandedByteBudget()
     path_registry = _EntryPathRegistry()
+    staging_fd = staging.fd
     if archive_format == "zip":
-        parsers.extract_zip_archive(archive, staging, budget, path_registry)
+        parsers.extract_zip_archive(archive, staging_fd, budget, path_registry)
     elif archive_format == "tar":
         parsers.extract_tar_archive(
             archive,
-            staging,
+            staging_fd,
             budget,
             path_registry,
             compression=None,
@@ -396,7 +391,7 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
     elif archive_format == "tar.gz":
         parsers.extract_tar_archive(
             archive,
-            staging,
+            staging_fd,
             budget,
             path_registry,
             compression="gz",
@@ -404,7 +399,7 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
     elif archive_format == "tar.bz2":
         parsers.extract_tar_archive(
             archive,
-            staging,
+            staging_fd,
             budget,
             path_registry,
             compression="bz2",
@@ -412,7 +407,7 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
     elif archive_format == "gzip":
         parsers.extract_gzip_archive(
             archive,
-            staging,
+            staging_fd,
             budget,
             path_registry,
             out_name=_gzip_output_name(archive),
@@ -420,7 +415,7 @@ def _extract_to_staging(archive: Path, staging: Path, archive_format: str) -> No
     elif archive_format == "bzip2":
         parsers.extract_bzip2_archive(
             archive,
-            staging,
+            staging_fd,
             budget,
             path_registry,
             out_name=_bzip2_output_name(archive),
@@ -520,47 +515,7 @@ def _enforce_limits(file_count: int, total_bytes: int) -> None:
         raise ArchiveExtractionError(msg)
 
 
-def _safe_relative_path(root: Path, entry_name: str) -> Path:
-    _validate_entry_name(entry_name)
-    root_resolved = root.resolve()
-    candidate = root_resolved.joinpath(*PurePosixPath(entry_name).parts)
-    _assert_contained(candidate, root_resolved)
-    return candidate
+def _collect_validated_regular_files(staging_fd: int) -> None:
+    from miramedia.imports.archive_staging_io import collect_validated_regular_files
 
-
-def _assert_contained(path: Path, root: Path) -> None:
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        msg = f"path escapes staging root: {path}"
-        raise ArchiveExtractionError(msg) from exc
-
-
-def _collect_validated_regular_files(staging: Path) -> list[Path]:
-    staging_root = staging.resolve()
-    files: list[Path] = []
-    file_count = 0
-    total_bytes = 0
-    for path in sorted(staging_root.rglob("*")):
-        try:
-            lstat = path.lstat()
-        except OSError as exc:
-            msg = f"failed to inspect extracted entry: {path}"
-            raise ArchiveExtractionError(msg) from exc
-        if stat.S_ISLNK(lstat.st_mode):
-            msg = f"extracted symlink is not allowed: {path}"
-            raise ArchiveExtractionError(msg)
-        if stat.S_ISDIR(lstat.st_mode):
-            continue
-        if not stat.S_ISREG(lstat.st_mode):
-            msg = f"extracted non-regular file is not allowed: {path}"
-            raise ArchiveExtractionError(msg)
-        if lstat.st_nlink > 1:
-            msg = f"extracted hardlink is not allowed: {path}"
-            raise ArchiveExtractionError(msg)
-        _assert_contained(path, staging_root)
-        file_count += 1
-        total_bytes += lstat.st_size
-        _enforce_limits(file_count, total_bytes)
-        files.append(path)
-    return files
+    collect_validated_regular_files(staging_fd)

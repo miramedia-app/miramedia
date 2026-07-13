@@ -347,7 +347,7 @@ def test_quarantine_swap_before_rmdir_leaves_quarantine(tmp_path: Path) -> None:
     try:
         with patch.object(
             publication,
-            "_directory_is_empty",
+            "_directory_fd_is_empty",
             return_value=False,
         ):
             publication.quarantine_owned_directory(
@@ -409,13 +409,15 @@ def test_staging_directory_replacement_before_publish_rejected(
         *,
         destination_stat: os.stat_result,
     ) -> Path:
-        replacement = dest.parent / "replacement"
+        parent = destination_dir.parent
+        staging_path = parent / staging.name
+        replacement = parent / "replacement"
         replacement.mkdir()
         (replacement / "evil.mkv").write_bytes(b"evil")
-        for child in staging.path.iterdir():
+        for child in staging_path.iterdir():
             child.unlink()
-        staging.path.rmdir()
-        replacement.rename(staging.path)
+        staging_path.rmdir()
+        replacement.rename(staging_path)
         return real_publish(staging, destination_dir, destination_stat=destination_stat)
 
     with (
@@ -505,14 +507,16 @@ def test_staging_cleanup_leaves_replaced_directory(tmp_path: Path) -> None:
         primary_error: BaseException | None = None,
     ) -> None:
         captured.append(staging)
-        replacement = dest.parent / "replacement"
+        parent = dest.parent
+        staging_path = parent / staging.name
+        replacement = parent / "replacement"
         replacement.mkdir()
         (replacement / "marker").write_bytes(b"safe")
-        if staging.path.exists():
-            for child in staging.path.iterdir():
+        if staging_path.exists():
+            for child in staging_path.iterdir():
                 child.unlink()
-            staging.path.rmdir()
-        replacement.rename(staging.path)
+            staging_path.rmdir()
+        replacement.rename(staging_path)
         real_cleanup(staging, primary_error=primary_error)
 
     with (
@@ -522,7 +526,7 @@ def test_staging_cleanup_leaves_replaced_directory(tmp_path: Path) -> None:
         extract_archive_to_directory(archive, dest)
 
     assert captured
-    assert (captured[0].path / "marker").read_bytes() == b"safe"
+    assert (dest.parent / captured[0].name / "marker").read_bytes() == b"safe"
     assert list(dest.parent.glob(f"{QUARANTINE_PREFIX}*")) == []
 
 

@@ -39,9 +39,8 @@ class _DigestWriter(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class BoundStagingDirectory:
-    """Staging directory opened and inode-bound at mkdtemp creation."""
+    """Staging directory opened and inode-bound at creation time."""
 
-    path: Path
     name: str
     parent_fd: int
     fd: int
@@ -402,64 +401,49 @@ def quarantine_owned_directory(
             return
         if allow_recursive_cleanup:
             _rmtree_at_fd(top_fd)
+        if not _directory_fd_is_empty(top_fd):
+            log.warning(
+                "Quarantine directory %s is not empty; leaving it in place",
+                quarantine_name,
+            )
+            return
+        final_opened = os.fstat(top_fd)
+        if (
+            final_opened.st_ino != expected_stat.st_ino
+            or final_opened.st_dev != expected_stat.st_dev
+        ):
+            log.warning(
+                "Quarantine directory %s identity changed before removal; leaving it",
+                quarantine_name,
+            )
+            return
+        try:
+            _rmdir_open_directory(top_fd)
+        except OSError as exc:
+            log.warning(
+                "Failed to remove empty quarantine directory %s; leaving it: %s",
+                quarantine_name,
+                exc,
+            )
     except OSError as exc:
         log.warning(
             "Failed to clean quarantined directory %s; leaving it: %s",
             quarantine_name,
             exc,
         )
-        return
     finally:
         os.close(top_fd)
 
-    try:
-        final = os.stat(
-            quarantine_name,
-            dir_fd=parent_fd,
-            follow_symlinks=False,
-        )
-    except OSError as exc:
-        log.warning(
-            "Failed to stat quarantine directory %s before removal: %s",
-            quarantine_name,
-            exc,
-        )
-        return
-    if final.st_ino != expected_stat.st_ino or final.st_dev != expected_stat.st_dev:
-        log.warning(
-            "Quarantine directory %s was replaced before removal; leaving it",
-            quarantine_name,
-        )
-        return
-    if not _directory_is_empty(parent_fd, quarantine_name):
-        log.warning(
-            "Quarantine directory %s is not empty; leaving it in place",
-            quarantine_name,
-        )
-        return
-    try:
-        os.rmdir(quarantine_name, dir_fd=parent_fd)
-    except OSError as exc:
-        log.warning(
-            "Failed to remove empty quarantine directory %s; leaving it: %s",
-            quarantine_name,
-            exc,
-        )
+
+def _directory_fd_is_empty(dir_fd: int) -> bool:
+    for _root, dirs, files, _walk_fd in os.fwalk(".", dir_fd=dir_fd):
+        if dirs or files:
+            return False
+    return True
 
 
-def _directory_is_empty(parent_fd: int, name: str) -> bool:
-    fd = os.open(
-        name,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        dir_fd=parent_fd,
-    )
-    try:
-        for _root, dirs, files, _walk_fd in os.fwalk(".", dir_fd=fd):
-            if dirs or files:
-                return False
-        return True
-    finally:
-        os.close(fd)
+def _rmdir_open_directory(dir_fd: int) -> None:
+    os.rmdir(".", dir_fd=dir_fd)
 
 
 def _rmtree_at_fd(top_fd: int) -> None:

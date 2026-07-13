@@ -5,6 +5,7 @@ from __future__ import annotations
 import bz2
 import contextlib
 import gzip
+import os
 import stat as stat_mod
 import struct
 import tarfile
@@ -15,13 +16,16 @@ from typing import IO, NamedTuple, cast
 
 from miramedia.imports.archive_extraction import (
     ArchiveExtractionError,
-    _copy_stream_bounded,
     _enforce_entry_count,
     _enforce_limits,
     _EntryPathRegistry,
     _ExpandedByteBudget,
-    _safe_relative_path,
     _validate_entry_name,
+)
+from miramedia.imports.archive_staging_io import (
+    mkdir_entry,
+    open_entry_for_write,
+    write_entry_stream,
 )
 
 _TAR_BLOCK = 512
@@ -238,7 +242,7 @@ def _reject_zip64_extra_field(extra: bytes) -> None:
 
 def extract_zip_archive(
     archive: Path,
-    staging: Path,
+    staging_fd: int,
     budget: _ExpandedByteBudget,
     path_registry: _EntryPathRegistry,
 ) -> None:
@@ -252,15 +256,15 @@ def extract_zip_archive(
             _validate_zip_entries(infos, path_registry)
             for info in infos:
                 if info.is_dir():
-                    _safe_relative_path(staging, info.filename).mkdir(
-                        parents=True,
-                        exist_ok=True,
-                    )
+                    mkdir_entry(staging_fd, info.filename)
                     continue
-                rel = _safe_relative_path(staging, info.filename)
-                rel.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(info, "r") as src, rel.open("wb") as dst:
-                    _copy_stream_bounded(src, dst, budget=budget)
+                with zf.open(info, "r") as src:
+                    write_entry_stream(
+                        staging_fd,
+                        info.filename,
+                        src,
+                        budget=budget,
+                    )
     except zipfile.BadZipFile as exc:
         msg = "malformed zip archive"
         raise ArchiveExtractionError(msg) from exc
@@ -295,7 +299,7 @@ def _validate_zip_entries(
 
 def extract_tar_archive(
     archive: Path,
-    staging: Path,
+    staging_fd: int,
     budget: _ExpandedByteBudget,
     path_registry: _EntryPathRegistry,
     *,
@@ -303,7 +307,7 @@ def extract_tar_archive(
 ) -> None:
     try:
         with _open_tar_stream(archive, compression) as stream:
-            _parse_tar_stream(stream, staging, budget, path_registry)
+            _parse_tar_stream(stream, staging_fd, budget, path_registry)
     except ArchiveExtractionError:
         raise
     except (tarfile.TarError, OSError, EOFError) as exc:
@@ -330,7 +334,7 @@ def _open_tar_stream(archive: Path, compression: str | None) -> Iterator[IO[byte
 
 def _parse_tar_stream(
     stream: IO[bytes],
-    staging: Path,
+    staging_fd: int,
     budget: _ExpandedByteBudget,
     path_registry: _EntryPathRegistry,
 ) -> None:
@@ -358,10 +362,7 @@ def _parse_tar_stream(
             if member.size != 0:
                 msg = "tar directory entry declares payload"
                 raise ArchiveExtractionError(msg)
-            _safe_relative_path(staging, member.name).mkdir(
-                parents=True,
-                exist_ok=True,
-            )
+            mkdir_entry(staging_fd, member.name)
             continue
         if not member.isreg():
             msg = f"unsupported tar entry type: {member.type!r}"
@@ -369,11 +370,17 @@ def _parse_tar_stream(
         if member.size > budget.remaining:
             msg = f"archive exceeds expanded-byte limit ({budget.limit})"
             raise ArchiveExtractionError(msg)
-        rel = _safe_relative_path(staging, member.name)
-        rel.parent.mkdir(parents=True, exist_ok=True)
-        with rel.open("wb") as dst:
-            _copy_tar_payload(stream, dst, member.size, budget=budget)
+        with open_entry_for_write(staging_fd, member.name) as dst_fd:
+            _copy_tar_payload(stream, _FdWriter(dst_fd), member.size, budget=budget)
         _debit_tar_padding(stream, member.size, budget=budget)
+
+
+class _FdWriter:
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+
+    def write(self, data: bytes, /) -> int:
+        return os.write(self._fd, data)
 
 
 def _read_exact(stream: IO[bytes], size: int) -> bytes:
@@ -386,7 +393,7 @@ def _read_exact(stream: IO[bytes], size: int) -> bytes:
 
 def _copy_tar_payload(
     stream: IO[bytes],
-    dst: IO[bytes],
+    dst: _FdWriter,
     size: int,
     *,
     budget: _ExpandedByteBudget,
@@ -414,7 +421,7 @@ def _debit_tar_padding(
 
 def extract_gzip_archive(
     archive: Path,
-    staging: Path,
+    staging_fd: int,
     budget: _ExpandedByteBudget,
     path_registry: _EntryPathRegistry,
     *,
@@ -422,11 +429,9 @@ def extract_gzip_archive(
 ) -> None:
     path_registry.register(out_name)
     _enforce_entry_count(1)
-    rel = _safe_relative_path(staging, out_name)
-    rel.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with gzip.open(archive, "rb") as src, rel.open("wb") as dst:
-            _copy_stream_bounded(src, dst, budget=budget)
+        with gzip.open(archive, "rb") as src:
+            write_entry_stream(staging_fd, out_name, src, budget=budget)
     except (OSError, EOFError) as exc:
         msg = f"gzip extraction failed: {exc}"
         raise ArchiveExtractionError(msg) from exc
@@ -434,7 +439,7 @@ def extract_gzip_archive(
 
 def extract_bzip2_archive(
     archive: Path,
-    staging: Path,
+    staging_fd: int,
     budget: _ExpandedByteBudget,
     path_registry: _EntryPathRegistry,
     *,
@@ -442,11 +447,9 @@ def extract_bzip2_archive(
 ) -> None:
     path_registry.register(out_name)
     _enforce_entry_count(1)
-    rel = _safe_relative_path(staging, out_name)
-    rel.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with bz2.open(archive, "rb") as src, rel.open("wb") as dst:
-            _copy_stream_bounded(src, dst, budget=budget)
+        with bz2.open(archive, "rb") as src:
+            write_entry_stream(staging_fd, out_name, src, budget=budget)
     except (OSError, EOFError) as exc:
         msg = f"bzip2 extraction failed: {exc}"
         raise ArchiveExtractionError(msg) from exc

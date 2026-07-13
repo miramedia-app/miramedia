@@ -5,6 +5,7 @@ from __future__ import annotations
 import bz2
 import gzip
 import io
+import os
 import stat
 import tarfile
 import zipfile
@@ -273,17 +274,19 @@ def test_staging_rejects_dangling_symlink(tmp_path: Path) -> None:
     dest.mkdir()
     _write_zip(archive, {"clip.mkv": b"ok"})
 
-    from miramedia.imports import archive_extraction as mod
+    from miramedia.imports import archive_staging_io as staging_io
 
-    real_collect = mod._collect_validated_regular_files
+    real_collect = staging_io.collect_validated_regular_files
 
-    def _inject_dangling(staging: Path) -> list[Path]:
-        (staging / "broken").symlink_to("missing-target")
-        return real_collect(staging)
+    def _inject_dangling(staging_fd: int) -> None:
+        os.symlink("missing-target", "broken", dir_fd=staging_fd)
+        real_collect(staging_fd)
 
     with (
         patch.object(
-            mod, "_collect_validated_regular_files", side_effect=_inject_dangling
+            staging_io,
+            "collect_validated_regular_files",
+            side_effect=_inject_dangling,
         ),
         pytest.raises(ArchiveExtractionError, match="symlink"),
     ):
@@ -482,38 +485,32 @@ def test_publication_idempotent_repeat(tmp_path: Path) -> None:
     assert payload_file(dest, "clip.mkv").read_bytes() == b"same-bytes"
 
 
-def test_staging_chmod_failure_removes_mkdtemp(tmp_path: Path) -> None:
+def test_staging_mkdir_failure_cleans_up(tmp_path: Path) -> None:
     archive = tmp_path / "release.zip"
     dest = tmp_path / "import"
     dest.mkdir()
     _write_zip(archive, {"clip.mkv": b"x"})
 
-    from miramedia.imports import archive_extraction as mod
+    from miramedia.imports.archive_staging_io import STAGING_DIR_PREFIX
 
-    created: list[str] = []
-    real_mkdtemp = mod.tempfile.mkdtemp
-    real_chmod = Path.chmod
+    created_names: list[str] = []
+    real_mkdir = os.mkdir
 
-    def _track_mkdtemp(*args: object, **kwargs: object) -> str:
-        path = real_mkdtemp(*args, **kwargs)
-        created.append(path)
-        return path
-
-    def _fail_first_chmod(self: Path, mode: int) -> None:
-        if str(self).endswith(tuple(created)) or self.name.startswith(".mm-extract-"):
-            msg = "simulated chmod failure"
+    def _track_mkdir(name: str, *args: object, **kwargs: object) -> None:
+        if str(name).startswith(STAGING_DIR_PREFIX):
+            created_names.append(str(name))
+            msg = "simulated staging mkdir failure"
             raise OSError(msg)
-        real_chmod(self, mode)
+        real_mkdir(name, *args, **kwargs)
 
     with (
-        patch.object(mod.tempfile, "mkdtemp", _track_mkdtemp),
-        patch.object(Path, "chmod", _fail_first_chmod),
-        pytest.raises(ArchiveExtractionError),
+        patch.object(os, "mkdir", side_effect=_track_mkdir),
+        pytest.raises(ArchiveExtractionError, match="staging directory"),
     ):
         extract_archive_to_directory(archive, dest)
 
-    assert created
-    assert not Path(created[0]).exists()
+    assert created_names
+    assert not list(dest.parent.glob(f"{STAGING_DIR_PREFIX}*"))
     assert container_paths(dest) == []
 
 
@@ -527,10 +524,11 @@ def test_staging_cleaned_up_after_success(tmp_path: Path) -> None:
 
     created: list[Path] = []
     real_create = mod._create_staging_dir
+    parent = dest.parent
 
-    def _track(parent: Path) -> mod.BoundStagingDirectory:
-        staging = real_create(parent)
-        created.append(staging.path)
+    def _track(parent_fd: int) -> mod.BoundStagingDirectory:
+        staging = real_create(parent_fd)
+        created.append(parent / staging.name)
         return staging
 
     with patch.object(mod, "_create_staging_dir", side_effect=_track):
@@ -551,10 +549,11 @@ def test_staging_cleaned_up_after_failure(tmp_path: Path) -> None:
 
     created: list[Path] = []
     real_create = mod._create_staging_dir
+    parent = dest.parent
 
-    def _track(parent: Path) -> mod.BoundStagingDirectory:
-        staging = real_create(parent)
-        created.append(staging.path)
+    def _track(parent_fd: int) -> mod.BoundStagingDirectory:
+        staging = real_create(parent_fd)
+        created.append(parent / staging.name)
         return staging
 
     with (
