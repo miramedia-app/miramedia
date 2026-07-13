@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -37,7 +38,6 @@ config = MiraMediaConfig()
 # weak reference to the task, so without this the task could be GC'd before
 # it finishes. add_done_callback(discard) drops the reference once it's done.
 _startup_tasks: set[asyncio.Task] = set()
-_shutdown_complete = False
 
 
 @dataclass
@@ -51,6 +51,14 @@ class SchedulerContext:
     startup_kick_task: asyncio.Task | None = None
     loop_task: asyncio.Task | None = None
     scheduler_leader_conn = None
+    _shutdown_lock: asyncio.Lock = field(
+        default_factory=asyncio.Lock, repr=False, compare=False
+    )
+    _shutdown_complete: bool = field(default=False, repr=False, compare=False)
+    _shutdown_in_progress: bool = field(default=False, repr=False, compare=False)
+    _shutdown_finished: asyncio.Event | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def configure_threadpool() -> None:
@@ -420,42 +428,75 @@ async def start_scheduler_workers(app: FastAPI, ctx: SchedulerContext) -> None:
     ctx.startup_kick_task = asyncio.create_task(_kick_startup_tasks())
 
 
-async def shutdown_startup(
+async def _best_effort(
+    label: str,
+    failures: list[BaseException],
+    awaitable: Awaitable[object] | None,
+) -> None:
+    if awaitable is None:
+        return
+    try:
+        await awaitable
+    except Exception as exc:
+        log.exception("%s failed", label)
+        failures.append(exc)
+
+
+def _best_effort_sync(
+    label: str,
+    failures: list[BaseException],
+    fn: Callable[[], object] | None,
+) -> None:
+    if fn is None:
+        return
+    try:
+        fn()
+    except Exception as exc:
+        log.exception("%s failed", label)
+        failures.append(exc)
+
+
+async def _shutdown_startup_impl(
     ctx: SchedulerContext,
     native_client: NativeDownloadClient | None,
     event_bridge_started: bool,
-) -> None:
-    """Tear down startup acquisitions; safe to call multiple times."""
-    global _shutdown_complete
-    if _shutdown_complete:
-        return
-    _shutdown_complete = True
-    # All scheduler-related vars stay None when scheduler_disabled is
-    # true, so these branches no-op naturally on API-only workers.
+) -> bool:
+    """Run one shutdown pass; return True when any step failed."""
+    failures: list[BaseException] = []
+
     if ctx.startup_kick_task is not None and not ctx.startup_kick_task.done():
         ctx.startup_kick_task.cancel()
-        try:
-            await ctx.startup_kick_task
-        except asyncio.CancelledError:
-            pass
+        await _best_effort(
+            "startup kick task shutdown",
+            failures,
+            _await_cancelled(ctx.startup_kick_task),
+        )
     if ctx.loop_task is not None and not ctx.loop_task.done():
         ctx.loop_task.cancel()
-        try:
-            await ctx.loop_task
-        except asyncio.CancelledError:
-            pass
-    # Cancel fire-and-forget startup tasks (library watcher = infinite loop,
-    # import-queue warm-up, settings revision subscriber) so they don't run
-    # against a torn-down engine on a non-exit lifespan teardown (tests, --reload).
+        await _best_effort(
+            "scheduler loop shutdown",
+            failures,
+            _await_cancelled(ctx.loop_task),
+        )
+
     from miramedia.settings.reload import stop_settings_revision_subscriber
 
-    await stop_settings_revision_subscriber()
+    await _best_effort(
+        "settings revision subscriber shutdown",
+        failures,
+        stop_settings_revision_subscriber(),
+    )
+
     outstanding = [t for t in list(_startup_tasks) if not t.done()]
-    for t in outstanding:
-        t.cancel()
+    for task in outstanding:
+        task.cancel()
     if outstanding:
-        await asyncio.gather(*outstanding, return_exceptions=True)
-    # Signal both receivers to drain in parallel, then wait for both.
+        await _best_effort(
+            "startup task cancellation",
+            failures,
+            asyncio.gather(*outstanding, return_exceptions=True),
+        )
+
     pending_receivers: list[asyncio.Task] = []
     if ctx.interactive_finish is not None and ctx.interactive_receiver_task is not None:
         ctx.interactive_finish.set()
@@ -464,64 +505,125 @@ async def shutdown_startup(
         ctx.background_finish.set()
         pending_receivers.append(ctx.background_receiver_task)
     if pending_receivers:
-        await asyncio.gather(*pending_receivers, return_exceptions=True)
+        await _best_effort(
+            "taskiq receiver shutdown",
+            failures,
+            asyncio.gather(*pending_receivers, return_exceptions=True),
+        )
+
     for source in ctx.started_sources:
-        await source.shutdown()
-    for b in ctx.brokers_started:
-        await b.shutdown()
+        await _best_effort(
+            "scheduler source shutdown",
+            failures,
+            source.shutdown(),
+        )
+    for broker in ctx.brokers_started:
+        await _best_effort("taskiq broker shutdown", failures, broker.shutdown())
+
     if native_client is not None:
-        # shutdown() pauses the session + polls the alert queue with
-        # time.sleep for up to ~10s to flush resume data. Run it off-loop so
-        # it doesn't block the parallel broker/source shutdown + CF reaper
-        # (the cron resume-save already uses to_thread for the same reason).
-        await asyncio.to_thread(native_client.shutdown)
-    # Stop the cloudflare-bypass worker loop + reap chromium so the
-    # container exits cleanly instead of leaving the daemon thread
-    # dangling.
+        await _best_effort(
+            "native torrent client shutdown",
+            failures,
+            asyncio.to_thread(native_client.shutdown),
+        )
+
     try:
         from miramedia.cloudflare import get_cloudflare_bypass
 
         bypass = get_cloudflare_bypass()
         if bypass is not None:
-            bypass.shutdown()
-    except Exception:
+            _best_effort_sync("cloudflare bypass shutdown", failures, bypass.shutdown)
+    except Exception as exc:
         log.exception("Cloudflare bypass shutdown failed")
-    # Release pooled HTTP connections (httpx + IPv4-pinned requests
-    # session) so the process exits without leaking sockets / file
-    # descriptors on container restarts.
+        failures.append(exc)
+
     try:
         from miramedia.indexers.sites.base import close_http_client
 
-        close_http_client()
-    except Exception:
+        _best_effort_sync("httpx client close", failures, close_http_client)
+    except Exception as exc:
         log.exception("httpx client close failed (non-fatal)")
+        failures.append(exc)
     try:
         from miramedia.metadata.backends.native import close_ipv4_session
 
-        close_ipv4_session()
-    except Exception:
+        _best_effort_sync("ipv4 session close", failures, close_ipv4_session)
+    except Exception as exc:
         log.exception("ipv4 session close failed (non-fatal)")
+        failures.append(exc)
+
     if ctx.scheduler_leader_conn is not None:
-        try:
+
+        async def _release_scheduler_lock() -> None:
             await ctx.scheduler_leader_conn.execute(
                 text("SELECT pg_advisory_unlock(4871260042)")
             )
-        except Exception:
-            log.exception("Failed to release scheduler advisory lock")
-        try:
             await ctx.scheduler_leader_conn.close()
-        except Exception:  # noqa: S110 — best-effort cleanup, non-fatal
-            pass
+
+        await _best_effort(
+            "scheduler advisory lock release",
+            failures,
+            _release_scheduler_lock(),
+        )
+
     if event_bridge_started:
         try:
             from miramedia.events.bus import get_event_bus
 
-            await get_event_bus().stop_postgres_bridge()
-        except Exception:
+            await _best_effort(
+                "postgres event bridge shutdown",
+                failures,
+                get_event_bus().stop_postgres_bridge(),
+            )
+        except Exception as exc:
             log.exception("Postgres event bridge shutdown failed")
+            failures.append(exc)
+
+    return bool(failures)
 
 
-def reset_startup_shutdown_state_for_tests() -> None:
-    """Reset shutdown idempotency guard (tests only)."""
-    global _shutdown_complete
-    _shutdown_complete = False
+async def _await_cancelled(task: asyncio.Task) -> None:
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def shutdown_startup(
+    ctx: SchedulerContext,
+    native_client: NativeDownloadClient | None,
+    event_bridge_started: bool,
+) -> None:
+    """Tear down one lifespan's startup acquisitions."""
+    while True:
+        wait_event: asyncio.Event | None
+        async with ctx._shutdown_lock:
+            if ctx._shutdown_complete:
+                return
+            if ctx._shutdown_in_progress:
+                wait_event = ctx._shutdown_finished
+            else:
+                ctx._shutdown_in_progress = True
+                ctx._shutdown_finished = asyncio.Event()
+                wait_event = None
+
+        if wait_event is not None:
+            await wait_event.wait()
+            continue
+
+        failed = False
+        try:
+            failed = await _shutdown_startup_impl(
+                ctx, native_client, event_bridge_started
+            )
+        finally:
+            finished = ctx._shutdown_finished
+            async with ctx._shutdown_lock:
+                ctx._shutdown_in_progress = False
+                if not failed:
+                    ctx._shutdown_complete = True
+                if finished is not None:
+                    finished.set()
+
+        if not failed:
+            return

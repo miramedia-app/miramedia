@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import miramedia.settings.reload as settings_reload
-import miramedia.startup as startup
 from miramedia.settings.reload import (
     _subscriber_sub_id,
     _subscriber_task,
@@ -32,7 +31,6 @@ async def _patched_persistence(*, fail_after_subscriber: bool) -> Any:
     """Run start_persistence with DB/admin steps mocked for unit isolation."""
     reset_settings_reload_state_for_tests()
     reset_settings_subscriber_for_tests()
-    startup.reset_startup_shutdown_state_for_tests()
 
     session = _mock_db_session()
     with (
@@ -112,7 +110,7 @@ def test_lifespan_shutdown_runs_when_persistence_fails_after_subscriber() -> Non
     asyncio.run(run())
 
 
-def test_shutdown_startup_is_idempotent() -> None:
+def test_two_lifespan_cycles_each_shutdown_subscriber() -> None:
     stop_calls = 0
     original_stop = settings_reload.stop_settings_revision_subscriber
 
@@ -122,15 +120,25 @@ def test_shutdown_startup_is_idempotent() -> None:
         await original_stop()
 
     async def run() -> None:
-        startup.reset_startup_shutdown_state_for_tests()
-        with patch.object(
-            settings_reload,
-            "stop_settings_revision_subscriber",
-            counting_stop,
+        from miramedia.main import app, lifespan
+
+        with (
+            patch.object(
+                settings_reload,
+                "stop_settings_revision_subscriber",
+                counting_stop,
+            ),
+            patch.dict("os.environ", {"MIRAMEDIA_SCHEDULER_DISABLED": "true"}),
         ):
-            ctx = startup.SchedulerContext()
-            await startup.shutdown_startup(ctx, None, False)
-            await startup.shutdown_startup(ctx, None, False)
-        assert stop_calls == 1
+            async with _patched_persistence(fail_after_subscriber=False):
+                gen = lifespan(app)
+                await gen.__aenter__()
+                await gen.__aexit__(None, None, None)
+            async with _patched_persistence(fail_after_subscriber=False):
+                gen = lifespan(app)
+                await gen.__aenter__()
+                await gen.__aexit__(None, None, None)
+
+        assert stop_calls == 2
 
     asyncio.run(run())
