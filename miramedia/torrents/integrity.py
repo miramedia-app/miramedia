@@ -58,18 +58,6 @@ def integrity_audit_snapshot_where(
     )
 
 
-def integrity_mismatch_action_where(
-    file_table: IntegrityFileModel,
-    file_id: UUID,
-) -> ColumnElement[bool]:
-    """Row must still be an imported file with an active mismatch stamp."""
-    return and_(
-        file_table.id == file_id,
-        file_table.import_status == ImportOutcome.imported,
-        file_table.import_error.like(_MISMATCH_ERROR_PREFIX),
-    )
-
-
 def integrity_mismatch_action_snapshot_where(
     file_table: IntegrityFileModel,
     file_id: UUID,

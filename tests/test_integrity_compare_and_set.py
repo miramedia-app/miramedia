@@ -26,7 +26,6 @@ from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.torrents.integrity import (
     integrity_audit_snapshot_where,
     integrity_mismatch_action_snapshot_where,
-    integrity_mismatch_action_where,
 )
 from miramedia.torrents.schemas import MediaType, Quality
 from miramedia.torrents.service import TorrentService
@@ -87,16 +86,6 @@ def test_audit_snapshot_predicate_imported_non_null_sha1_and_error() -> None:
     assert sql.count("IS NOT DISTINCT FROM") == 2
     assert prior in sql
     assert prior_error in sql
-
-
-def test_mismatch_action_predicate_requires_imported_mismatch_stamp() -> None:
-    file_id = uuid.uuid4()
-    where = integrity_mismatch_action_where(MovieFile, file_id)
-    sql = _compile_sql(where)
-    assert f"movie_file.id = '{file_id}'" in sql
-    assert "movie_file.import_status" in sql
-    assert "movie_file.import_error LIKE" in sql
-    assert "sha1 mismatch%" in sql
 
 
 @dataclass
