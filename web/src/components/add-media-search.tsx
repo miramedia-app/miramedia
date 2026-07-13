@@ -26,21 +26,16 @@ async function fetchMedia(
 ): Promise<SearchResult[]> {
   // Provider precedence (TMDB → TVDB → Cinemeta → TVMaze) is resolved
   // server-side; the client no longer pins a single provider.
-  const endpoint =
-    mediaType === "show"
-      ? query.length > 0
-        ? "/api/v1/shows/search"
-        : "/api/v1/shows/recommended"
-      : query.length > 0
-        ? "/api/v1/movies/search"
-        : "/api/v1/movies/recommended";
-
-  const params = query.length > 0 ? { query: { query } } : { query: { skip } };
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data, error } = await (apiClient as any).GET(endpoint, { params });
+  const { data, error } =
+    query.length > 0
+      ? mediaType === "show"
+        ? await apiClient.GET("/api/v1/shows/search", { params: { query: { query } } })
+        : await apiClient.GET("/api/v1/movies/search", { params: { query: { query } } })
+      : mediaType === "show"
+        ? await apiClient.GET("/api/v1/shows/recommended", { params: { query: { skip } } })
+        : await apiClient.GET("/api/v1/movies/recommended", { params: { query: { skip } } });
   if (error) throw new Error("Metadata provider request failed");
-  return (data ?? []) as SearchResult[];
+  return data ?? [];
 }
 
 const PROVIDER_ERROR =

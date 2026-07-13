@@ -79,6 +79,7 @@ services:
       - MIRAMEDIA_LOG_FILE=/dev/null
       - MIRAMEDIA_LOG_LEVEL=DEBUG
       - MIRAMEDIA_MISC__DEVELOPMENT=TRUE
+      - MIRAMEDIA_ALLOW_INSECURE_TOKEN_SECRET=1
       - MIRAMEDIA_MISC__CORS_URLS=["http://localhost:5555","http://10.1.3.176:5555"]
     volumes:
       - ./res/config:/app/config

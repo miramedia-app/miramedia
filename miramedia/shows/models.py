@@ -19,6 +19,12 @@ from miramedia.file_status import ImportOutcome
 from miramedia.torrents.models import Quality
 
 
+def _default_list_progress_status() -> str:
+    from miramedia.media_state import ProgressStatus
+
+    return ProgressStatus.none
+
+
 class Show(Base):
     __tablename__ = "show"
     __table_args__ = (
@@ -78,7 +84,9 @@ class Show(Base):
     wanted_episode_count: Mapped[int] = mapped_column(default=0)
     downloaded_episode_count: Mapped[int] = mapped_column(default=0)
     # complete | partial | none — mirrors frontend grid status filters.
-    list_progress_status: Mapped[str] = mapped_column(default="none", index=True)
+    list_progress_status: Mapped[str] = mapped_column(
+        default=_default_list_progress_status, index=True
+    )
 
     seasons: Mapped[list["Season"]] = relationship(
         back_populates="show", cascade="all, delete", order_by="Season.number"

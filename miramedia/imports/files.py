@@ -12,7 +12,7 @@ import logging
 import mimetypes
 import re
 import shutil
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path, UnsupportedOperation
 
 import patoolib
@@ -124,7 +124,8 @@ def list_files_recursively(path: Path = Path()) -> list[Path]:
 def extract_archives(files: list) -> None:
     archive_types = {
         "application/zip",
-        "application/x-zip-compressedapplication/x-compressed",
+        "application/x-zip-compressed",
+        "application/x-compressed",
         "application/vnd.rar",
         "application/x-7z-compressed",
         "application/x-freearc",
@@ -280,6 +281,31 @@ def ensure_free_space(target_dir: Path, required_bytes: int) -> None:
     if free < required_bytes:
         msg = f"Need {required_bytes} bytes at {target_dir}, only {free} free"
         raise DiskSpaceError(msg)
+
+
+def delete_files_matching_stems(directory: Path, stems: Iterable[str]) -> None:
+    for stem in stems:
+        for f in files_matching_stem(directory, stem):
+            try:
+                f.unlink(missing_ok=True)
+                log.info(f"Deleted file: {f}")
+            except OSError:
+                log.warning(f"Failed to delete file: {f}", exc_info=True)
+
+
+def link_video_into_slot(
+    directory: Path,
+    source_file: Path,
+    stem: str,
+    target_video: Path,
+    *,
+    source_in_place: bool,
+) -> None:
+    if source_in_place:
+        rename_media_slot(directory, source_file.stem, stem)
+        return
+    ensure_free_space(target_video.parent, source_file.stat().st_size)
+    import_file(target_file=target_video, source_file=source_file)
 
 
 def get_files_for_import(

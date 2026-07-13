@@ -1,0 +1,27 @@
+{
+  "torrents": [
+    {
+      "id": 1,
+      "hash": "aabbccddeeff00112233445566778899aabbccdd",
+      "filename": "Show.Name.S01E01.HDTV.x264",
+      "magnet_url": "magnet:?xt=urn:btih:aabbccddeeff00112233445566778899aabbccdd&dn=Show.Name.S01E01",
+      "size_bytes": 536870912,
+      "seeds": 50
+    },
+    {
+      "id": 2,
+      "hash": "bbccddeeff00112233445566778899aabbccddee",
+      "filename": "Show.Name.S01E02.HDTV.x264",
+      "torrent_url": "https://eztvx.to/torrents/2.torrent",
+      "size_bytes": 400000000,
+      "seeders": 30
+    },
+    {
+      "id": 3,
+      "hash": "ccddeeff00112233445566778899aabbccddeeff",
+      "filename": "Show.Name.S01E03.NoSeedField.x264",
+      "magnet_url": "magnet:?xt=urn:btih:ccddeeff00112233445566778899aabbccddeeff",
+      "size_bytes": 350000000
+    }
+  ]
+}

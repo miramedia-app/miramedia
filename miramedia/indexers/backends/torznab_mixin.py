@@ -1,7 +1,8 @@
 import logging
-import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+
+from defusedxml import ElementTree as DefusedET
 
 from miramedia.indexers.schemas import IndexerQueryResult
 
@@ -11,7 +12,7 @@ log = logging.getLogger(__name__)
 class TorznabMixin:
     def process_search_result(self, xml: str) -> list[IndexerQueryResult]:
         result_list: list[IndexerQueryResult] = []
-        xml_tree = ET.fromstring(xml)  # noqa: S314  # trusted source, since it is user controlled
+        xml_tree = DefusedET.fromstring(xml)
         xmlns = {
             "torznab": "http://torznab.com/schemas/2015/feed",
             "atom": "http://www.w3.org/2005/Atom",
@@ -39,6 +40,8 @@ class TorznabMixin:
                             posted_date = parsedate_to_datetime(
                                 attribute.attrib["value"]
                             )
+                            if posted_date.tzinfo is None:
+                                posted_date = posted_date.replace(tzinfo=UTC)
                             now = datetime.now(UTC)
                             age = int((now - posted_date).total_seconds())
                     else:

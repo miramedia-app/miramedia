@@ -11,6 +11,7 @@ search). All create/import side effects live here in the task.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -22,6 +23,16 @@ if TYPE_CHECKING:
     from miramedia.torrents.schemas import MediaType
 
 log = logging.getLogger(__name__)
+
+_SCAN_LOCK: asyncio.Lock | None = None
+
+
+def _get_scan_lock() -> asyncio.Lock:
+    """Lazy-init the scan lock so it's bound to the running event loop."""
+    global _SCAN_LOCK
+    if _SCAN_LOCK is None:
+        _SCAN_LOCK = asyncio.Lock()
+    return _SCAN_LOCK
 
 
 async def _auto_import_item(
@@ -154,6 +165,15 @@ async def _scan_and_cache() -> None:
       bg session per item via ``_auto_import_item`` + follow-up.
     * Phase 5 (DB write): replace_scan_cache + mark scan_run done.
     """
+    lock = _get_scan_lock()
+    if lock.locked():
+        log.info("Library scan already running; skipping this trigger")
+        return
+    async with lock:
+        await _scan_and_cache_body()
+
+
+async def _scan_and_cache_body() -> None:
     from miramedia.config import MiraMediaConfig
     from miramedia.database import (
         background_session,
@@ -192,15 +212,11 @@ async def _scan_and_cache() -> None:
             terminal_rows = await repo.list_terminal_scan_cache()
         async with bg_show_service() as show_service:
             tracked_show_ids = {
-                str(s.id)
-                for s in await show_service.get_all_shows()
-                if getattr(s, "id", None)
+                str(show_id) for show_id in await show_service.get_all_show_ids()
             }
         async with bg_movie_service() as movie_service:
             tracked_movie_ids = {
-                str(m.id)
-                for m in await movie_service.get_all_movies()
-                if getattr(m, "id", None)
+                str(movie_id) for movie_id in await movie_service.get_all_movie_ids()
             }
 
         imported_snapshot: dict[str, dict] = {

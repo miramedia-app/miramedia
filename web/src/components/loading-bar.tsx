@@ -9,7 +9,15 @@ export function LoadingBar() {
   const [value, setValue] = React.useState(8);
   React.useEffect(() => {
     const id = setInterval(() => {
-      setValue((v) => (v >= 95 ? v : v + Math.max(0.5, (95 - v) * 0.04)));
+      setValue((v) => {
+        // Once the easing has visually flattened near 95, stop ticking so we
+        // don't re-render Progress ~33x/second forever.
+        if (v >= 94) {
+          clearInterval(id);
+          return v;
+        }
+        return v + Math.max(0.5, (95 - v) * 0.04);
+      });
     }, 30);
     return () => clearInterval(id);
   }, []);

@@ -495,6 +495,89 @@ async def cleanup_old_logs_task() -> None:
 
 _STARTUP_SCHEDULES[cleanup_old_logs_task.task_name] = [{"cron": "0 3 * * *"}]
 
+POSTER_VARIANT_WIDTHS = (200, 300, 400, 600, 800)
+_POSTER_VARIANT_MAX_BYTES = 512 * 1024 * 1024
+
+
+def _poster_source_for_variant(image_dir: Path, variant_path: Path) -> Path | None:
+    stem = variant_path.stem
+    suffix = variant_path.suffix
+    for width in POSTER_VARIANT_WIDTHS:
+        width_suffix = f"-{width}"
+        if stem.endswith(width_suffix):
+            source_stem = stem[: -len(width_suffix)]
+            return image_dir / f"{source_stem}{suffix}"
+    return None
+
+
+def _variant_access_time(path: Path) -> float:
+    stat = path.stat()
+    return stat.st_atime if stat.st_atime > 0 else stat.st_mtime
+
+
+def evict_poster_variants(
+    image_dir: Path,
+    variant_dir: Path,
+    *,
+    max_total_bytes: int = _POSTER_VARIANT_MAX_BYTES,
+) -> list[Path]:
+    """Delete orphaned poster variants and enforce a total size cap."""
+    if not variant_dir.is_dir():
+        return []
+
+    deleted: list[Path] = []
+    remaining: list[tuple[Path, int]] = []
+
+    for variant_path in variant_dir.iterdir():
+        if not variant_path.is_file():
+            continue
+        source = _poster_source_for_variant(image_dir, variant_path)
+        if source is None or not source.is_file():
+            try:
+                variant_path.unlink()
+                deleted.append(variant_path)
+            except OSError:
+                log.debug(
+                    "failed to delete orphaned poster variant %s",
+                    variant_path,
+                    exc_info=True,
+                )
+            continue
+        remaining.append((variant_path, variant_path.stat().st_size))
+
+    total = sum(size for _, size in remaining)
+    if total <= max_total_bytes:
+        return deleted
+
+    remaining.sort(key=lambda item: _variant_access_time(item[0]))
+    for variant_path, size in remaining:
+        if total <= max_total_bytes:
+            break
+        try:
+            variant_path.unlink()
+            deleted.append(variant_path)
+            total -= size
+        except OSError:
+            log.debug(
+                "failed to delete poster variant %s during eviction",
+                variant_path,
+                exc_info=True,
+            )
+
+    return deleted
+
+
+@background_broker.task(labels={"priority": "background"})
+async def cleanup_poster_variants_task() -> None:
+    image_dir = MiraMediaConfig().misc.image_directory
+    variant_dir = image_dir / ".variants"
+    log.info("Cleaning up poster variant cache in %s", variant_dir)
+    deleted = await asyncio.to_thread(evict_poster_variants, image_dir, variant_dir)
+    log.info("Deleted %d poster variant file(s)", len(deleted))
+
+
+_STARTUP_SCHEDULES[cleanup_poster_variants_task.task_name] = [{"cron": "30 3 * * *"}]
+
 
 @background_broker.task(labels={"priority": "background"})
 async def purge_old_indexer_query_results_task() -> None:

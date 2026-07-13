@@ -2,64 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.6"
+    "version": "1.0.7"
   },
   "paths": {
-    "/api/v1/static/image/{filename}": {
-      "get": {
-        "summary": "Serve Image",
-        "operationId": "serve_image_api_v1_static_image__filename__get",
-        "parameters": [
-          {
-            "name": "filename",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Filename"
-            }
-          },
-          {
-            "name": "w",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "maximum": 1200,
-                  "minimum": 64
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "W"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/health": {
       "get": {
         "summary": "Hello World",
@@ -111,6 +56,61 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DashboardSummary"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/static/image/{filename}": {
+      "get": {
+        "summary": "Serve Image",
+        "operationId": "serve_image_api_v1_static_image__filename__get",
+        "parameters": [
+          {
+            "name": "filename",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Filename"
+            }
+          },
+          {
+            "name": "w",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 1200,
+                  "minimum": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "W"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -3804,6 +3804,160 @@
             "APIKeyCookie": []
           }
         ]
+      }
+    },
+    "/api/v1/torrents/integrity/mismatches": {
+      "get": {
+        "tags": [
+          "torrents"
+        ],
+        "summary": "List Integrity Mismatches",
+        "description": "Imported files whose integrity audit recorded a SHA1 mismatch.",
+        "operationId": "list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/IntegrityMismatch"
+                  },
+                  "type": "array",
+                  "title": "Response List Integrity Mismatches Api V1 Torrents Integrity Mismatches Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline": {
+      "post": {
+        "tags": [
+          "torrents"
+        ],
+        "summary": "Rebaseline Integrity File",
+        "description": "Accept current on-disk bytes: clear error + sha1 for next audit baseline.",
+        "operationId": "rebaseline_integrity_file_api_v1_torrents_integrity__media_type___file_id__rebaseline_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "media_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/miramedia__torrents__schemas__MediaType"
+            }
+          },
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrityActionResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/torrents/integrity/{media_type}/{file_id}/dismiss": {
+      "post": {
+        "tags": [
+          "torrents"
+        ],
+        "summary": "Dismiss Integrity Mismatch",
+        "description": "Clear the mismatch stamp only; keep sha1 so the next audit re-verifies.",
+        "operationId": "dismiss_integrity_mismatch_api_v1_torrents_integrity__media_type___file_id__dismiss_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "media_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/miramedia__torrents__schemas__MediaType"
+            }
+          },
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IntegrityActionResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/torrents/bulk-retry-import": {
@@ -10568,6 +10722,11 @@
             "type": "integer",
             "title": "Import Total",
             "default": 0
+          },
+          "corrupted": {
+            "type": "integer",
+            "title": "Corrupted",
+            "default": 0
           }
         },
         "type": "object",
@@ -11594,6 +11753,97 @@
           "message"
         ],
         "title": "IntegrationTestResult"
+      },
+      "IntegrityActionResult": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "IntegrityActionResult"
+      },
+      "IntegrityMismatch": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "show",
+              "movie"
+            ],
+            "title": "Media Type"
+          },
+          "media_title": {
+            "type": "string",
+            "title": "Media Title"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/Quality"
+          },
+          "variant_tag": {
+            "type": "string",
+            "title": "Variant Tag"
+          },
+          "import_error": {
+            "type": "string",
+            "title": "Import Error"
+          },
+          "detected_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detected At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_type",
+          "media_title",
+          "episode",
+          "path",
+          "quality",
+          "variant_tag",
+          "import_error",
+          "detected_at"
+        ],
+        "title": "IntegrityMismatch",
+        "description": "An imported file whose on-disk SHA1 no longer matches the stored hash."
       },
       "InviteUserRequest": {
         "properties": {
@@ -13799,6 +14049,15 @@
         },
         "type": "object",
         "title": "PreferredQualityBody"
+      },
+      "ProgressStatus": {
+        "type": "string",
+        "enum": [
+          "none",
+          "partial",
+          "complete"
+        ],
+        "title": "ProgressStatus"
       },
       "ProwlarrSettingsSchema": {
         "properties": {
@@ -16066,8 +16325,7 @@
             "default": 0
           },
           "list_progress_status": {
-            "type": "string",
-            "title": "List Progress Status",
+            "$ref": "#/components/schemas/ProgressStatus",
             "default": "none"
           },
           "seasons": {

@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { ScoringPreview } from "@/components/system/scoring-preview";
-import { csvToArray, type AnyObj, type SetPath } from "../_shared";
+import { csvToArray, type AnyObj, type Keyed, type SetPath } from "../_shared";
 
 type Opt = {
   name?: string;
@@ -210,7 +210,7 @@ export function ScoresTab({
           </Card>
 
           {OPTION_SECTIONS.map(({ key, title, desc, placeholder, addLabel }) => {
-            const options = (ind[key] as Opt[]) ?? [];
+            const options = (ind[key] as Keyed<Opt>[]) ?? [];
             const enabledCount = options.filter((o) => o.enabled !== false).length;
             const move = (from: number, to: number) => {
               if (to < 0 || to >= options.length) return;
@@ -229,7 +229,7 @@ export function ScoresTab({
                   {options.map((opt, i) => {
                     const isLastEnabled = opt.enabled !== false && enabledCount === 1;
                     return (
-                      <div key={i} className="flex flex-wrap items-center gap-2">
+                      <div key={opt._key} className="flex flex-wrap items-center gap-2">
                         <div className="flex flex-col gap-0.5">
                           <Button
                             variant="ghost"
@@ -321,7 +321,16 @@ export function ScoresTab({
                     onClick={() =>
                       setIndexersPath(
                         [key],
-                        [...options, { name: "", keywords: [], score_modifier: 0, enabled: true }],
+                        [
+                          ...options,
+                          {
+                            _key: crypto.randomUUID(),
+                            name: "",
+                            keywords: [],
+                            score_modifier: 0,
+                            enabled: true,
+                          },
+                        ],
                       )
                     }
                   >
@@ -334,7 +343,7 @@ export function ScoresTab({
           })}
 
           {RULE_SECTIONS.map(({ key, title, desc, keywordsField, placeholder, addLabel }) => {
-            const rules = (ind[key] as Rule[]) ?? [];
+            const rules = (ind[key] as Keyed<Rule>[]) ?? [];
             return (
               <Card key={key}>
                 <CardHeader>
@@ -343,7 +352,7 @@ export function ScoresTab({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {rules.map((rule, i) => (
-                    <div key={i} className="flex flex-wrap items-center gap-2">
+                    <div key={rule._key} className="flex flex-wrap items-center gap-2">
                       <Input
                         value={rule.name ?? ""}
                         onChange={(e) => {
@@ -419,6 +428,7 @@ export function ScoresTab({
                         [
                           ...rules,
                           {
+                            _key: crypto.randomUUID(),
                             name: "",
                             [keywordsField]: [],
                             score_modifier: 0,

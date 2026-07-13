@@ -49,7 +49,7 @@ get started. Plug in external services later if you want them.
 
 **Playback & extras**
 - In-browser media streaming with client-side transcoding for instant seeking
-- Subtitle management via native search (subliminal + multiple providers) or Bazarr; SRT auto-converted to WebVTT for playback
+- Subtitle management via native search (subliminal + first-party subdl/subsource/yifysubtitles, vendored keyless plugins, or optional Bazarr); SRT auto-converted to WebVTT for playback
 - Optional media request system (native fulfillment and/or forward to Overseerr/Jellyseerr)
 
 **Operations**
@@ -107,7 +107,7 @@ For unattended updates, you can either:
 | `miramedia/metadata/` | Metadata providers (native TVmaze+Cinemeta, TMDB, TVDB) | - |
 | `miramedia/notifications/` | Notification system | `/api/v1/notifications/` |
 | `miramedia/streams/` | Media streaming & subtitle delivery | `/api/v1/streams/` |
-| `miramedia/subtitles/` | Subtitle management (subliminal, Bazarr) | `/api/v1/subtitles/` |
+| `miramedia/subtitles/` | Subtitle management (subliminal; subdl/subsource/yifysubtitles; vendored keyless plugins; optional Bazarr) | `/api/v1/subtitles/` |
 | `miramedia/requests/` | Media request system (native + Seerr composite, optional) | `/api/v1/requests/` |
 | `miramedia/cloudflare/` | Shared Cloudflare bypass (nodriver + curl_cffi) | - |
 | `miramedia/updates/` | GitHub release checks + optional in-app apply | `/api/v1/system/` |
@@ -144,7 +144,7 @@ the backend over CORS; types are generated from the backend OpenAPI schema into
 ### Stack
 
 Python 3.13 · FastAPI · SQLAlchemy · Alembic · Pydantic-Settings · taskiq
-(scheduler) · PostgreSQL · libtorrent · guessit · subliminal · TypeScript ·
+(scheduler) · PostgreSQL · libtorrent · guessit · subliminal (+ subdl/subsource/yifysubtitles, vendored plugins) · TypeScript ·
 Next.js 16 · React 19.
 
 ## Developer Quick Start
@@ -169,12 +169,15 @@ Common commands:
 | `make up` / `make down` | start / stop the dev stack |
 | `make logs ARGS="--follow miramedia"` | tail backend logs |
 | `make app` / `make frontend` | shell into the backend / frontend container |
+| `make check` | lint, format-check, ty, test, and frontend typecheck (CI parity minus OpenAPI drift) |
+| `make lint` / `make format` / `make format-check` / `make ty` | backend lint, format, format check, typecheck |
+| `make test` | run the backend test suite on the host |
+| `make frontend-bootstrap` | fresh-clone web setup (`pnpm install` + fumadocs-mdx + next typegen) |
 | `make openapi` | regenerate `web/src/lib/api/api.d.ts` from the OpenAPI schema |
 | `make tsc` | type-check the frontend |
-| `ruff format . && ruff check .` | format + lint the backend |
 
 Alembic migrations run automatically on backend startup. Create one with
-`make app` then `uv run alembic revision --autogenerate -m "description"`.
+`make app` then `uv run --python 3.13 alembic revision --autogenerate -m "description"`.
 
 Local (non-Docker) backend setup and the full guide:
 [Developer Guide](https://miramedia-app.github.io/miramedia/docs/contributing-to-miramedia/developer-guide/).

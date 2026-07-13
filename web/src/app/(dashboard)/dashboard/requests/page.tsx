@@ -65,8 +65,7 @@ export default function RequestsPage() {
     queryKey: ["requests", "list"],
     queryFn: async () => {
       const { data, error } = await apiClient.GET("/api/v1/requests", {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        params: { query: {} as any },
+        params: { query: {} },
       });
       if (error) throw error;
       return (data ?? []) as MediaRequest[];

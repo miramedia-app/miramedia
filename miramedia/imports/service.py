@@ -16,6 +16,7 @@ unified API for the imports UI.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -74,6 +75,16 @@ _queue_built_at: datetime | None = None
 # set, so a queue wiped out-of-band still gets repopulated within the window.
 _QUEUE_BUILT_TTL = timedelta(minutes=15)
 
+_QUEUE_BUILD_LOCK: asyncio.Lock | None = None
+
+
+def _get_queue_build_lock() -> asyncio.Lock:
+    """Lazy-init the queue-build lock so it's bound to the running event loop."""
+    global _QUEUE_BUILD_LOCK
+    if _QUEUE_BUILD_LOCK is None:
+        _QUEUE_BUILD_LOCK = asyncio.Lock()
+    return _QUEUE_BUILD_LOCK
+
 
 class ImportsService:
     def __init__(
@@ -110,9 +121,16 @@ class ImportsService:
         now = datetime.now(UTC)
         if _queue_built_at is not None and (now - _queue_built_at) < _QUEUE_BUILT_TTL:
             return
-        if await import_queue_is_empty(db):
-            await rebuild_import_queue(db, self)
-        _queue_built_at = datetime.now(UTC)
+        async with _get_queue_build_lock():
+            now = datetime.now(UTC)
+            if (
+                _queue_built_at is not None
+                and (now - _queue_built_at) < _QUEUE_BUILT_TTL
+            ):
+                return
+            if await import_queue_is_empty(db):
+                await rebuild_import_queue(db, self)
+            _queue_built_at = datetime.now(UTC)
 
     async def list_imports(
         self, *, tab: ImportTab, offset: int, limit: int
@@ -136,6 +154,10 @@ class ImportsService:
         db = self.repository.db
         await self._ensure_queue_populated(db)
         by_tab = await count_queue_by_tab(db)
+        corrupted = (
+            await self.show_service.show_repository.count_sha1_mismatch_files()
+            + await self.movie_service.movie_repository.count_sha1_mismatch_files()
+        )
         return ImportCounts(
             review=by_tab.get(ImportTab.review.value, 0),
             retry=by_tab.get(ImportTab.retry.value, 0),
@@ -143,6 +165,7 @@ class ImportsService:
             all=by_tab.get(ImportTab.all.value, 0),
             importing=await self.repository.count_queued_scans(),
             import_total=await self.repository.get_import_batch_total(),
+            corrupted=corrupted,
         )
 
     async def _collect_items(self) -> list[TorrentImportItem | ScanImportItem]:

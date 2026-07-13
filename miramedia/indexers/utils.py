@@ -575,17 +575,7 @@ def evaluate_indexer_query_results(
                 log.debug(
                     f"Applying scoring ruleset {ruleset.name} for IndexerQueryResult {result.title} for {media.name} ({media.year})"
                 )
-                result, passed = evaluate_indexer_query_result(
-                    query_result=result, ruleset=ruleset
-                )
-                if not passed:
-                    log.debug(
-                        f"Indexer query result {result.title} did not pass scoring ruleset {ruleset.name} with score {result.score}, removing from results."
-                    )
-                else:
-                    log.debug(
-                        f"Indexer query result {result.title} passed scoring ruleset {ruleset.name} with score {result.score}."
-                    )
+                evaluate_indexer_query_result(query_result=result, ruleset=ruleset)
 
     q_allowed = list(quality_allowed) if quality_allowed is not None else None
     c_allowed = list(codec_allowed) if codec_allowed is not None else None
@@ -596,7 +586,7 @@ def evaluate_indexer_query_results(
             kept_after_options.append(result)
     query_results = kept_after_options
 
-    query_results = [result for result in query_results if result.score >= 0]
+    query_results = [result for result in query_results if result.score > 0]
     query_results.sort(reverse=True)
     log.info(f"{len(query_results)} passed the scoring rulesets")
     return query_results

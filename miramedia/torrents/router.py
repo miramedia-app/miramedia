@@ -33,6 +33,10 @@ from miramedia.indexers.schemas import (
 from miramedia.movies.dependencies import movie_repository_dep, movie_service_dep
 from miramedia.naming import episode_file_stem, movie_file_stem
 from miramedia.shows.dependencies import show_repository_dep, show_service_dep
+from miramedia.shows.service import (
+    filter_results_to_episode,
+    filter_results_to_season,
+)
 from miramedia.torrents.dependencies import (
     torrent_dep,
     torrent_repository_dep,
@@ -47,6 +51,8 @@ from miramedia.torrents.schemas import (
     DryRunImportResult,
     ImportStatusCounts,
     ImportStatusFilter,
+    IntegrityActionResult,
+    IntegrityMismatch,
     ManualDownloadRequest,
     ManualMapRequest,
     ManualMapResult,
@@ -74,6 +80,11 @@ router = APIRouter(
     tags=["torrents"],
     dependencies=[Depends(current_active_user)],
 )
+
+# A real .torrent metainfo file is a few KB to low-hundreds of KB even for
+# large multi-file torrents. Cap uploads well above that to reject oversized
+# bodies before buffering them into memory.
+MAX_TORRENT_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MiB
 
 
 # -----------------------------------------------------------------------------
@@ -180,6 +191,13 @@ async def search_torrents_stream(
                     codec_allowed=codec,
                 )
             scored = _filter_results_by_options(scored, quality, codec)
+            if not query_override and media_type == MediaType.show:
+                if season_number is not None and episode_number is not None:
+                    scored = filter_results_to_episode(
+                        scored, season_number, episode_number
+                    )
+                elif season_number is not None:
+                    scored = filter_results_to_season(scored, season_number)
             log.debug(
                 "SSE chunk: source=%s raw=%d scored=%d",
                 source_name,
@@ -511,7 +529,20 @@ async def manual_parse(
 
     torrent_file_content = None
     if torrent_file:
-        torrent_file_content = await torrent_file.read()
+        if (
+            torrent_file.size is not None
+            and torrent_file.size > MAX_TORRENT_UPLOAD_BYTES
+        ):
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "Torrent file too large",
+            )
+        torrent_file_content = await torrent_file.read(MAX_TORRENT_UPLOAD_BYTES + 1)
+        if len(torrent_file_content) > MAX_TORRENT_UPLOAD_BYTES:
+            raise HTTPException(
+                status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                "Torrent file too large",
+            )
 
     try:
         name, _info_hash, magnet_uri = parse_magnet_or_torrent_file(
@@ -715,6 +746,71 @@ async def list_import_status(
 async def get_import_status_counts(service: torrent_service_dep) -> ImportStatusCounts:
     """Bucket counts for the imports dashboard widget."""
     return await service.get_import_status_counts()
+
+
+@router.get(
+    "/integrity/mismatches",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(current_superuser)],
+)
+async def list_integrity_mismatches(
+    service: torrent_service_dep,
+    show_service: show_service_dep,
+    movie_service: movie_service_dep,
+) -> list[IntegrityMismatch]:
+    """Imported files whose integrity audit recorded a SHA1 mismatch."""
+    return await service.list_integrity_mismatches(
+        show_service=show_service,
+        movie_service=movie_service,
+    )
+
+
+@router.post(
+    "/integrity/{media_type}/{file_id}/rebaseline",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(current_superuser)],
+)
+async def rebaseline_integrity_file(
+    media_type: MediaType,
+    file_id: uuid.UUID,
+    service: torrent_service_dep,
+    show_service: show_service_dep,
+    movie_service: movie_service_dep,
+) -> IntegrityActionResult:
+    """Accept current on-disk bytes: clear error + sha1 for next audit baseline."""
+    try:
+        return await service.rebaseline_file(
+            media_type=media_type,
+            file_id=file_id,
+            show_service=show_service,
+            movie_service=movie_service,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+
+
+@router.post(
+    "/integrity/{media_type}/{file_id}/dismiss",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(current_superuser)],
+)
+async def dismiss_integrity_mismatch(
+    media_type: MediaType,
+    file_id: uuid.UUID,
+    service: torrent_service_dep,
+    show_service: show_service_dep,
+    movie_service: movie_service_dep,
+) -> IntegrityActionResult:
+    """Clear the mismatch stamp only; keep sha1 so the next audit re-verifies."""
+    try:
+        return await service.dismiss_mismatch(
+            media_type=media_type,
+            file_id=file_id,
+            show_service=show_service,
+            movie_service=movie_service,
+        )
+    except NotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 @router.post(

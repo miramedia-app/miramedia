@@ -309,3 +309,24 @@ class DryRunImportResult(BaseModel):
     torrent_id: TorrentId
     torrent_title: str
     plan: list[DryRunImportPlanItem]
+
+
+# --- Integrity mismatch (SHA1 audit) ---
+
+
+class IntegrityMismatch(BaseModel):
+    """An imported file whose on-disk SHA1 no longer matches the stored hash."""
+
+    file_id: uuid.UUID
+    media_type: typing.Literal["show", "movie"]
+    media_title: str
+    episode: str | None  # "S03E07" for shows, None for movies
+    path: str | None
+    quality: Quality
+    variant_tag: str
+    import_error: str
+    detected_at: datetime | None  # last_attempt_at or None
+
+
+class IntegrityActionResult(BaseModel):
+    ok: bool = True

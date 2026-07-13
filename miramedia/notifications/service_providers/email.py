@@ -1,3 +1,5 @@
+import html
+
 import miramedia.notifications.utils
 from miramedia.config import MiraMediaConfig
 from miramedia.notifications.schemas import MessageNotification
@@ -11,22 +13,26 @@ class EmailNotificationServiceProvider(AbstractNotificationServiceProvider):
         self.config = MiraMediaConfig().notifications.email_notifications
 
     def send_notification(self, message: MessageNotification) -> bool:
-        subject = "MiraMedia - " + message.title
-        html = f"""\
+        safe_title = (
+            message.title.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+        )
+        subject = "MiraMedia - " + safe_title
+        escaped_message = html.escape(message.message)
+        html_body = f"""\
                 <html>
                   <body>
                     <br>
-                    {message.message}
+                    {escaped_message}
                     <br>
                     <br>
-                    This is an automated message from MiraMedia.</p>
+                    This is an automated message from MiraMedia.
                   </body>
                 </html>
                 """
 
         for email in self.config.emails:
             miramedia.notifications.utils.send_email(
-                subject=subject, html=html, addressee=email
+                subject=subject, html=html_body, addressee=email
             )
 
         return True

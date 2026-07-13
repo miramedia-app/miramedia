@@ -14,9 +14,12 @@ import pytest
 from miramedia.imports.files import (
     DiskSpaceError,
     ImportConflictError,
+    delete_files_matching_stems,
     ensure_free_space,
+    extract_archives,
     find_renamed_duplicate,
     import_file,
+    link_video_into_slot,
     rename_media_slot,
 )
 
@@ -209,6 +212,38 @@ def test_import_file_replaced_target_is_linked_to_source(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
+# extract_archives
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mime_type",
+    [
+        "application/x-zip-compressed",
+        "application/x-compressed",
+    ],
+)
+def test_extract_archives_recognizes_zip_mime_types(
+    tmp_path: Path,
+    mime_type: str,
+) -> None:
+    """ZIP archives guessed as Windows-style MIME types are routed to patoolib."""
+    archive = tmp_path / "release.zip"
+    archive.write_bytes(b"fake zip content")
+
+    def _guess_type(path: Path | str) -> tuple[str | None, None]:  # noqa: ARG001
+        return (mime_type, None)
+
+    with (
+        patch("miramedia.imports.files.mimetypes.guess_type", _guess_type),
+        patch("miramedia.imports.files.patoolib.extract_archive") as extract_mock,
+    ):
+        extract_archives([archive])
+
+    extract_mock.assert_called_once_with(str(archive), outdir=str(archive.parent))
+
+
+# ---------------------------------------------------------------------------
 # ensure_free_space
 # ---------------------------------------------------------------------------
 
@@ -351,3 +386,64 @@ def test_find_renamed_duplicate_size_guard_fires_for_different_path(
     # other path != src path, so size match fires.
     result = find_renamed_duplicate(src, {"key_e": other})
     assert result == "key_e"
+
+
+# ---------------------------------------------------------------------------
+# delete_files_matching_stems
+# ---------------------------------------------------------------------------
+
+
+def test_delete_files_matching_stems_removes_matching_files(tmp_path: Path) -> None:
+    (tmp_path / "Show.S01E01.1080p.mkv").write_bytes(b"video")
+    (tmp_path / "Show.S01E01.1080p.en.srt").write_bytes(b"sub")
+    (tmp_path / "other.mkv").write_bytes(b"keep")
+
+    delete_files_matching_stems(tmp_path, ["Show.S01E01.1080p"])
+
+    assert not (tmp_path / "Show.S01E01.1080p.mkv").exists()
+    assert not (tmp_path / "Show.S01E01.1080p.en.srt").exists()
+    assert (tmp_path / "other.mkv").exists()
+
+
+# ---------------------------------------------------------------------------
+# link_video_into_slot
+# ---------------------------------------------------------------------------
+
+
+def test_link_video_into_slot_source_in_place_renames(tmp_path: Path) -> None:
+    source = tmp_path / "old_stem.mkv"
+    source.write_bytes(b"video")
+    target = tmp_path / "new_stem.mkv"
+
+    link_video_into_slot(
+        tmp_path,
+        source,
+        "new_stem",
+        target,
+        source_in_place=True,
+    )
+
+    assert not source.exists()
+    assert target.exists()
+    assert target.read_bytes() == b"video"
+
+
+def test_link_video_into_slot_cross_dir_hardlinks(tmp_path: Path) -> None:
+    src_dir = tmp_path / "download"
+    lib_dir = tmp_path / "library"
+    src_dir.mkdir()
+    lib_dir.mkdir()
+    source = src_dir / "source.mkv"
+    source.write_bytes(b"video content")
+    target = lib_dir / "canonical.mkv"
+
+    link_video_into_slot(
+        lib_dir,
+        source,
+        "canonical",
+        target,
+        source_in_place=False,
+    )
+
+    assert target.exists()
+    assert target.stat().st_ino == source.stat().st_ino

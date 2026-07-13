@@ -15,6 +15,7 @@ from sqlalchemy.sql.base import ExecutableOption
 from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.file_status import ImportOutcome
 from miramedia.media_filters import apply_list_filters, apply_sort
+from miramedia.media_status import MediaStatus
 from miramedia.movies.models import Movie, MovieFile
 from miramedia.movies.schemas import (
     Movie as MovieSchema,
@@ -79,14 +80,14 @@ def _apply_movie_status_filters(
     excluded_statuses: list[str] | None = None,
 ) -> Select[tuple[object, ...]]:
     if statuses:
-        wanted = "downloaded" in statuses
+        wanted = MediaStatus.downloaded in statuses
         not_wanted = "not_downloaded" in statuses
         if wanted and not not_wanted:
             stmt = stmt.where(Movie.downloaded.is_(True))
         elif not_wanted and not wanted:
             stmt = stmt.where(Movie.downloaded.is_(False))
     if excluded_statuses:
-        if "downloaded" in excluded_statuses:
+        if MediaStatus.downloaded in excluded_statuses:
             stmt = stmt.where(Movie.downloaded.is_(False))
         if "not_downloaded" in excluded_statuses:
             stmt = stmt.where(Movie.downloaded.is_(True))
@@ -237,6 +238,25 @@ class MovieRepository:
         except SQLAlchemyError:
             log.exception("Database error while retrieving all movies")
             raise
+
+    async def get_movie_ids(self) -> list[MovieId]:
+        """Return all movie primary keys without loading full rows."""
+        try:
+            return typing_cast(
+                "list[MovieId]",
+                list((await self.db.execute(select(Movie.id))).scalars().all()),
+            )
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving all movie ids")
+            raise
+
+    async def get_movie_auto_download_candidate_flags(
+        self,
+    ) -> list[tuple[MovieId, bool, bool | None]]:
+        """Scalar (id, skipped, continuous_download) rows for sweep candidate selection."""
+        stmt = select(Movie.id, Movie.skipped, Movie.continuous_download)
+        rows = (await self.db.execute(stmt)).all()
+        return [(MovieId(row[0]), row[1], row[2]) for row in rows]
 
     async def get_movies_paginated(
         self,
@@ -611,6 +631,54 @@ class MovieRepository:
         except SQLAlchemyError:
             await self.db.rollback()
             log.exception("Failed to set sha1 for movie_file %s", file_id)
+            raise
+
+    async def list_sha1_mismatch_files(self) -> list[MovieFileSchema]:
+        """Imported movie files whose integrity audit recorded a SHA1 mismatch.
+
+        Contract: ``import_error`` prefix ``sha1 mismatch%`` must stay in sync
+        with ``verify_imported_files_task`` in ``miramedia/scheduler.py``.
+        MovieFile has no ORM ``movie`` relationship; title is resolved by the
+        service via ``movie_id``.
+        """
+        stmt = select(MovieFile).where(
+            MovieFile.import_status == ImportOutcome.imported,
+            MovieFile.import_error.like("sha1 mismatch%"),
+        )
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return [MovieFileSchema.model_validate(r) for r in rows]
+
+    async def count_sha1_mismatch_files(self) -> int:
+        """Count imported movie files with a SHA1 mismatch error stamp."""
+        stmt = (
+            select(func.count())
+            .select_from(MovieFile)
+            .where(
+                MovieFile.import_status == ImportOutcome.imported,
+                MovieFile.import_error.like("sha1 mismatch%"),
+            )
+        )
+        return int((await self.db.execute(stmt)).scalar_one())
+
+    async def clear_file_integrity_state(
+        self, file_id: UUID, *, reset_sha1: bool
+    ) -> bool:
+        """Clear ``import_error`` (and optionally ``sha1``) on a movie file.
+
+        Returns ``True`` when a row was updated, ``False`` when ``file_id`` is
+        unknown. Does not change ``import_status``.
+        """
+        values: dict[str, object] = {"import_error": None}
+        if reset_sha1:
+            values["sha1"] = None
+        try:
+            stmt = update(MovieFile).where(MovieFile.id == file_id).values(**values)
+            result = await self.db.execute(stmt)
+            await self.db.flush()
+            return bool(result.rowcount)
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception("Failed to clear integrity state for movie_file %s", file_id)
             raise
 
     async def remove_movie_files_by_torrent_id(self, torrent_id: TorrentId) -> int:

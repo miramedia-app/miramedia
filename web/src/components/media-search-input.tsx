@@ -45,12 +45,15 @@ export function MediaSearchInput({
   const suggestionsQuery = useQuery({
     queryKey: ["media-search", mediaType, debouncedQuery],
     queryFn: async () => {
-      const endpoint = mediaType === "show" ? "/api/v1/shows/search" : "/api/v1/movies/search";
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const { data } = await (apiClient as any).GET(endpoint, {
-        params: { query: { query: debouncedQuery } },
-      });
-      return ((data ?? []) as SearchResult[]).slice(0, 8);
+      const { data } =
+        mediaType === "show"
+          ? await apiClient.GET("/api/v1/shows/search", {
+              params: { query: { query: debouncedQuery } },
+            })
+          : await apiClient.GET("/api/v1/movies/search", {
+              params: { query: { query: debouncedQuery } },
+            });
+      return (data ?? []).slice(0, 8);
     },
     enabled: debouncedQuery.length >= 2,
     staleTime: 60 * 1000,

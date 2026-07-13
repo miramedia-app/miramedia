@@ -1,3 +1,17 @@
+"""On-disk and import-attempt status vocabularies for media files.
+
+Four status enums cover distinct facts on public episode/movie rows:
+
+- :class:`~miramedia.media_status.MediaStatus` — user intent (wanted /
+  downloaded / skipped).
+- :class:`FileStatus` — on-disk truth at request time (imported / queued /
+  removed / orphaned).
+- :class:`ImportOutcome` — last import attempt (pending / imported /
+  failed_* / ambiguous).
+- :class:`~miramedia.media_state.ProgressStatus` — derived list-progress
+  display for shows (none / partial / complete).
+"""
+
 from enum import StrEnum
 
 

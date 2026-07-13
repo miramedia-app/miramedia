@@ -12,7 +12,8 @@ ARGS ?=
 APP_SVC ?= api
 FRONTEND_SVC ?= web
 
-.PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json test
+.PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
+	lint format format-check ty test check audit frontend-bootstrap tsc frontend-build
 
 help:
 	@echo "Usage:"
@@ -27,6 +28,10 @@ help:
 	@echo "  make app                    # Shell into $(APP_SVC) container"
 	@echo "  make frontend               # Shell into $(FRONTEND_SVC) container"
 	@echo "  make test                   # Run the backend test suite on the host (no docker needed)"
+	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
+	@echo "  make check                  # lint + format-check + ty + test + tsc (CI parity minus OpenAPI drift)"
+	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + fumadocs-mdx + next typegen)"
+	@echo "  make tsc                    # Type-check the Next.js frontend"
 
 # Core lifecycle
 up:
@@ -68,8 +73,30 @@ openapi-json:
 openapi: openapi-json
 	@cd web && pnpm exec openapi-typescript public/openapi.json -o src/lib/api/api.d.ts
 
+lint:
+	@uv run --python 3.13 ruff check .
+
+format:
+	@uv run --python 3.13 ruff format .
+
+format-check:
+	@uv run --python 3.13 ruff format --check .
+
+ty:
+	@uv run --python 3.13 ty check miramedia
+
+frontend-bootstrap:
+	@cd web && pnpm install --frozen-lockfile && pnpm exec fumadocs-mdx && pnpm exec next typegen
+
+# Scan production Python deps for known vulnerabilities (CI parity).
+audit:
+	@uv export --locked --no-dev --format requirements-txt > /tmp/req.txt
+	@uvx pip-audit --strict -r /tmp/req.txt --disable-pip
+
+# CI parity minus OpenAPI/api.d.ts drift checks (those are PR-only in ci.yml).
+check: lint format-check ty test tsc
+
 # Type-check the Next.js frontend
-.PHONY: tsc frontend-build
 tsc:
 	@cd web && pnpm exec tsgo --noEmit
 

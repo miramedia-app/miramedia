@@ -4,23 +4,6 @@
  */
 
 export interface paths {
-    "/api/v1/static/image/{filename}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Serve Image */
-        get: operations["serve_image_api_v1_static_image__filename__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/health": {
         parameters: {
             query?: never;
@@ -78,6 +61,23 @@ export interface paths {
          * @description One cheap dashboard-count read instead of several parallel requests.
          */
         get: operations["get_dashboard_summary_api_v1_dashboard_summary_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/static/image/{filename}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Serve Image */
+        get: operations["serve_image_api_v1_static_image__filename__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1150,6 +1150,66 @@ export interface paths {
         get: operations["get_import_status_counts_api_v1_torrents_import_status_counts_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/torrents/integrity/mismatches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Integrity Mismatches
+         * @description Imported files whose integrity audit recorded a SHA1 mismatch.
+         */
+        get: operations["list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/torrents/integrity/{media_type}/{file_id}/rebaseline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rebaseline Integrity File
+         * @description Accept current on-disk bytes: clear error + sha1 for next audit baseline.
+         */
+        post: operations["rebaseline_integrity_file_api_v1_torrents_integrity__media_type___file_id__rebaseline_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/torrents/integrity/{media_type}/{file_id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Dismiss Integrity Mismatch
+         * @description Clear the mismatch stamp only; keep sha1 so the next audit re-verifies.
+         */
+        post: operations["dismiss_integrity_mismatch_api_v1_torrents_integrity__media_type___file_id__dismiss_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3408,6 +3468,11 @@ export interface components {
              * @default 0
              */
             import_total: number;
+            /**
+             * Corrupted
+             * @default 0
+             */
+            corrupted: number;
         };
         /**
          * ImportFileDetail
@@ -3811,6 +3876,43 @@ export interface components {
             message: string;
             /** Latency Ms */
             latency_ms?: number | null;
+        };
+        /** IntegrityActionResult */
+        IntegrityActionResult: {
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+        };
+        /**
+         * IntegrityMismatch
+         * @description An imported file whose on-disk SHA1 no longer matches the stored hash.
+         */
+        IntegrityMismatch: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /**
+             * Media Type
+             * @enum {string}
+             */
+            media_type: "show" | "movie";
+            /** Media Title */
+            media_title: string;
+            /** Episode */
+            episode: string | null;
+            /** Path */
+            path: string | null;
+            quality: components["schemas"]["Quality"];
+            /** Variant Tag */
+            variant_tag: string;
+            /** Import Error */
+            import_error: string;
+            /** Detected At */
+            detected_at: string | null;
         };
         /** InviteUserRequest */
         InviteUserRequest: {
@@ -4476,6 +4578,11 @@ export interface components {
             /** Preferred Quality */
             preferred_quality?: string[] | null;
         };
+        /**
+         * ProgressStatus
+         * @enum {string}
+         */
+        ProgressStatus: "none" | "partial" | "complete";
         /** ProwlarrSettingsSchema */
         ProwlarrSettingsSchema: {
             /** Enabled */
@@ -5348,11 +5455,8 @@ export interface components {
              * @default 0
              */
             downloaded_episode_count: number;
-            /**
-             * List Progress Status
-             * @default none
-             */
-            list_progress_status: string;
+            /** @default none */
+            list_progress_status: components["schemas"]["ProgressStatus"];
             /**
              * Seasons
              * @default []
@@ -5903,39 +6007,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    serve_image_api_v1_static_image__filename__get: {
-        parameters: {
-            query?: {
-                w?: number | null;
-            };
-            header?: never;
-            path: {
-                filename: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     hello_world_api_v1_health_get: {
         parameters: {
             query?: never;
@@ -5994,6 +6065,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DashboardSummary"];
+                };
+            };
+        };
+    };
+    serve_image_api_v1_static_image__filename__get: {
+        parameters: {
+            query?: {
+                w?: number | null;
+            };
+            header?: never;
+            path: {
+                filename: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -7983,6 +8087,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ImportStatusCounts"];
+                };
+            };
+        };
+    };
+    list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrityMismatch"][];
+                };
+            };
+        };
+    };
+    rebaseline_integrity_file_api_v1_torrents_integrity__media_type___file_id__rebaseline_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                media_type: components["schemas"]["miramedia__torrents__schemas__MediaType"];
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrityActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dismiss_integrity_mismatch_api_v1_torrents_integrity__media_type___file_id__dismiss_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                media_type: components["schemas"]["miramedia__torrents__schemas__MediaType"];
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IntegrityActionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

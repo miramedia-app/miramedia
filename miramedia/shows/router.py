@@ -292,7 +292,10 @@ async def delete_a_show(
     )
 
 
-@router.post("/{show_id}/metadata")
+@router.post(
+    "/{show_id}/metadata",
+    dependencies=[Depends(current_superuser)],
+)
 async def update_shows_metadata(
     show: show_dep, show_service: show_service_dep
 ) -> PublicShow:

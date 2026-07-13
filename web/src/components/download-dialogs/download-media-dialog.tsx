@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
 import apiClient from "@/lib/api/client";
+import { createManagedEventSource, type ManagedEventSource } from "@/lib/managed-event-source";
 import { getTorrentQualityString } from "@/lib/utils";
 import type { components } from "@/lib/api/api";
 
@@ -171,7 +172,7 @@ export function DownloadMediaDialog({
 
   // Cancel handle for any in-flight SSE streams so navigating away or
   // re-triggering search aborts the prior streams cleanly.
-  const streamControllersRef = React.useRef<EventSource[]>([]);
+  const streamControllersRef = React.useRef<ManagedEventSource[]>([]);
 
   function streamSearch(
     queryParams: Record<string, string | number | undefined>,
@@ -189,41 +190,32 @@ export function DownloadMediaDialog({
       for (const c of codecParam) url.searchParams.append("codec", c);
     }
     return new Promise<void>((resolve) => {
-      const es = new EventSource(url.toString(), { withCredentials: true });
-      streamControllersRef.current.push(es);
-      es.addEventListener("results", (ev) => {
-        try {
-          onChunk(
-            JSON.parse((ev as MessageEvent).data) as components["schemas"]["SearchStreamChunk"],
-          );
-        } catch (err) {
-          console.error("SSE parse error", err);
-        }
-      });
-      let settled = false;
-      let errorTimer: ReturnType<typeof setTimeout> | null = null;
-      const finish = () => {
-        if (settled) return;
-        settled = true;
-        if (errorTimer) clearTimeout(errorTimer);
-        es.close();
-        streamControllersRef.current = streamControllersRef.current.filter((x) => x !== es);
-        resolve();
-      };
-      es.addEventListener("done", finish);
       // EventSource fires onerror on TRANSIENT reconnects too (readyState
-      // CONNECTING), not only terminal failures. The old `onerror = finish`
-      // ended the search on any network blip — truncating results with no
-      // error shown. Finish immediately only when the browser has terminally
-      // given up (CLOSED); otherwise let it auto-reconnect and wait for `done`,
-      // capping the wait so a truly-down server can't hang the search forever.
-      es.onerror = () => {
-        if (es.readyState === EventSource.CLOSED) {
-          finish();
-        } else if (!errorTimer) {
-          errorTimer = setTimeout(finish, 10000);
-        }
-      };
+      // CONNECTING), not only terminal failures. The primitive finishes
+      // immediately only when the browser has terminally given up (CLOSED);
+      // otherwise it lets the stream auto-reconnect and waits for `done`,
+      // capping the wait (10s) so a truly-down server can't hang the search.
+      const handle: ManagedEventSource = createManagedEventSource(url.toString(), {
+        withCredentials: true,
+        timeoutMs: 10000,
+        doneEvent: "done",
+        events: {
+          results: (ev) => {
+            try {
+              onChunk(JSON.parse(ev.data) as components["schemas"]["SearchStreamChunk"]);
+            } catch (err) {
+              console.error("SSE parse error", err);
+            }
+          },
+        },
+        // Every terminal outcome (completed / closed / timeout) resolves the
+        // promise, exactly as the prior single `finish()` did.
+        onDone: () => {
+          streamControllersRef.current = streamControllersRef.current.filter((x) => x !== handle);
+          resolve();
+        },
+      });
+      streamControllersRef.current.push(handle);
     });
   }
 

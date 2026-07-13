@@ -13,6 +13,8 @@ from miramedia.exceptions import MetadataProviderUnavailableError
 
 log = logging.getLogger(__name__)
 
+_MAX_POSTER_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
 
 def get_year_from_date(first_air_date: str | None) -> int | None:
     if first_air_date:
@@ -89,8 +91,24 @@ def download_poster_image(storage_path: Path, poster_url: str, uuid: UUID) -> bo
     res = requests.get(poster_url, stream=True, timeout=60)
 
     if res.status_code == 200:
+        content_length = res.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                if int(content_length) > _MAX_POSTER_DOWNLOAD_BYTES:
+                    log.warning(
+                        "Skipping poster download for %s: Content-Length %s exceeds 50 MiB",
+                        uuid,
+                        content_length,
+                    )
+                    return False
+            except ValueError:
+                pass
+
         image_file_path = storage_path.joinpath(str(uuid)).with_suffix(".jpg")
-        image_file_path.write_bytes(res.content)
+        with image_file_path.open("wb") as f:
+            for chunk in res.iter_content(chunk_size=1 << 20):
+                if chunk:
+                    f.write(chunk)
 
         original_image = Image.open(image_file_path)
         original_image.save(image_file_path.with_suffix(".avif"), quality=50)

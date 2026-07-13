@@ -4,12 +4,14 @@
 
 | Task | Command |
 |---|---|
-| Test | `MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest` |
-| Lint | `uv run --python 3.13 ruff check .` |
-| Format | `uv run --python 3.13 ruff format .` |
-| Format check | `uv run --python 3.13 ruff format --check .` |
-| Typecheck (backend) | `uv run --python 3.13 ty check miramedia` |
-| Typecheck (frontend) | `cd web && pnpm exec tsgo --noEmit` |
+| Check (CI parity) | `make check` |
+| Test | `make test` |
+| Lint | `make lint` |
+| Format | `make format` |
+| Format check | `make format-check` |
+| Typecheck (backend) | `make ty` |
+| Typecheck (frontend) | `make tsc` |
+| Frontend bootstrap | `make frontend-bootstrap` |
 | OpenAPI regen | `make openapi` (backend must be importable; writes `web/src/lib/api/api.d.ts`) |
 | Dev stack up | `make up` (docker-compose.dev.yaml; `make dev` for watch mode) |
 

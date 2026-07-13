@@ -138,8 +138,47 @@ function stableStringify(value: unknown): string {
   if (typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return "[" + value.map(stableStringify).join(",") + "]";
   const obj = value as AnyObj;
-  const keys = Object.keys(obj).sort();
+  // `_key` is a client-only synthetic id (stable React keys); it never leaves
+  // the browser, so ignore it here or dirty detection would trip permanently.
+  const keys = Object.keys(obj)
+    .filter((k) => k !== "_key")
+    .sort();
   return "{" + keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") + "}";
+}
+
+// Attach a stable synthetic `_key` to each object row of a list. Non-arrays
+// pass through unchanged; existing `_key`s are preserved across reloads.
+function keyRows(list: unknown): unknown {
+  if (!Array.isArray(list)) return list;
+  return list.map((row) =>
+    row && typeof row === "object" && !Array.isArray(row)
+      ? { ...(row as AnyObj), _key: (row as AnyObj)._key ?? crypto.randomUUID() }
+      : row,
+  );
+}
+
+// Reorderable/deletable list keys that carry a synthetic `_key` in local
+// state. Kept in sync with the row renderings in scores-tab / general-tab.
+const INDEXER_KEYED_LISTS = [
+  "quality_options",
+  "codec_options",
+  "title_scoring_rules",
+  "indexer_flag_scoring_rules",
+];
+const MISC_KEYED_LISTS = ["show_libraries", "movie_libraries"];
+
+// Deep-remove every `_key` before submitting to the API.
+function stripRowKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripRowKeys);
+  if (value && typeof value === "object") {
+    const out: AnyObj = {};
+    for (const [k, v] of Object.entries(value as AnyObj)) {
+      if (k === "_key") continue;
+      out[k] = stripRowKeys(v);
+    }
+    return out;
+  }
+  return value;
 }
 
 import { OverrideCtx, type OverrideCtxValue } from "./_shared";
@@ -264,6 +303,9 @@ export default function SystemSettingsPage() {
     if (settings.misc) {
       const next = structuredClone(settings.misc) as AnyObj;
       if (!next.naming) next.naming = {};
+      for (const k of MISC_KEYED_LISTS) {
+        if (Array.isArray(next[k])) next[k] = keyRows(next[k]);
+      }
       setMisc(next);
     }
   }, [settings.misc]);
@@ -277,7 +319,13 @@ export default function SystemSettingsPage() {
     if (settings.torrents) setTorrents(structuredClone(settings.torrents) as AnyObj);
   }, [settings.torrents]);
   React.useEffect(() => {
-    if (settings.indexers) setIndexers(structuredClone(settings.indexers) as AnyObj);
+    if (settings.indexers) {
+      const next = structuredClone(settings.indexers) as AnyObj;
+      for (const k of INDEXER_KEYED_LISTS) {
+        if (Array.isArray(next[k])) next[k] = keyRows(next[k]);
+      }
+      setIndexers(next);
+    }
   }, [settings.indexers]);
   React.useEffect(() => {
     if (settings.metadata) setMetadata(structuredClone(settings.metadata) as AnyObj);
@@ -455,11 +503,11 @@ export default function SystemSettingsPage() {
     try {
       const { error } = await apiClient.PUT("/api/v1/system/settings", {
         body: {
-          misc,
+          misc: stripRowKeys(misc),
           auth,
           notifications,
           torrents,
-          indexers,
+          indexers: stripRowKeys(indexers),
           metadata,
           requests,
           subtitles,

@@ -2,7 +2,7 @@
 
 The default ``title_scoring_rules`` entry "Reject cam/workprint" (-10000),
 applied via the default ``scoring_rule_sets`` "Reject low-quality sources"
-(ALL_TV + ALL_MOVIES), pushes pre-retail releases below the ``score >= 0`` floor
+(ALL_TV + ALL_MOVIES), pushes pre-retail releases below the ``score > 0`` floor
 in evaluate_indexer_query_results. These tests drive the real pipeline.
 """
 
@@ -203,6 +203,28 @@ def test_subtitled_name_rejects_different_show_sharing_main_title() -> None:
     show = _show_named("Star Trek: Discovery", 2017)
     r = _result("Star.Trek.Strange.New.Worlds.S01E01.1080p.WEB-DL.x265-GRP")
     kept = evaluate_indexer_query_results([r], show, is_tv=True)
+    assert kept == []
+
+
+def test_zero_score_excluded() -> None:
+    # Neutralize quality/codec bonuses so the final score stays at 0.
+    r = _result("Some Movie 2024 1080p BluRay x264-GRP")
+    kept = evaluate_indexer_query_results(
+        [r], _movie(), is_tv=False, quality_allowed=[], codec_allowed=[]
+    )
+    assert kept == []
+
+
+def test_positive_score_survives() -> None:
+    r = _result("Some Movie 2024 1080p BluRay x264-GRP")
+    kept = evaluate_indexer_query_results([r], _movie(), is_tv=False)
+    assert [x.title for x in kept] == [r.title]
+    assert kept[0].score > 0
+
+
+def test_negative_score_dropped() -> None:
+    junk = _result("Some Movie 2024 1080p HDCAM x264-GRP")
+    kept = evaluate_indexer_query_results([junk], _movie(), is_tv=False)
     assert kept == []
 
 

@@ -61,6 +61,7 @@ router = APIRouter(
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".m4v", ".ts", ".wmv"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".sub"}
 _VTT_CACHE: TTLCache = TTLCache(maxsize=512, ttl=3600)
+_MAX_SRT_BYTES = 5 * 1024 * 1024
 
 FileIdQuery = Annotated[UUID, Query()]
 DownloadQuery = Annotated[bool, Query()]
@@ -580,6 +581,8 @@ def _convert_srt_to_vtt(srt_path: Path) -> str:
     import re
 
     stat = srt_path.stat()
+    if stat.st_size > _MAX_SRT_BYTES:
+        raise HTTPException(status_code=413, detail="Subtitle file too large")
     cache_key = (str(srt_path), stat.st_mtime_ns, stat.st_size)
     cached = _VTT_CACHE.get(cache_key)
     if cached is not None:

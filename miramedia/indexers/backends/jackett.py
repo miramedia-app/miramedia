@@ -1,11 +1,11 @@
 import concurrent
 import concurrent.futures
 import logging
-import xml.etree.ElementTree as ET
 from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import requests
+from defusedxml import ElementTree as DefusedET
 
 from miramedia.config import MiraMediaConfig
 from miramedia.indexers.backends.generic import GenericIndexer
@@ -88,7 +88,7 @@ class Jackett(GenericIndexer, TorznabMixin):
             raise RuntimeError(msg)
 
         xml = response.text
-        xml_tree = ET.fromstring(xml)  # noqa: S314  # trusted source, since it is user controlled
+        xml_tree = DefusedET.fromstring(xml)
         tv_search = xml_tree.find("./*/tv-search")
         movie_search = xml_tree.find("./*/movie-search")
         log.debug(tv_search.attrib)

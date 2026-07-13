@@ -10,7 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { OverrideMarker } from "../_marker";
-import { csvToArray, type AnyObj, type SetPath } from "../_shared";
+import { csvToArray, type AnyObj, type Keyed, type SetPath } from "../_shared";
 
 const CF_SOLVERS = [
   [
@@ -629,7 +629,8 @@ export function GeneralTab({
             {(["show", "movie"] as const).map((kind) => {
               const libKey = `${kind}_libraries`;
               const dirKey = `${kind}_directory`;
-              const libs = (m[libKey] as { name: string; path: string }[] | undefined) ?? [];
+              const libs =
+                (m[libKey] as Keyed<{ name: string; path: string }>[] | undefined) ?? [];
               return (
                 <div key={kind} className="space-y-3">
                   <Label>
@@ -651,7 +652,7 @@ export function GeneralTab({
                       setMiscPath([libKey], next);
                     };
                     return (
-                      <div key={i} className="flex items-center gap-2">
+                      <div key={library._key} className="flex items-center gap-2">
                         <div className="flex w-5 shrink-0 flex-col gap-0.5">
                           <Button
                             variant="ghost"
@@ -712,7 +713,12 @@ export function GeneralTab({
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setMiscPath([libKey], [...libs, { name: "", path: "" }])}
+                    onClick={() =>
+                      setMiscPath([libKey], [
+                        ...libs,
+                        { _key: crypto.randomUUID(), name: "", path: "" },
+                      ])
+                    }
                   >
                     <Plus className="mr-1 h-4 w-4" />
                     Add {kind === "show" ? "Show" : "Movie"} Library
