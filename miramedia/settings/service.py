@@ -12,9 +12,8 @@ from miramedia.config import MiraMediaConfig
 
 log = logging.getLogger(__name__)
 
-# Serializes the transient swap-out of the MiraMediaConfig singleton when reading TOML
-# defaults so two settings requests can't race and leak a duplicate instance.
-_singleton_swap_lock = threading.Lock()
+# Serializes live singleton section replacement during settings apply/swap.
+_live_apply_lock = threading.Lock()
 
 SETTINGS_SECTIONS = (
     "misc",
@@ -225,20 +224,8 @@ def get_settings_schema() -> list[dict]:
 
 
 def get_toml_defaults() -> dict:
-    """Return TOML-only defaults (no DB overrides applied) for the UI to show 'Default: ...' tooltips.
-
-    Builds a transient fresh instance to bypass the singleton's already-applied overrides.
-    """
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
+    """Return TOML-only defaults (no DB overrides applied) for the UI to show 'Default: ...' tooltips."""
+    fresh = MiraMediaConfig.load_isolated()
 
     sections = [
         "misc",
@@ -311,25 +298,16 @@ def compute_clear_override_path(overrides: dict, path: list[str]) -> dict:
 
 def build_isolated_config(overrides: dict | None = None) -> MiraMediaConfig:
     """Build a complete config snapshot from TOML + overrides without mutating live state."""
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            isolated = MiraMediaConfig()
-            if overrides:
-                apply_overrides_to_config(isolated, overrides)
-            return isolated
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
+    isolated = MiraMediaConfig.load_isolated()
+    if overrides:
+        apply_overrides_to_config(isolated, overrides)
+    return isolated
 
 
 def apply_live_config_from_overrides(overrides: dict) -> None:
     """Atomically replace live singleton sections from a prospective snapshot."""
     isolated = build_isolated_config(overrides)
-    with _singleton_swap_lock:
+    with _live_apply_lock:
         live = MiraMediaConfig()
         for section in SETTINGS_SECTIONS:
             source = getattr(isolated, section)
@@ -342,27 +320,16 @@ def apply_live_config_from_overrides(overrides: dict) -> None:
 def revert_field_to_toml_default(path: list[str]) -> None:
     """Reset a single dotted-path field on the in-memory singleton back to its TOML default.
 
-    Builds a transient fresh instance to read the TOML default, then setattrs on the real
-    singleton so external references (e.g. ``cfg.torrents``) remain valid.
+    Reads the default from an isolated TOML load, then setattrs on the live singleton so
+    external references (e.g. ``cfg.torrents``) remain valid.
     """
     if not path:
         return
-    with _singleton_swap_lock:
-        saved_instance = MiraMediaConfig._instance
-        saved_initialized = MiraMediaConfig._initialized
-        MiraMediaConfig._instance = None
-        MiraMediaConfig._initialized = False
-        try:
-            fresh = MiraMediaConfig()
-        finally:
-            MiraMediaConfig._instance = saved_instance
-            MiraMediaConfig._initialized = saved_initialized
-
-    if saved_instance is None:
-        return
+    fresh = MiraMediaConfig.load_isolated()
+    live = MiraMediaConfig()
 
     fresh_node: Any = fresh
-    real_node: Any = saved_instance
+    real_node: Any = live
     for key in path[:-1]:
         if not hasattr(fresh_node, key) or not hasattr(real_node, key):
             return

@@ -24,6 +24,7 @@ from miramedia.settings.service import build_isolated_config
 log = logging.getLogger(__name__)
 
 OAUTH_ROUTE_NAME = "oidc"
+OIDC_CONFIG_INVALID_DETAIL = "OpenID Connect provider configuration is invalid."
 _oauth_runtime_ctx: ContextVar[AuthRuntimeGeneration | None] = ContextVar(
     "auth_oidc_runtime_generation", default=None
 )
@@ -31,6 +32,9 @@ _oauth_runtime_ctx: ContextVar[AuthRuntimeGeneration | None] = ContextVar(
 
 class AuthRuntimeActivationError(Exception):
     """Prospective auth runtime could not be built or activated."""
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or OIDC_CONFIG_INVALID_DETAIL)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,8 +125,11 @@ async def build_auth_runtime_generation(
     try:
         client = await asyncio.to_thread(_build_openid_client_sync, oidc)
     except Exception as exc:
-        msg = f"Failed to configure OpenID Connect provider: {exc}"
-        raise AuthRuntimeActivationError(msg) from exc
+        log.warning(
+            "OpenID Connect provider activation failed: %s",
+            type(exc).__name__,
+        )
+        raise AuthRuntimeActivationError() from exc
     return AuthRuntimeGeneration(
         generation_id=0,
         oidc_enabled=True,

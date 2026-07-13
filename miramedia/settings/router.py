@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from miramedia.auth.runtime import (
+    OIDC_CONFIG_INVALID_DETAIL,
     AuthRuntimeActivationError,
     AuthRuntimeGeneration,
     prepare_auth_runtime_for_overrides,
@@ -24,7 +25,8 @@ from miramedia.settings.integration_tests import HANDLERS as TEST_HANDLERS
 from miramedia.settings.integration_tests import IntegrationTestResult
 from miramedia.settings.mutation import (
     SettingsMutationError,
-    commit_validated_settings_mutation,
+    SettingsMutationSupersededError,
+    execute_settings_mutation,
 )
 from miramedia.settings.schemas import SystemSettingsRead, SystemSettingsUpdate
 from miramedia.settings.service import (
@@ -54,24 +56,26 @@ async def _stage_auth_runtime(
     except AuthRuntimeActivationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
+            detail=str(exc) or OIDC_CONFIG_INVALID_DETAIL,
         ) from exc
 
 
 async def _commit_settings_mutation(
-    merged_overrides: dict,
     *,
-    prior_overrides: dict,
+    prepare: Callable[[], Awaitable[tuple[dict, dict]]],
     persist_overrides: Callable[[dict], Awaitable[object]],
-) -> None:
-    prospective = await _stage_auth_runtime(merged_overrides)
+) -> dict:
     try:
-        await commit_validated_settings_mutation(
-            merged_overrides,
-            prospective,
+        return await execute_settings_mutation(
+            prepare=prepare,
             persist_overrides=persist_overrides,
-            prior_overrides=prior_overrides,
+            stage_auth_runtime=_stage_auth_runtime,
         )
+    except SettingsMutationSupersededError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     except SettingsMutationError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -195,11 +199,12 @@ async def update_system_settings(
     }
     new_overrides = diff_against_defaults(new_overrides, toml_defaults)
 
-    existing_overrides = await repo.get_overrides()
-    merged_overrides = deep_merge(existing_overrides, new_overrides)
-    await _commit_settings_mutation(
-        merged_overrides,
-        prior_overrides=existing_overrides,
+    async def _prepare() -> tuple[dict, dict]:
+        existing_overrides = await repo.get_overrides()
+        return deep_merge(existing_overrides, new_overrides), existing_overrides
+
+    merged_overrides = await _commit_settings_mutation(
+        prepare=_prepare,
         persist_overrides=repo.save_overrides,
     )
 
@@ -223,11 +228,13 @@ async def reset_system_settings(
     repo: settings_repository_dep,
 ) -> None:
     """Reset all system settings to TOML defaults (removes all DB overrides)."""
-    prior_overrides = await repo.get_overrides()
-    merged_overrides: dict = {}
+
+    async def _prepare() -> tuple[dict, dict]:
+        prior_overrides = await repo.get_overrides()
+        return {}, prior_overrides
+
     await _commit_settings_mutation(
-        merged_overrides,
-        prior_overrides=prior_overrides,
+        prepare=_prepare,
         persist_overrides=repo.save_overrides,
     )
 
@@ -285,15 +292,20 @@ async def import_settings(
             )
 
     if body.mode == "replace":
-        merged = incoming
+        incoming_merged = incoming
     else:
-        existing = await repo.get_overrides()
-        merged = deep_merge(existing, incoming)
+        incoming_merged = None
 
-    prior_overrides = await repo.get_overrides()
-    await _commit_settings_mutation(
-        merged,
-        prior_overrides=prior_overrides,
+    async def _prepare() -> tuple[dict, dict]:
+        existing = await repo.get_overrides()
+        if incoming_merged is not None:
+            merged = incoming_merged
+        else:
+            merged = deep_merge(existing, incoming)
+        return merged, existing
+
+    merged = await _commit_settings_mutation(
+        prepare=_prepare,
         persist_overrides=repo.save_overrides,
     )
 
@@ -325,11 +337,13 @@ async def clear_override_path(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid section: {body.path[0]}",
         )
-    prior_overrides = await repo.get_overrides()
-    updated_overrides = compute_clear_override_path(prior_overrides, body.path)
-    await _commit_settings_mutation(
-        updated_overrides,
-        prior_overrides=prior_overrides,
+
+    async def _prepare() -> tuple[dict, dict]:
+        prior = await repo.get_overrides()
+        return compute_clear_override_path(prior, body.path), prior
+
+    updated_overrides = await _commit_settings_mutation(
+        prepare=_prepare,
         persist_overrides=repo.save_overrides,
     )
 

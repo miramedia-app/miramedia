@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from miramedia.auth.runtime import (
+    OIDC_CONFIG_INVALID_DETAIL,
     auth_runtime_store,
     build_auth_runtime_generation,
     commit_auth_runtime_generation,
@@ -36,12 +37,15 @@ pytestmark = pytest.mark.usefixtures("fake_openid")
 
 @pytest.fixture(autouse=True)
 def _reset_auth_state() -> Generator[None]:
+    from miramedia.settings.mutation import reset_settings_mutation_state_for_tests
     from miramedia.settings.service import apply_live_config_from_overrides
 
     reset_auth_runtime_for_tests()
+    reset_settings_mutation_state_for_tests()
     apply_live_config_from_overrides({})
     yield
     reset_auth_runtime_for_tests()
+    reset_settings_mutation_state_for_tests()
     apply_live_config_from_overrides({})
 
 
@@ -260,9 +264,7 @@ def test_oidc_refresh_failure_does_not_persist_or_activate(
             json=_oidc_payload(enabled=True, name="BrokenProvider"),
         )
         assert response.status_code == 400
-        assert (
-            "Failed to configure OpenID Connect provider" in response.json()["detail"]
-        )
+        assert response.json()["detail"] == OIDC_CONFIG_INVALID_DETAIL
         assert fake_repo.save_calls == []
         assert client.get(METADATA_PATH).json()["oauth_providers"] == []
 
@@ -422,9 +424,7 @@ def test_clear_staging_failure_leaves_state_unchanged(
             json={"path": ["auth", "openid_connect", "client_id"]},
         )
         assert response.status_code == 400
-        assert (
-            "Failed to configure OpenID Connect provider" in response.json()["detail"]
-        )
+        assert response.json()["detail"] == OIDC_CONFIG_INVALID_DETAIL
         assert fake_repo.overrides == before_overrides
         assert len(fake_repo.save_calls) == save_calls_before
         assert _capture_runtime_state() == before_runtime
@@ -531,6 +531,87 @@ def test_import_runtime_activation_failure_rolls_back_state(
         assert response.status_code == 500
         assert fake_repo.overrides == before_overrides
         assert _capture_runtime_state() == before_runtime
+
+
+def test_load_isolated_config_leaves_singleton_intact() -> None:
+    import threading
+
+    from miramedia.config import MiraMediaConfig
+    from miramedia.settings.service import build_isolated_config
+
+    live_before = MiraMediaConfig()
+    assert MiraMediaConfig._instance is live_before
+    assert MiraMediaConfig._initialized is True
+
+    observed: list[MiraMediaConfig | None] = []
+    barrier = threading.Barrier(2)
+
+    def _reader() -> None:
+        barrier.wait()
+        observed.append(MiraMediaConfig())
+        observed.append(MiraMediaConfig._instance)
+
+    thread = threading.Thread(target=_reader)
+    thread.start()
+    isolated = build_isolated_config({"misc": {"development": True}})
+    barrier.wait()
+    thread.join()
+
+    assert isolated is not live_before
+    assert observed[0] is live_before
+    assert observed[1] is live_before
+    assert MiraMediaConfig._instance is live_before
+    assert isolated.misc.development is True
+
+
+def test_concurrent_mutation_superseded_preserves_later_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+    import threading
+
+    from miramedia.settings.router import prepare_auth_runtime_for_overrides
+
+    original_prepare = prepare_auth_runtime_for_overrides
+    slow_started = threading.Event()
+    slow_release = threading.Event()
+
+    async def _slow_prepare(overrides: dict) -> Any:
+        name = overrides.get("auth", {}).get("openid_connect", {}).get("name")
+        if name == "ProviderSlow":
+            slow_started.set()
+            await asyncio.to_thread(slow_release.wait, 5)
+        return await original_prepare(overrides)
+
+    monkeypatch.setattr(
+        "miramedia.settings.router.prepare_auth_runtime_for_overrides",
+        _slow_prepare,
+    )
+
+    with settings_client() as (client, fake_repo):
+        results: dict[str, Any] = {}
+
+        def _run_slow() -> None:
+            results["slow"] = client.put(
+                SETTINGS_PREFIX,
+                json=_oidc_payload(enabled=True, name="ProviderSlow"),
+            )
+
+        thread = threading.Thread(target=_run_slow)
+        thread.start()
+        assert slow_started.wait(timeout=2)
+
+        results["fast"] = client.put(
+            SETTINGS_PREFIX,
+            json=_oidc_payload(enabled=True, name="ProviderFast"),
+        )
+        slow_release.set()
+        thread.join(timeout=5)
+
+        assert results["fast"].status_code == 200
+        assert results["slow"].status_code == 409
+        assert client.get(METADATA_PATH).json()["oauth_providers"] == ["ProviderFast"]
+        assert fake_repo.overrides["auth"]["openid_connect"]["name"] == "ProviderFast"
 
 
 def test_authorize_uses_request_generation_under_concurrent_swap(
