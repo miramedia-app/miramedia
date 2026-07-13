@@ -41,6 +41,14 @@ def _write_tar(
             tf.addfile(info, io.BytesIO(data))
 
 
+def _write_tar_bz2(path: Path, entries: dict[str, bytes]) -> None:
+    with tarfile.open(path, "w:bz2") as tf:
+        for name, data in entries.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+
 # ---------------------------------------------------------------------------
 # Format matrix
 # ---------------------------------------------------------------------------
@@ -109,6 +117,17 @@ def test_extract_valid_tar_gz(tmp_path: Path) -> None:
     assert (dest / "clip.mkv").read_bytes() == b"gz-video"
 
 
+def test_extract_valid_tar_bz2(tmp_path: Path) -> None:
+    archive = tmp_path / "release.tar.bz2"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_tar_bz2(archive, {"clip.mkv": b"bz2-tar-video"})
+
+    extract_archive_to_directory(archive, dest)
+
+    assert (dest / "clip.mkv").read_bytes() == b"bz2-tar-video"
+
+
 def test_extract_valid_gzip_single_file(tmp_path: Path) -> None:
     archive = tmp_path / "clip.mkv.gz"
     dest = tmp_path / "import"
@@ -143,6 +162,14 @@ def test_extract_valid_bzip2_single_file(tmp_path: Path) -> None:
         "/absolute.mkv",
         "foo/../../outside.mkv",
         "foo\\bar.mkv",
+        "C:/windows.mkv",
+        "C:relative.mkv",
+        "//server/share/file.mkv",
+        "\\\\server\\share\\file.mkv",
+        "\\\\.\\PhysicalDrive0\\file.mkv",
+        "encoded/%2e%2e/escape.mkv",
+        "encoded/%2f/abs.mkv",
+        "encoded/%5c/win.mkv",
     ],
 )
 def test_zip_rejects_unsafe_entry_names(
@@ -158,6 +185,20 @@ def test_zip_rejects_unsafe_entry_names(
         extract_archive_to_directory(archive, dest)
 
     assert list(dest.iterdir()) == []
+
+
+def test_zip_keeps_double_encoded_percent_literal_and_confined(tmp_path: Path) -> None:
+    archive = tmp_path / "encoded.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    entry = "literal/%252e%252e/stays.mkv"
+    _write_zip(archive, {entry: b"literal-bytes"})
+
+    extract_archive_to_directory(archive, dest)
+
+    assert (
+        dest / "literal" / "%252e%252e" / "stays.mkv"
+    ).read_bytes() == b"literal-bytes"
 
 
 def test_zip_rejects_symlink_metadata(tmp_path: Path) -> None:
@@ -189,6 +230,81 @@ def test_tar_rejects_symlink_member(tmp_path: Path) -> None:
         extract_archive_to_directory(archive, dest)
 
     assert list(dest.iterdir()) == []
+
+
+def test_tar_rejects_hardlink_member(tmp_path: Path) -> None:
+    archive = tmp_path / "hardlink.tar"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("link.mkv")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "real.mkv"
+        tf.addfile(info)
+
+    with pytest.raises(ArchiveExtractionError, match="link entry"):
+        extract_archive_to_directory(archive, dest)
+
+    assert list(dest.iterdir()) == []
+
+
+def test_tar_rejects_device_member(tmp_path: Path) -> None:
+    archive = tmp_path / "device.tar"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    with tarfile.open(archive, "w") as tf:
+        info = tarfile.TarInfo("dev.zero")
+        info.type = tarfile.CHRTYPE
+        tf.addfile(info)
+
+    with pytest.raises(ArchiveExtractionError, match="non-regular entry"):
+        extract_archive_to_directory(archive, dest)
+
+    assert list(dest.iterdir()) == []
+
+
+def test_staging_rejects_dangling_symlink(tmp_path: Path) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"clip.mkv": b"ok"})
+
+    from miramedia.imports import archive_extraction as mod
+
+    real_collect = mod._collect_validated_regular_files
+
+    def _inject_dangling(staging: Path) -> list[Path]:
+        (staging / "broken").symlink_to("missing-target")
+        return real_collect(staging)
+
+    with (
+        patch.object(
+            mod, "_collect_validated_regular_files", side_effect=_inject_dangling
+        ),
+        pytest.raises(ArchiveExtractionError, match="symlink"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert list(dest.iterdir()) == []
+
+
+def test_promotion_rejects_symlink_destination_parent(tmp_path: Path) -> None:
+    archive = tmp_path / "release.zip"
+    root = tmp_path / "import"
+    root.mkdir()
+    real_dir = root / "real"
+    real_dir.mkdir()
+    alias = root / "alias"
+    alias.symlink_to(real_dir)
+    _write_zip(archive, {"alias/clip.mkv": b"new-bytes"})
+    keeper = real_dir / "keeper.mkv"
+    keeper.write_bytes(b"keep-me")
+
+    with pytest.raises(ArchiveExtractionError, match="symlink"):
+        extract_archive_to_directory(archive, root)
+
+    assert keeper.read_bytes() == b"keep-me"
+    assert not (real_dir / "clip.mkv").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -327,24 +443,58 @@ def test_promotion_mid_failure_rolls_back(tmp_path: Path) -> None:
         {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
     )
 
-    real_replace = Path.replace
+    from miramedia.imports import archive_extraction as mod
+
+    real_atomic = mod._atomic_promote_file
     calls = {"count": 0}
 
-    def _flaky_replace(self: Path, target: Path) -> Path:
+    def _flaky_atomic(src: Path, dst: Path) -> None:
         calls["count"] += 1
         if calls["count"] == 2:
             msg = "simulated promotion failure"
             raise OSError(msg)
-        return real_replace(self, target)
+        real_atomic(src, dst)
 
     with (
-        patch.object(Path, "replace", _flaky_replace),
+        patch.object(mod, "_atomic_promote_file", side_effect=_flaky_atomic),
         pytest.raises(ArchiveExtractionError, match="promotion failed"),
     ):
         extract_archive_to_directory(archive, dest)
 
     assert not (dest / "first.mkv").exists()
     assert not (dest / "second.mkv").exists()
+
+
+def test_promotion_toctou_collision_preserves_existing_and_rolls_back(
+    tmp_path: Path,
+) -> None:
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(
+        archive,
+        {"first.mkv": b"first-bytes", "second.mkv": b"second-bytes"},
+    )
+
+    from miramedia.imports import archive_extraction as mod
+
+    real_atomic = mod._atomic_promote_file
+    calls = {"count": 0}
+
+    def _race_atomic(src: Path, dst: Path) -> None:
+        calls["count"] += 1
+        if calls["count"] == 2:
+            dst.write_bytes(b"raced-in")
+        real_atomic(src, dst)
+
+    with (
+        patch.object(mod, "_atomic_promote_file", side_effect=_race_atomic),
+        pytest.raises(ArchiveExtractionError, match="already exists"),
+    ):
+        extract_archive_to_directory(archive, dest)
+
+    assert not (dest / "first.mkv").exists()
+    assert (dest / "second.mkv").read_bytes() == b"raced-in"
 
 
 def test_staging_cleaned_up_after_success(tmp_path: Path) -> None:

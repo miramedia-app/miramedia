@@ -21,6 +21,8 @@ from __future__ import annotations
 import bz2
 import gzip
 import logging
+import os
+import re
 import shutil
 import stat
 import tarfile
@@ -36,6 +38,35 @@ MAX_ARCHIVE_ENTRIES = 10_000
 MAX_EXPANDED_BYTES = 50 * 1024**3
 STAGING_DIR_MODE = 0o700
 _COPY_CHUNK_SIZE = 64 * 1024
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:", re.ASCII)
+_FORBIDDEN_PERCENT_SEQUENCES = ("%2f", "%5c", "%2e%2e", "%00")
+_RESERVED_WINDOWS_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+    },
+)
 
 RETAINED_ARCHIVE_FORMATS = frozenset(
     {"zip", "tar", "tar.gz", "tar.bz2", "gzip", "bzip2"},
@@ -353,16 +384,39 @@ def _validate_entry_name(name: str) -> None:
     if not name or name in {".", ".."}:
         msg = f"unsafe archive entry name: {name!r}"
         raise ArchiveExtractionError(msg)
+    if "\0" in name:
+        msg = f"archive entry name contains NUL: {name!r}"
+        raise ArchiveExtractionError(msg)
     if name.startswith(("/", "\\")):
         msg = f"absolute archive entry name: {name!r}"
+        raise ArchiveExtractionError(msg)
+    if name.startswith(("//", "\\\\")):
+        msg = f"unc archive entry name: {name!r}"
+        raise ArchiveExtractionError(msg)
+    if _WINDOWS_DRIVE_RE.match(name):
+        msg = f"drive-anchored archive entry name: {name!r}"
         raise ArchiveExtractionError(msg)
     if "\\" in name:
         msg = f"mixed-separator archive entry name: {name!r}"
         raise ArchiveExtractionError(msg)
+    lowered = name.lower()
+    for sequence in _FORBIDDEN_PERCENT_SEQUENCES:
+        if sequence in lowered:
+            msg = f"encoded archive entry name is not allowed: {name!r}"
+            raise ArchiveExtractionError(msg)
     parts = PurePosixPath(name).parts
     if ".." in parts:
         msg = f"traversal archive entry name: {name!r}"
         raise ArchiveExtractionError(msg)
+    for part in parts:
+        if _is_reserved_windows_name(part):
+            msg = f"reserved windows archive entry name: {name!r}"
+            raise ArchiveExtractionError(msg)
+
+
+def _is_reserved_windows_name(part: str) -> bool:
+    stem = part.split(".", 1)[0].upper()
+    return stem in _RESERVED_WINDOWS_NAMES
 
 
 def _enforce_entry_count(file_count: int) -> None:
@@ -380,15 +434,30 @@ def _enforce_limits(file_count: int, total_bytes: int) -> None:
 
 def _safe_relative_path(root: Path, entry_name: str) -> Path:
     _validate_entry_name(entry_name)
-    rel = (root / entry_name).resolve()
-    _assert_contained(rel, root.resolve())
-    return rel
+    root_resolved = root.resolve()
+    candidate = root_resolved.joinpath(*PurePosixPath(entry_name).parts)
+    _assert_contained(candidate, root_resolved)
+    return candidate
 
 
 def _assert_contained(path: Path, root: Path) -> None:
-    if not path.is_relative_to(root):
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
         msg = f"path escapes staging root: {path}"
-        raise ArchiveExtractionError(msg)
+        raise ArchiveExtractionError(msg) from exc
+
+
+def _assert_no_symlink_components(path: Path, root: Path) -> None:
+    current = path
+    while current != root:
+        if current.is_symlink():
+            msg = f"symlink in destination path: {current}"
+            raise ArchiveExtractionError(msg)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
 
 
 def _collect_validated_regular_files(staging: Path) -> list[Path]:
@@ -397,9 +466,10 @@ def _collect_validated_regular_files(staging: Path) -> list[Path]:
     file_count = 0
     total_bytes = 0
     for path in sorted(staging_root.rglob("*")):
-        if not path.exists():
+        try:
+            lstat = path.lstat()
+        except OSError:
             continue
-        lstat = path.lstat()
         if stat.S_ISLNK(lstat.st_mode):
             msg = f"extracted symlink is not allowed: {path}"
             raise ArchiveExtractionError(msg)
@@ -411,18 +481,17 @@ def _collect_validated_regular_files(staging: Path) -> list[Path]:
         if lstat.st_nlink > 1:
             msg = f"extracted hardlink is not allowed: {path}"
             raise ArchiveExtractionError(msg)
-        resolved = _assert_contained_return(path, staging_root)
+        contained = _assert_contained_return(path, staging_root)
         file_count += 1
         total_bytes += lstat.st_size
         _enforce_limits(file_count, total_bytes)
-        files.append(resolved)
+        files.append(contained)
     return files
 
 
 def _assert_contained_return(path: Path, root: Path) -> Path:
-    resolved = path.resolve()
-    _assert_contained(resolved, root)
-    return resolved
+    _assert_contained(path, root)
+    return path
 
 
 def _preflight_promotion(
@@ -437,8 +506,9 @@ def _preflight_promotion(
 
     for src in files:
         rel = src.relative_to(staging_root)
-        dst = (destination_root / rel).resolve()
+        dst = destination_root / rel
         _assert_contained(dst, destination_root)
+        _assert_no_symlink_components(dst.parent, destination_root)
         if dst in seen_destinations:
             msg = f"duplicate promotion destination: {dst}"
             raise ArchiveExtractionError(msg)
@@ -447,9 +517,10 @@ def _preflight_promotion(
             msg = f"destination file already exists: {dst}"
             raise ArchiveExtractionError(msg)
         parent = dst.parent
-        if parent.exists() and not parent.is_dir():
-            msg = f"promotion parent is not a directory: {parent}"
-            raise ArchiveExtractionError(msg)
+        if parent.exists():
+            if parent.is_symlink() or not parent.is_dir():
+                msg = f"promotion parent is not a directory: {parent}"
+                raise ArchiveExtractionError(msg)
         plan.append((src, dst))
 
     return plan
@@ -463,15 +534,38 @@ def _promote_files(files: Iterable[Path], staging: Path, destination_dir: Path) 
 
     try:
         for src, dst in plan:
-            for directory in _missing_parent_dirs(dst.parent, destination_root):
-                directory.mkdir()
-                created_dirs.append(directory)
-            src.replace(dst)
+            created_dirs.extend(_create_parent_dirs(dst.parent, destination_root))
+            _atomic_promote_file(src, dst)
             promoted_files.append(dst)
-    except OSError as exc:
+    except (ArchiveExtractionError, OSError) as exc:
         _rollback_promotion(promoted_files, created_dirs, destination_root)
+        if isinstance(exc, ArchiveExtractionError):
+            raise
         msg = f"promotion failed: {exc}"
         raise ArchiveExtractionError(msg) from exc
+
+
+def _atomic_promote_file(src: Path, dst: Path) -> None:
+    try:
+        os.link(src, dst)
+    except FileExistsError as exc:
+        msg = f"destination file already exists: {dst}"
+        raise ArchiveExtractionError(msg) from exc
+    src.unlink()
+
+
+def _create_parent_dirs(leaf: Path, destination_root: Path) -> list[Path]:
+    created: list[Path] = []
+    for directory in _missing_parent_dirs(leaf, destination_root):
+        _assert_no_symlink_components(directory, destination_root)
+        if directory.exists():
+            if directory.is_symlink() or not directory.is_dir():
+                msg = f"promotion parent is not a directory: {directory}"
+                raise ArchiveExtractionError(msg)
+            continue
+        directory.mkdir()
+        created.append(directory)
+    return created
 
 
 def _missing_parent_dirs(start: Path, stop: Path) -> Iterator[Path]:
