@@ -153,6 +153,12 @@ export function IntegritySection() {
   if (!canSee) return null;
 
   const total = page?.total ?? 0;
+  // Range text describes the page actually on screen, which — while a new offset
+  // is fetching — is still the previous page (`placeholderData`). Reading the
+  // requested `offset` here would announce "51–100" over rows 1–50. Navigation
+  // itself still keys off the requested `offset`.
+  const renderedOffset = page?.offset ?? offset;
+  const range = pageRangeLabel({ offset: renderedOffset, count: rows.length, total });
   const counts = mismatchPageCounts(rows);
   const busy = busyId !== null;
   const paging = query.isFetching || busy;
@@ -180,11 +186,9 @@ export function IntegritySection() {
         <span className="sr-only" aria-live="polite">
           {query.isFetching
             ? "Loading file integrity issues"
-            : `Showing ${pageRangeLabel({ offset, count: rows.length, total })} file integrity issues`}
+            : `Showing ${range} file integrity issues`}
         </span>
-        <p className="ml-auto text-xs text-muted-foreground tabular-nums">
-          {pageRangeLabel({ offset, count: rows.length, total })}
-        </p>
+        <p className="ml-auto text-xs text-muted-foreground tabular-nums">{range}</p>
       </div>
 
       {query.isError ? (
@@ -241,7 +245,9 @@ export function IntegritySection() {
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
                   <MetaPill className="uppercase">{qualityToString(m.quality)}</MetaPill>
-                  {m.variant_tag ? <MetaPill className="font-mono">{m.variant_tag}</MetaPill> : null}
+                  {m.variant_tag ? (
+                    <MetaPill className="font-mono">{m.variant_tag}</MetaPill>
+                  ) : null}
                   <MetaPill title={m.import_error}>
                     {m.detected_at ? new Date(m.detected_at).toLocaleDateString() : "—"}
                   </MetaPill>
