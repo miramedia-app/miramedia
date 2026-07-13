@@ -34,8 +34,8 @@ export function DashboardHome() {
     queries: [
       {
         queryKey: ["dashboard", "summary"],
-        queryFn: async () => {
-          const { data, error } = await apiClient.GET("/api/v1/dashboard/summary");
+        queryFn: async ({ signal }) => {
+          const { data, error } = await apiClient.GET("/api/v1/dashboard/summary", { signal });
           if (error) throw error;
           return data;
         },
@@ -43,8 +43,8 @@ export function DashboardHome() {
       },
       {
         queryKey: ["shows", "recommended"],
-        queryFn: async () => {
-          const { data, error } = await apiClient.GET("/api/v1/shows/recommended");
+        queryFn: async ({ signal }) => {
+          const { data, error } = await apiClient.GET("/api/v1/shows/recommended", { signal });
           if (error) throw error;
           return data ?? [];
         },
@@ -52,8 +52,8 @@ export function DashboardHome() {
       },
       {
         queryKey: ["movies", "recommended"],
-        queryFn: async () => {
-          const { data, error } = await apiClient.GET("/api/v1/movies/recommended");
+        queryFn: async ({ signal }) => {
+          const { data, error } = await apiClient.GET("/api/v1/movies/recommended", { signal });
           if (error) throw error;
           return data ?? [];
         },

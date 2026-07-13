@@ -13,7 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
-import { beginAuthTransition, handleOauth } from "@/lib/auth";
+import { beginAuthTransition, handleOauth, hardNavigate } from "@/lib/auth";
 
 type Props = {
   oauthProviderNames: string[];
@@ -35,6 +35,12 @@ export function LoginCard({ oauthProviderNames }: Props) {
     setSuccessMessage("");
 
     try {
+      // Transition BEFORE authenticating, not just before navigating: this
+      // advances the auth generation and drains any in-flight 401 exit, so a
+      // response still travelling for the previous session cannot land on — or
+      // log out — the session this POST is about to establish.
+      await beginAuthTransition(qc);
+
       const { error } = await apiClient.POST("/api/v1/auth/cookie/login", {
         body: {
           username: email,
@@ -45,15 +51,12 @@ export function LoginCard({ oauthProviderNames }: Props) {
       });
 
       if (!error) {
-        // New session, new identity. Establish a fresh auth generation, wait for
-        // any older 401 exit to finish, and drop everything the previous account
-        // left behind — all before navigating, so a stale handler can neither
-        // clear this session's cache nor beat us to the router.
-        await beginAuthTransition(qc);
         const message = "Login successful! Redirecting...";
         setSuccessMessage(message);
         toast.success(message);
-        router.push("/dashboard");
+        // Full document load: no QueryObserver from the previous session can
+        // survive into the new one.
+        hardNavigate("/dashboard", (p) => router.push(p));
       } else {
         toast.error("Login failed!");
         setErrorMessage("Login failed! Please check your credentials and try again.");

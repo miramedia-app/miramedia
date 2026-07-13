@@ -148,7 +148,7 @@ export default function ImportsPage() {
 
   const listQuery = useQuery({
     queryKey: [...qk.imports.list(apiTab), "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const PAGE = 200; // server cap (le=200)
       const items: ImportItem[] = [];
       let offset = 0;
@@ -158,6 +158,7 @@ export default function ImportsPage() {
       for (let i = 0; i < 20; i++) {
         const { data, error } = await apiClient.GET("/api/v1/imports", {
           params: { query: { tab: apiTab, offset, limit: PAGE } },
+          signal,
         });
         if (error) throw error;
         const page = (data?.items ?? []) as ImportItem[];
@@ -173,8 +174,8 @@ export default function ImportsPage() {
 
   const scanStatusQuery = useQuery<ScanRunStatus>({
     queryKey: [...qk.imports.scan(), "status"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status", { signal });
       if (error) throw error;
       return data!;
     },
@@ -189,8 +190,8 @@ export default function ImportsPage() {
   // backstop while a batch is in flight in case the stream drops.
   const countsQuery = useQuery({
     queryKey: [...qk.imports.counts()],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/counts");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/counts", { signal });
       if (error) throw error;
       return data;
     },

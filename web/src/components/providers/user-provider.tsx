@@ -3,6 +3,7 @@
 import * as React from "react";
 import { useQuery } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
+import { authTransition } from "@/lib/auth-generation";
 import type { components } from "@/lib/api/api";
 
 type User = components["schemas"]["UserRead"];
@@ -41,14 +42,24 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     staleTime: 30 * 1000,
   });
 
+  // `QueryClient.clear()` does not blank an active observer's last result, so a
+  // stalled or failed navigation could leave this provider still handing out the
+  // previous account's `is_superuser`. Once an auth transition starts we report
+  // no user, unconditionally, until a new document initializes.
+  const isTransitioning = React.useSyncExternalStore(
+    authTransition.subscribe,
+    authTransition.isTransitioning,
+    () => false,
+  );
+
   const { data, isLoading, refetch } = query;
   const value = React.useMemo<UserContextValue>(
     () => ({
-      user: data ?? null,
-      isLoading,
+      user: isTransitioning ? null : (data ?? null),
+      isLoading: isTransitioning || isLoading,
       refresh: () => void refetch(),
     }),
-    [data, isLoading, refetch],
+    [data, isLoading, refetch, isTransitioning],
   );
 
   return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
