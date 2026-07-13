@@ -60,8 +60,10 @@ def _high_water_background_session_factory(
     movie_rows: list[Any] | None = None,
     episode_high_water: uuid.UUID | None = None,
     movie_high_water: uuid.UUID | None = None,
+    episode_budget: int | None = None,
+    movie_budget: int | None = None,
 ) -> tuple[Any, list[RecordingSession]]:
-    """Recording sessions with explicit high-water snapshots per phase."""
+    """Recording sessions with explicit sweep bounds."""
     shared_episode_rows = list(episode_rows or [])
     shared_movie_rows = list(movie_rows or [])
     sessions: list[RecordingSession] = []
@@ -73,6 +75,8 @@ def _high_water_background_session_factory(
             movie_rows=shared_movie_rows,
             episode_high_water=episode_high_water,
             movie_high_water=movie_high_water,
+            episode_budget=episode_budget,
+            movie_budget=movie_budget,
         )
         sessions.append(session)
         yield session
@@ -360,19 +364,18 @@ def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> Non
     assert max_select_rows <= INTEGRITY_AUDIT_CHUNK_SIZE
 
 
-def test_integrity_audit_high_water_defers_rows_inserted_after_start(
+def test_integrity_audit_budget_defers_rows_inserted_after_start(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
     initial_id = uuid.UUID(int=1)
-    deferred_id = uuid.UUID(int=2)
+    deferred_id = uuid.uuid4()
     initial_path = tmp_path / "initial.mkv"
     deferred_path = tmp_path / "deferred.mkv"
     initial_path.write_bytes(b"initial")
     deferred_path.write_bytes(b"deferred")
 
     shared_rows = [FakeFileRow(id=initial_id, sha1=None, _resolved_path=initial_path)]
-    high_water = initial_id
     session_calls = 0
     hashed_ids: list[uuid.UUID] = []
 
@@ -380,7 +383,7 @@ def test_integrity_audit_high_water_defers_rows_inserted_after_start(
     async def _deferred_insert_session():
         nonlocal session_calls
         session_calls += 1
-        if session_calls == 2:
+        if session_calls > 1:
             shared_rows.append(
                 FakeFileRow(
                     id=deferred_id,
@@ -390,7 +393,8 @@ def test_integrity_audit_high_water_defers_rows_inserted_after_start(
             )
         session = RecordingSession(
             episode_rows=shared_rows,
-            episode_high_water=high_water,
+            episode_high_water=initial_id,
+            episode_budget=1,
         )
         yield session
 
@@ -431,7 +435,7 @@ def test_integrity_audit_empty_table_skips_chunk_reads(monkeypatch) -> None:
 
     _run(scheduler.verify_imported_files_task())
 
-    assert opened == 2
+    assert opened == 1
 
 
 def test_integrity_audit_exact_chunk_boundary(monkeypatch, tmp_path: Path) -> None:
@@ -539,3 +543,104 @@ def test_integrity_audit_overlapping_cross_table_uuids(
 
     assert hashed == [show_path, movie_path]
     assert len(_write_sessions(sessions)) == 2
+
+
+def test_integrity_audit_budget_caps_episode_reads_and_movie_still_runs(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    ep_max = uuid.UUID(int=100)
+    initial_episodes = [
+        FakeFileRow(
+            id=uuid.UUID(int=1),
+            sha1=None,
+            _resolved_path=tmp_path / "ep-1.mkv",
+        ),
+        FakeFileRow(
+            id=uuid.UUID(int=2),
+            sha1=None,
+            _resolved_path=tmp_path / "ep-2.mkv",
+        ),
+    ]
+    for row in initial_episodes:
+        row._resolved_path.write_bytes(b"x")
+
+    movie_id = uuid.uuid4()
+    movie_path = tmp_path / "movie.mkv"
+    movie_path.write_bytes(b"movie")
+    movie_row = FakeFileRow(
+        id=movie_id,
+        sha1=None,
+        _resolved_path=movie_path,
+        movie_id=uuid.uuid4(),
+        episode_id=None,
+    )
+
+    shared_episode_rows = list(initial_episodes)
+    episode_rows_read = 0
+    session_calls = 0
+    hashed_episodes = 0
+    hashed_movies = 0
+
+    @asynccontextmanager
+    async def _budget_starvation_session():
+        nonlocal session_calls
+        session_calls += 1
+        if session_calls > 1:
+            shared_episode_rows.append(
+                FakeFileRow(
+                    id=uuid.uuid4(),
+                    sha1=None,
+                    _resolved_path=tmp_path / f"late-{session_calls}.mkv",
+                )
+            )
+        session = RecordingSession(
+            episode_rows=shared_episode_rows,
+            movie_rows=[movie_row],
+            episode_high_water=ep_max,
+            episode_budget=2,
+            movie_budget=1,
+        )
+        original_execute = session.execute
+
+        async def _execute(stmt):
+            nonlocal episode_rows_read
+            result = await original_execute(stmt)
+            from sqlalchemy.sql.selectable import Select
+
+            if isinstance(stmt, Select):
+                entity = stmt.column_descriptions[0].get("entity")
+                if getattr(entity, "__name__", "") == "EpisodeFile":
+                    episode_rows_read += len(result.scalars().all())
+            return result
+
+        session.execute = _execute  # type: ignore[method-assign]
+        yield session
+
+    async def _track_hash(path: Path) -> str:
+        nonlocal hashed_episodes, hashed_movies
+        if path.parent == tmp_path and path.name.startswith("ep-"):
+            hashed_episodes += 1
+        if path == movie_path:
+            hashed_movies += 1
+        return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    _patch_integrity_config(monkeypatch)
+    monkeypatch.setattr(
+        "miramedia.database.background_session", _budget_starvation_session
+    )
+    patch_batch_resolve_paths(
+        monkeypatch,
+        {
+            initial_episodes[0].id: initial_episodes[0]._resolved_path,
+            initial_episodes[1].id: initial_episodes[1]._resolved_path,
+            movie_id: movie_path,
+        },
+    )
+    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert episode_rows_read == 2
+    assert hashed_episodes == 2
+    assert hashed_movies == 1

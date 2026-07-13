@@ -2,7 +2,18 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, delete, exists, func, literal, or_, select, text, union_all
+from sqlalchemy import (
+    and_,
+    delete,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    true,
+    union_all,
+)
 from sqlalchemy.orm import selectinload
 
 from miramedia.database import DbSessionDependency
@@ -686,31 +697,32 @@ class TorrentRepository:
             MovieFile.import_status == ImportOutcome.imported,
             MovieFile.import_error.like(mismatch),
         )
-        union = union_all(show_part, movie_part).subquery()
-        stmt = (
-            select(
-                union.c.type_sort,
-                union.c.file_id,
-                func.count().over().label("total"),
-            )
+        union = union_all(show_part, movie_part).subquery("mismatch_keys")
+        total_cte = (
+            select(func.count().label("total")).select_from(union).cte("mismatch_total")
+        )
+        page_cte = (
+            select(union.c.type_sort, union.c.file_id)
             .order_by(union.c.type_sort, union.c.file_id)
             .offset(offset)
             .limit(limit)
+            .cte("mismatch_page")
         )
+        stmt = select(
+            total_cte.c.total,
+            page_cte.c.type_sort,
+            page_cte.c.file_id,
+        ).select_from(total_cte.outerjoin(page_cte, true()))
         rows = (await self.db.execute(stmt)).all()
         if not rows:
-            total = int(
-                (
-                    await self.db.execute(select(func.count()).select_from(union))
-                ).scalar_one()
-            )
-            return Sha1MismatchPage(keys=[], total=total)
-        total = int(rows[0].total)
+            return Sha1MismatchPage(keys=[], total=0)
+        total = int(rows[0][0])
         keys = [
             Sha1MismatchPageKey(
                 media_type="show" if type_sort == 0 else "movie",
                 file_id=file_id,
             )
-            for type_sort, file_id, _total in rows
+            for _total, type_sort, file_id in rows
+            if file_id is not None
         ]
         return Sha1MismatchPage(keys=keys, total=total)

@@ -125,6 +125,12 @@ class _SelectExecuteResult:
     def scalar_one_or_none(self) -> Any:
         return self.scalar
 
+    def scalar_one(self) -> Any:
+        if self.scalar is None:
+            msg = "no scalar result"
+            raise ValueError(msg)
+        return self.scalar
+
 
 def _row_matches_audit_snapshot(
     row: _MutableRow,
@@ -242,38 +248,37 @@ def _audit_background_session_factory(
     ep_snapshot = list(snapshot_episode_rows or [])
     mv_snapshot = list(snapshot_movie_rows or [])
     write_sessions: list[_CompareAndSetSession] = []
-    planned: list[tuple[str, str, list[_MutableRow]]] = []
+    planned: list[tuple[str, Any, Any]] = [
+        ("bounds", ep_snapshot, mv_snapshot),
+    ]
     if ep_snapshot:
-        planned.append(("high_water", "ep", ep_snapshot))
         planned.append(("snapshot", "ep", ep_snapshot))
         planned.append(
             ("write", "ep", list(write_episode_rows or ep_snapshot)),
         )
         planned.append(("snapshot", "ep", []))
-    else:
-        planned.append(("high_water", "ep", []))
     if mv_snapshot:
-        planned.append(("high_water", "mv", mv_snapshot))
         planned.append(("snapshot", "mv", mv_snapshot))
         planned.append(
             ("write", "mv", list(write_movie_rows or mv_snapshot)),
         )
         planned.append(("snapshot", "mv", []))
-    else:
-        planned.append(("high_water", "mv", []))
     plan_iter = iter(planned)
 
     @asynccontextmanager
     async def _background_session():
         try:
-            kind, media, rows = next(plan_iter)
+            item = next(plan_iter)
         except StopIteration as exc:
             msg = "unexpected background_session call"
             raise AssertionError(msg) from exc
 
-        if kind == "snapshot" or kind == "high_water":
+        kind = item[0]
+        if kind == "bounds":
+            ep_rows = item[1]
+            mv_rows = item[2]
 
-            class _SnapshotSession:
+            class _BoundsSession:
                 async def commit(self) -> None:
                     return None
 
@@ -283,12 +288,42 @@ def _audit_background_session_factory(
                 async def execute(self, stmt: Any) -> _SelectExecuteResult:
                     from sqlalchemy.sql.selectable import Select
 
-                    if kind == "high_water" and isinstance(stmt, Select):
-                        if rows:
-                            return _SelectExecuteResult(
-                                [], scalar=max(r.id for r in rows)
-                            )
-                        return _SelectExecuteResult([], scalar=None)
+                    if not isinstance(stmt, Select):
+                        return _SelectExecuteResult([])
+                    if len(stmt.column_descriptions) == 1:
+                        name = stmt.column_descriptions[0].get("name")
+                        table = ""
+                        for from_item in stmt.get_final_froms():
+                            table = getattr(from_item, "name", "")
+                        if name == "id" and stmt._limit_clause is not None:
+                            if table == "episode_file":
+                                hw = max(r.id for r in ep_rows) if ep_rows else None
+                                return _SelectExecuteResult([], scalar=hw)
+                            if table == "movie_file":
+                                hw = max(r.id for r in mv_rows) if mv_rows else None
+                                return _SelectExecuteResult([], scalar=hw)
+                        if name and "count" in str(name).lower():
+                            if table == "episode_file":
+                                return _SelectExecuteResult([], scalar=len(ep_rows))
+                            if table == "movie_file":
+                                return _SelectExecuteResult([], scalar=len(mv_rows))
+                    return _SelectExecuteResult([])
+
+            yield _BoundsSession()
+            return
+
+        media = item[1]
+        rows = item[2]
+        if kind == "snapshot":
+
+            class _SnapshotSession:
+                async def commit(self) -> None:
+                    return None
+
+                async def rollback(self) -> None:
+                    return None
+
+                async def execute(self, stmt: Any) -> _SelectExecuteResult:
                     entity = stmt.column_descriptions[0].get("entity")
                     entity_name = getattr(entity, "__name__", "")
                     if media == "ep" and entity_name == "EpisodeFile":

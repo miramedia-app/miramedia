@@ -212,51 +212,53 @@ class IntegrityPathLayout:
 def scan_directory_for_stem_prefixes(
     directory: Path,
     stem_prefixes: frozenset[str],
-) -> list[Path]:
-    """Return video files matching any ``stem + '.'`` prefix (one directory pass).
+) -> dict[str, Path]:
+    """Return one deterministic video path per requested ``stem + '.'`` prefix.
 
-    Memory is bounded by the number of matches for the requested prefixes, not
-      the size of the directory listing.
+    Memory is O(len(stem_prefixes)), not O(directory size). When several files
+    share a prefix, the lexicographically smallest filename wins.
     """
     if not stem_prefixes or not directory.exists() or not directory.is_dir():
-        return []
-    matches: list[Path] = []
+        return {}
+    best: dict[str, Path] = {}
     try:
-        for entry in directory.iterdir():
-            if not entry.is_file():
-                continue
+        entries = sorted(
+            (entry for entry in directory.iterdir() if entry.is_file()),
+            key=lambda entry: entry.name,
+        )
+        for entry in entries:
             if entry.suffix.lower() not in _VIDEO_SUFFIXES:
                 continue
             name = entry.name
             for prefix in stem_prefixes:
-                if name.startswith(prefix):
-                    matches.append(entry)
+                if name.startswith(prefix) and prefix not in best:
+                    best[prefix] = entry
                     break
     except OSError:
-        return []
-    return matches
+        return {}
+    return best
 
 
 def resolve_video_path_from_stems(
     directory: Path,
     stems: Iterable[str],
     *,
-    candidates: list[Path] | None = None,
+    candidates: dict[str, Path] | None = None,
 ) -> Path | None:
     """Return the first video file matching any stem under ``directory``."""
-    prefixes = frozenset(f"{stem}." for stem in stems)
-    files = (
+    prefix_map = (
         candidates
         if candidates is not None
-        else scan_directory_for_stem_prefixes(directory, prefixes)
+        else scan_directory_for_stem_prefixes(
+            directory, frozenset(f"{stem}." for stem in stems)
+        )
     )
-    if not files:
+    if not prefix_map:
         return None
     for stem in stems:
-        prefix = stem + "."
-        for candidate in files:
-            if candidate.name.startswith(prefix):
-                return candidate
+        candidate = prefix_map.get(stem + ".")
+        if candidate is not None:
+            return candidate
     return None
 
 
@@ -267,7 +269,7 @@ def resolve_episode_file_path_in_memory(
     episode_number: int,
     episode_file: EpisodeFileSchema,
     season_dir: Path,
-    candidates: list[Path] | None = None,
+    candidates: dict[str, Path] | None = None,
 ) -> Path | None:
     """Pure in-memory episode path resolution (same semantics as ShowService)."""
     stems = episode_file_stem_candidates(
@@ -291,7 +293,7 @@ def resolve_movie_file_path_in_memory(
     movie: Movie,
     movie_file: MovieFileSchema,
     movie_root: Path,
-    candidates: list[Path] | None = None,
+    candidates: dict[str, Path] | None = None,
 ) -> Path | None:
     """Pure in-memory movie path resolution (same semantics as MovieService)."""
     stems = movie_file_stem_candidates(

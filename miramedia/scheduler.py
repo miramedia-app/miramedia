@@ -745,7 +745,7 @@ async def verify_imported_files_task() -> None:
     if not MiraMediaConfig().misc.integrity_check_enabled:
         return
 
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from miramedia.database import background_session
     from miramedia.file_status import ImportOutcome
@@ -861,9 +861,12 @@ async def verify_imported_files_task() -> None:
 
     layout = IntegrityPathLayout.from_config()
 
-    ep_high_water: uuid.UUID | None = None
+    ep_max_id: uuid.UUID | None = None
+    ep_budget = 0
+    mv_max_id: uuid.UUID | None = None
+    mv_budget = 0
     async with background_session() as db:
-        ep_high_water = (
+        ep_max_id = (
             await db.execute(
                 select(EpisodeFile.id)
                 .where(EpisodeFile.import_status == ImportOutcome.imported)
@@ -871,29 +874,58 @@ async def verify_imported_files_task() -> None:
                 .limit(1)
             )
         ).scalar_one_or_none()
+        ep_budget = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(EpisodeFile)
+                    .where(EpisodeFile.import_status == ImportOutcome.imported)
+                )
+            ).scalar_one()
+        )
+        mv_max_id = (
+            await db.execute(
+                select(MovieFile.id)
+                .where(MovieFile.import_status == ImportOutcome.imported)
+                .order_by(MovieFile.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        mv_budget = int(
+            (
+                await db.execute(
+                    select(func.count())
+                    .select_from(MovieFile)
+                    .where(MovieFile.import_status == ImportOutcome.imported)
+                )
+            ).scalar_one()
+        )
 
     last_episode_id = uuid.UUID(int=0)
-    if ep_high_water is not None:
-        while True:
+    remaining_ep_budget = ep_budget
+    if remaining_ep_budget > 0 and ep_max_id is not None:
+        while remaining_ep_budget > 0:
             row_snapshots: list[tuple] = []
             episode_context = {}
             shows = {}
             ep_schema_rows: list[EpisodeFileSchema] = []
+            chunk_limit = min(INTEGRITY_AUDIT_CHUNK_SIZE, remaining_ep_budget)
             async with background_session() as db:
                 ep_result = await db.execute(
                     select(EpisodeFile)
                     .where(
                         EpisodeFile.import_status == ImportOutcome.imported,
                         EpisodeFile.id > last_episode_id,
-                        EpisodeFile.id <= ep_high_water,
+                        EpisodeFile.id <= ep_max_id,
                     )
                     .order_by(EpisodeFile.id)
-                    .limit(INTEGRITY_AUDIT_CHUNK_SIZE)
+                    .limit(chunk_limit)
                 )
                 ep_rows = ep_result.scalars().all()
                 if not ep_rows:
                     break
                 last_episode_id = ep_rows[-1].id
+                remaining_ep_budget -= len(ep_rows)
                 show_repo = ShowRepository(db)
                 ep_schema_rows = [
                     EpisodeFileSchema.model_validate(row) for row in ep_rows
@@ -941,38 +973,30 @@ async def verify_imported_files_task() -> None:
                     )
                 await db.commit()
 
-    mv_high_water: uuid.UUID | None = None
-    async with background_session() as db:
-        mv_high_water = (
-            await db.execute(
-                select(MovieFile.id)
-                .where(MovieFile.import_status == ImportOutcome.imported)
-                .order_by(MovieFile.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-
     last_movie_id = uuid.UUID(int=0)
-    if mv_high_water is not None:
-        while True:
+    remaining_mv_budget = mv_budget
+    if remaining_mv_budget > 0 and mv_max_id is not None:
+        while remaining_mv_budget > 0:
             row_snapshots = []
             movies = {}
             mv_schema_rows: list[MovieFileSchema] = []
+            chunk_limit = min(INTEGRITY_AUDIT_CHUNK_SIZE, remaining_mv_budget)
             async with background_session() as db:
                 mv_result = await db.execute(
                     select(MovieFile)
                     .where(
                         MovieFile.import_status == ImportOutcome.imported,
                         MovieFile.id > last_movie_id,
-                        MovieFile.id <= mv_high_water,
+                        MovieFile.id <= mv_max_id,
                     )
                     .order_by(MovieFile.id)
-                    .limit(INTEGRITY_AUDIT_CHUNK_SIZE)
+                    .limit(chunk_limit)
                 )
                 mv_rows = mv_result.scalars().all()
                 if not mv_rows:
                     break
                 last_movie_id = mv_rows[-1].id
+                remaining_mv_budget -= len(mv_rows)
                 movie_repo = MovieRepository(db)
                 mv_schema_rows = [
                     MovieFileSchema.model_validate(row) for row in mv_rows

@@ -287,6 +287,7 @@ class FakeTorrentRepository:
     ) -> None:
         self.show_repo = show_repo
         self.movie_repo = movie_repo
+        self.db = FakeDb()
         self.torrents: dict[TorrentId, Torrent] = {}
         self.episode_files: dict[TorrentId, list[EpisodeFile]] = {}
         self.movie_files: dict[TorrentId, list[MovieFile]] = {}

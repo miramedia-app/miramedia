@@ -1886,9 +1886,13 @@ class TorrentService:
             [row.movie_id for row in movie_rows]
         )
 
-        from miramedia.database import release_session_before_external_io
+        from miramedia.database import release_sessions_before_external_io
 
-        await release_session_before_external_io(show_repo.db)
+        await release_sessions_before_external_io(
+            self.torrent_repository.db,
+            show_repo.db,
+            movie_repo.db,
+        )
 
         layout = IntegrityPathLayout.from_config()
         show_paths = await batch_resolve_episode_paths_async(

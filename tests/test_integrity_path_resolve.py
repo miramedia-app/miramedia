@@ -118,7 +118,7 @@ def test_scan_directory_matches_files_matching_stem_order(tmp_path: Path) -> Non
     prefixes = frozenset(f"{stem}." for stem in stems)
     scanned = scan_directory_for_stem_prefixes(season_dir, prefixes)
     legacy = [p for stem in stems for p in files_matching_stem(season_dir, stem)]
-    assert {p.name for p in scanned} == {p.name for p in legacy}
+    assert {p.name for p in scanned.values()} == {p.name for p in legacy}
 
 
 def test_scan_directory_does_not_retain_unrelated_files(tmp_path: Path) -> None:
@@ -133,5 +133,27 @@ def test_scan_directory_does_not_retain_unrelated_files(tmp_path: Path) -> None:
         season_dir, frozenset({"Target.S01E01.1080p."})
     )
 
-    assert matches == [target]
+    assert matches == {"Target.S01E01.1080p.": target}
     assert len(matches) == 1
+
+
+def test_scan_directory_retains_one_candidate_per_prefix_with_variant_noise(
+    tmp_path: Path,
+) -> None:
+    season_dir = tmp_path / "Season 01"
+    season_dir.mkdir()
+    prefix = "Noise.S01E01.1080p."
+    variants = [
+        f"{prefix}remux.mkv",
+        f"{prefix}web-dl.mkv",
+        f"{prefix}proper.mkv",
+    ]
+    for name in reversed(variants):
+        (season_dir / name).write_bytes(b"x")
+    for i in range(500):
+        (season_dir / f"other-{i:04d}.mkv").write_bytes(b"x")
+
+    matches = scan_directory_for_stem_prefixes(season_dir, frozenset({prefix}))
+
+    assert len(matches) == 1
+    assert matches[prefix].name == sorted(variants)[0]

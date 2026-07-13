@@ -14,6 +14,8 @@ from sqlalchemy.sql.selectable import Select
 class FakeDb:
     """Async session stub — commit/close are no-ops for DB-free tests."""
 
+    released: bool = False
+
     async def commit(self) -> None:
         return None
 
@@ -50,6 +52,12 @@ class _ExecuteResult:
     def scalar_one_or_none(self) -> Any:
         return self.scalar
 
+    def scalar_one(self) -> Any:
+        if self.scalar is None:
+            msg = "no scalar result"
+            raise ValueError(msg)
+        return self.scalar
+
 
 @dataclass
 class RecordingSession:
@@ -60,6 +68,8 @@ class RecordingSession:
     executes: list[Any] = field(default_factory=list)
     episode_high_water: UUID | None = None
     movie_high_water: UUID | None = None
+    episode_budget: int | None = None
+    movie_budget: int | None = None
 
     async def commit(self) -> None:
         return None
@@ -77,6 +87,14 @@ class RecordingSession:
             return False
         name = stmt.column_descriptions[0].get("name")
         return name == "id"
+
+    def _is_count_scalar(self, stmt: Select) -> bool:
+        if stmt._limit_clause is not None:
+            return False
+        if len(stmt.column_descriptions) != 1:
+            return False
+        name = str(stmt.column_descriptions[0].get("name", ""))
+        return "count" in name.lower()
 
     def _select_table(self, stmt: Select) -> str:
         for table in stmt.get_final_froms():
@@ -128,6 +146,16 @@ class RecordingSession:
                     if hw is None and self.movie_rows:
                         hw = max(row.id for row in self.movie_rows)
                     return _ExecuteResult([], scalar=hw)
+            if self._is_count_scalar(stmt):
+                table = self._select_table(stmt)
+                if table == "episode_file" or table == "EpisodeFile":
+                    budget = self.episode_budget
+                    count = budget if budget is not None else len(self.episode_rows)
+                    return _ExecuteResult([], scalar=count)
+                if table == "movie_file" or table == "MovieFile":
+                    budget = self.movie_budget
+                    count = budget if budget is not None else len(self.movie_rows)
+                    return _ExecuteResult([], scalar=count)
             entity = stmt.column_descriptions[0].get("entity")
             entity_name = getattr(entity, "__name__", "")
             if entity_name == "EpisodeFile":

@@ -25,6 +25,7 @@ from miramedia.torrents.integrity import (
 )
 from miramedia.torrents.schemas import IntegrityMismatch, MediaType, Quality
 from miramedia.torrents.service import TorrentService
+from tests.fakes.db import FakeDb
 from tests.fakes.repositories import (
     FakeMovieRepository,
     FakeShowRepository,
@@ -46,6 +47,7 @@ def _torrent_service(
     movie_repo: _IntegrityMovieRepo,
 ) -> TorrentService:
     torrent_repo = FakeTorrentRepository(show_repo=show_repo, movie_repo=movie_repo)
+    torrent_repo.db = FakeDb()
     return TorrentService(torrent_repository=torrent_repo)  # type: ignore[arg-type]
 
 
@@ -955,6 +957,81 @@ def test_list_integrity_mismatches_next_offset_uses_page_span_after_dismiss() ->
     assert page.next_offset != len(page.items)
 
 
+def test_list_integrity_mismatches_releases_all_repository_sessions(
+    monkeypatch,
+) -> None:
+    show = make_show(name="Severance", season_number=1, episode_number=1)
+    show_repo = _IntegrityShowRepo()
+    show_repo.add_show(show)
+    show_repo.db = FakeDb()
+    episode = show.seasons[0].episodes[0]
+    detected = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
+    fid = uuid.uuid4()
+    show_repo.episode_files[fid] = EpisodeFile(
+        id=fid,
+        episode_id=episode.id,
+        quality=Quality.hd,
+        torrent_id=None,
+        import_status=ImportOutcome.imported,
+        import_error="sha1 mismatch (expected a…, got b…)",
+        last_attempt_at=detected,
+        sha1="abc",
+    )
+    movie_repo = _IntegrityMovieRepo()
+    movie_repo.db = FakeDb()
+    released_ids: list[int] = []
+    queries_after_release = 0
+
+    async def _tracking_release(*sessions: Any) -> None:
+        released_ids.extend(id(session) for session in sessions)
+
+    async def _slow_episode_paths(rows, episode_context, shows, layout):  # noqa: ARG001
+        nonlocal queries_after_release
+        if queries_after_release:
+            msg = "repository query after session release"
+            raise AssertionError(msg)
+        await asyncio.sleep(0.01)
+        return {row.id: None for row in rows}
+
+    original_get_by_ids = show_repo.get_sha1_mismatch_episode_files_by_ids
+
+    async def _counting_get_by_ids(file_ids):
+        nonlocal queries_after_release
+        if released_ids:
+            queries_after_release += 1
+        return await original_get_by_ids(file_ids)
+
+    show_repo.get_sha1_mismatch_episode_files_by_ids = _counting_get_by_ids  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        "miramedia.database.release_sessions_before_external_io",
+        _tracking_release,
+    )
+    monkeypatch.setattr(
+        "miramedia.torrents.service.batch_resolve_episode_paths_async",
+        _slow_episode_paths,
+    )
+    monkeypatch.setattr(
+        "miramedia.torrents.service.batch_resolve_movie_paths_async",
+        _async_empty_movie_paths,
+    )
+
+    svc = _torrent_service(show_repo, movie_repo)
+    page = _run(
+        svc.list_integrity_mismatches(
+            offset=0,
+            limit=INTEGRITY_MISMATCH_MAX_LIMIT,
+            show_service=_show_service(show_repo, {}),
+            movie_service=_movie_service(movie_repo, {}),
+        )
+    )
+
+    assert len(page.items) == 1
+    assert len(released_ids) == 3
+    assert len(set(released_ids)) == 3
+    assert queries_after_release == 0
+
+
 def test_list_integrity_mismatches_releases_session_before_directory_scan(
     monkeypatch,
 ) -> None:
@@ -975,6 +1052,7 @@ def test_list_integrity_mismatches_releases_session_before_directory_scan(
         sha1="abc",
     )
     movie_repo = _IntegrityMovieRepo()
+    movie_repo.db = FakeDb()
     sessions_open: list[bool] = []
     released_before_scan = False
 
@@ -988,7 +1066,7 @@ def test_list_integrity_mismatches_releases_session_before_directory_scan(
             finally:
                 sessions_open.pop()
 
-    async def _tracking_release(_db: Any) -> None:
+    async def _tracking_release(*_sessions: Any) -> None:
         nonlocal released_before_scan
         released_before_scan = True
 
@@ -999,7 +1077,7 @@ def test_list_integrity_mismatches_releases_session_before_directory_scan(
         return {row.id: None for row in rows}
 
     monkeypatch.setattr(
-        "miramedia.database.release_session_before_external_io",
+        "miramedia.database.release_sessions_before_external_io",
         _tracking_release,
     )
     monkeypatch.setattr(
