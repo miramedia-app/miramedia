@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -32,10 +32,8 @@ from miramedia.torrents.service import TorrentService
 from tests.fakes.config import fake_scheduler_config
 from tests.fakes.repositories import FakeTorrentRepository, make_movie, make_show
 from tests.fakes.scheduler import (
-    FakeMoviePathService,
-    FakeShowService,
-    bg_movie_path_service_factory,
-    bg_show_service_factory,
+    patch_audit_repository_lookups,
+    patch_batch_resolve_paths,
 )
 from tests.test_integrity_mismatch_api import (
     _IntegrityMovieRepo,
@@ -94,11 +92,17 @@ class _RowcountResult:
 
 
 @dataclass
+@dataclass
 class _MutableRow:
     id: uuid.UUID
     sha1: str | None
+    episode_id: uuid.UUID = field(default_factory=uuid.uuid4)
     import_status: ImportOutcome = ImportOutcome.imported
     import_error: str | None = None
+    movie_id: uuid.UUID | None = None
+    torrent_id: uuid.UUID | None = None
+    quality: Quality = Quality.hd
+    variant: str = ""
     _resolved_path: Path | None = None
 
 
@@ -113,9 +117,19 @@ class _ScalarResult:
 @dataclass
 class _SelectExecuteResult:
     rows: list[Any]
+    scalar: Any = None
 
     def scalars(self) -> _ScalarResult:
         return _ScalarResult(self.rows)
+
+    def scalar_one_or_none(self) -> Any:
+        return self.scalar
+
+    def scalar_one(self) -> Any:
+        if self.scalar is None:
+            msg = "no scalar result"
+            raise ValueError(msg)
+        return self.scalar
 
 
 def _row_matches_audit_snapshot(
@@ -234,12 +248,73 @@ def _audit_background_session_factory(
     ep_snapshot = list(snapshot_episode_rows or [])
     mv_snapshot = list(snapshot_movie_rows or [])
     write_sessions: list[_CompareAndSetSession] = []
-    call = {"n": 0}
+    planned: list[tuple[str, Any, Any]] = [
+        ("bounds", ep_snapshot, mv_snapshot),
+    ]
+    if ep_snapshot:
+        planned.append(("snapshot", "ep", ep_snapshot))
+        planned.append(
+            ("write", "ep", list(write_episode_rows or ep_snapshot)),
+        )
+        planned.append(("snapshot", "ep", []))
+    if mv_snapshot:
+        planned.append(("snapshot", "mv", mv_snapshot))
+        planned.append(
+            ("write", "mv", list(write_movie_rows or mv_snapshot)),
+        )
+        planned.append(("snapshot", "mv", []))
+    plan_iter = iter(planned)
 
     @asynccontextmanager
     async def _background_session():
-        call["n"] += 1
-        if call["n"] == 1:
+        try:
+            item = next(plan_iter)
+        except StopIteration as exc:
+            msg = "unexpected background_session call"
+            raise AssertionError(msg) from exc
+
+        kind = item[0]
+        if kind == "bounds":
+            ep_rows = item[1]
+            mv_rows = item[2]
+
+            class _BoundsSession:
+                async def commit(self) -> None:
+                    return None
+
+                async def rollback(self) -> None:
+                    return None
+
+                async def execute(self, stmt: Any) -> _SelectExecuteResult:
+                    from sqlalchemy.sql.selectable import Select
+
+                    if not isinstance(stmt, Select):
+                        return _SelectExecuteResult([])
+                    if len(stmt.column_descriptions) == 1:
+                        name = stmt.column_descriptions[0].get("name")
+                        table = ""
+                        for from_item in stmt.get_final_froms():
+                            table = getattr(from_item, "name", "")
+                        if name == "id" and stmt._limit_clause is not None:
+                            if table == "episode_file":
+                                hw = max(r.id for r in ep_rows) if ep_rows else None
+                                return _SelectExecuteResult([], scalar=hw)
+                            if table == "movie_file":
+                                hw = max(r.id for r in mv_rows) if mv_rows else None
+                                return _SelectExecuteResult([], scalar=hw)
+                        if name and "count" in str(name).lower():
+                            if table == "episode_file":
+                                return _SelectExecuteResult([], scalar=len(ep_rows))
+                            if table == "movie_file":
+                                return _SelectExecuteResult([], scalar=len(mv_rows))
+                    return _SelectExecuteResult([])
+
+            yield _BoundsSession()
+            return
+
+        media = item[1]
+        rows = item[2]
+        if kind == "snapshot":
 
             class _SnapshotSession:
                 async def commit(self) -> None:
@@ -251,18 +326,18 @@ def _audit_background_session_factory(
                 async def execute(self, stmt: Any) -> _SelectExecuteResult:
                     entity = stmt.column_descriptions[0].get("entity")
                     entity_name = getattr(entity, "__name__", "")
-                    if entity_name == "EpisodeFile":
-                        return _SelectExecuteResult(ep_snapshot)
-                    if entity_name == "MovieFile":
-                        return _SelectExecuteResult(mv_snapshot)
+                    if media == "ep" and entity_name == "EpisodeFile":
+                        return _SelectExecuteResult(rows)
+                    if media == "mv" and entity_name == "MovieFile":
+                        return _SelectExecuteResult(rows)
                     return _SelectExecuteResult([])
 
             yield _SnapshotSession()
             return
 
         write = _CompareAndSetSession(
-            episode_rows=list(write_episode_rows or ep_snapshot),
-            movie_rows=list(write_movie_rows or mv_snapshot),
+            episode_rows=list(rows) if media == "ep" else [],
+            movie_rows=list(rows) if media == "mv" else [],
         )
         write_sessions.append(write)
         yield write
@@ -271,10 +346,10 @@ def _audit_background_session_factory(
 
 
 def _patch_integrity_config(monkeypatch, *, enabled: bool = True) -> None:
-    monkeypatch.setattr(
-        "miramedia.config.MiraMediaConfig",
-        lambda: fake_scheduler_config(integrity_check_enabled=enabled),
-    )
+    cfg = fake_scheduler_config(integrity_check_enabled=enabled)
+    monkeypatch.setattr("miramedia.config.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
+    patch_audit_repository_lookups(monkeypatch)
 
 
 async def _return_sha(sha: str | None):
@@ -343,18 +418,9 @@ def test_show_audit_skips_when_dismiss_cleared_import_error_after_snapshot(
         snapshot_episode_rows=[snapshot_row],
         write_episode_rows=[write_row],
     )
-    show_service = FakeShowService(make_show(), path_by_row_id={file_id: media_path})
-
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -376,34 +442,30 @@ def test_movie_audit_skips_when_dismiss_cleared_import_error_after_snapshot(
     media_path.write_bytes(b"content")
     prior = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     prior_error = "sha1 mismatch (expected bbbbbbbbbb…, got old…)"
+    movie_id = uuid.uuid4()
     snapshot_row = _MutableRow(
         id=file_id,
         sha1=prior,
         import_error=prior_error,
         _resolved_path=media_path,
+        movie_id=movie_id,
+        episode_id=uuid.UUID(int=0),
     )
     write_row = _MutableRow(
         id=file_id,
         sha1=prior,
         import_error=None,
         _resolved_path=media_path,
+        movie_id=movie_id,
+        episode_id=uuid.UUID(int=0),
     )
     bg_session, write_sessions = _audit_background_session_factory(
         snapshot_movie_rows=[snapshot_row],
         write_movie_rows=[write_row],
     )
-    movie_service = FakeMoviePathService(path_by_row_id={file_id: media_path})
-
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(FakeShowService(make_show())),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(movie_service),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -439,18 +501,9 @@ def test_show_audit_skips_when_rebaseline_changed_sha1_after_snapshot(
         snapshot_episode_rows=[snapshot_row],
         write_episode_rows=[write_row],
     )
-    show_service = FakeShowService(make_show(), path_by_row_id={file_id: media_path})
-
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
-    )
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
         scheduler,
         "_compute_sha1_async",
@@ -486,20 +539,11 @@ def test_current_audit_baseline_and_mismatch_still_apply(
         snapshot_episode_rows=[baseline_row, mismatch_row],
         write_episode_rows=[baseline_row, mismatch_row],
     )
-    show_service = FakeShowService(
-        make_show(),
-        path_by_row_id={baseline_id: baseline_path, mismatch_id: mismatch_path},
-    )
-
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr("miramedia.database.background_session", bg_session)
-    monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
-        bg_show_service_factory(show_service),
-    )
-    monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
-        bg_movie_path_service_factory(FakeMoviePathService()),
+    patch_batch_resolve_paths(
+        monkeypatch,
+        {baseline_id: baseline_path, mismatch_id: mismatch_path},
     )
 
     async def _hash(path: Path) -> str:
@@ -770,3 +814,70 @@ def test_null_sha1_baseline_predicate_distinguishes_from_nonempty_sha1() -> None
     )
     assert "IS NULL" in _compile_sql(null_where)
     assert _compile_sql(nonempty_where).count("IS NOT DISTINCT FROM") == 2
+
+
+def test_show_audit_batch_loads_shows_via_column_mapping(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Audit snapshot phase must load shows without lazy Show.seasons access."""
+    from miramedia.shows.schemas import EpisodeId, EpisodeIntegrityContext
+    from tests.fakes.repositories import make_show
+    from tests.test_integrity_repository_lookups import (
+        _REAL_GET_SHOWS_BY_IDS,
+        _MappingRecordingSession,
+        _show_mapping,
+    )
+
+    show = make_show(name="Audit Show")
+    show_id = show.id
+    episode_id = show.seasons[0].episodes[0].id
+    file_id = uuid.uuid4()
+    media_path = tmp_path / "audit-show.mkv"
+    media_path.write_bytes(b"content")
+    snapshot_row = _MutableRow(
+        id=file_id,
+        sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        import_error=None,
+        episode_id=episode_id,
+        _resolved_path=media_path,
+    )
+    bg_session, _write_sessions = _audit_background_session_factory(
+        snapshot_episode_rows=[snapshot_row],
+        write_episode_rows=[snapshot_row],
+    )
+    cfg = fake_scheduler_config(integrity_check_enabled=True)
+    monkeypatch.setattr("miramedia.config.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr("miramedia.database.background_session", bg_session)
+    patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
+    monkeypatch.setattr(
+        scheduler,
+        "_compute_sha1_async",
+        lambda _path: _return_sha("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    )
+
+    lookup_sessions: list[_MappingRecordingSession] = []
+
+    async def _episode_context(self, episode_ids):  # noqa: ARG001
+        return {
+            EpisodeId(episode_id): EpisodeIntegrityContext(
+                episode_number=1,
+                season_number=1,
+                show_id=show_id,
+                show_name="Audit Show",
+            )
+        }
+
+    async def _mapping_shows_by_ids(self, show_ids):  # noqa: ARG001
+        session = _MappingRecordingSession(rows=[_show_mapping(show)])
+        lookup_sessions.append(session)
+        repo = ShowRepository(session)  # type: ignore[arg-type]
+        return await _REAL_GET_SHOWS_BY_IDS(repo, show_ids)
+
+    monkeypatch.setattr(ShowRepository, "batch_episodes_with_context", _episode_context)
+    monkeypatch.setattr(ShowRepository, "get_shows_by_ids", _mapping_shows_by_ids)
+
+    _run(scheduler.verify_imported_files_task())
+
+    assert len(lookup_sessions) == 1
+    assert len(lookup_sessions[0].executes) == 1

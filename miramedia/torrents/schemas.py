@@ -328,5 +328,15 @@ class IntegrityMismatch(BaseModel):
     detected_at: datetime | None  # last_attempt_at or None
 
 
+class PaginatedIntegrityMismatches(BaseModel):
+    """Bounded page of integrity-mismatch rows (shows first, then movies)."""
+
+    items: list[IntegrityMismatch]
+    total: int
+    offset: int
+    limit: int
+    next_offset: int | None = None
+
+
 class IntegrityActionResult(BaseModel):
     ok: bool = True
