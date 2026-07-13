@@ -27,7 +27,9 @@ def _write_zip(path: Path, entries: dict[str, bytes]) -> None:
             zf.writestr(name, data)
 
 
-def _write_tar(path: Path, entries: dict[str, bytes], *, gzip_compressed: bool = False) -> None:
+def _write_tar(
+    path: Path, entries: dict[str, bytes], *, gzip_compressed: bool = False
+) -> None:
     mode = "w:gz" if gzip_compressed else "w"
     with tarfile.open(path, mode) as tf:
         for name, data in entries.items():

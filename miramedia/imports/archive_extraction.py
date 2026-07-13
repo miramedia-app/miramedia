@@ -124,7 +124,11 @@ def _detect_format(archive: Path) -> str:
         return "bzip2"
 
     mime = _guess_mime(archive)
-    if mime in {"application/zip", "application/x-zip-compressed", "application/x-compressed"}:
+    if mime in {
+        "application/zip",
+        "application/x-zip-compressed",
+        "application/x-compressed",
+    }:
         return "zip"
     if mime == "application/vnd.rar":
         return "rar"
@@ -203,7 +207,9 @@ def _extract_tar(
         extract_filter = getattr(tarfile, "data_filter", None)
         for member in members:
             if member.isdir():
-                _safe_relative_path(staging, member.name).mkdir(parents=True, exist_ok=True)
+                _safe_relative_path(staging, member.name).mkdir(
+                    parents=True, exist_ok=True
+                )
                 continue
             if extract_filter is not None:
                 safe = extract_filter(member, staging)
@@ -223,7 +229,11 @@ def _extract_gzip(archive: Path, staging: Path) -> None:
     if archive.stat().st_size > MAX_EXPANDED_BYTES:
         msg = "archive exceeds expanded-byte limit"
         raise ArchiveExtractionError(msg)
-    out_name = archive.name[:-3] if archive.name.lower().endswith(".gz") else f"{archive.name}.out"
+    out_name = (
+        archive.name[:-3]
+        if archive.name.lower().endswith(".gz")
+        else f"{archive.name}.out"
+    )
     _validate_entry_name(out_name)
     _enforce_limits(1, archive.stat().st_size)
     rel = _safe_relative_path(staging, out_name)
@@ -236,7 +246,11 @@ def _extract_bzip2(archive: Path, staging: Path) -> None:
     if archive.stat().st_size > MAX_EXPANDED_BYTES:
         msg = "archive exceeds expanded-byte limit"
         raise ArchiveExtractionError(msg)
-    out_name = archive.name[:-4] if archive.name.lower().endswith(".bz2") else f"{archive.name}.out"
+    out_name = (
+        archive.name[:-4]
+        if archive.name.lower().endswith(".bz2")
+        else f"{archive.name}.out"
+    )
     _validate_entry_name(out_name)
     _enforce_limits(1, archive.stat().st_size)
     rel = _safe_relative_path(staging, out_name)
