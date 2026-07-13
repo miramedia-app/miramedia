@@ -115,8 +115,8 @@ export default function ShowsPage() {
 
   const facetsQuery = useQuery({
     queryKey: ["shows", "facets"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/shows/facets");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/shows/facets", { signal });
       if (error) throw error;
       return data ?? { libraries: [], genres: [], decades: [] };
     },
@@ -126,7 +126,7 @@ export default function ShowsPage() {
 
   const showsQuery = useQuery({
     queryKey: ["shows", "list", deferredSearchQuery, sortBy, currentPage, pageSize, filterParams],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const baseQuery: ShowsQuery = {
         q: deferredSearchQuery.trim() || undefined,
         sort: sortBy,
@@ -135,6 +135,7 @@ export default function ShowsPage() {
         ...(filterParams as Partial<ShowsQuery>),
       };
       const listRes = await apiClient.GET("/api/v1/shows", {
+        signal,
         params: { query: baseQuery },
       });
       if (listRes.error) throw listRes.error;

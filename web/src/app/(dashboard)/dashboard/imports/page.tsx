@@ -148,7 +148,7 @@ export default function ImportsPage() {
 
   const listQuery = useQuery({
     queryKey: [...qk.imports.list(apiTab), "all"],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const PAGE = 200; // server cap (le=200)
       const items: ImportItem[] = [];
       let offset = 0;
@@ -158,6 +158,7 @@ export default function ImportsPage() {
       for (let i = 0; i < 20; i++) {
         const { data, error } = await apiClient.GET("/api/v1/imports", {
           params: { query: { tab: apiTab, offset, limit: PAGE } },
+          signal,
         });
         if (error) throw error;
         const page = (data?.items ?? []) as ImportItem[];
@@ -173,8 +174,8 @@ export default function ImportsPage() {
 
   const scanStatusQuery = useQuery<ScanRunStatus>({
     queryKey: [...qk.imports.scan(), "status"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/scan/status", { signal });
       if (error) throw error;
       return data!;
     },
@@ -189,8 +190,8 @@ export default function ImportsPage() {
   // backstop while a batch is in flight in case the stream drops.
   const countsQuery = useQuery({
     queryKey: [...qk.imports.counts()],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/imports/counts");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/imports/counts", { signal });
       if (error) throw error;
       return data;
     },
@@ -207,8 +208,12 @@ export default function ImportsPage() {
   const canSeeIntegrity = user?.is_superuser === true;
   const mismatchesQuery = useQuery({
     queryKey: qk.imports.integrity(),
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches");
+    // Signal-aware: when authorization drops we `cancelQueries` this key, and the
+    // privileged request is aborted in transport rather than being left to land.
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/torrents/integrity/mismatches", {
+        signal,
+      });
       if (error) throw error;
       return data ?? [];
     },
@@ -1094,7 +1099,11 @@ export default function ImportsPage() {
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
         {integrityFailed && (
-          <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+          <div
+            role="alert"
+            aria-live="polite"
+            className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm"
+          >
             <div className="flex items-center gap-2">
               <AlertOctagon className="h-4 w-4 text-destructive" />
               <span>Corruption data could not be loaded. Other imports are unaffected.</span>

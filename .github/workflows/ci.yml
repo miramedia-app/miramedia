@@ -84,10 +84,14 @@ jobs:
           cache-dependency-path: web/pnpm-lock.yaml
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      # Typecheck-only path: nothing here compiles, so the generated collections +
+      # type declarations must be produced explicitly. One MDX run; `typecheck`
+      # would generate a second time, so use the already-generated variant. Build
+      # paths must NOT do this — the `build` script generates on its own.
       - name: Generate types (fumadocs source + next typegen)
         run: pnpm run generate
       - name: Typecheck
-        run: pnpm exec tsgo --noEmit
+        run: pnpm run typecheck:generated
 
   # Regenerate the OpenAPI spec + client types on main and commit them if they
   # drift, so the Pages docs site (which renders the committed web/public/openapi.json)

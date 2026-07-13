@@ -44,13 +44,15 @@ export function MediaSearchInput({
   // setState calls after unmount) is no longer needed.
   const suggestionsQuery = useQuery({
     queryKey: ["media-search", mediaType, debouncedQuery],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const { data } =
         mediaType === "show"
           ? await apiClient.GET("/api/v1/shows/search", {
+              signal,
               params: { query: { query: debouncedQuery } },
             })
           : await apiClient.GET("/api/v1/movies/search", {
+              signal,
               params: { query: { query: debouncedQuery } },
             });
       return (data ?? []).slice(0, 8);

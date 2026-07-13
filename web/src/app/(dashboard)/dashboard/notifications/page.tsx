@@ -21,8 +21,8 @@ export default function NotificationsPage() {
 
   const allQuery = useQuery({
     queryKey: ["notifications", "all"],
-    queryFn: async () => {
-      const { data, error } = await apiClient.GET("/api/v1/notifications");
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/notifications", { signal });
       if (error) throw error;
       return (data ?? []) as Notification[];
     },

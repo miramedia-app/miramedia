@@ -41,8 +41,8 @@ function writeDismiss(target: string | null) {
 export function VersionUpdate() {
   const { data } = useQuery({
     queryKey: ["system", "updates"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/updates");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/updates", { signal });
       return data ?? null;
     },
     staleTime: 60 * 60 * 1000,

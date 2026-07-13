@@ -23,16 +23,16 @@ export function UpdatesTab({
 
   const updateInfoQuery = useQuery({
     queryKey: ["system", "updates"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/updates");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/updates", { signal });
       return data ?? null;
     },
     retry: false,
   });
   const applyStatusQuery = useQuery({
     queryKey: ["system", "updates", "status"],
-    queryFn: async () => {
-      const { data } = await apiClient.GET("/api/v1/system/updates/status");
+    queryFn: async ({ signal }) => {
+      const { data } = await apiClient.GET("/api/v1/system/updates/status", { signal });
       return data ?? null;
     },
     retry: false,
