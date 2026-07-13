@@ -45,6 +45,13 @@ from miramedia.imports.schemas import (
     TorrentImportItem,
     TorrentResolveAction,
 )
+from miramedia.media_paths import (
+    PathNotDirectoryError,
+    PathNotFoundError,
+    PathOutsideRootsError,
+    library_roots_for_media_type,
+    resolve_path_within_roots,
+)
 from miramedia.movies.service import MovieService
 from miramedia.shows.service import ShowService
 from miramedia.torrents.schemas import (
@@ -309,9 +316,14 @@ class ImportsService:
     async def resolve(self, body: ResolveRequest) -> ResolveResult:
         if body.kind == "torrent":
             return await self._resolve_torrent(body)
-        if body.kind == "scan":
-            return await self._resolve_scan(body)
-        raise HTTPException(400, f"Unknown kind: {body.kind}")
+        raise HTTPException(400, "scan resolve requires claim token via worker payload")
+
+    async def resolve_manual_scan(
+        self, body: ResolveRequest, *, claim_token: str
+    ) -> ResolveResult:
+        if body.kind != "scan":
+            raise HTTPException(400, "manual scan resolve payload mismatch")
+        return await self._resolve_scan(body, claim_token=claim_token)
 
     async def _resolve_torrent(self, body: ResolveRequest) -> ResolveResult:
         try:
@@ -348,13 +360,34 @@ class ImportsService:
             )
         raise HTTPException(400, f"Unknown action: {action}")
 
-    async def _resolve_scan(self, body: ResolveRequest) -> ResolveResult:
+    async def _resolve_scan(
+        self, body: ResolveRequest, *, claim_token: str
+    ) -> ResolveResult:
         if body.media_type is None:
             raise HTTPException(400, "media_type required for scan resolve")
         directory = body.id
-        path = Path(directory)
-        if not path.exists():  # noqa: ASYNC240 — cheap stat, intentional
-            raise HTTPException(400, "directory no longer exists on disk")
+        cache_row = await self.repository.get_scan_cache_entry(directory)
+        if cache_row is None:
+            raise HTTPException(404, "scan entry not found")
+        if cache_row.get("status") != "queued":
+            raise HTTPException(409, "scan entry not eligible")
+        if cache_row.get("media_type_hint") != body.media_type.value:
+            raise HTTPException(409, "scan entry not eligible")
+        if cache_row.get("claim_token") != claim_token:
+            raise HTTPException(409, "scan entry not eligible")
+
+        roots = library_roots_for_media_type(body.media_type)
+        try:
+            path = await asyncio.to_thread(
+                resolve_path_within_roots,
+                Path(directory),
+                roots,
+                require_directory=True,
+            )
+        except (PathNotFoundError, PathNotDirectoryError) as exc:
+            raise HTTPException(404, "scan entry not found") from exc
+        except PathOutsideRootsError as exc:
+            raise HTTPException(404, "scan entry not found") from exc
 
         imported_media = None
         if body.media_id is not None:
@@ -403,7 +436,9 @@ class ImportsService:
                 # Surface as a 422 with the provider's message + leave the
                 # scan row in failed state so the user can pick a different
                 # candidate without retrying the broken one.
-                await self.repository.mark_scan_cache_failed(directory, error=str(exc))
+                await self.repository.fail_manual_scan_import(
+                    directory, claim_token=claim_token, error=str(exc)
+                )
                 raise HTTPException(422, str(exc)) from exc
         else:
             raise HTTPException(
@@ -413,14 +448,13 @@ class ImportsService:
 
         if not ok:
             # Keep the row visible as a needs-attention entry, never finished.
-            await self.repository.mark_scan_cache_failed(
-                directory, error="import failed"
+            await self.repository.fail_manual_scan_import(
+                directory, claim_token=claim_token, error="import failed"
             )
             raise HTTPException(400, "import failed")
-        # Keep the row visible as a finished entry (status: imported) instead
-        # of deleting it.
-        await self.repository.mark_scan_cache_imported(
+        await self.repository.complete_manual_scan_import(
             directory,
+            claim_token=claim_token,
             imported_name=getattr(imported_media, "name", None),
             imported_media_id=str(getattr(imported_media, "id", "")) or None,
             imported_media_type=body.media_type.value
