@@ -7,6 +7,7 @@ from sqlalchemy import UniqueConstraint
 from miramedia.auth.db import OAuthAccount
 
 _UNIQUE_INDEX_NAME = "uq_oauth_account_oauth_name_account_id"
+_USER_ID_INDEX_NAME = "ix_oauth_account_user_id"
 
 
 def test_oauth_account_declares_named_provider_account_unique_index() -> None:
@@ -22,6 +23,15 @@ def test_oauth_account_declares_named_provider_account_unique_index() -> None:
     index = composite_unique[0]
     assert index.name == _UNIQUE_INDEX_NAME
     assert [column.name for column in index.columns] == ["oauth_name", "account_id"]
+
+    user_id_indexes = [
+        ix
+        for ix in table.indexes
+        if not ix.unique and [column.name for column in ix.columns] == ["user_id"]
+    ]
+    assert len(user_id_indexes) == 1
+    user_index = user_id_indexes[0]
+    assert user_index.name == _USER_ID_INDEX_NAME
 
     assert not any(
         isinstance(constraint, UniqueConstraint)

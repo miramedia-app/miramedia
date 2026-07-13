@@ -17,6 +17,7 @@ from miramedia.database import Base, get_session
 
 class OAuthAccount(SQLAlchemyBaseOAuthAccountTableUUID, Base):
     __table_args__ = (
+        Index("ix_oauth_account_user_id", "user_id"),
         Index(
             "uq_oauth_account_oauth_name_account_id",
             "oauth_name",
