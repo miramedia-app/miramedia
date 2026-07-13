@@ -235,6 +235,17 @@ class ResolveResult(BaseModel):
     detail: str = ""
 
 
+class ResolveImportTaskPayload(BaseModel):
+    """Internal worker payload for /imports/resolve dispatch.
+
+    ``scan_claim_token`` is server-issued at claim time and is never accepted
+    from the public API — it binds one broker delivery to one queued row.
+    """
+
+    body: ResolveRequest
+    scan_claim_token: str | None = None
+
+
 class IgnoreRequest(BaseModel):
     kind: Literal["torrent", "scan"]
     id: str

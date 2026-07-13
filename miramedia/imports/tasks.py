@@ -352,8 +352,11 @@ async def resolve_import_task(body_json: dict) -> None:
     for the duration of the resolve (which may include disk-walk and import).
     """
     from miramedia.database import background_session
-    from miramedia.imports.repository import ImportsRepository
-    from miramedia.imports.schemas import ResolveRequest
+    from miramedia.imports.repository import (
+        ImportsRepository,
+        ScanWorkerBeginResult,
+    )
+    from miramedia.imports.schemas import ResolveImportTaskPayload
     from miramedia.imports.service import ImportsService
     from miramedia.indexers.repository import IndexerRepository
     from miramedia.indexers.service import IndexerService
@@ -366,7 +369,8 @@ async def resolve_import_task(body_json: dict) -> None:
     from miramedia.torrents.repository import TorrentRepository
     from miramedia.torrents.service import TorrentService
 
-    body = ResolveRequest.model_validate(body_json)
+    payload = ResolveImportTaskPayload.model_validate(body_json)
+    body = payload.body
     # Collapse the previous 4-session fan-out into one shared bg session.
     # Holding it for a single resolve (bounded I/O) is cheap; the prior
     # nesting could pin 4 connections per concurrent resolve and exhaust
@@ -394,8 +398,50 @@ async def resolve_import_task(body_json: dict) -> None:
             show_service=show_service,
             movie_service=movie_service,
         )
+        worker_began = False
         try:
-            result = await service.resolve(body)
+            if body.kind == "scan":
+                if payload.scan_claim_token is None:
+                    log.error(
+                        "Scan resolve for %s missing claim token; refusing to mutate",
+                        body.id,
+                    )
+                    return
+                if body.media_type is None:
+                    log.error(
+                        "Scan resolve for %s missing media_type; refusing to mutate",
+                        body.id,
+                    )
+                    return
+                began = await repo.begin_manual_scan_worker(
+                    body.id,
+                    claim_token=payload.scan_claim_token,
+                    media_type=body.media_type.value,
+                )
+                if began.result is ScanWorkerBeginResult.duplicate:
+                    log.info(
+                        "Duplicate scan delivery for %s; skipping mutation",
+                        body.id,
+                    )
+                    return
+                if began.result is ScanWorkerBeginResult.stale:
+                    log.info(
+                        "Stale scan claim for %s; skipping mutation",
+                        body.id,
+                    )
+                    return
+                if began.worker_started_at is None:
+                    log.error(
+                        "Scan resolve for %s missing worker lease; refusing to mutate",
+                        body.id,
+                    )
+                    return
+                worker_began = True
+                result = await service.resolve_manual_scan(
+                    body, claim_token=payload.scan_claim_token
+                )
+            else:
+                result = await service.resolve(body)
             log.info(
                 "Queued import for %s resolved: ok=%s detail=%s",
                 body.id,
@@ -416,8 +462,14 @@ async def resolve_import_task(body_json: dict) -> None:
         except Exception as exc:
             log.exception("Queued import failed for %s", body.id)
             if body.kind == "scan":
+                if payload.scan_claim_token is None or not worker_began:
+                    return
                 try:
-                    await repo.mark_scan_cache_failed(body.id, error=str(exc))
+                    await repo.fail_manual_scan_import(
+                        body.id,
+                        claim_token=payload.scan_claim_token,
+                        error=str(exc),
+                    )
                 except Exception:
                     log.exception(
                         "Failed to mark scan cache row %s as failed",

@@ -6,15 +6,21 @@ internals; does not duplicate their persistence logic.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from miramedia.auth.users import current_active_user, current_superuser
 from miramedia.imports.dependencies import imports_repository_dep, imports_service_dep
+from miramedia.imports.repository import ScanClaimResult
+from miramedia.imports.scan_resolve import (
+    validate_scan_resolve_request,
+    validate_scan_resolve_target,
+)
 from miramedia.imports.schemas import (
     IgnoreRequest,
     ImportCounts,
     ImportTab,
     PaginatedImports,
+    ResolveImportTaskPayload,
     ResolveRequest,
     ResolveResult,
     ScanRunStatus,
@@ -62,8 +68,46 @@ async def resolve_item(
     from miramedia.imports.tasks import resolve_import_task
 
     if body.kind == "scan":
-        await repository.mark_scan_cache_queued(body.id)
-    await resolve_import_task.kiq(body.model_dump(mode="json"))
+        if body.media_type is None:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "media_type required for scan resolve",
+            )
+        validate_scan_resolve_target(body)
+        cache_key = await validate_scan_resolve_request(repository, body)
+        claim = await repository.claim_scan_cache_row(
+            cache_key, media_type=body.media_type.value
+        )
+        if claim.result is ScanClaimResult.not_found:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "scan entry not found")
+        if claim.result is ScanClaimResult.not_eligible:
+            raise HTTPException(status.HTTP_409_CONFLICT, "scan entry not eligible")
+        if claim.claim_token is None:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "failed to queue import",
+            )
+        dispatch_body = body.model_copy(update={"id": cache_key})
+        task_payload = ResolveImportTaskPayload(
+            body=dispatch_body,
+            scan_claim_token=claim.claim_token,
+        )
+        try:
+            await resolve_import_task.kiq(task_payload.model_dump(mode="json"))
+        except Exception as exc:
+            await repository.compensate_scan_cache_claim(
+                cache_key,
+                claim_token=claim.claim_token,
+                error="Failed to queue import task. Press Import to retry.",
+            )
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "failed to queue import",
+            ) from exc
+        return ResolveResult(ok=True, detail="queued")
+
+    task_payload = ResolveImportTaskPayload(body=body)
+    await resolve_import_task.kiq(task_payload.model_dump(mode="json"))
     return ResolveResult(ok=True, detail="queued")
 
 

@@ -79,6 +79,10 @@ from miramedia.indexers.schemas import (  # noqa: E402
 )
 from miramedia.indexers.service import IndexerService  # noqa: E402
 from miramedia.indexers.utils import evaluate_indexer_query_results  # noqa: E402
+from miramedia.media_paths import (  # noqa: E402
+    PathCanonicalResolutionError,
+    paths_same_canonical,
+)
 from miramedia.media_service import (  # noqa: E402
     BgMediaSessionProtocol,
     MediaFileRowProtocol,
@@ -2270,7 +2274,11 @@ class ShowService(MediaService[Show, ShowId]):
         is a safe no-op (``import_file`` is inode-checked).
         """
         canonical_dir = self.get_root_show_directory(show=show, write=False)
-        is_canonical = source_directory.absolute() == canonical_dir.absolute()  # noqa: ASYNC240 — cheap path resolution, intentional
+        try:
+            is_canonical = paths_same_canonical(source_directory, canonical_dir)
+        except PathCanonicalResolutionError as exc:
+            log.exception("Failed to resolve canonical path for %s", source_directory)
+            raise RenameError from exc
         if not is_canonical and not source_directory.name.startswith("."):
             dot_path = source_directory.parent / ("." + source_directory.name)
             try:
