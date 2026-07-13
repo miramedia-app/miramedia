@@ -446,8 +446,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Oauth:Oauth2.Cookie.Authorize */
-        get: operations["oauth_oauth2_cookie_authorize_api_v1_auth_oauth_authorize_get"];
+        /** Oauth:Oidc.Cookie.Authorize */
+        get: operations["oauth_oidc_cookie_authorize_api_v1_auth_oauth_authorize_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -464,10 +464,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Oauth:Oauth2.Cookie.Callback
+         * Oauth:Oidc.Cookie.Callback
          * @description The response varies based on the authentication backend used.
          */
-        get: operations["oauth_oauth2_cookie_callback_api_v1_auth_oauth_callback_get"];
+        get: operations["oauth_oidc_cookie_callback_api_v1_auth_oauth_callback_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3054,6 +3054,8 @@ export interface components {
             session_lifetime?: number | null;
             /** Email Password Resets */
             email_password_resets?: boolean | null;
+            /** Cookie Secure */
+            cookie_secure?: boolean | null;
             openid_connect?: components["schemas"]["OpenIdSettingsSchema"] | null;
         };
         /** BazarrSettingsSchema */
@@ -6960,7 +6962,7 @@ export interface operations {
             };
         };
     };
-    oauth_oauth2_cookie_authorize_api_v1_auth_oauth_authorize_get: {
+    oauth_oidc_cookie_authorize_api_v1_auth_oauth_authorize_get: {
         parameters: {
             query?: {
                 scopes?: string[];
@@ -6991,11 +6993,10 @@ export interface operations {
             };
         };
     };
-    oauth_oauth2_cookie_callback_api_v1_auth_oauth_callback_get: {
+    oauth_oidc_cookie_callback_api_v1_auth_oauth_callback_get: {
         parameters: {
             query?: {
                 code?: string | null;
-                code_verifier?: string | null;
                 state?: string | null;
                 error?: string | null;
             };

@@ -150,6 +150,58 @@ def _fetch_accounts(conn) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _create_same_name_index(conn, ddl: str) -> None:
+    conn.execute(text(ddl))
+
+
+def _set_index_catalog_flag(
+    conn,
+    *,
+    flag: str,
+    value: bool,
+) -> None:
+    if flag == "indisvalid":
+        stmt = text(
+            """
+            UPDATE pg_index AS idx
+            SET indisvalid = :value
+            FROM pg_class AS ix
+            JOIN pg_namespace AS n ON n.oid = ix.relnamespace
+            WHERE idx.indexrelid = ix.oid
+              AND ix.relname = :index_name
+              AND n.nspname = current_schema()
+            """
+        )
+    elif flag == "indisready":
+        stmt = text(
+            """
+            UPDATE pg_index AS idx
+            SET indisready = :value
+            FROM pg_class AS ix
+            JOIN pg_namespace AS n ON n.oid = ix.relnamespace
+            WHERE idx.indexrelid = ix.oid
+              AND ix.relname = :index_name
+              AND n.nspname = current_schema()
+            """
+        )
+    else:
+        msg = f"unsupported pg_index flag: {flag}"
+        raise ValueError(msg)
+    conn.execute(
+        stmt,
+        {"index_name": "uq_oauth_account_oauth_name_account_id", "value": value},
+    )
+
+
+def _assert_upgrade_rejects_incompatible_index(
+    conn, migration, *, pattern: str
+) -> None:
+    savepoint = conn.begin_nested()
+    with pytest.raises(RuntimeError, match=pattern):
+        migration.ensure_unique_oauth_name_account_id(conn)
+    savepoint.rollback()
+
+
 @pytest.fixture
 def pg_oauth_schema():
     engine = _pg_engine()
@@ -178,6 +230,11 @@ def test_migration_contains_uuid_safe_dedupe_and_exact_pair_preflight() -> None:
     assert "MIN(id)" not in source
     assert "assert_no_cross_user_provider_account_conflicts" in source
     assert "_oauth_account_unique_index_columns" in source
+    assert "_assert_compatible_oauth_unique_index" in source
+    assert "indisvalid" in source
+    assert "indisready" in source
+    assert "indpred" in source
+    assert "indexprs" in source
     assert "uq_oauth_account_oauth_name_account_id" in source
     assert 'canonical="oidc"' not in source
     assert "rename_remaining_legacy_rows" not in source
@@ -365,3 +422,157 @@ def test_downgrade_drops_unique_index(pg_oauth_schema) -> None:
 
     columns = migration._oauth_account_unique_index_columns(conn)
     assert columns is None
+
+
+def test_upgrade_rejects_partial_same_name_index(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    user_id = uuid.uuid4()
+    _insert_user(conn, user_id)
+    _insert_oauth(
+        conn,
+        row_id=uuid.uuid4(),
+        user_id=user_id,
+        oauth_name="OnlyProtected",
+        account_id="acct-protected",
+    )
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_account (oauth_name, account_id)
+        WHERE oauth_name = 'OnlyProtected'
+        """,
+    )
+    _assert_upgrade_rejects_incompatible_index(conn, migration, pattern="partial")
+
+    _insert_oauth(
+        conn,
+        row_id=uuid.uuid4(),
+        user_id=user_id,
+        oauth_name="Unprotected",
+        account_id="acct-dup",
+    )
+    _insert_oauth(
+        conn,
+        row_id=uuid.uuid4(),
+        user_id=user_id,
+        oauth_name="Unprotected",
+        account_id="acct-dup",
+    )
+    rows = _fetch_accounts(conn)
+    assert len(rows) == 3
+
+
+def test_upgrade_rejects_expression_same_name_index(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_account ((lower(oauth_name)), account_id)
+        """,
+    )
+    _assert_upgrade_rejects_incompatible_index(conn, migration, pattern="expression")
+
+
+def test_upgrade_rejects_extra_key_column_index(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_account (oauth_name, account_id, user_id)
+        """,
+    )
+    _assert_upgrade_rejects_incompatible_index(conn, migration, pattern="key columns")
+
+
+def test_upgrade_rejects_same_name_index_on_wrong_table(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    conn.execute(
+        text(
+            """
+            CREATE TABLE oauth_index_decoy (
+                oauth_name varchar(100) NOT NULL,
+                account_id varchar(320) NOT NULL
+            )
+            """
+        )
+    )
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_index_decoy (oauth_name, account_id)
+        """,
+    )
+    _assert_upgrade_rejects_incompatible_index(
+        conn, migration, pattern="oauth_index_decoy"
+    )
+
+
+def test_upgrade_accepts_valid_exact_global_unique_index(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    user_id = uuid.uuid4()
+    _insert_user(conn, user_id)
+    _insert_oauth(
+        conn,
+        row_id=uuid.uuid4(),
+        user_id=user_id,
+        oauth_name="Legacy",
+        account_id="acct-1",
+    )
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_account (oauth_name, account_id)
+        """,
+    )
+
+    migration.ensure_unique_oauth_name_account_id(conn)
+
+    with pytest.raises(Exception, match=r"unique|duplicate key"):
+        _insert_oauth(
+            conn,
+            row_id=uuid.uuid4(),
+            user_id=user_id,
+            oauth_name="Legacy",
+            account_id="acct-1",
+        )
+
+
+def test_upgrade_rejects_invalid_same_name_index(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_account (oauth_name, account_id)
+        """,
+    )
+    try:
+        _set_index_catalog_flag(conn, flag="indisvalid", value=False)
+    except Exception as exc:
+        pytest.skip(f"cannot mark index invalid in this PostgreSQL role: {exc}")
+    _assert_upgrade_rejects_incompatible_index(
+        conn, migration, pattern="indisvalid=false"
+    )
+
+
+def test_upgrade_rejects_not_ready_same_name_index(pg_oauth_schema) -> None:
+    conn, migration, _engine, _schema = pg_oauth_schema
+    _create_same_name_index(
+        conn,
+        """
+        CREATE UNIQUE INDEX uq_oauth_account_oauth_name_account_id
+        ON oauth_account (oauth_name, account_id)
+        """,
+    )
+    try:
+        _set_index_catalog_flag(conn, flag="indisready", value=False)
+    except Exception as exc:
+        pytest.skip(f"cannot mark index not-ready in this PostgreSQL role: {exc}")
+    _assert_upgrade_rejects_incompatible_index(
+        conn, migration, pattern="indisready=false"
+    )

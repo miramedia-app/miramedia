@@ -1283,8 +1283,8 @@
         "tags": [
           "openid"
         ],
-        "summary": "Oauth:Oauth2.Cookie.Authorize",
-        "operationId": "oauth_oauth2_cookie_authorize_api_v1_auth_oauth_authorize_get",
+        "summary": "Oauth:Oidc.Cookie.Authorize",
+        "operationId": "oauth_oidc_cookie_authorize_api_v1_auth_oauth_authorize_get",
         "parameters": [
           {
             "name": "scopes",
@@ -1328,9 +1328,9 @@
         "tags": [
           "openid"
         ],
-        "summary": "Oauth:Oauth2.Cookie.Callback",
+        "summary": "Oauth:Oidc.Cookie.Callback",
         "description": "The response varies based on the authentication backend used.",
-        "operationId": "oauth_oauth2_cookie_callback_api_v1_auth_oauth_callback_get",
+        "operationId": "oauth_oidc_cookie_callback_api_v1_auth_oauth_callback_get",
         "parameters": [
           {
             "name": "code",
@@ -1346,22 +1346,6 @@
                 }
               ],
               "title": "Code"
-            }
-          },
-          {
-            "name": "code_verifier",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Code Verifier"
             }
           },
           {
@@ -1417,18 +1401,6 @@
                     "summary": "User is inactive.",
                     "value": {
                       "detail": "LOGIN_BAD_CREDENTIALS"
-                    }
-                  },
-                  "ACCESS_TOKEN_DECODE_ERROR": {
-                    "summary": "Access token is error.",
-                    "value": {
-                      "detail": "ACCESS_TOKEN_DECODE_ERROR"
-                    }
-                  },
-                  "ACCESS_TOKEN_ALREADY_EXPIRED": {
-                    "summary": "Access token is already expired.",
-                    "value": {
-                      "detail": "ACCESS_TOKEN_ALREADY_EXPIRED"
                     }
                   }
                 },
@@ -9751,6 +9723,17 @@
             ],
             "title": "Email Password Resets"
           },
+          "cookie_secure": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cookie Secure"
+          },
           "openid_connect": {
             "anyOf": [
               {
@@ -9762,6 +9745,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "AuthSettingsSchema"
       },
@@ -9801,6 +9785,7 @@
             "title": "Api Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "BazarrSettingsSchema"
       },
@@ -10140,6 +10125,7 @@
             "title": "Enabled"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "CinemetaSettingsSchema"
       },
@@ -10262,6 +10248,7 @@
             "title": "Solve Timeout Seconds"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "CloudflareSettingsSchema"
       },
@@ -10289,6 +10276,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -10393,6 +10381,7 @@
             "title": "Emails"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "EmailNotificationsSettingsSchema"
       },
@@ -10706,6 +10695,7 @@
             "title": "Url"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "GotifySettingsSchema"
       },
@@ -11099,6 +11089,7 @@
             "title": "Auto Scan Interval Hours"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "ImportsSettingsSchema"
       },
@@ -11126,6 +11117,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -11433,6 +11425,7 @@
             "title": "Recency Decay Days"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "IndexerSettingsSchema"
       },
@@ -11990,6 +11983,7 @@
             "title": "Indexers"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "JackettSettingsSchema"
       },
@@ -12023,6 +12017,7 @@
             "title": "Path"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -12962,6 +12957,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "MetadataSettingsSchema"
       },
@@ -13207,6 +13203,7 @@
             "title": "Integrity Check Interval Hours"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "MiscSettingsSchema"
       },
@@ -13538,6 +13535,7 @@
             "title": "Episode File Format"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NamingSettingsSchema"
       },
@@ -13566,6 +13564,7 @@
             "title": "Max Concurrent Searches"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeIndexerSettingsSchema"
       },
@@ -13592,6 +13591,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeMetadataSettingsSchema"
       },
@@ -13620,6 +13620,7 @@
             "title": "Retention Days"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeNotificationSettingsSchema"
       },
@@ -13637,6 +13638,7 @@
             "title": "Enabled"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeRequestsSettingsSchema"
       },
@@ -13665,6 +13667,7 @@
             "title": "Scan Interval Hours"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeSubtitleSettingsSchema"
       },
@@ -13715,6 +13718,7 @@
             "title": "Max Upload Rate"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NativeTorrentSettingsSchema"
       },
@@ -13824,6 +13828,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NotificationSettingsSchema"
       },
@@ -13852,6 +13857,7 @@
             "title": "Url"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "NtfySettingsSchema"
       },
@@ -13926,6 +13932,7 @@
             "title": "Name"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "OpenIdSettingsSchema"
       },
@@ -14148,6 +14155,7 @@
             "title": "Url"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "ProwlarrSettingsSchema"
       },
@@ -15021,6 +15029,7 @@
             "title": "User"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "PushoverSettingsSchema"
       },
@@ -15104,6 +15113,7 @@
             "title": "Category Save Path"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "QbittorrentSettingsSchema"
       },
@@ -15142,6 +15152,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -15213,6 +15224,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "RequestsSettingsSchema"
       },
@@ -15460,6 +15472,7 @@
             "title": "Base Path"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SabnzbdSettingsSchema"
       },
@@ -15956,6 +15969,7 @@
             "default": []
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name"
@@ -16063,6 +16077,7 @@
             "title": "Api Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SeerrSettingsSchema"
       },
@@ -16528,6 +16543,7 @@
             "title": "Use Tls"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SmtpSettingsSchema"
       },
@@ -16636,6 +16652,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SubtitleSettingsSchema"
       },
@@ -16888,6 +16905,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "SystemSettingsUpdate",
         "description": "Partial update \u2014 only include sections/fields you want to override."
@@ -16916,6 +16934,7 @@
             "default": true
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "name",
@@ -16973,6 +16992,7 @@
             "title": "Default Language"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TmdbSettingsSchema"
       },
@@ -17225,6 +17245,7 @@
             ]
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TorrentSettingsSchema"
       },
@@ -17392,6 +17413,7 @@
             "title": "Password"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TransmissionSettingsSchema"
       },
@@ -17420,6 +17442,7 @@
             "title": "Api Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TvdbSettingsSchema"
       },
@@ -17437,6 +17460,7 @@
             "title": "Enabled"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "TvmazeSettingsSchema"
       },
@@ -17706,6 +17730,7 @@
             "title": "Container Name"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "UpdateSettingsSchema"
       },
