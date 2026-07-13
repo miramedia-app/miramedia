@@ -29,4 +29,5 @@ fixture) and fails fast when the URL is missing or not PostgreSQL.
 - Atomic scan claim/reclaim CAS (Plans 074/078)
 - Integrity audit compare-and-set (Plan 079)
 
-Plan 082 (integrity batching) and Plan 083 branches are not covered here yet.
+Plan 082 (integrity pagination, scalar lookups, audit chunk) is covered here.
+Plan 083 migrations are not pinned — head revision is asserted dynamically.
