@@ -29,9 +29,7 @@ from miramedia.torrents.repository import TorrentRepository
 from miramedia.torrents.schemas import (
     ImportFileDetail,
     ImportProgress,
-    ImportStatusCounts,
     ImportStatusEntry,
-    ImportStatusFilter,
     IntegrityActionResult,
     IntegrityMismatch,
     MediaType,
@@ -531,6 +529,11 @@ class TorrentService:
         all_db_torrents = await self.torrent_repository.get_all_torrents()
         if not all_db_torrents:
             return []
+        from miramedia.database import release_session_before_external_io
+
+        # Per-torrent client RPC below is slow external I/O — never hold the
+        # DB session across it (idle-in-transaction reap; see CLAUDE.md).
+        await release_session_before_external_io(self.torrent_repository.db)
 
         # Parallel-fan-out live-status fetches, but capped: each call is a
         # libtorrent / qbittorrent RPC and unbounded gather() with a 500-
@@ -686,34 +689,6 @@ class TorrentService:
             tid: self.compute_import_progress_from_files(files).all_imported
             for tid, files in by_torrent.items()
         }
-
-    def _bucket_progress(self, progress: ImportProgress) -> set[ImportStatusFilter]:
-        """Categorise an :class:`ImportProgress` snapshot into filter buckets."""
-        buckets: set[ImportStatusFilter] = {ImportStatusFilter.all}
-        if progress.failed > 0:
-            buckets.add(ImportStatusFilter.failed)
-        if progress.ambiguous > 0:
-            buckets.add(ImportStatusFilter.ambiguous)
-        if progress.imported > 0 and progress.imported < progress.total:
-            buckets.add(ImportStatusFilter.partial)
-        if (
-            progress.total > 0
-            and progress.imported == 0
-            and progress.failed == 0
-            and progress.ambiguous == 0
-        ):
-            buckets.add(ImportStatusFilter.pending)
-        if progress.last_attempt_at is not None:
-            # Compare in aware UTC. The old code used naive utcnow() vs a
-            # local-converted naive attempt, shifting the 24h "recent" window
-            # by the host's UTC offset on a non-UTC box.
-            cutoff = datetime.now(UTC) - timedelta(hours=24)
-            attempt = progress.last_attempt_at
-            if attempt.tzinfo is None:
-                attempt = attempt.replace(tzinfo=UTC)
-            if attempt >= cutoff:
-                buckets.add(ImportStatusFilter.recent)
-        return buckets
 
     def _compose_import_status_entry(
         self,
@@ -960,83 +935,6 @@ class TorrentService:
             )
         return entries
 
-    async def list_import_statuses(
-        self,
-        *,
-        bucket: ImportStatusFilter,
-        offset: int,
-        limit: int,
-    ) -> tuple[list[ImportStatusEntry], int]:
-        """Return paginated import-status entries for the requested bucket."""
-        torrents = await self.torrent_repository.get_all_torrents()
-        (
-            ep_by_tid,
-            mv_by_tid,
-            ep_lookup,
-            show_ctx,
-            movie_ctx,
-        ) = await self._prefetch_import_status_data(torrents)
-        matching: list[ImportStatusEntry] = []
-        for t in torrents:
-            episode_files = ep_by_tid.get(t.id, [])
-            movie_files = mv_by_tid.get(t.id, [])
-            progress = self.compute_import_progress_from_files(
-                list(episode_files) + list(movie_files)
-            )
-            if progress.total == 0:
-                continue
-            if bucket not in self._bucket_progress(progress):
-                continue
-            matching.append(
-                self._compose_import_status_entry(
-                    t,
-                    episode_files=episode_files,
-                    movie_files=movie_files,
-                    ep_lookup=ep_lookup.get(t.id, {}),
-                    show_ctx=show_ctx.get(t.id),
-                    movie_ctx=movie_ctx.get(t.id),
-                )
-            )
-
-        sentinel = datetime.min.replace(tzinfo=UTC)
-
-        def sort_key(entry: ImportStatusEntry) -> tuple[bool, float]:
-            ts = entry.progress.last_attempt_at or sentinel
-            return (
-                entry.progress.failed == 0,
-                -ts.timestamp() if ts != sentinel else 0,
-            )
-
-        matching.sort(key=sort_key)
-        total = len(matching)
-        return matching[offset : offset + limit], total
-
-    async def get_import_status_counts(self) -> ImportStatusCounts:
-        """Cheap aggregate counts per bucket (used for dashboard badges)."""
-        torrents = await self.torrent_repository.get_all_torrents()
-        ep_by_tid, mv_by_tid, _, _, _ = await self._prefetch_import_status_data(
-            torrents
-        )
-        counts = ImportStatusCounts()
-        for t in torrents:
-            files = ep_by_tid.get(t.id, []) + mv_by_tid.get(t.id, [])
-            progress = self.compute_import_progress_from_files(files)
-            if progress.total == 0:
-                continue
-            buckets = self._bucket_progress(progress)
-            counts.all += 1
-            if ImportStatusFilter.failed in buckets:
-                counts.failed += 1
-            if ImportStatusFilter.ambiguous in buckets:
-                counts.ambiguous += 1
-            if ImportStatusFilter.partial in buckets:
-                counts.partial += 1
-            if ImportStatusFilter.pending in buckets:
-                counts.pending += 1
-            if ImportStatusFilter.recent in buckets:
-                counts.recent += 1
-        return counts
-
     async def is_due_for_retry(self, torrent: Torrent) -> bool:
         """Return True if enough time has passed to re-attempt the import.
 
@@ -1205,6 +1103,11 @@ class TorrentService:
         """Live libtorrent/qBittorrent status for a bounded torrent list."""
         if not torrents:
             return []
+        from miramedia.database import release_session_before_external_io
+
+        # Per-torrent client RPC below is slow external I/O — never hold the
+        # DB session across it (idle-in-transaction reap; see CLAUDE.md).
+        await release_session_before_external_io(self.torrent_repository.db)
         # ``torrents`` are pydantic schema instances (TorrentSchema), not
         # session-attached ORM rows, so get_torrent_status(persist=False)
         # mutates plain objects with no risk of an unrelated commit flushing

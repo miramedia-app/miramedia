@@ -16,8 +16,10 @@ class GotifyNotificationServiceProvider(AbstractNotificationServiceProvider):
         self.config = MiraMediaConfig().notifications.gotify
 
     def send_notification(self, message: MessageNotification) -> bool:
+        api_key = self.config.api_key or ""
         response = requests.post(
-            url=f"{self.config.url}/message?token={self.config.api_key}",
+            url=f"{self.config.url}/message",
+            headers={"X-Gotify-Key": api_key},
             json={
                 "message": message.message,
                 "title": message.title,

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.10"
+    "version": "1.0.11"
   },
   "paths": {
     "/api/v1/health": {
@@ -2128,16 +2128,6 @@
               "default": false,
               "title": "Delete Files On Disk"
             }
-          },
-          {
-            "name": "delete_torrents",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Delete Torrents"
-            }
           }
         ],
         "responses": {
@@ -3674,110 +3664,6 @@
         ]
       }
     },
-    "/api/v1/torrents/import-status": {
-      "get": {
-        "tags": [
-          "torrents"
-        ],
-        "summary": "List Import Status",
-        "description": "Paginated list of torrents grouped by import outcome bucket.",
-        "operationId": "list_import_status_api_v1_torrents_import_status_get",
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          },
-          {
-            "APIKeyCookie": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "bucket",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/ImportStatusFilter",
-              "default": "all"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "minimum": 0,
-              "default": 0,
-              "title": "Offset"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "maximum": 200,
-              "exclusiveMinimum": 0,
-              "default": 50,
-              "title": "Limit"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaginatedTorrentImports"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/torrents/import-status/counts": {
-      "get": {
-        "tags": [
-          "torrents"
-        ],
-        "summary": "Get Import Status Counts",
-        "description": "Bucket counts for the imports dashboard widget.",
-        "operationId": "get_import_status_counts_api_v1_torrents_import_status_counts_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ImportStatusCounts"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "OAuth2PasswordBearer": []
-          },
-          {
-            "APIKeyCookie": []
-          }
-        ]
-      }
-    },
     "/api/v1/torrents/integrity/mismatches": {
       "get": {
         "tags": [
@@ -5230,16 +5116,6 @@
               "type": "boolean",
               "default": false,
               "title": "Delete Files On Disk"
-            }
-          },
-          {
-            "name": "delete_torrents",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": false,
-              "title": "Delete Torrents"
             }
           }
         ],
@@ -10940,43 +10816,6 @@
         "title": "ImportProgress",
         "description": "Aggregate import status across files linked to a torrent."
       },
-      "ImportStatusCounts": {
-        "properties": {
-          "failed": {
-            "type": "integer",
-            "title": "Failed",
-            "default": 0
-          },
-          "ambiguous": {
-            "type": "integer",
-            "title": "Ambiguous",
-            "default": 0
-          },
-          "pending": {
-            "type": "integer",
-            "title": "Pending",
-            "default": 0
-          },
-          "partial": {
-            "type": "integer",
-            "title": "Partial",
-            "default": 0
-          },
-          "recent": {
-            "type": "integer",
-            "title": "Recent",
-            "default": 0
-          },
-          "all": {
-            "type": "integer",
-            "title": "All",
-            "default": 0
-          }
-        },
-        "type": "object",
-        "title": "ImportStatusCounts",
-        "description": "Counts per filter bucket (cheap to fetch for sidebar/dashboard widgets)."
-      },
       "ImportStatusEntry": {
         "properties": {
           "torrent_id": {
@@ -11027,19 +10866,6 @@
         ],
         "title": "ImportStatusEntry",
         "description": "One torrent + its aggregate + per-file breakdown."
-      },
-      "ImportStatusFilter": {
-        "type": "string",
-        "enum": [
-          "failed",
-          "ambiguous",
-          "pending",
-          "partial",
-          "recent",
-          "all"
-        ],
-        "title": "ImportStatusFilter",
-        "description": "Filter buckets for the import-status list."
       },
       "ImportTab": {
         "type": "string",
@@ -14140,37 +13966,6 @@
           "limit"
         ],
         "title": "PaginatedResponse[ActivityLogRead]"
-      },
-      "PaginatedTorrentImports": {
-        "properties": {
-          "items": {
-            "items": {
-              "$ref": "#/components/schemas/ImportStatusEntry"
-            },
-            "type": "array",
-            "title": "Items"
-          },
-          "total": {
-            "type": "integer",
-            "title": "Total"
-          },
-          "offset": {
-            "type": "integer",
-            "title": "Offset"
-          },
-          "limit": {
-            "type": "integer",
-            "title": "Limit"
-          }
-        },
-        "type": "object",
-        "required": [
-          "items",
-          "total",
-          "offset",
-          "limit"
-        ],
-        "title": "PaginatedTorrentImports"
       },
       "PreferredCodecBody": {
         "properties": {

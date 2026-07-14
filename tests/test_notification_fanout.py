@@ -118,7 +118,9 @@ def test_gotify_payload_shape(monkeypatch: pytest.MonkeyPatch) -> None:
         MessageNotification(title="Gotify Title", message="Gotify body"),
     )
     assert ok is True
-    assert captured["url"] == "https://gotify.example.test/message?token=test-token"
+    assert captured["url"] == "https://gotify.example.test/message"
+    assert captured["headers"] == {"X-Gotify-Key": "test-token"}
+    assert "token=" not in captured["url"]
     assert captured["json"] == {
         "message": "Gotify body",
         "title": "Gotify Title",

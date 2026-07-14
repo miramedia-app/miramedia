@@ -373,14 +373,12 @@ class MovieService(MediaService[Movie, MovieId]):
         self,
         movie: Movie,
         delete_files_on_disk: bool = False,
-        delete_torrents: bool = False,  # noqa: ARG002 — kept for API back-compat; torrents reaped unconditionally
     ) -> None:
         """
-        Delete a movie from the database, optionally deleting files and torrents.
+        Delete a movie from the database, optionally deleting files from disk.
 
         :param movie: The movie to delete.
         :param delete_files_on_disk: Whether to delete the movie's files from disk.
-        :param delete_torrents: Whether to delete associated torrents from the torrent client.
         """
         # Snapshot the torrents linked to this movie BEFORE deletion. The
         # movie_file rows cascade-delete with the movie (FK ON DELETE CASCADE),
@@ -405,8 +403,7 @@ class MovieService(MediaService[Movie, MovieId]):
         # that is now orphaned. ``cleanup_torrent_if_orphaned`` is idempotent
         # and only removes a torrent that has no remaining media link, so it's
         # safe to run unconditionally — an unlinked torrent row is never
-        # something the user wants left behind. ``delete_torrents`` is kept for
-        # API back-compat but reaping no longer depends on it.
+        # something the user wants left behind.
         await self.movie_repository.delete_movie(movie_id=movie.id)
         for tid in torrent_ids:
             await self.torrent_service.cleanup_torrent_if_orphaned(tid)

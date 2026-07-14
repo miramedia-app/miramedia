@@ -31,7 +31,7 @@ from miramedia.config import BasicConfig
 
 log = logging.getLogger(__name__)
 
-OAUTH_GENERATION_STATE_KEY = "generation_snapshot"
+OAUTH_SNAPSHOT_COOKIE_NAME = "miramediaoauthsnapshot"
 OAUTH_STATE_GENERATION_TTL_SECONDS = 3600
 _OAUTH_SNAPSHOT_KDF_INFO = b"miramedia-oauth-generation-snapshot-v1"
 _HTTP_URL_ADAPTER: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)

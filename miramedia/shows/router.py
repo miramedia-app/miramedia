@@ -280,7 +280,6 @@ async def delete_a_show(
     show_service: show_service_dep,
     show: show_dep,
     delete_files_on_disk: Annotated[bool, Query()] = False,
-    delete_torrents: Annotated[bool, Query()] = False,
 ) -> None:
     """
     Delete a show from the library.
@@ -288,7 +287,6 @@ async def delete_a_show(
     await show_service.delete_show(
         show=show,
         delete_files_on_disk=delete_files_on_disk,
-        delete_torrents=delete_torrents,
     )
 
 

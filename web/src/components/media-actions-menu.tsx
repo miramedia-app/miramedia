@@ -79,7 +79,6 @@ export function MediaActionsMenu({
   // Delete dialog
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleteFilesOnDisk, setDeleteFilesOnDisk] = React.useState(false);
-  const [deleteTorrents, setDeleteTorrents] = React.useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = React.useState("");
   const [deleting, setDeleting] = React.useState(false);
 
@@ -87,7 +86,6 @@ export function MediaActionsMenu({
 
   function resetDeleteState() {
     setDeleteFilesOnDisk(false);
-    setDeleteTorrents(false);
     setDeleteConfirmText("");
   }
 
@@ -127,7 +125,7 @@ export function MediaActionsMenu({
         const { error } = await apiClient.DELETE("/api/v1/shows/{show_id}", {
           params: {
             path: { show_id: media.id! },
-            query: { delete_files_on_disk: deleteFilesOnDisk, delete_torrents: deleteTorrents },
+            query: { delete_files_on_disk: deleteFilesOnDisk },
           },
         });
         if (error) {
@@ -142,7 +140,7 @@ export function MediaActionsMenu({
         const { error } = await apiClient.DELETE("/api/v1/movies/{movie_id}", {
           params: {
             path: { movie_id: media.id! },
-            query: { delete_files_on_disk: deleteFilesOnDisk, delete_torrents: deleteTorrents },
+            query: { delete_files_on_disk: deleteFilesOnDisk },
           },
         });
         if (error) {
@@ -230,16 +228,6 @@ export function MediaActionsMenu({
                   />
                   <Label htmlFor="ma-delete-files" className="text-sm leading-none font-medium">
                     Also delete files on disk
-                  </Label>
-                </div>
-                <div className="flex items-center space-x-2">
-                  <Checkbox
-                    id="ma-delete-torrents"
-                    checked={deleteTorrents}
-                    onCheckedChange={(v) => setDeleteTorrents(v === true)}
-                  />
-                  <Label htmlFor="ma-delete-torrents" className="text-sm leading-none font-medium">
-                    Also delete torrents from download clients
                   </Label>
                 </div>
                 <div className="grid gap-2">

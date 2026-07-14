@@ -19,6 +19,15 @@ export type OverrideCtxValue = {
 
 export const OverrideCtx = React.createContext<OverrideCtxValue | null>(null);
 
+// crypto.randomUUID is only defined in secure contexts (HTTPS/localhost);
+// production served over plain HTTP needs the fallback or the page crashes.
+export function newRowKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `k-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+}
+
 export function formatDefault(value: unknown): string {
   if (value === undefined) return "(unset)";
   if (value === null) return "(none)";

@@ -1043,7 +1043,7 @@ export default function ImportsPage() {
             getId={(it) => it.id}
             columns={columns}
             pageSize={50}
-            searchPlaceholder="Search imports…"
+            searchPlaceholder="Search or filter imports…"
             searchMatch={(it, q) => {
               if (isTorrent(it)) {
                 return (

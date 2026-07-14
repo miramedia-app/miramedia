@@ -528,6 +528,14 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
                     continue
                 ready_ids.append((t.id, t.title))
 
+        from miramedia.database import release_session_before_external_io
+
+        # The loop below does slow file I/O in per-item fresh sessions; the
+        # entry session must not sit idle-in-transaction across it.
+        await release_session_before_external_io(
+            self.torrent_service.torrent_repository.db
+        )
+
         imported_count = 0
         for torrent_id, torrent_title in ready_ids:
             media = None

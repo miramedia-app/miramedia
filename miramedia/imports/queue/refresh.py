@@ -55,11 +55,24 @@ async def sync_torrent_import_queue(
     service: ImportsService,
     torrent_id: UUID,
 ) -> None:
+    from miramedia.exceptions import NotFoundError
     from miramedia.torrents.schemas import TorrentId
 
-    torrent = await service.torrent_service.torrent_repository.get_torrent_by_id(
-        TorrentId(torrent_id)
-    )
+    try:
+        torrent = await service.torrent_service.torrent_repository.get_torrent_by_id(
+            TorrentId(torrent_id)
+        )
+    except NotFoundError:
+        # Torrent row is gone (deleted mid-flight) — drop its stale queue rows
+        # instead of erroring out and leaving them behind.
+        await db.execute(
+            delete(ImportQueueItem).where(
+                ImportQueueItem.kind == "torrent",
+                ImportQueueItem.ref_id == str(torrent_id),
+            )
+        )
+        await db.commit()
+        return
     # Refresh live download status (persist=False — no event, no loop): a
     # torrent only belongs in the queue once its download has finished.
     torrent = await service.torrent_service.get_torrent_status(torrent, persist=False)

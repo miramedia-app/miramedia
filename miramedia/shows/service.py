@@ -428,14 +428,12 @@ class ShowService(MediaService[Show, ShowId]):
         self,
         show: Show,
         delete_files_on_disk: bool = False,
-        delete_torrents: bool = False,  # noqa: ARG002 — kept for API back-compat; torrents reaped unconditionally
     ) -> None:
         """
-        Delete a show from the database, optionally deleting files and torrents.
+        Delete a show from the database, optionally deleting files from disk.
 
         :param show: The show to delete.
         :param delete_files_on_disk: Whether to delete the show's files from disk.
-        :param delete_torrents: Whether to delete associated torrents from the torrent client.
         """
         log.debug(f"Deleting ID: {show.id} - Name: {show.name}")
 
@@ -455,7 +453,7 @@ class ShowService(MediaService[Show, ShowId]):
         # Delete the show (cascades season/episode/episode_file rows), then reap
         # orphaned torrents. ``cleanup_torrent_if_orphaned`` only removes a
         # torrent with no remaining media link, so running it unconditionally is
-        # safe; ``delete_torrents`` is kept for API back-compat.
+        # safe.
         await self.show_repository.delete_show(show_id=show.id)
         for tid in torrent_ids:
             await self.torrent_service.cleanup_torrent_if_orphaned(tid)

@@ -1116,46 +1116,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/torrents/import-status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Import Status
-         * @description Paginated list of torrents grouped by import outcome bucket.
-         */
-        get: operations["list_import_status_api_v1_torrents_import_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/torrents/import-status/counts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Import Status Counts
-         * @description Bucket counts for the imports dashboard widget.
-         */
-        get: operations["get_import_status_counts_api_v1_torrents_import_status_counts_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/torrents/integrity/mismatches": {
         parameters: {
             query?: never;
@@ -3563,42 +3523,6 @@ export interface components {
             last_attempt_at?: string | null;
         };
         /**
-         * ImportStatusCounts
-         * @description Counts per filter bucket (cheap to fetch for sidebar/dashboard widgets).
-         */
-        ImportStatusCounts: {
-            /**
-             * Failed
-             * @default 0
-             */
-            failed: number;
-            /**
-             * Ambiguous
-             * @default 0
-             */
-            ambiguous: number;
-            /**
-             * Pending
-             * @default 0
-             */
-            pending: number;
-            /**
-             * Partial
-             * @default 0
-             */
-            partial: number;
-            /**
-             * Recent
-             * @default 0
-             */
-            recent: number;
-            /**
-             * All
-             * @default 0
-             */
-            all: number;
-        };
-        /**
          * ImportStatusEntry
          * @description One torrent + its aggregate + per-file breakdown.
          */
@@ -3621,12 +3545,6 @@ export interface components {
             /** Files */
             files: components["schemas"]["ImportFileDetail"][];
         };
-        /**
-         * ImportStatusFilter
-         * @description Filter buckets for the import-status list.
-         * @enum {string}
-         */
-        ImportStatusFilter: "failed" | "ambiguous" | "pending" | "partial" | "recent" | "all";
         /**
          * ImportTab
          * @enum {string}
@@ -4602,17 +4520,6 @@ export interface components {
         PaginatedResponse_ActivityLogRead_: {
             /** Items */
             items: components["schemas"]["ActivityLogRead"][];
-            /** Total */
-            total: number;
-            /** Offset */
-            offset: number;
-            /** Limit */
-            limit: number;
-        };
-        /** PaginatedTorrentImports */
-        PaginatedTorrentImports: {
-            /** Items */
-            items: components["schemas"]["ImportStatusEntry"][];
             /** Total */
             total: number;
             /** Offset */
@@ -7319,7 +7226,6 @@ export interface operations {
         parameters: {
             query?: {
                 delete_files_on_disk?: boolean;
-                delete_torrents?: boolean;
             };
             header?: never;
             path: {
@@ -8089,59 +7995,6 @@ export interface operations {
             };
         };
     };
-    list_import_status_api_v1_torrents_import_status_get: {
-        parameters: {
-            query?: {
-                bucket?: components["schemas"]["ImportStatusFilter"];
-                offset?: number;
-                limit?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PaginatedTorrentImports"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_import_status_counts_api_v1_torrents_import_status_counts_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImportStatusCounts"];
-                };
-            };
-        };
-    };
     list_integrity_mismatches_api_v1_torrents_integrity_mismatches_get: {
         parameters: {
             query?: {
@@ -8834,7 +8687,6 @@ export interface operations {
         parameters: {
             query?: {
                 delete_files_on_disk?: boolean;
-                delete_torrents?: boolean;
             };
             header?: never;
             path: {

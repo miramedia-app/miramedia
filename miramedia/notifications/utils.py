@@ -8,6 +8,11 @@ from miramedia.config import MiraMediaConfig
 log = logging.getLogger(__name__)
 
 
+def sanitize_notification_title(title: str) -> str:
+    """Strip CR/LF and other control chars so titles are header-safe."""
+    return "".join(ch for ch in title if ch >= " " and ch != "\x7f")
+
+
 def send_email(subject: str, html: str, addressee: str) -> None:
     email_conf = MiraMediaConfig().notifications.smtp_config
     message = MIMEMultipart()

@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from fastapi_users.router.oauth import CSRF_TOKEN_COOKIE_NAME
 
+from miramedia.auth.oauth_state import OAUTH_SNAPSHOT_COOKIE_NAME
 from miramedia.auth.runtime import (
     OAUTH_ROUTE_NAME,
     auth_runtime_store,
@@ -154,6 +155,35 @@ def _set_cookie_secure_flag(set_cookie: str) -> bool:
     return any(part.strip().lower() == "secure" for part in set_cookie.split(";"))
 
 
+def _oauth_authorize_cookies(authorize_response: object) -> dict[str, str]:
+    headers = getattr(authorize_response, "headers", {})
+    cookies: dict[str, str] = {}
+    for header in headers.get_list("set-cookie"):
+        for name in (CSRF_TOKEN_COOKIE_NAME, OAUTH_SNAPSHOT_COOKIE_NAME):
+            match = re.search(rf"{re.escape(name)}=([^;]+)", header, re.IGNORECASE)
+            if match:
+                cookies[name] = match.group(1)
+    return cookies
+
+
+def _snapshot_cookie_cleared(callback_response: object) -> bool:
+    headers = getattr(callback_response, "headers", {})
+    for header in headers.get_list("set-cookie"):
+        if OAUTH_SNAPSHOT_COOKIE_NAME.lower() not in header.lower():
+            continue
+        lowered = header.lower()
+        if "max-age=0" in lowered:
+            return True
+        value_match = re.search(
+            rf"{re.escape(OAUTH_SNAPSHOT_COOKIE_NAME)}=([^;]*)",
+            header,
+            re.IGNORECASE,
+        )
+        if value_match is not None and value_match.group(1) == "":
+            return True
+    return False
+
+
 def _jwt_lifetime_from_callback_response(response: object) -> int:
     import jwt
 
@@ -211,6 +241,10 @@ def test_authorize_csrf_cookie_not_secure_for_http_frontend(
     assert response.status_code == 200
     set_cookie = response.headers.get("set-cookie", "")
     assert CSRF_TOKEN_COOKIE_NAME in set_cookie.lower()
+    assert (
+        OAUTH_SNAPSHOT_COOKIE_NAME
+        in " ".join(response.headers.get_list("set-cookie")).lower()
+    )
     assert not _set_cookie_secure_flag(set_cookie)
 
 
@@ -272,14 +306,7 @@ def test_oauth_callback_uses_stable_provider_key_not_display_name(
         _enable_oidc(client, name="MyIdentityProvider")
         authorize = client.get(OIDC_AUTHORIZE_PATH)
         assert authorize.status_code == 200
-        set_cookie = authorize.headers.get("set-cookie", "")
-        csrf_match = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            set_cookie,
-            re.IGNORECASE,
-        )
-        assert csrf_match is not None
-        csrf_token = csrf_match.group(1)
+        oauth_cookies = _oauth_authorize_cookies(authorize)
 
         auth_url = authorize.json()["authorization_url"]
         state = parse_qs(urlparse(auth_url).query)["state"][0]
@@ -287,7 +314,7 @@ def test_oauth_callback_uses_stable_provider_key_not_display_name(
         callback = client.get(
             OIDC_CALLBACK_PATH,
             params={"code": "auth-code", "state": state},
-            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_token},
+            cookies=oauth_cookies,
             follow_redirects=False,
         )
     assert callback.status_code in {200, 204, 302, 307}
@@ -327,16 +354,11 @@ def test_oauth_provider_key_stable_across_display_name_rename(
         state_a = parse_qs(urlparse(authorize_a.json()["authorization_url"]).query)[
             "state"
         ][0]
-        csrf_a = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            authorize_a.headers.get("set-cookie", ""),
-            re.IGNORECASE,
-        )
-        assert csrf_a is not None
+        cookies_a = _oauth_authorize_cookies(authorize_a)
         client.get(
             OIDC_CALLBACK_PATH,
             params={"code": "auth-code", "state": state_a},
-            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_a.group(1)},
+            cookies=cookies_a,
             follow_redirects=False,
         )
 
@@ -348,16 +370,11 @@ def test_oauth_provider_key_stable_across_display_name_rename(
         state_b = parse_qs(urlparse(authorize_b.json()["authorization_url"]).query)[
             "state"
         ][0]
-        csrf_b = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            authorize_b.headers.get("set-cookie", ""),
-            re.IGNORECASE,
-        )
-        assert csrf_b is not None
+        cookies_b = _oauth_authorize_cookies(authorize_b)
         client.get(
             OIDC_CALLBACK_PATH,
             params={"code": "auth-code", "state": state_b},
-            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_b.group(1)},
+            cookies=cookies_b,
             follow_redirects=False,
         )
 
@@ -433,13 +450,7 @@ def test_oauth_callback_keeps_request_generation_after_concurrent_swap(
             },
         )
         authorize = client.get(OIDC_AUTHORIZE_PATH)
-        set_cookie = authorize.headers.get("set-cookie", "")
-        csrf_match = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            set_cookie,
-            re.IGNORECASE,
-        )
-        assert csrf_match is not None
+        oauth_cookies = _oauth_authorize_cookies(authorize)
         state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
             "state"
         ][0]
@@ -451,7 +462,7 @@ def test_oauth_callback_keeps_request_generation_after_concurrent_swap(
                 client.get(
                     OIDC_CALLBACK_PATH,
                     params={"code": "auth-code", "state": state},
-                    cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+                    cookies=oauth_cookies,
                     follow_redirects=False,
                 )
             except BaseException as exc:
@@ -547,13 +558,7 @@ def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_re
             },
         )
         authorize = client.get(OIDC_AUTHORIZE_PATH)
-        set_cookie = authorize.headers.get("set-cookie", "")
-        csrf_match = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            set_cookie,
-            re.IGNORECASE,
-        )
-        assert csrf_match is not None
+        oauth_cookies = _oauth_authorize_cookies(authorize)
         state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
             "state"
         ][0]
@@ -575,7 +580,7 @@ def test_oauth_callback_uses_authorize_generation_after_settings_swap_between_re
         callback = client.get(
             OIDC_CALLBACK_PATH,
             params={"code": "auth-code", "state": state},
-            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+            cookies=oauth_cookies,
             follow_redirects=False,
         )
         assert callback.status_code in {200, 204, 302, 307}
@@ -623,12 +628,7 @@ def test_oauth_callback_uses_authorize_issuer_after_runtime_switches_to_issuer_b
         )
         authorize_a = client.get(OIDC_AUTHORIZE_PATH)
         assert authorize_a.status_code == 200
-        csrf_match = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            authorize_a.headers.get("set-cookie", ""),
-            re.IGNORECASE,
-        )
-        assert csrf_match is not None
+        oauth_cookies = _oauth_authorize_cookies(authorize_a)
         state_a = parse_qs(urlparse(authorize_a.json()["authorization_url"]).query)[
             "state"
         ][0]
@@ -648,7 +648,7 @@ def test_oauth_callback_uses_authorize_issuer_after_runtime_switches_to_issuer_b
         callback = client.get(
             OIDC_CALLBACK_PATH,
             params={"code": "auth-code", "state": state_a},
-            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+            cookies=oauth_cookies,
             follow_redirects=False,
         )
         assert callback.status_code in {200, 204, 302, 307}
@@ -717,12 +717,7 @@ def test_callback_rejects_issuer_flip_on_same_endpoint(
         _enable_oidc(client, name="IssuerA", configuration_endpoint=ENDPOINT_A)
         authorize = client.get(OIDC_AUTHORIZE_PATH)
         assert authorize.status_code == 200
-        csrf_match = re.search(
-            rf"{re.escape(CSRF_TOKEN_COOKIE_NAME)}=([^;]+)",
-            authorize.headers.get("set-cookie", ""),
-            re.IGNORECASE,
-        )
-        assert csrf_match is not None
+        oauth_cookies = _oauth_authorize_cookies(authorize)
         state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
             "state"
         ][0]
@@ -730,8 +725,71 @@ def test_callback_rejects_issuer_flip_on_same_endpoint(
         callback = client.get(
             OIDC_CALLBACK_PATH,
             params={"code": "auth-code", "state": state},
-            cookies={CSRF_TOKEN_COOKIE_NAME: csrf_match.group(1)},
+            cookies=oauth_cookies,
             follow_redirects=False,
         )
 
     assert callback.status_code == 400
+
+
+def test_callback_rejects_missing_snapshot_cookie(
+    fake_openid: list[MagicMock],  # noqa: ARG001
+) -> None:
+    with settings_client() as (client, _repo):
+        _enable_oidc(client)
+        authorize = client.get(OIDC_AUTHORIZE_PATH)
+        assert authorize.status_code == 200
+        oauth_cookies = _oauth_authorize_cookies(authorize)
+        state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+        client.cookies.pop(OAUTH_SNAPSHOT_COOKIE_NAME, None)
+
+        callback = client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state},
+            cookies={CSRF_TOKEN_COOKIE_NAME: oauth_cookies[CSRF_TOKEN_COOKIE_NAME]},
+            follow_redirects=False,
+        )
+
+    assert callback.status_code == 400
+
+
+def test_callback_clears_snapshot_cookie(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_openid: list[MagicMock],  # noqa: ARG001
+) -> None:
+    from miramedia.auth.users import UserManager
+
+    async def _oauth_callback(
+        _self: UserManager,
+        _provider: str,
+        *_args: object,
+        **_kwargs: object,
+    ) -> object:
+        return types.SimpleNamespace(
+            id=uuid.uuid4(),
+            email="user@example.com",
+            is_active=True,
+        )
+
+    monkeypatch.setattr(UserManager, "oauth_callback", _oauth_callback)
+
+    with settings_client() as (client, _repo):
+        _enable_oidc(client)
+        authorize = client.get(OIDC_AUTHORIZE_PATH)
+        assert authorize.status_code == 200
+        oauth_cookies = _oauth_authorize_cookies(authorize)
+        state = parse_qs(urlparse(authorize.json()["authorization_url"]).query)[
+            "state"
+        ][0]
+
+        callback = client.get(
+            OIDC_CALLBACK_PATH,
+            params={"code": "auth-code", "state": state},
+            cookies=oauth_cookies,
+            follow_redirects=False,
+        )
+
+    assert callback.status_code in {200, 204, 302, 307}
+    assert _snapshot_cookie_cleared(callback)

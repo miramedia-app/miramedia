@@ -10,7 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { OverrideMarker } from "../_marker";
-import { csvToArray, type AnyObj, type Keyed, type SetPath } from "../_shared";
+import { csvToArray, newRowKey, type AnyObj, type Keyed, type SetPath } from "../_shared";
 
 const CF_SOLVERS = [
   [
@@ -713,10 +713,7 @@ export function GeneralTab({
                     variant="outline"
                     size="sm"
                     onClick={() =>
-                      setMiscPath(
-                        [libKey],
-                        [...libs, { _key: crypto.randomUUID(), name: "", path: "" }],
-                      )
+                      setMiscPath([libKey], [...libs, { _key: newRowKey(), name: "", path: "" }])
                     }
                   >
                     <Plus className="mr-1 h-4 w-4" />

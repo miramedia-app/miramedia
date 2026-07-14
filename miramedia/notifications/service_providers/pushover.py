@@ -5,6 +5,7 @@ from miramedia.notifications.schemas import MessageNotification
 from miramedia.notifications.service_providers.abstract_notification_service_provider import (
     AbstractNotificationServiceProvider,
 )
+from miramedia.notifications.utils import sanitize_notification_title
 
 
 class PushoverNotificationServiceProvider(AbstractNotificationServiceProvider):
@@ -18,7 +19,7 @@ class PushoverNotificationServiceProvider(AbstractNotificationServiceProvider):
                 "token": self.config.api_key,
                 "user": self.config.user,
                 "message": message.message,
-                "title": "MiraMedia - " + message.title,
+                "title": "MiraMedia - " + sanitize_notification_title(message.title),
             },
             timeout=60,
         )

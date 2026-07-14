@@ -152,7 +152,7 @@ function keyRows(list: unknown): unknown {
   if (!Array.isArray(list)) return list;
   return list.map((row) =>
     row && typeof row === "object" && !Array.isArray(row)
-      ? { ...(row as AnyObj), _key: (row as AnyObj)._key ?? crypto.randomUUID() }
+      ? { ...(row as AnyObj), _key: (row as AnyObj)._key ?? newRowKey() }
       : row,
   );
 }
@@ -181,7 +181,7 @@ function stripRowKeys(value: unknown): unknown {
   return value;
 }
 
-import { OverrideCtx, type OverrideCtxValue } from "./_shared";
+import { newRowKey, OverrideCtx, type OverrideCtxValue } from "./_shared";
 
 // Tabs are code-split via React.lazy so opening Settings only loads the
 // initially-active tab. Suspense boundary in the render handles fallback.

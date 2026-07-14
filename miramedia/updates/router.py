@@ -45,7 +45,7 @@ async def get_updates(
         log.exception("update check failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{type(exc).__name__}: {exc}",
+            detail="update check failed",
         ) from exc
 
 
@@ -61,7 +61,7 @@ async def trigger_check(svc: update_service_dep) -> UpdateInfo:
         log.exception("manual update check failed")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"{type(exc).__name__}: {exc}",
+            detail="manual update check failed",
         ) from exc
 
 

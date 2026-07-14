@@ -163,17 +163,6 @@ class TorrentHistoryOutcome(StrEnum):
 # --- Import status views ---
 
 
-class ImportStatusFilter(StrEnum):
-    """Filter buckets for the import-status list."""
-
-    failed = "failed"
-    ambiguous = "ambiguous"
-    pending = "pending"
-    partial = "partial"
-    recent = "recent"
-    all = "all"
-
-
 class ImportFileDetail(BaseModel):
     """Per-file detail inside an import-status entry."""
 
@@ -197,24 +186,6 @@ class ImportStatusEntry(BaseModel):
     media: TorrentMediaContext | None = None
     progress: ImportProgress
     files: list[ImportFileDetail]
-
-
-class PaginatedTorrentImports(BaseModel):
-    items: list[ImportStatusEntry]
-    total: int
-    offset: int
-    limit: int
-
-
-class ImportStatusCounts(BaseModel):
-    """Counts per filter bucket (cheap to fetch for sidebar/dashboard widgets)."""
-
-    failed: int = 0
-    ambiguous: int = 0
-    pending: int = 0
-    partial: int = 0
-    recent: int = 0
-    all: int = 0
 
 
 # --- Manual file mapping ---

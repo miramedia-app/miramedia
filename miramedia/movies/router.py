@@ -275,7 +275,6 @@ async def delete_a_movie(
     movie_service: movie_service_dep,
     movie: movie_dep,
     delete_files_on_disk: Annotated[bool, Query()] = False,
-    delete_torrents: Annotated[bool, Query()] = False,
 ) -> None:
     """
     Delete a movie from the library.
@@ -283,7 +282,6 @@ async def delete_a_movie(
     await movie_service.delete_movie(
         movie=movie,
         delete_files_on_disk=delete_files_on_disk,
-        delete_torrents=delete_torrents,
     )
 
 

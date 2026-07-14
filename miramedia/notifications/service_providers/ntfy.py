@@ -5,6 +5,7 @@ from miramedia.notifications.schemas import MessageNotification
 from miramedia.notifications.service_providers.abstract_notification_service_provider import (
     AbstractNotificationServiceProvider,
 )
+from miramedia.notifications.utils import sanitize_notification_title
 
 
 class NtfyNotificationServiceProvider(AbstractNotificationServiceProvider):
@@ -20,7 +21,7 @@ class NtfyNotificationServiceProvider(AbstractNotificationServiceProvider):
             url=self.config.url,
             data=message.message.encode(encoding="utf-8"),
             headers={
-                "Title": "MiraMedia - " + message.title,
+                "Title": "MiraMedia - " + sanitize_notification_title(message.title),
             },
             timeout=60,
         )

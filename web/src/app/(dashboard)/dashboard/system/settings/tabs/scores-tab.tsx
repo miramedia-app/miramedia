@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { ScoringPreview } from "@/components/system/scoring-preview";
-import { csvToArray, type AnyObj, type Keyed, type SetPath } from "../_shared";
+import { csvToArray, newRowKey, type AnyObj, type Keyed, type SetPath } from "../_shared";
 
 type Opt = {
   name?: string;
@@ -324,7 +324,7 @@ export function ScoresTab({
                         [
                           ...options,
                           {
-                            _key: crypto.randomUUID(),
+                            _key: newRowKey(),
                             name: "",
                             keywords: [],
                             score_modifier: 0,
@@ -428,7 +428,7 @@ export function ScoresTab({
                         [
                           ...rules,
                           {
-                            _key: crypto.randomUUID(),
+                            _key: newRowKey(),
                             name: "",
                             [keywordsField]: [],
                             score_modifier: 0,

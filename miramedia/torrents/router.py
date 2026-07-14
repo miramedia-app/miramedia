@@ -53,8 +53,6 @@ from miramedia.torrents.schemas import (
     BulkRetryImportResult,
     DryRunImportPlanItem,
     DryRunImportResult,
-    ImportStatusCounts,
-    ImportStatusFilter,
     IntegrityActionResult,
     ManualDownloadRequest,
     ManualMapRequest,
@@ -62,7 +60,6 @@ from miramedia.torrents.schemas import (
     ManualMapTargetType,
     MediaType,
     PaginatedIntegrityMismatches,
-    PaginatedTorrentImports,
     Quality,
     RetryImportResult,
     RichTorrent,
@@ -730,26 +727,6 @@ async def get_all_torrents(
 async def get_torrent_count(repo: torrent_repository_dep) -> int:
     """Get the count of active (non-imported) torrents."""
     return await repo.get_active_torrent_count()
-
-
-@router.get("/import-status", status_code=status.HTTP_200_OK)
-async def list_import_status(
-    service: torrent_service_dep,
-    bucket: Annotated[ImportStatusFilter, Query()] = ImportStatusFilter.all,
-    offset: Annotated[int, Query(ge=0)] = 0,
-    limit: Annotated[int, Query(gt=0, le=200)] = 50,
-) -> PaginatedTorrentImports:
-    """Paginated list of torrents grouped by import outcome bucket."""
-    items, total = await service.list_import_statuses(
-        bucket=bucket, offset=offset, limit=limit
-    )
-    return PaginatedTorrentImports(items=items, total=total, offset=offset, limit=limit)
-
-
-@router.get("/import-status/counts", status_code=status.HTTP_200_OK)
-async def get_import_status_counts(service: torrent_service_dep) -> ImportStatusCounts:
-    """Bucket counts for the imports dashboard widget."""
-    return await service.get_import_status_counts()
 
 
 @router.get(

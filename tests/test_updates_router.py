@@ -170,7 +170,7 @@ def test_get_updates_maps_service_errors_to_500() -> None:
         response = client.get(UPDATES_PREFIX)
 
     assert response.status_code == 500
-    assert "RuntimeError" in response.json()["detail"]
+    assert response.json()["detail"] == "update check failed"
 
 
 def test_post_updates_check_maps_service_errors_to_500() -> None:
@@ -187,7 +187,7 @@ def test_post_updates_check_maps_service_errors_to_500() -> None:
         response = client.post(f"{UPDATES_PREFIX}/check")
 
     assert response.status_code == 500
-    assert "ValueError" in response.json()["detail"]
+    assert response.json()["detail"] == "manual update check failed"
 
 
 def test_get_updates_requires_superuser() -> None:

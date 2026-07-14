@@ -545,10 +545,55 @@ class ImportsService:
                 torrent_id = uuid.UUID(body.id)
             except ValueError:
                 raise HTTPException(400, "torrent id must be a uuid") from None
-            await self.torrent_service.torrent_repository.delete_torrent(
-                torrent_id=torrent_id,
-                delete_associated_media_files=body.delete_files,
+            from miramedia.exceptions import NotFoundError
+
+            try:
+                torrent = (
+                    await self.torrent_service.torrent_repository.get_torrent_by_id(
+                        torrent_id=torrent_id
+                    )
+                )
+            except NotFoundError:
+                torrent = None
+            if torrent is not None:
+                # Stop the torrent in the download client first — a bare row
+                # delete leaves it seeding and its files on disk.
+                from miramedia.database import release_session_before_external_io
+
+                await release_session_before_external_io(self.repository.db)
+                try:
+                    await self.torrent_service.cancel_download(
+                        torrent=torrent, delete_files=body.delete_files
+                    )
+                except RuntimeError:
+                    pass
+                # Service-level delete publishes ``torrent.deleted`` so the
+                # dashboards refetch.
+                try:
+                    await self.torrent_service.delete_torrent(torrent_id=torrent.id)
+                except Exception:
+                    # Best-effort: the row/client state may already be gone
+                    # (concurrent reap). Still prune the queue so the UI entry
+                    # clears; the periodic rebuild resurrects it if the
+                    # torrent actually survives.
+                    log.warning(
+                        "ignore(): delete_torrent failed for %s; pruning queue anyway",
+                        torrent_id,
+                        exc_info=True,
+                    )
+            # The imports page is queue-backed: prune the queue rows in-request
+            # so the entry is gone by the time the UI refetches.
+            from sqlalchemy import delete as sa_delete
+
+            from miramedia.imports.models import ImportQueueItem
+
+            await self.repository.db.execute(
+                sa_delete(ImportQueueItem).where(
+                    ImportQueueItem.kind == "torrent",
+                    ImportQueueItem.ref_id == str(torrent_id),
+                )
             )
+            await self.repository.db.commit()
             return ResolveResult(ok=True, detail="torrent removed")
         if body.kind == "scan":
             await self.repository.add_ignored_path(body.id)
