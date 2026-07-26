@@ -197,8 +197,11 @@ class IntegrityPathLayout:
                 return old_path
         return new_path
 
+    def show_root(self, show: Show) -> Path:
+        return self._media_root(show, for_show=True)
+
     def season_directory(self, show: Show, season_number: int) -> Path:
-        root = self._media_root(show, for_show=True)
+        root = self.show_root(show)
         current = root / Path(season_folder_name(season_number))
         fallback = root / Path(default_season_folder_name(season_number))
         if not current.exists() and fallback != current and fallback.exists():

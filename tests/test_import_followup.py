@@ -94,6 +94,8 @@ def _subtitle_patches() -> tuple[MagicMock, MagicMock]:
     subtitle_instance = MagicMock()
     subtitle_instance.search_episode_subtitles = AsyncMock()
     subtitle_instance.search_movie_subtitles = AsyncMock()
+    subtitle_instance.notify_bazarr_episode_imported = AsyncMock()
+    subtitle_instance.notify_bazarr_movie_imported = AsyncMock()
     subtitle_cls = MagicMock(return_value=subtitle_instance)
     return subtitle_cls, subtitle_instance
 

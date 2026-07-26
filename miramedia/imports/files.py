@@ -201,13 +201,23 @@ def import_file(
         if not overwrite:
             msg = f"Target {target_file} already exists and overwrite=False"
             raise ImportConflictError(msg)
-        target_file.unlink()
+
+    # Atomic publish: link or copy to a temp file on the SAME directory/filesystem,
+    # then os.replace() (atomic within a filesystem) into place. The canonical path
+    # is only ever written by replace from a fully-published temp — never unlinked
+    # up front. A kill/power-loss mid-copy leaves only the .mmpart temp, never a
+    # truncated file at the canonical path the importer would mistake for finished.
+    tmp_target = target_file.with_name(target_file.name + ".mmpart")
+    try:
+        tmp_target.unlink()
+    except OSError:
+        pass
 
     try:
-        target_file.hardlink_to(source_file)
+        tmp_target.hardlink_to(source_file)
     except FileExistsError as exc:
-        # TOCTOU race: a concurrent import re-published the target between our
-        # ``unlink`` above and this link. If the file now in place is the same
+        # TOCTOU race: a concurrent import re-published the target while we were
+        # linking into the temp. If the file now at the canonical path is the same
         # content as our source (same inode, or a complete copy of equal size),
         # the other writer already finished this exact import — treat it as an
         # idempotent success instead of recording a false ``failed_io`` that
@@ -232,10 +242,18 @@ def import_file(
                 "Target %s re-published by a concurrent import; treating as done",
                 target_file,
             )
+            try:
+                tmp_target.unlink()
+            except OSError:
+                pass
             return
         # Genuine conflict (different content occupies the path). Surface as a
         # structured error so callers record failed_io rather than silently
         # treating the import as successful.
+        try:
+            tmp_target.unlink()
+        except OSError:
+            pass
         msg = f"Target {target_file} reappeared during link"
         raise ImportConflictError(msg) from exc
     except (OSError, UnsupportedOperation, NotImplementedError) as exc:
@@ -246,15 +264,9 @@ def import_file(
             exc,
         )
     else:
+        tmp_target.replace(target_file)
         return
 
-    # Atomic publish: copy to a temp file on the SAME directory/filesystem, then
-    # os.replace() (atomic within a filesystem) into place. A kill/power-loss
-    # mid-copy — the common danger on a frequently-restarting NAS doing the
-    # cross-volume copy that is the default path here — then leaves only the
-    # .mmpart temp, never a truncated file at the canonical path that the
-    # importer would mistake for a finished import.
-    tmp_target = target_file.with_name(target_file.name + ".mmpart")
     try:
         ensure_free_space(target_file.parent, source_file.stat().st_size)
         shutil.copy(src=source_file, dst=tmp_target)

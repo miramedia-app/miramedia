@@ -8,6 +8,10 @@ from requests.exceptions import Timeout
 
 log = logging.getLogger(__name__)
 
+# Inbound webhook payload shapes verified against Bazarr master (2026-07):
+# - Sonarr: https://github.com/morpheus65535/bazarr/blob/master/bazarr/api/webhooks/sonarr.py
+# - Radarr: https://github.com/morpheus65535/bazarr/blob/master/bazarr/api/webhooks/radarr.py
+
 
 class BazarrClient:
     """Simple client for the Bazarr API."""
@@ -46,13 +50,29 @@ class BazarrClient:
         else:
             return True
 
-    def search_episode_subtitles(self, episode_id: str) -> bool:
-        """Trigger Bazarr to search subtitles for an episode."""
-        return self._post(f"/episodes/{episode_id}/subtitles")
+    def notify_episode_files_imported(
+        self, episode_file_ids: list[int], episode_ids: list[int]
+    ) -> bool:
+        """Push Bazarr's inbound Sonarr ``Download`` webhook for episode files."""
+        return self._post(
+            "/webhooks/sonarr",
+            json={
+                "eventType": "Download",
+                "episodeFiles": [{"id": i} for i in episode_file_ids],
+                "episodes": [{"id": i} for i in episode_ids],
+            },
+        )
 
-    def search_movie_subtitles(self, movie_id: str) -> bool:
-        """Trigger Bazarr to search subtitles for a movie."""
-        return self._post(f"/movies/{movie_id}/subtitles")
+    def notify_movie_file_imported(self, movie_file_id: int, movie_id: int) -> bool:
+        """Push Bazarr's inbound Radarr ``Download`` webhook for a movie file."""
+        return self._post(
+            "/webhooks/radarr",
+            json={
+                "eventType": "Download",
+                "movieFile": {"id": movie_file_id},
+                "movie": {"id": movie_id},
+            },
+        )
 
     def test_connection(self) -> bool:
         """Test if Bazarr is reachable."""

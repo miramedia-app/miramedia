@@ -1,9 +1,12 @@
+import ipaddress
 import logging
+import socket
 from collections.abc import Callable
 from datetime import date
 from functools import wraps
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 from uuid import UUID
 
 import requests
@@ -14,6 +17,7 @@ from miramedia.exceptions import MetadataProviderUnavailableError
 log = logging.getLogger(__name__)
 
 _MAX_POSTER_DOWNLOAD_BYTES = 50 * 1024 * 1024
+_MAX_POSTER_REDIRECTS = 5
 
 # Refuse decompression-bomb posters (PIL default is ~178M pixels but can be
 # disabled globally elsewhere; pin an explicit ceiling for this decode path).
@@ -92,8 +96,57 @@ def poster_exists(storage_path: Path, uuid: UUID) -> bool:
     return storage_path.joinpath(str(uuid)).with_suffix(".jpg").exists()
 
 
+def _is_safe_poster_url(poster_url: str) -> bool:
+    """Reject non-http(s) schemes and hosts that resolve to non-global
+    addresses (loopback/private/link-local/etc). Blind-SSRF guard for
+    provider-supplied poster URLs."""
+    try:
+        parsed = urlparse(poster_url)
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    try:
+        # Pre-connection check only; DNS rebinding TOCTOU is out of scope here.
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if not addr.is_global:
+            return False
+    return True
+
+
 def download_poster_image(storage_path: Path, poster_url: str, uuid: UUID) -> bool:
-    res = requests.get(poster_url, stream=True, timeout=60)
+    if not _is_safe_poster_url(poster_url):
+        log.warning("Skipping poster download for %s: unsafe URL host/scheme", uuid)
+        return False
+
+    url = poster_url
+    res: requests.Response | None = None
+    for _ in range(_MAX_POSTER_REDIRECTS + 1):
+        res = requests.get(url, stream=True, timeout=60, allow_redirects=False)
+        if not res.is_redirect and not res.is_permanent_redirect:
+            break
+        location = res.headers.get("Location")
+        res.close()
+        if not location:
+            log.warning("Poster redirect without Location for %s", uuid)
+            return False
+        url = urljoin(url, location)
+        if not _is_safe_poster_url(url):
+            log.warning(
+                "Skipping poster download for %s: unsafe redirect target host/scheme",
+                uuid,
+            )
+            return False
+    else:
+        log.warning("Too many poster redirects for %s", uuid)
+        return False
 
     if res.status_code == 200:
         content_length = res.headers.get("Content-Length")

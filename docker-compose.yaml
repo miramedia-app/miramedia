@@ -23,7 +23,8 @@ services:
     # Pin to a specific version (e.g. ":v0.2.0") for stable updates instead of ":latest"
     # ":latest" is the slim image (no bundled Chromium). To use the Cloudflare
     # native solver ([cloudflare] enabled = true, solver = "native"), switch to
-    # the chromium variant: ghcr.io/miramedia-app/miramedia:latest-cf. External
+    # the chromium variant, a separate repo with version tags only (no
+    # ":latest"): ghcr.io/miramedia-app/miramedia-cf:<version>. External
     # solvers (byparr/flaresolverr/remote/browser_run/firecrawl) run on slim.
     image: ghcr.io/miramedia-app/miramedia:latest
     restart: unless-stopped

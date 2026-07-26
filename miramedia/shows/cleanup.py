@@ -1,10 +1,10 @@
 import logging
-from types import EllipsisType
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.config import MiraMediaConfig
+from miramedia.media_preferences import filter_enabled_preferences
 from miramedia.shows.models import Show
 
 log = logging.getLogger(__name__)
@@ -23,23 +23,12 @@ async def cleanup_stale_show_preferences(
     }
     enabled_codec = {opt.name for opt in config.indexers.codec_options if opt.enabled}
 
-    def _filter(
-        value: list[str] | None, enabled: set[str]
-    ) -> list[str] | None | EllipsisType:
-        if value is None or value == []:
-            return ...
-        filtered = [n for n in value if n in enabled]
-        if filtered == list(value):
-            return ...
-        # Original had names but none survived → fall back to global default.
-        return filtered or None
-
     q_cleared = 0
     stmt = select(Show).where(Show.preferred_quality.isnot(None))
     shows = (await db.execute(stmt)).scalars().all()
     for show in shows:
-        new = _filter(show.preferred_quality, enabled_quality)
-        if new is not ...:
+        new = filter_enabled_preferences(show.preferred_quality, enabled_quality)
+        if new != show.preferred_quality:
             log.info(
                 "Cleaning Show.preferred_quality=%r → %r on %s",
                 show.preferred_quality,
@@ -53,8 +42,8 @@ async def cleanup_stale_show_preferences(
     stmt = select(Show).where(Show.preferred_codec.isnot(None))
     shows = (await db.execute(stmt)).scalars().all()
     for show in shows:
-        new = _filter(show.preferred_codec, enabled_codec)
-        if new is not ...:
+        new = filter_enabled_preferences(show.preferred_codec, enabled_codec)
+        if new != show.preferred_codec:
             log.info(
                 "Cleaning Show.preferred_codec=%r → %r on %s",
                 show.preferred_codec,

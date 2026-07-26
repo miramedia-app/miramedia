@@ -86,7 +86,7 @@ class CompositeRequestProvider(AbstractRequestProvider):
         self, request_id: MediaRequestId, decided_by_id: UUID
     ) -> MediaRequest:
         result = await self.native.approve_request(request_id, decided_by_id)
-        if result.seerr_request_id is not None:
+        if self.client is not None and result.seerr_request_id is not None:
             await self._safe_seerr(
                 "approve", self.client.approve(result.seerr_request_id)
             )
@@ -96,7 +96,7 @@ class CompositeRequestProvider(AbstractRequestProvider):
         self, request_id: MediaRequestId, decided_by_id: UUID
     ) -> MediaRequest:
         result = await self.native.reject_request(request_id, decided_by_id)
-        if result.seerr_request_id is not None:
+        if self.client is not None and result.seerr_request_id is not None:
             await self._safe_seerr(
                 "decline", self.client.decline(result.seerr_request_id)
             )
@@ -106,7 +106,7 @@ class CompositeRequestProvider(AbstractRequestProvider):
         row = await self.repository.get_request(request_id)
         seerr_request_id = row.seerr_request_id
         await self.native.delete_request(request_id)
-        if seerr_request_id is not None:
+        if self.client is not None and seerr_request_id is not None:
             await self._safe_seerr(
                 "delete",
                 self.client.delete_request(seerr_request_id),
@@ -117,7 +117,7 @@ class CompositeRequestProvider(AbstractRequestProvider):
 
     async def mark_downloaded(self, request_id: MediaRequestId) -> MediaRequest:
         result = await self.native.mark_downloaded(request_id)
-        if result.seerr_media_id is not None:
+        if self.client is not None and result.seerr_media_id is not None:
             await self._safe_seerr(
                 "mark_available",
                 self.client.mark_media_available(result.seerr_media_id),

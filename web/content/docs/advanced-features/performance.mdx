@@ -50,18 +50,30 @@ Performance schema changes ship as normal migrations — apply them with the res
 alembic upgrade head
 ```
 
-Revision `i6j7k8l9m0n1` adds denormalized download counters, the import-queue
-index, and search indexes. Revision `j7k8l9m0n1o2` adds the BRIN index on
-activity logs.
+The container runs this on boot. The schema history was squashed into a single
+`3ae9e0afdc49` baseline, so the performance indexes (denormalized download
+counters, import-queue index, search indexes, the BRIN index on activity logs)
+are part of that baseline rather than separate revisions. If the running app
+expects a newer revision than the database is at, the health endpoint's
+`alembic` section reports `ok: false` — check it after any upgrade rather than
+waiting for a column error on a hot path.
 
 ## Observability
 
 - **Prometheus** — `GET /api/v1/metrics` (scoped under the API prefix so
-  reverse-proxy ACLs can gate it).
+  reverse-proxy ACLs can gate it). Superuser-only by default; set
+  `misc.metrics_public = true` for unauthenticated scraping.
+- **Health** — `GET /api/v1/health` never raises: it returns liveness plus a
+  per-section `ok` flag for `db`, `alembic` (migration head match), and
+  `cache`, so a degraded subsystem doesn't flap the compose healthcheck. DB
+  pings use a dedicated `NullPool` engine, so a saturated pool can't stall the
+  probe. `GET /api/v1/health/details` (superuser) returns the full payload
+  including both pool stats.
 - **Slow queries** — statements over 500 ms are logged; `docker logs
 miramedia-postgres`.
 - **`pg_stat_statements`** — enabled in the compose Postgres config.
-- **Ops summary** — `GET /api/v1/ops/summary` (superuser).
+- **Ops summary** — `GET /api/v1/ops/summary` (superuser): slow-query snapshot
+  plus live pool stats.
 
 ## Library state denormalization
 

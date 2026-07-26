@@ -9,6 +9,7 @@ from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from miramedia.database import release_session_before_external_io
 from miramedia.imports.models import ImportQueueItem
 from miramedia.imports.schemas import ScanImportItem, TorrentImportItem
 from miramedia.imports.service import ImportsService
@@ -75,6 +76,7 @@ async def sync_torrent_import_queue(
         return
     # Refresh live download status (persist=False — no event, no loop): a
     # torrent only belongs in the queue once its download has finished.
+    await release_session_before_external_io(db)
     torrent = await service.torrent_service.get_torrent_status(torrent, persist=False)
     entry = await service.torrent_service._build_import_status_entry(torrent)
     if entry.progress.total == 0 or not service.torrent_service.is_import_ready(

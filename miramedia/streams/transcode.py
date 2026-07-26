@@ -82,8 +82,12 @@ def schedule_hls_warm(source: Path) -> None:
         if t.cancelled():
             return
         exc = t.exception()
+        if exc is None:
+            return
         if isinstance(exc, HlsTranscodeError):
             log.error("Background HLS warm failed for %s: %s", source.name, exc)
+        else:
+            log.error("Background HLS warm crashed for %s", source.name, exc_info=exc)
 
     task.add_done_callback(_on_done)
 
@@ -211,7 +215,10 @@ async def ensure_hls_playlist(source: Path) -> Path:
             _inflight[key] = task
 
     try:
-        await task
+        # A waiter (playlist request) may be cancelled on client disconnect;
+        # shield so cancellation stays local to that waiter and never kills
+        # the shared encode other viewers / the warm task are awaiting.
+        await asyncio.shield(task)
     finally:
         async with _inflight_lock:
             if _inflight.get(key) is task:

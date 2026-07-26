@@ -5,14 +5,16 @@ with the same `(provider, provider_id)` repeatedly. This module exposes
 a small set of TTLCaches keyed by call shape, plus a `cached` decorator
 factory so providers can opt in per-method without changing call sites.
 
-Cache is process-local; safe under the single-process app model.
-Eviction is LRU + TTL via cachetools.
+Cache is process-local; accessed from the event-loop thread and
+``asyncio.to_thread`` worker threads. All TTLCache container access goes
+through ``_lock``. Eviction is LRU + TTL via cachetools.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
@@ -34,6 +36,7 @@ _DEFAULT_MAXSIZE = int(os.getenv("MIRAMEDIA_METADATA_CACHE_MAXSIZE", "1024"))
 # Separate caches per call shape so a `get_show` and `search_show("foo")`
 # don't collide. Keyed by a tuple of (method_name, *args).
 _caches: dict[str, TTLCache] = {}
+_lock = threading.Lock()
 
 
 @dataclass
@@ -106,14 +109,16 @@ def cached(
             @wraps(fn)
             async def awrapper(self: object, *args: object, **kwargs: object) -> Any:  # noqa: ANN401 — wraps arbitrary provider methods with dynamic return types
                 key = (args, tuple(sorted(kwargs.items())))
-                hit = cache.get(key)
+                with _lock:
+                    hit = cache.get(key)
                 if hit is not None:
                     stats.hits += 1
                     return hit
                 stats.misses += 1
                 result = await fn(self, *args, **kwargs)
                 if result:
-                    cache[key] = result
+                    with _lock:
+                        cache[key] = result
                     stats.sets += 1
                 return result
 
@@ -122,14 +127,16 @@ def cached(
         @wraps(fn)
         def swrapper(self: object, *args: object, **kwargs: object) -> Any:  # noqa: ANN401 — wraps arbitrary provider methods with dynamic return types
             key = (args, tuple(sorted(kwargs.items())))
-            hit = cache.get(key)
+            with _lock:
+                hit = cache.get(key)
             if hit is not None:
                 stats.hits += 1
                 return hit
             stats.misses += 1
             result = fn(self, *args, **kwargs)
             if result:
-                cache[key] = result
+                with _lock:
+                    cache[key] = result
                 stats.sets += 1
             return result
 
@@ -140,27 +147,31 @@ def cached(
 
 def get_all_cache_stats() -> dict[str, dict[str, int | float]]:
     """Snapshot of every cache's hit/miss counters. Used by /health detail."""
-    return {
-        name: {
+    result: dict[str, dict[str, int | float]] = {}
+    for name, s in _stats.items():
+        with _lock:
+            size = len(_caches.get(name, ()))
+        result[name] = {
             "hits": s.hits,
             "misses": s.misses,
             "sets": s.sets,
             "hit_rate": round(s.hit_rate, 4),
-            "size": len(_caches.get(name, ())),
+            "size": size,
         }
-        for name, s in _stats.items()
-    }
+    return result
 
 
 def invalidate_all() -> None:
     """Drop every cache entry. Use after a user-triggered force-refresh."""
-    for c in _caches.values():
-        c.clear()
+    with _lock:
+        for c in _caches.values():
+            c.clear()
 
 
 def invalidate(name: str) -> None:
-    if name in _caches:
-        _caches[name].clear()
+    with _lock:
+        if name in _caches:
+            _caches[name].clear()
 
 
 __all__ = [

@@ -48,6 +48,7 @@ import type {
   SortOption,
 } from "@/components/data-list";
 import apiClient from "@/lib/api/client";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import { createManagedEventSource, type ManagedEventSource } from "@/lib/managed-event-source";
 
 type Site = {
@@ -337,8 +338,20 @@ export default function IndexersPage() {
         icon: <Power className="h-3.5 w-3.5" />,
         variant: "secondary",
         onRun: async (items) => {
-          await Promise.all(items.map((s) => updateSite(s.id, { enabled: true })));
-          toast.success(`Enabled ${items.length} site(s)`);
+          const { ok, failed } = await bulkMutate(items, (s) =>
+            apiClient.PUT("/api/v1/indexers/sites/{site_id}", {
+              params: { path: { site_id: s.id } },
+              body: { enabled: true } as never,
+            }),
+          );
+          await qc.invalidateQueries({ queryKey: ["indexers", "sites"] });
+          if (failed === 0) {
+            toast.success(`Enabled ${ok} site(s)`);
+          } else if (ok === 0) {
+            toast.error(`Failed to enable ${failed} site(s)`);
+          } else {
+            toast.warning(`Enabled ${ok} site(s), ${failed} failed`);
+          }
         },
       },
       {
@@ -347,12 +360,24 @@ export default function IndexersPage() {
         icon: <PowerOff className="h-3.5 w-3.5" />,
         variant: "secondary",
         onRun: async (items) => {
-          await Promise.all(items.map((s) => updateSite(s.id, { enabled: false })));
-          toast.success(`Disabled ${items.length} site(s)`);
+          const { ok, failed } = await bulkMutate(items, (s) =>
+            apiClient.PUT("/api/v1/indexers/sites/{site_id}", {
+              params: { path: { site_id: s.id } },
+              body: { enabled: false } as never,
+            }),
+          );
+          await qc.invalidateQueries({ queryKey: ["indexers", "sites"] });
+          if (failed === 0) {
+            toast.success(`Disabled ${ok} site(s)`);
+          } else if (ok === 0) {
+            toast.error(`Failed to disable ${failed} site(s)`);
+          } else {
+            toast.warning(`Disabled ${ok} site(s), ${failed} failed`);
+          }
         },
       },
     ],
-    [updateSite],
+    [qc],
   );
 
   // Add dialog
@@ -557,6 +582,16 @@ export default function IndexersPage() {
         if (testStreamRef.current === handle) testStreamRef.current = null;
         setTestingId((cur) => (cur === site.id ? null : cur));
         void qc.invalidateQueries({ queryKey: ["indexers", "sites"] });
+      },
+      // Aborted by a newer test or by unmount: `onDone` never fires, so drop
+      // the loading toast and clear the row spinner here or they linger for
+      // the rest of the session. No `["indexers","sites"]` invalidation — the
+      // test was abandoned, so it produced no site state worth refetching, and
+      // on unmount there is nothing left to render.
+      onAbort: () => {
+        toast.dismiss(toastId);
+        if (testStreamRef.current === handle) testStreamRef.current = null;
+        setTestingId((cur) => (cur === site.id ? null : cur));
       },
     });
     testStreamRef.current = handle;

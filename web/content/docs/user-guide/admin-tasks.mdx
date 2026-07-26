@@ -27,12 +27,20 @@ all tabs.
   or `(merge)`.
 - Footer line: **"Changes apply immediately, no restart required."** Overrides
   are the live source of truth; `config.toml` provides the file defaults.
+- Saves are **compare-and-swap** against a stored settings revision. If
+  another admin (or another tab) saved while you were editing, your save is
+  rejected with a revision-conflict error rather than silently overwriting
+  theirs — reload and re-apply. A failed apply rolls the stored overrides back
+  to the previous revision, so the file and the running config never diverge.
 
 ### Tab contents (what's worth knowing per tab)
 
 - **General** — 5 cards: General Settings (Frontend URL, CORS, Log Retention,
-  Dev Mode), **Cloudflare Bypass** (Browser Path, Cookie TTL, Impersonation
-  Profile), **Storage Paths** (image / torrent / movie / show dirs),
+  Dev Mode), **Cloudflare Bypass** (master toggle, **solver backend** picker —
+  native / remote / byparr / flaresolverr / browser\_run / firecrawl — with the
+  selected backend's own fields, optional proxy, and the native-only Browser
+  Path / Cookie TTL / Impersonation Profile / timeouts), **Storage Paths**
+  (image / torrent / movie / show dirs),
   **Libraries** (named Show/Movie roots, reorderable), **Naming** (folder /
   file format templates with full placeholder reference).
 - **Updates** — Status card (current vs latest version, last-checked, repo,
@@ -58,11 +66,14 @@ all tabs.
   library names or sentinels `ALL_TV` / `ALL_MOVIES`. A live
   **`<ScoringPreview>`** at the bottom runs a synthetic title through every
   rule and shows the breakdown.
-- **Subtitles** — three provider categories: **Free** (Gestdown, TVSubtitles,
-  YIFY Subtitles, OpenSubtitles legacy, BSPlayer), **Account-Based**
-  (OpenSubtitles.com [Recommended], Addic7ed, SubDL, Subsource),
-  **Language-Specific** (NapiProjekt, Subtis, Subtitulamos), plus a Bazarr
-  Integration card with **Test**.
+- **Subtitles** — four provider categories: **Free / keyless** (Embedded
+  Subtitles, Gestdown, TVSubtitles, YIFY Subtitles, SubtitleCat, Subf2m,
+  iSubtitles, My-Subs), **Account-Based** (OpenSubtitles.com [Recommended],
+  Addic7ed), **API-Key** (SubDL, Subsource), **Language-Specific**
+  (NapiProjekt, Subtis, Subtitulamos), plus a Bazarr Integration card
+  (outbound test + a **Generate** button for the shim API key Bazarr uses on
+  the Sonarr/Radarr URLs). The dead `opensubtitles` (XML-RPC) and `bsplayer`
+  providers are gone and are stripped from old configs on load.
 - **Imports** — Automatic Library Scan (enable + interval hours), Automatic
   Import on Scan (enable + minimum confidence 0–1 slider), Provider Matching
   (toggle + max results + auto-pick confidence threshold).

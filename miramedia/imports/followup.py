@@ -18,7 +18,10 @@ user controls per-media / via the global default.
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
+from miramedia.file_status import ImportOutcome
+from miramedia.shows.schemas import EpisodeId
 from miramedia.torrents.schemas import MediaType
 
 log = logging.getLogger(__name__)
@@ -54,6 +57,10 @@ async def run_post_import_completion(
             movie_service=movie_service,
         )
         if media_type == MediaType.show:
+            # (episode_file_id, episode_id) for every file this show actually
+            # imported — pushed to Bazarr as ONE webhook below, so a season
+            # pack costs one POST instead of one per file.
+            bazarr_pairs: list[tuple[UUID, EpisodeId]] = []
             for season in media.seasons:
                 for episode in season.episodes:
                     # Only search episodes that actually have an imported file.
@@ -73,7 +80,24 @@ async def run_post_import_completion(
                         log.exception(
                             "Subtitle search failed for episode %s", episode.id
                         )
+                    bazarr_pairs.extend(
+                        (episode_file.id, episode.id)
+                        for episode_file in episode.episode_files
+                        if episode_file.import_status == ImportOutcome.imported
+                    )
+            await subtitle_service.notify_bazarr_episodes_imported(db, bazarr_pairs)
         else:
             await subtitle_service.search_movie_subtitles(media.id)
+            movie_files = (
+                await movie_service.movie_repository.get_movie_files_by_movie_id(
+                    media.id
+                )
+            )
+            for movie_file in movie_files:
+                if movie_file.import_status != ImportOutcome.imported:
+                    continue
+                await subtitle_service.notify_bazarr_movie_imported(
+                    db, movie_file.id, media.id
+                )
     except Exception:
         log.exception("Post-import subtitle follow-up failed for %s", media.name)

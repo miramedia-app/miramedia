@@ -2,10 +2,12 @@ import contextlib
 import hashlib
 import logging
 import os
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from typing import Annotated, Any, override
 
+import jwt
 from cachetools import TTLCache
 from fastapi import Depends, Request
 from fastapi.responses import RedirectResponse, Response
@@ -262,13 +264,35 @@ async def create_default_admin_user() -> None:
 # ---------------------------------------------------------------------------
 _AUTH_CACHE_TTL_S = int(os.getenv("MIRAMEDIA_AUTH_CACHE_TTL_SECONDS", "30"))
 _AUTH_CACHE_MAX = int(os.getenv("MIRAMEDIA_AUTH_CACHE_MAXSIZE", "2048"))
-_user_cache: TTLCache = TTLCache(maxsize=_AUTH_CACHE_MAX, ttl=_AUTH_CACHE_TTL_S)
+_AuthCacheEntry = tuple[models.UP, float | None]
+_user_cache: TTLCache[bytes, _AuthCacheEntry] = TTLCache(
+    maxsize=_AUTH_CACHE_MAX, ttl=_AUTH_CACHE_TTL_S
+)
 
 
 def _token_cache_key(token: str | None) -> bytes | None:
     if not token:
         return None
     return hashlib.sha256(token.encode("utf-8", "ignore")).digest()
+
+
+def _token_exp_epoch(token: str) -> float | None:
+    """Return the JWT ``exp`` claim without verifying the signature.
+
+    Only call on tokens the parent ``JWTStrategy`` has already verified on a
+    cache miss; the cache key is the full token hash so forged tokens cannot
+    seed entries.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            options={"verify_signature": False},
+            algorithms=["HS256"],
+        )
+    except jwt.PyJWTError:
+        return None
+    exp = payload.get("exp")
+    return float(exp) if exp is not None else None
 
 
 def _detached_user_copy(user: User) -> User:
@@ -308,8 +332,8 @@ def invalidate_auth_cache(user_id: uuid.UUID | None = None) -> None:
     if user_id is None:
         _user_cache.clear()
         return
-    for k, u in list(_user_cache.items()):
-        if getattr(u, "id", None) == user_id:
+    for k, (cached_user, _exp) in list(_user_cache.items()):
+        if getattr(cached_user, "id", None) == user_id:
             _user_cache.pop(k, None)
 
 
@@ -317,9 +341,10 @@ class CachedJWTStrategy(JWTStrategy[models.UP, models.ID]):
     """``JWTStrategy`` with a small TTL cache keyed by token signature.
 
     On a cache hit we skip both the JWT decode and the ``user_manager.get(id)``
-    round-trip. On a miss we fall back to the parent implementation and store
-    the resulting user. ``None`` results are intentionally not cached so a
-    momentary DB failure doesn't poison auth for the TTL window.
+    round-trip, but still reject entries whose stored ``exp`` has passed. On a
+    miss we fall back to the parent implementation and store the resulting
+    user. ``None`` results are intentionally not cached so a momentary DB
+    failure doesn't poison auth for the TTL window.
     """
 
     @override
@@ -332,10 +357,14 @@ class CachedJWTStrategy(JWTStrategy[models.UP, models.ID]):
         if key is not None:
             cached = _user_cache.get(key)
             if cached is not None:
-                return cached
+                cached_user, exp_epoch = cached
+                if exp_epoch is not None and time.time() >= exp_epoch:
+                    _user_cache.pop(key, None)
+                else:
+                    return cached_user
         user = await super().read_token(token, user_manager)
-        if user is not None and key is not None:
-            _user_cache[key] = _detached_user_copy(user)
+        if user is not None and key is not None and token is not None:
+            _user_cache[key] = (_detached_user_copy(user), _token_exp_epoch(token))
         return user
 
 

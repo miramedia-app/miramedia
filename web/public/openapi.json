@@ -2,13 +2,57 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.11"
+    "version": "1.0.12"
   },
   "paths": {
+    "/radarr/api/v3/system/status": {
+      "get": {
+        "summary": "Radarr System Status V3",
+        "operationId": "radarr_system_status_v3_radarr_api_v3_system_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Radarr System Status V3 Radarr Api V3 System Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/radarr/api/system/status": {
+      "get": {
+        "summary": "Radarr System Status Legacy",
+        "operationId": "radarr_system_status_legacy_radarr_api_system_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Radarr System Status Legacy Radarr Api System Status Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/health": {
       "get": {
         "summary": "Hello World",
-        "description": "Healthcheck must never raise \u2014 partial degradation is reported via\nper-section ``.ok`` flags so the docker compose healthcheck does not flap\nwhen an optional subsystem (cache, pool) is temporarily unavailable.\n\nDB pings use a dedicated ``NullPool`` engine so a saturated request /\nbackground pool cannot stall the liveness probe. Both real pools' stats\nare reported. An ``alembic`` section flags head-mismatch (deployed app\nexpects revision X but DB is at Y) which would otherwise silently\nsurface as ``UndefinedColumn`` errors on the first hot path.",
+        "description": "Healthcheck must never raise \u2014 partial degradation is reported via\nper-section ``.ok`` flags so the docker compose healthcheck does not flap\nwhen an optional subsystem (cache, pool) is temporarily unavailable.\n\nDB pings use a dedicated ``NullPool`` engine so a saturated request /\nbackground pool cannot stall the liveness probe. Both real pools' stats\nare reported. An ``alembic`` section flags head-mismatch (deployed app\nexpects revision X but DB is at Y) which would otherwise silently\nsurface as ``UndefinedColumn`` errors on the first hot path.\n\nAnonymous callers receive liveness plus per-section ``ok`` booleans only;\nuse ``GET /health/details`` (superuser) for the full diagnostic payload.",
         "operationId": "hello_world_api_v1_health_get",
         "responses": {
           "200": {
@@ -24,6 +68,35 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/health/details": {
+      "get": {
+        "summary": "Health Details",
+        "description": "Full health diagnostics for operators (superuser only).",
+        "operationId": "health_details_api_v1_health_details_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Health Details Api V1 Health Details Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
       }
     },
     "/api/v1/features": {
@@ -60,7 +133,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
       }
     },
     "/api/v1/static/image/{filename}": {
@@ -9690,6 +9771,17 @@
               }
             ],
             "title": "Api Key"
+          },
+          "shim_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shim Api Key"
           }
         },
         "additionalProperties": false,

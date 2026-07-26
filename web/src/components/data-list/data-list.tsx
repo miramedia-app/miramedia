@@ -14,7 +14,7 @@ import { DataListSkeleton } from "./data-list-skeleton";
 import { DataListToolbar } from "./data-list-toolbar";
 import { useListFilters } from "./use-list-filters";
 import { useListHotkeys } from "./use-list-hotkeys";
-import { useListSelection } from "./use-list-selection";
+import { selectionHeaderState, useListSelection } from "./use-list-selection";
 import type {
   ActiveFilter,
   BulkAction,
@@ -52,6 +52,13 @@ export interface DataListProps<T> {
   rowActionsWidth?: string;
   /** Free-form content rendered below the row when expanded. Return null to disable expand for an item. */
   expandedContent?: (item: T) => React.ReactNode | null;
+  /**
+   * Cheap predicate for whether a row can expand. Defaults to true when
+   * `expandedContent` is provided. Pass this whenever `expandedContent` can
+   * return null for some rows, or whenever the expanded tree is nontrivial —
+   * it lets collapsed rows skip building that tree entirely.
+   */
+  isExpandable?: (item: T) => boolean;
   /** Default expanded state for new rows. */
   defaultExpanded?: boolean;
   onRowOpen?: (item: T) => void;
@@ -104,6 +111,7 @@ export function DataList<T>({
   rowActions,
   rowActionsWidth = "88px",
   expandedContent,
+  isExpandable,
   defaultExpanded = false,
   onRowOpen,
   toolbarLeading,
@@ -229,9 +237,12 @@ export function DataList<T>({
   // Memoize so identity is stable across renders — keeps useListSelection
   // refs intact and avoids forcing the idIndex Map to rebuild every render.
   const visibleIds = React.useMemo(() => paged.map(getId), [paged, getId]);
+  // Full filtered id list (pre-pagination) — what "Select all N" acts on.
+  const allSelectableIds = React.useMemo(() => sorted.map(getId), [sorted, getId]);
 
   const selection = useListSelection({
     ids: visibleIds,
+    allIds: allSelectableIds,
     disabledIds: unselectableIds,
   });
 
@@ -297,21 +308,12 @@ export function DataList<T>({
     });
   }, []);
 
-  // Single pass over visible ids — count selectable + selected once instead
-  // of three array walks (filter + every + some).
-  const { allSelected, someSelected } = React.useMemo(() => {
-    let selectable = 0;
-    let selected = 0;
-    for (const id of visibleIds) {
-      if (unselectableIds?.has(id)) continue;
-      selectable++;
-      if (selection.isSelected(id)) selected++;
-    }
-    return {
-      allSelected: selectable > 0 && selected === selectable,
-      someSelected: selected > 0 && selected < selectable,
-    };
-  }, [visibleIds, unselectableIds, selection]);
+  // Header state describes the whole filtered set, matching what the header
+  // checkbox now selects.
+  const { allSelected, someSelected } = React.useMemo(
+    () => selectionHeaderState(allSelectableIds, unselectableIds, selection.selected),
+    [allSelectableIds, unselectableIds, selection.selected],
+  );
 
   function toggleAll(checked: boolean) {
     if (checked) selection.selectAll();
@@ -366,12 +368,12 @@ export function DataList<T>({
 
   function renderRow(item: T, indexHint?: number) {
     const id = getId(item);
-    // Build expanded content once per render — was called twice before
-    // (once to probe `expandable`, once to render).
-    const content = expandedContent ? expandedContent(item) : null;
-    const expandable = content != null;
+    // Expandability is probed with the cheap `isExpandable` predicate so the
+    // expanded subtree is only built for rows that are actually open.
+    const expandable = expandedContent != null && (isExpandable ? isExpandable(item) : true);
     const isExpanded =
       expandable && (expandedRows.has(id) || (defaultExpanded && !expandedRows.has(`__c:${id}`)));
+    const content = isExpanded && expandedContent ? expandedContent(item) : null;
     void indexHint;
     return (
       <DataListRow

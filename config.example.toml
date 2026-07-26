@@ -10,6 +10,11 @@
 frontend_url = "http://localhost:8000" # note the lack of a trailing slash
 cors_urls = ["http://localhost:8000"] # note the lack of a trailing slash
 
+# Only trust X-Forwarded-* from these hosts (private/loopback by default).
+# Direct clients cannot spoof forwarded headers when their IP is outside this list.
+# Set to "*" to trust all proxies (old behavior; not recommended on the public internet).
+trusted_proxy_hosts = ["127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+
 image_directory = "/app/images"
 show_directory = "/data/shows"
 movie_directory = "/data/movies"
@@ -351,11 +356,15 @@ enabled = true
 [subtitles.native.embeddedsubtitles]
 enabled = true
 
-# Bazarr integration (external) — alternative to native search
+# Bazarr integration (external) — alternative to native search.
+# MiraMedia exposes read-only Sonarr/Radarr shims at /sonarr and /radarr;
+# Bazarr syncs the library through them and writes subtitle files to disk.
+# After each import MiraMedia pushes Bazarr's inbound Download webhook.
 [subtitles.bazarr]
 enabled = false
-url = ""
-api_key = ""
+url = ""           # Bazarr's own base URL (outbound)
+api_key = ""         # Bazarr's API key (outbound)
+shim_api_key = ""    # API key Bazarr uses to call MiraMedia's Sonarr/Radarr shim
 
 # Metadata Providers
 # Native provider (TVmaze + Cinemeta) works out of the box with no API key
@@ -405,7 +414,8 @@ api_key = ""  # Get an API key at https://thetvdb.com/api-information
 [cloudflare]
 enabled = false                # master switch; false = never invoked, no chromium, no resources
 # NOTE: solver = "native" needs a local Chromium, which is NOT in the default
-# (slim) image. Pull the "-cf" image variant (e.g. miramedia:latest-cf), set
+# (slim) image. Pull the "-cf" image variant (its own repo, version tags only:
+# ghcr.io/miramedia-app/miramedia-cf:<version>), set
 # browser_path to an existing Chrome/Chromium, or use an external solver below
 # (byparr/flaresolverr/remote/browser_run/firecrawl — none need local chromium).
 # Solver backend that earns cf_clearance. All feed the same cookie cache +

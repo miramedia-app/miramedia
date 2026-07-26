@@ -33,6 +33,14 @@ from miramedia.updates.config import UpdateConfig
 
 log = logging.getLogger(__name__)
 
+DEFAULT_TRUSTED_PROXY_HOSTS: list[str] = [
+    "127.0.0.1",
+    "::1",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+]
+
 config_path = os.getenv("MIRAMEDIA_CONFIG_FILE")
 if config_path is None:
     # Default to config folder approach
@@ -68,6 +76,9 @@ class BasicConfig(BaseSettings):
 
     frontend_url: AnyHttpUrl = AnyHttpUrl("http://localhost:8000")
     cors_urls: list[str] = []
+    # Hosts allowed to set X-Forwarded-* (private/loopback by default). Use "*"
+    # to trust all proxies (restores pre-129 behavior).
+    trusted_proxy_hosts: list[str] | str = DEFAULT_TRUSTED_PROXY_HOSTS
     development: bool = False
 
     show_libraries: list[LibraryItem] = []

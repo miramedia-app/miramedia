@@ -532,7 +532,11 @@ export default function SystemSettingsPage() {
   async function resetAll() {
     setResetting(true);
     try {
-      await apiClient.DELETE("/api/v1/system/settings");
+      const { error } = await apiClient.DELETE("/api/v1/system/settings");
+      if (error) {
+        toast.error("Failed to reset settings");
+        return;
+      }
       toast.success("All settings reset to defaults");
       await qc.invalidateQueries({ queryKey: ["system", "settings"] });
     } catch {

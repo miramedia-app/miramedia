@@ -27,6 +27,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import apiClient from "@/lib/api/client";
 import { createManagedEventSource, type ManagedEventSource } from "@/lib/managed-event-source";
+import { createRunGenerationGuard } from "@/lib/run-generation";
 import { getTorrentQualityString } from "@/lib/utils";
 import type { components } from "@/lib/api/api";
 
@@ -174,6 +175,12 @@ export function DownloadMediaDialog({
   // re-triggering search aborts the prior streams cleanly.
   const streamControllersRef = React.useRef<ManagedEventSource[]>([]);
 
+  // Closing a stream now settles its promise (`onAbort`), so an abandoned
+  // `search()` resumes in a microtask *after* its replacement already called
+  // `setIsLoading(true)`. Every settle-time side effect is therefore stamped
+  // with the run's generation and skipped once it is no longer current.
+  const searchRunRef = React.useRef(createRunGenerationGuard());
+
   function streamSearch(
     queryParams: Record<string, string | number | undefined>,
     onChunk: (chunk: components["schemas"]["SearchStreamChunk"]) => void,
@@ -211,6 +218,15 @@ export function DownloadMediaDialog({
         // Every terminal outcome (completed / closed / timeout) resolves the
         // promise, exactly as the prior single `finish()` did.
         onDone: () => {
+          streamControllersRef.current = streamControllersRef.current.filter((x) => x !== handle);
+          resolve();
+        },
+        // A caller-initiated `close()` (re-running the search, unmount, or
+        // freeing the connection slot before a download POST) is not a
+        // terminal outcome, so `onDone` never fires for it. Resolve — never
+        // reject — so `search()`'s `finally { setIsLoading(false) }` runs and
+        // the dialog can't be pinned in the loading state.
+        onAbort: () => {
           streamControllersRef.current = streamControllersRef.current.filter((x) => x !== handle);
           resolve();
         },
@@ -255,6 +271,11 @@ export function DownloadMediaDialog({
   }
 
   async function search() {
+    // Stamp this run first, so the prior run's continuation — which the
+    // `close()` calls below are about to resume — no longer owns the
+    // generation and skips its toast and its `setIsLoading(false)`.
+    const generation = searchRunRef.current.begin();
+
     // Abort any in-flight streams from a prior search.
     for (const es of streamControllersRef.current) es.close();
     streamControllersRef.current = [];
@@ -268,6 +289,7 @@ export function DownloadMediaDialog({
       chunk: components["schemas"]["SearchStreamChunk"],
       extra?: (t: SearchHit) => boolean,
     ) => {
+      if (!searchRunRef.current.owns(generation)) return;
       allResults.push(...chunk.results);
       setResults(dedupAndFilter([...allResults], extra));
     };
@@ -325,19 +347,29 @@ export function DownloadMediaDialog({
           (chunk) => pushChunk(chunk, filterForEpisode),
         );
       }
-      toast.info(`Found ${allResults.length} torrents.`);
+      if (searchRunRef.current.owns(generation)) {
+        toast.info(`Found ${allResults.length} torrents.`);
+      }
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Search failed";
-      setError(msg);
-      toast.error(msg);
+      if (searchRunRef.current.owns(generation)) {
+        const msg = e instanceof Error ? e.message : "Search failed";
+        setError(msg);
+        toast.error(msg);
+      }
     } finally {
-      setIsLoading(false);
+      // Only the newest run may clear the spinner; an abandoned run resuming
+      // here would otherwise stop the spinner of the search that replaced it.
+      if (searchRunRef.current.owns(generation)) setIsLoading(false);
     }
   }
 
   // Close any open EventSources on unmount.
   React.useEffect(() => {
+    const run = searchRunRef.current;
     return () => {
+      // Abandon before closing so the settled search continuation performs no
+      // state updates or toasts against the unmounted dialog.
+      run.abandon();
       for (const es of streamControllersRef.current) es.close();
       streamControllersRef.current = [];
     };
@@ -348,8 +380,14 @@ export function DownloadMediaDialog({
     // per-origin HTTP/1.1 connection cap (~6) can starve the POST while a
     // long-running search stream still holds a slot, surfacing as
     // ``TypeError: Failed to fetch`` in apiClient.onError.
+    //
+    // Abandon the run first: closing the streams settles the search promise, and
+    // that continuation must not emit a partial-result toast or touch the
+    // spinner just because the user picked a result mid-search.
+    searchRunRef.current.abandon();
     for (const es of streamControllersRef.current) es.close();
     streamControllersRef.current = [];
+    setIsLoading(false);
     setError(null);
     const { response } = await apiClient.POST("/api/v1/torrents/download", {
       body: {

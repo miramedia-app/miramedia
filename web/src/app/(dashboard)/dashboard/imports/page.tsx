@@ -47,6 +47,7 @@ import {
 } from "@/lib/imports";
 import type { ImportItem, IntegrityImport, ScanImport, TorrentImport } from "@/lib/imports";
 import apiClient from "@/lib/api/client";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import { qk } from "@/lib/query-keys";
 import type { components } from "@/lib/api/api";
 
@@ -450,17 +451,20 @@ export default function ImportsPage() {
       return;
     }
     if (!confirm(`Retry ${torrents.length} torrent(s)?`)) return;
-    const results = await Promise.all(
-      torrents.map((t) =>
-        apiClient.POST("/api/v1/imports/resolve", {
-          body: { kind: "torrent", id: t.id, action: "retry" },
-        }),
-      ),
+    const { ok, failed } = await bulkMutate(torrents, (t) =>
+      apiClient.POST("/api/v1/imports/resolve", {
+        body: { kind: "torrent", id: t.id, action: "retry" },
+      }),
     );
-    const ok = results.filter((r) => !r.error).length;
-    toast.success(`Queued retry for ${ok}/${torrents.length}`, {
-      description: "Re-imports will run in the background.",
-    });
+    if (failed === 0) {
+      toast.success(`Queued retry for ${ok}/${torrents.length}`, {
+        description: "Re-imports will run in the background.",
+      });
+    } else if (ok === 0) {
+      toast.error(`${failed} retry request(s) failed.`);
+    } else {
+      toast.warning(`Queued retry for ${ok}/${torrents.length}, ${failed} failed`);
+    }
     refreshAll();
   }
 
@@ -506,29 +510,27 @@ export default function ImportsPage() {
       return next;
     });
 
-    const results = await Promise.all(
-      targets.map(({ it, choice }) =>
-        apiClient.POST("/api/v1/imports/resolve", {
-          body:
-            choice.kind === "candidate"
-              ? {
-                  kind: "scan",
-                  id: it.id,
-                  media_type: choice.data.media_type,
-                  media_id: choice.data.media_id,
-                }
-              : {
-                  kind: "scan",
-                  id: it.id,
-                  media_type: choice.data.media_type,
-                  external_id: choice.data.external_id,
-                  metadata_provider: choice.data.metadata_provider,
-                },
-        }),
-      ),
+    const { failedItems } = await bulkMutate(targets, ({ it, choice }) =>
+      apiClient.POST("/api/v1/imports/resolve", {
+        body:
+          choice.kind === "candidate"
+            ? {
+                kind: "scan",
+                id: it.id,
+                media_type: choice.data.media_type,
+                media_id: choice.data.media_id,
+              }
+            : {
+                kind: "scan",
+                id: it.id,
+                media_type: choice.data.media_type,
+                external_id: choice.data.external_id,
+                metadata_provider: choice.data.metadata_provider,
+              },
+      }),
     );
 
-    const failedIds = ids.filter((_, i) => results[i].error);
+    const failedIds = failedItems.map((t) => t.it.id);
     if (failedIds.length > 0) unmarkQueued(failedIds);
     const ok = ids.length - failedIds.length;
     if (ok > 0) {
@@ -1110,6 +1112,13 @@ export default function ImportsPage() {
               </>
             }
             bulkActions={bulkActions}
+            isExpandable={(it) => {
+              // Mirrors the only null return in `expandedContent` below:
+              // torrent/media rows with no files have nothing to expand.
+              if (isTorrent(it)) return it.entry.files.length > 0;
+              if (isMedia(it)) return it.files.length > 0;
+              return true;
+            }}
             expandedContent={(it) => {
               if (isIntegrity(it)) {
                 const m = it.mismatch;

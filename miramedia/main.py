@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.datastructures import Headers
 from starlette.middleware.base import RequestResponseEndpoint
-from starlette.responses import FileResponse, RedirectResponse
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse
 from starlette.routing import Match, Mount
 from starlette.staticfiles import NotModifiedResponse
 from starlette.types import Scope
@@ -232,7 +232,8 @@ async def api_trailing_slash_redirect_middleware(
 # innermost layer (closest to the app), and the FIRST call as the outermost.
 # Effective request flow (outermost → innermost):
 #   1. ProxyHeadersMiddleware — needs the raw client IP from forwarded headers
-#      before anything else touches the scope.
+#      before anything else touches the scope; trust list is configurable via
+#      misc.trusted_proxy_hosts (defaults to private/loopback ranges).
 #   2. CORSMiddleware — answer preflight OPTIONS before correlation tagging,
 #      otherwise short-circuited preflights skip our id header anyway.
 #   3. GZipMiddleware — compress responses (HTML, JSON, JS, CSS, fonts). The
@@ -240,7 +241,10 @@ async def api_trailing_slash_redirect_middleware(
 #      adds CPU + framing overhead but no meaningful size win.
 #   4. CorrelationIdMiddleware — innermost so every response (including
 #      handler-raised errors) carries an X-Correlation-ID.
-app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
+app.add_middleware(
+    ProxyHeadersMiddleware,
+    trusted_hosts=config.misc.trusted_proxy_hosts,
+)
 origins = config.misc.cors_urls
 log.info(f"CORS URLs activated for following origins: {origins}")
 app.add_middleware(
@@ -344,6 +348,21 @@ from miramedia.ops.router import router as ops_router  # noqa: E402
 
 api_app.include_router(ops_router)
 
+# Sonarr/Radarr compatibility shim for Bazarr — always mounted (like requests);
+# auth returns 401 until subtitles.bazarr.shim_api_key is configured.
+from miramedia.subtitles.arr_shim import (  # noqa: E402
+    SHIM_PATH_PREFIXES,
+    radarr_shim_legacy_router,
+    radarr_shim_router,
+    sonarr_shim_legacy_router,
+    sonarr_shim_router,
+)
+
+app.include_router(sonarr_shim_router)
+app.include_router(sonarr_shim_legacy_router)
+app.include_router(radarr_shim_router)
+app.include_router(radarr_shim_legacy_router)
+
 # Prometheus metrics. The instrumentator hooks into the parent ``app``
 # (it needs the live ASGI middleware stack to time requests) and exposes
 # the scrape endpoint on the same ``app`` — its ``.expose()`` helper calls
@@ -384,9 +403,12 @@ _UUID_RE = re.compile(
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, _exc: Exception) -> Response:
+    path = request.url.path
+    # Arr clients parse every response body as JSON — answer the shims in kind.
+    if path.startswith(SHIM_PATH_PREFIXES):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
     if DISABLE_FRONTEND_MOUNT:
         return Response(content="Not Found", status_code=404)
-    path = request.url.path
     # Rewrite UUID detail paths to the dynamic-route shell index.html
     match = _UUID_RE.match(path)
     if match:
@@ -401,8 +423,11 @@ async def not_found_handler(request: Request, _exc: Exception) -> Response:
             shell = f"{FRONTEND_FILES_DIR}/dashboard/{media_type}/_shell/index.html"
         if Path(shell).is_file():  # noqa: ASYNC240 — cheap stat, intentional
             return FileResponse(shell)
-    # Generic SPA fallback for anything that isn't an API route
-    if not path.startswith("/api/"):
+    # Generic SPA fallback for anything that isn't an API route. The arr shims
+    # count as API surface: an arr client parses every response as JSON, so
+    # handing Bazarr the SPA shell for an unimplemented endpoint reads as a
+    # successful, malformed reply instead of an honest 404.
+    if not path.startswith(("/api/", *SHIM_PATH_PREFIXES)):
         fallback = f"{FRONTEND_FILES_DIR}/index.html"
         if Path(fallback).is_file():  # noqa: ASYNC240 — cheap stat, intentional
             return FileResponse(fallback)

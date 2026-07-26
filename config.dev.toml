@@ -351,6 +351,7 @@ enabled = true
 enabled = false
 url = ""
 api_key = ""
+shim_api_key = ""
 
 # Metadata Providers
 # Native provider (TVmaze + Cinemeta) works out of the box with no API key
@@ -400,7 +401,8 @@ api_key = ""  # Get an API key at https://thetvdb.com/api-information
 [cloudflare]
 enabled = false                # master switch; false = never invoked, no chromium, no resources
 # NOTE: solver = "native" needs a local Chromium, which is NOT in the default
-# (slim) image. Pull the "-cf" image variant (e.g. miramedia:latest-cf), set
+# (slim) image. Pull the "-cf" image variant (its own repo, version tags only:
+# ghcr.io/miramedia-app/miramedia-cf:<version>), set
 # browser_path to an existing Chrome/Chromium, or use an external solver below
 # (byparr/flaresolverr/remote/browser_run/firecrawl — none need local chromium).
 # Solver backend that earns cf_clearance. All feed the same cookie cache +

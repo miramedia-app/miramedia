@@ -48,6 +48,7 @@ import type {
 import { useUser } from "@/components/providers/user-provider";
 import { useEventStream } from "@/hooks/use-event-stream";
 import apiClient from "@/lib/api/client";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import { qk } from "@/lib/query-keys";
 import {
   getTorrentQualityString,
@@ -177,14 +178,18 @@ export default function TorrentsPage() {
       }
       setBulkWorking(true);
       try {
-        await Promise.all(
-          ids.map((id) =>
-            apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-              params: { path: { torrent_id: id } },
-            }),
-          ),
+        const { ok, failed } = await bulkMutate(ids, (id) =>
+          apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
+            params: { path: { torrent_id: id } },
+          }),
         );
-        toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} paused`);
+        if (failed === 0) {
+          toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} paused`);
+        } else if (ok === 0) {
+          toast.error("Failed to pause some torrents.");
+        } else {
+          toast.warning(`${ok} paused, ${failed} failed`);
+        }
         await qc.invalidateQueries({ queryKey: qk.torrents.all });
       } catch {
         toast.error("Failed to pause some torrents.");
@@ -204,14 +209,18 @@ export default function TorrentsPage() {
       }
       setBulkWorking(true);
       try {
-        await Promise.all(
-          ids.map((id) =>
-            apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-              params: { path: { torrent_id: id } },
-            }),
-          ),
+        const { ok, failed } = await bulkMutate(ids, (id) =>
+          apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
+            params: { path: { torrent_id: id } },
+          }),
         );
-        toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} resumed`);
+        if (failed === 0) {
+          toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} resumed`);
+        } else if (ok === 0) {
+          toast.error("Failed to resume some torrents.");
+        } else {
+          toast.warning(`${ok} resumed, ${failed} failed`);
+        }
         await qc.invalidateQueries({ queryKey: qk.torrents.all });
       } catch {
         toast.error("Failed to resume some torrents.");
@@ -227,20 +236,29 @@ export default function TorrentsPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-            params: {
-              path: { torrent_id: id },
-              query: { block_hash: bulkBlockHash },
-            },
-          }),
-        ),
+      const { ok, failed, failedItems } = await bulkMutate(ids, (id) =>
+        apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
+          params: {
+            path: { torrent_id: id },
+            query: { block_hash: bulkBlockHash },
+          },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} deleted.`);
-      setBulkDeleteOpen(false);
-      setBulkBlockHash(false);
-      setPendingBulkDelete([]);
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} deleted.`);
+      } else if (ok === 0) {
+        toast.error("Failed to delete some torrents.");
+      } else {
+        toast.warning(`${ok} deleted, ${failed} failed`);
+      }
+      if (failed === 0) {
+        setBulkDeleteOpen(false);
+        setBulkBlockHash(false);
+        setPendingBulkDelete([]);
+      } else {
+        const failedSet = new Set(failedItems);
+        setPendingBulkDelete((prev) => prev.filter((t) => t.id && failedSet.has(t.id)));
+      }
       await qc.invalidateQueries({ queryKey: qk.torrents.all });
     } catch {
       toast.error("Failed to delete some torrents.");

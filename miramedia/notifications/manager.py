@@ -31,44 +31,50 @@ class NotificationManager:
     """
 
     def __init__(self) -> None:
-        self.config = MiraMediaConfig().notifications
-        self.providers: list[AbstractNotificationServiceProvider] = []
-        self._initialize_providers()
+        pass
 
-    def _initialize_providers(self) -> None:
+    def _build_providers(self) -> list[AbstractNotificationServiceProvider]:
+        injected = getattr(self, "providers", None)
+        if injected is not None:
+            return injected
+
+        config = MiraMediaConfig().notifications
+        providers: list[AbstractNotificationServiceProvider] = []
+
         # Email provider
-        if self.config.email_notifications.enabled:
+        if config.email_notifications.enabled:
             try:
-                self.providers.append(EmailNotificationServiceProvider())
-                logger.info("Email notification provider initialized")
+                providers.append(EmailNotificationServiceProvider())
+                logger.debug("Email notification provider initialized")
             except Exception:
                 logger.exception("Failed to initialize Email provider")
 
         # Gotify provider
-        if self.config.gotify.enabled:
+        if config.gotify.enabled:
             try:
-                self.providers.append(GotifyNotificationServiceProvider())
-                logger.info("Gotify notification provider initialized")
+                providers.append(GotifyNotificationServiceProvider())
+                logger.debug("Gotify notification provider initialized")
             except Exception:
                 logger.exception("Failed to initialize Gotify provider")
 
         # Ntfy provider
-        if self.config.ntfy.enabled:
+        if config.ntfy.enabled:
             try:
-                self.providers.append(NtfyNotificationServiceProvider())
-                logger.info("Ntfy notification provider initialized")
+                providers.append(NtfyNotificationServiceProvider())
+                logger.debug("Ntfy notification provider initialized")
             except Exception:
                 logger.exception("Failed to initialize Ntfy provider")
 
         # Pushover provider
-        if self.config.pushover.enabled:
+        if config.pushover.enabled:
             try:
-                self.providers.append(PushoverNotificationServiceProvider())
-                logger.info("Pushover notification provider initialized")
+                providers.append(PushoverNotificationServiceProvider())
+                logger.debug("Pushover notification provider initialized")
             except Exception:
                 logger.exception("Failed to initialize Pushover provider")
 
-        logger.info(f"Initialized {len(self.providers)} notification providers")
+        logger.debug("Initialized %d notification providers", len(providers))
+        return providers
 
     def send_notification(self, title: str, message: str) -> None:
         # No-op silently when no external providers are configured — the in-app
@@ -79,8 +85,9 @@ class NotificationManager:
             title = f"{prefix} {title}"
 
         notification = MessageNotification(title=title, message=message)
+        providers = self._build_providers()
 
-        for provider in self.providers:
+        for provider in providers:
             provider_name = provider.__class__.__name__
             try:
                 success = provider.send_notification(notification)
@@ -93,10 +100,10 @@ class NotificationManager:
                 logger.exception(f"Error sending notification via {provider_name}")
 
     def get_configured_providers(self) -> list[str]:
-        return [provider.__class__.__name__ for provider in self.providers]
+        return [provider.__class__.__name__ for provider in self._build_providers()]
 
     def is_configured(self) -> bool:
-        return len(self.providers) > 0
+        return len(self._build_providers()) > 0
 
 
 notification_manager = NotificationManager()

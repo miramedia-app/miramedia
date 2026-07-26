@@ -59,16 +59,30 @@ operational variables also take the prefix (`MIRAMEDIA_CONFIG_DIR`,
 
 ## Settings UI vs. file
 
-Some settings can also be edited from **System → Settings** in the dashboard.
-Those overrides are stored in the database and applied on top of the file at
-startup. Schedule intervals (auto-download, subtitle scan, request fulfil,
-update check) hot-reload when you save in the UI; most other changes take
-effect on the next restart.
+Most settings can also be edited from **System → Settings** in the dashboard.
+Those overrides are stored in the database and layered on top of the file, so
+the effective order is: **DB overrides → environment → `.env` → `config.toml`
+→ built-in defaults**.
+
+Saving applies immediately — no restart. Every editable section (`misc`,
+`auth`, `notifications`, `torrents`, `indexers`, `metadata`, `requests`,
+`subtitles`, `updates`, `cloudflare`, `imports`) is swapped on the live config,
+schedule intervals are rescheduled, and auth transport settings (cookie flags,
+session lifetime, OIDC client) are rebuilt in place. Other workers pick the
+change up over the event bus. The one exception is `auth.token_secret`, which
+is restart-only — a DB override for it is ignored by the live apply so
+in-flight sessions aren't invalidated mid-request.
+
+Saves are compare-and-swap against a settings revision: a concurrent edit is
+rejected rather than silently overwriting, and a failed apply rolls back to the
+previous revision.
 
 <Callout type="info">
 
-When in doubt, edit `config.toml` and restart. The file is the source of
-truth; the UI is a convenience layer on top of it.
+`config.toml` remains the file-level source of truth and is what a fresh
+install reads; UI overrides sit on top of it. A field showing an
+`overridden` badge is coming from the database, not the file — reset it there
+if editing the file appears to do nothing.
 
 </Callout>
 

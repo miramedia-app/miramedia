@@ -69,10 +69,12 @@ class FakeSeerrClient:
     title_imdb_raises: Exception | None = None
     create_results: dict[int, SeerrRequest | None] = field(default_factory=dict)
     create_raises: dict[int, Exception] = field(default_factory=dict)
+    approve_raises: Exception | None = None
     find_tmdb: dict[str, tuple[int, str] | None] = field(default_factory=dict)
     created: list[tuple[str, int, list[int] | None]] = field(default_factory=list)
     approved_ids: list[int] = field(default_factory=list)
     declined_ids: list[int] = field(default_factory=list)
+    call_log: list[str] = field(default_factory=list)
     _create_seq: int = 0
 
     async def iter_requests(self) -> list[SeerrRequest]:
@@ -97,6 +99,7 @@ class FakeSeerrClient:
         *,
         seasons: list[int] | None = None,
     ) -> SeerrRequest | None:
+        self.call_log.append("create_request")
         self.created.append((media_type, tmdb_id, seasons))
         self._create_seq += 1
         if self._create_seq in self.create_raises:
@@ -115,6 +118,9 @@ class FakeSeerrClient:
         )
 
     async def approve(self, request_id: int) -> None:
+        self.call_log.append("approve")
+        if self.approve_raises is not None:
+            raise self.approve_raises
         self.approved_ids.append(request_id)
 
     async def decline(self, request_id: int) -> None:
@@ -360,6 +366,97 @@ def test_push_client_http_error_isolates_remaining_requests() -> None:
     assert len(client.created) == 2
     assert repo.by_id[first.id].seerr_request_id is None
     assert repo.by_id[second.id].seerr_request_id == 9002
+
+
+def test_push_happy_path_persists_link_before_approve() -> None:
+    """Create succeeds, approve succeeds — link persisted, push returns 1."""
+    repo = FakeRequestRepository()
+    row = make_request(
+        title="Happy",
+        status=RequestStatus.approved,
+        external_id="tt1111111",
+        imdb_id="tt1111111",
+    ).model_copy(update={"source": RequestSource.native, "tmdb_id": 111})
+    repo.seed(row)
+
+    client = FakeSeerrClient()
+    pushed = run_async(SeerrSyncService(repo, client).push())
+
+    assert pushed == 1
+    assert client.call_log == ["create_request", "approve"]
+    assert len(repo.update_calls) == 1
+    assert repo.update_calls[0] == (
+        row.id,
+        {"seerr_request_id": 9001, "seerr_media_id": 8001},
+    )
+    assert repo.by_id[row.id].seerr_request_id == 9001
+    assert client.approved_ids == [9001]
+
+
+def test_push_persists_link_when_approve_fails() -> None:
+    """Approve HTTPError after create — link already written, push does not re-raise."""
+    repo = FakeRequestRepository()
+    row = make_request(
+        title="Approve Fails",
+        status=RequestStatus.approved,
+        external_id="tt2222222",
+        imdb_id="tt2222222",
+    ).model_copy(update={"source": RequestSource.native, "tmdb_id": 222})
+    repo.seed(row)
+
+    client = FakeSeerrClient(approve_raises=httpx.HTTPError("approve failed"))
+    pushed = run_async(SeerrSyncService(repo, client).push())
+
+    assert pushed == 1
+    assert client.call_log == ["create_request", "approve"]
+    assert repo.update_calls[0] == (
+        row.id,
+        {"seerr_request_id": 9001, "seerr_media_id": 8001},
+    )
+    assert repo.by_id[row.id].seerr_request_id == 9001
+    assert client.approved_ids == []
+
+
+def test_push_does_not_duplicate_create_after_approve_failure() -> None:
+    """Linked row is excluded from the next push cycle — create called exactly once."""
+    repo = FakeRequestRepository()
+    row = make_request(
+        title="No Duplicate",
+        status=RequestStatus.approved,
+        external_id="tt3333333",
+        imdb_id="tt3333333",
+    ).model_copy(update={"source": RequestSource.native, "tmdb_id": 333})
+    repo.seed(row)
+
+    client = FakeSeerrClient(approve_raises=httpx.HTTPError("approve failed"))
+    first = run_async(SeerrSyncService(repo, client).push())
+    second = run_async(SeerrSyncService(repo, client).push())
+
+    assert first == 1
+    assert second == 0
+    assert len(client.created) == 1
+    assert repo.by_id[row.id].seerr_request_id == 9001
+
+
+def test_push_create_returns_none_skips_update() -> None:
+    """create_request returns None — no link persisted, row stays unsynced."""
+    repo = FakeRequestRepository()
+    row = make_request(
+        title="No Create",
+        status=RequestStatus.approved,
+        external_id="tt4444444",
+        imdb_id="tt4444444",
+    ).model_copy(update={"source": RequestSource.native, "tmdb_id": 444})
+    repo.seed(row)
+
+    client = FakeSeerrClient(create_results={1: None})
+    pushed = run_async(SeerrSyncService(repo, client).push())
+
+    assert pushed == 0
+    assert client.call_log == ["create_request"]
+    assert repo.update_calls == []
+    assert repo.by_id[row.id].seerr_request_id is None
+    assert client.approved_ids == []
 
 
 def test_push_approves_or_declines_based_on_native_status() -> None:

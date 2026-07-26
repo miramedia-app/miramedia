@@ -22,6 +22,9 @@ TMDB/TVDB as optional direct integrations.
 - `desired_languages` — ISO 639-1 codes. Default `["en"]`.
 - `check_interval_hours` — how often metadata is refreshed. Default `24`. A
   weekly bulk refresh also runs and triggers continuous download.
+- `failure_backoff_hours` — after a provider or DNS failure the affected row
+  is stamped and retries are skipped for this long, so one dead provider can't
+  turn every refresh cycle into a timeout storm. Default `6`.
 
 ## Native (`[metadata.native]`)
 

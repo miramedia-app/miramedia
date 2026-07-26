@@ -383,6 +383,7 @@ async def episode_hls_playlist(
         episode_file=episode_file,
         db=db,
     )
+    await release_session_before_external_io(db)
     try:
         playlist = await ensure_hls_playlist(video_file)
     except HlsTranscodeError as exc:
@@ -413,6 +414,11 @@ async def episode_hls_segment(
         episode_file=episode_file,
         db=db,
     )
+    # The FileResponse body streams after the handler returns; release the
+    # request session first so the connection doesn't sit idle-in-TX for the
+    # whole segment transfer (segments are the highest-frequency endpoint
+    # during playback).
+    await release_session_before_external_io(db)
     seg = resolve_within(segment_dir(video_file), segment_name)
     if seg is None or not seg.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found")
@@ -435,6 +441,7 @@ async def movie_hls_playlist(
         movie_file=movie_file,
         db=db,
     )
+    await release_session_before_external_io(db)
     try:
         playlist = await ensure_hls_playlist(video_file)
     except HlsTranscodeError as exc:
@@ -466,6 +473,11 @@ async def movie_hls_segment(
         movie_file=movie_file,
         db=db,
     )
+    # The FileResponse body streams after the handler returns; release the
+    # request session first so the connection doesn't sit idle-in-TX for the
+    # whole segment transfer (segments are the highest-frequency endpoint
+    # during playback).
+    await release_session_before_external_io(db)
     seg = resolve_within(segment_dir(video_file), segment_name)
     if seg is None or not seg.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found")

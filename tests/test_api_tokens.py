@@ -112,7 +112,9 @@ def test_read_token_uninitialized_sessionlocal(
 def test_read_token_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid.uuid4()
     token_id = uuid.uuid4()
-    row = SimpleNamespace(id=token_id, user_id=user_id, expires_at=None)
+    row = SimpleNamespace(
+        id=token_id, user_id=user_id, expires_at=None, last_used_at=None
+    )
     user = SimpleNamespace(id=user_id, is_active=True)
     session = FakeAsyncSession(row=row, user=user)
     factory = FakeSessionLocal(session)
@@ -129,12 +131,61 @@ def test_read_token_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert factory.calls == 1
 
 
+def test_read_token_skips_last_used_update_when_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        expires_at=None,
+        last_used_at=datetime.now(UTC) - timedelta(seconds=5),
+    )
+    user = SimpleNamespace(id=user_id, is_active=True)
+    session = FakeAsyncSession(row=row, user=user)
+    monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
+
+    plaintext, _, _ = generate_token()
+    strategy = DatabaseTokenStrategy()
+    result = asyncio.run(strategy.read_token(plaintext, user_manager=None))  # type: ignore[arg-type]
+
+    assert result is user
+    assert session.committed is False
+    assert not any(isinstance(stmt, Update) for stmt in session.executes)
+    assert session.expunge_calls == [user]
+
+
+def test_read_token_updates_last_used_when_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = uuid.uuid4()
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        expires_at=None,
+        last_used_at=datetime.now(UTC) - timedelta(seconds=120),
+    )
+    user = SimpleNamespace(id=user_id, is_active=True)
+    session = FakeAsyncSession(row=row, user=user)
+    monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
+
+    plaintext, _, _ = generate_token()
+    strategy = DatabaseTokenStrategy()
+    result = asyncio.run(strategy.read_token(plaintext, user_manager=None))  # type: ignore[arg-type]
+
+    assert result is user
+    assert session.committed is True
+    assert any(isinstance(stmt, Update) for stmt in session.executes)
+    assert session.expunge_calls == [user]
+
+
 def test_read_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid.uuid4()
     row = SimpleNamespace(
         id=uuid.uuid4(),
         user_id=user_id,
         expires_at=datetime.now(UTC) - timedelta(hours=1),
+        last_used_at=None,
     )
     session = FakeAsyncSession(
         row=row, user=SimpleNamespace(id=user_id, is_active=True)
@@ -151,7 +202,12 @@ def test_read_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_read_token_inactive_user(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid.uuid4()
-    row = SimpleNamespace(id=uuid.uuid4(), user_id=user_id, expires_at=None)
+    row = SimpleNamespace(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        expires_at=None,
+        last_used_at=datetime.now(UTC) - timedelta(seconds=5),
+    )
     user = SimpleNamespace(id=user_id, is_active=False)
     session = FakeAsyncSession(row=row, user=user)
     monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))

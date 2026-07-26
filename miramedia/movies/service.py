@@ -978,8 +978,7 @@ class MovieService(MediaService[Movie, MovieId]):
         """
         Get torrents for a given movie.
 
-        Per-torrent queries run serially: shared AsyncSession is unsafe for
-        concurrent use.
+        Enrichment is batched via ``TorrentService._rich_torrents_for_ids``.
 
         :param movie: The movie.
         :return: A list of RichTorrent objects.
@@ -987,41 +986,9 @@ class MovieService(MediaService[Movie, MovieId]):
         raw_torrents = await self.movie_repository.get_torrents_by_movie_id(
             movie_id=movie.id
         )
-
-        async def _enrich(t: Torrent) -> RichTorrent:
-            try:
-                t = await self.torrent_service.get_torrent_status(t)
-            except RuntimeError:
-                pass
-            # Serial — shared AsyncSession.
-            movie_files = await self.torrent_service.get_movie_files_of_torrent(
-                torrent=t,
-            )
-            import_progress = await self.torrent_service.compute_import_progress(t)
-            variant = movie_files[0].variant if movie_files else ""
-            return RichTorrent(
-                id=t.id,
-                status=t.status,
-                progress=t.progress,
-                num_peers=t.num_peers,
-                num_seeds=t.num_seeds,
-                download_speed=t.download_speed,
-                title=t.title,
-                quality=t.quality,
-                hash=t.hash,
-                usenet=t.usenet,
-                variant=variant,
-                import_progress=import_progress,
-                media=TorrentMediaContext(
-                    media_type="movie",
-                    media_id=movie.id,
-                    media_name=movie.name,
-                    media_year=movie.year,
-                    metadata_provider=movie.metadata_provider,
-                ),
-            )
-
-        return [await _enrich(t) for t in raw_torrents]
+        return await self.torrent_service._rich_torrents_for_ids(
+            raw_torrents, live_status=True
+        )
 
     async def _try_download_first_valid(
         self,
@@ -1260,6 +1227,7 @@ class MovieService(MediaService[Movie, MovieId]):
                 status=ImportOutcome.imported,
             )
             await self._trigger_subtitle_search_for_movie(movie.id)
+            await self._trigger_bazarr_notify_for_movie(dup_row.id, movie.id)
             from miramedia.media_state import refresh_media_state
 
             await refresh_media_state(self.movie_repository.db, movie_id=movie.id)
@@ -1333,8 +1301,9 @@ class MovieService(MediaService[Movie, MovieId]):
                 extra=extra,
                 status=ImportOutcome.imported,
             )
+            imported_file_id = existing_file_id
         else:
-            await self.movie_repository.add_movie_file(
+            added = await self.movie_repository.add_movie_file(
                 MovieFile(
                     movie_id=movie.id,
                     quality=chosen_quality,
@@ -1350,8 +1319,10 @@ class MovieService(MediaService[Movie, MovieId]):
                     attempt_count=1,
                 )
             )
+            imported_file_id = added.id
 
         await self._trigger_subtitle_search_for_movie(movie.id)
+        await self._trigger_bazarr_notify_for_movie(imported_file_id, movie.id)
         from miramedia.media_state import refresh_media_state
 
         await refresh_media_state(self.movie_repository.db, movie_id=movie.id)
@@ -1382,6 +1353,30 @@ class MovieService(MediaService[Movie, MovieId]):
                 )
         except Exception:
             log.exception(f"Subtitle search failed for movie {movie_id} after import")
+
+    async def _trigger_bazarr_notify_for_movie(
+        self, movie_file_id: UUID, movie_id: MovieId
+    ) -> None:
+        """Best-effort Bazarr webhook after a just-imported movie file.
+
+        No-op unless Bazarr is enabled. Never raises into the import flow.
+        """
+        try:
+            from miramedia.subtitles.repository import SubtitleRepository
+            from miramedia.subtitles.service import SubtitleService
+
+            subtitle_service = SubtitleService(
+                subtitle_repository=SubtitleRepository(self.movie_repository.db),
+                movie_service=self,
+            )
+            await subtitle_service.notify_bazarr_movie_imported(
+                self.movie_repository.db, movie_file_id, movie_id
+            )
+        except Exception:
+            log.exception(
+                "Bazarr notify failed for movie file %s after import",
+                movie_file_id,
+            )
 
     async def import_movie_from_torrent(self, movie: Movie, torrent: Torrent) -> None:
         """Public import entry point. Runs the import then notifies the imports

@@ -11,7 +11,7 @@ export { DataListSkeleton } from "./data-list-skeleton";
 export { DataListToolbar, DataListDisplayMenu } from "./data-list-toolbar";
 export { useListFilters } from "./use-list-filters";
 export { useListHotkeys } from "./use-list-hotkeys";
-export { useListSelection } from "./use-list-selection";
+export { selectionHeaderState, useListSelection } from "./use-list-selection";
 export type {
   ActiveFilter,
   BulkAction,

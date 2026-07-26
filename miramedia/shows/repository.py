@@ -318,6 +318,80 @@ class ShowRepository:
             log.exception("Database error while retrieving all shows")
             raise
 
+    async def get_all_shows_with_tree(self) -> list[Show]:
+        """Return every show ORM row with seasons, episodes, and files loaded."""
+        try:
+            stmt = select(Show).options(*_full_show_eager_loads())
+            return list((await self.db.execute(stmt)).scalars().unique().all())
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving all shows for arr shim")
+            raise
+
+    async def get_show_with_tree_by_id(self, show_id: UUID) -> Show | None:
+        """Return one show ORM row with the full tree loaded, or ``None``."""
+        try:
+            stmt = (
+                select(Show)
+                .where(Show.id == show_id)
+                .options(*_full_show_eager_loads())
+            )
+            return (await self.db.execute(stmt)).unique().scalar_one_or_none()
+        except SQLAlchemyError:
+            log.exception(
+                "Database error while retrieving show %s for arr shim", show_id
+            )
+            raise
+
+    async def get_episode_with_show_tree(self, episode_id: UUID) -> Episode | None:
+        """Return one episode with season, show, and files eager-loaded.
+
+        ``Show.seasons`` is **not** loaded. Callers must not touch it or async
+        lazy-load will raise ``MissingGreenlet``.
+        """
+        try:
+            stmt = (
+                select(Episode)
+                .where(Episode.id == episode_id)
+                .options(
+                    selectinload(Episode.episode_files),
+                    selectinload(Episode.season).selectinload(Season.show),
+                )
+            )
+            return (await self.db.execute(stmt)).unique().scalar_one_or_none()
+        except SQLAlchemyError:
+            log.exception(
+                "Database error while retrieving episode %s for arr shim", episode_id
+            )
+            raise
+
+    async def get_episode_file_with_show_tree(
+        self, file_id: UUID
+    ) -> EpisodeFile | None:
+        """Return one episode file with episode, season, show, and files loaded.
+
+        ``Show.seasons`` is **not** loaded. Callers must not touch it or async
+        lazy-load will raise ``MissingGreenlet``.
+        """
+        try:
+            stmt = (
+                select(EpisodeFile)
+                .where(EpisodeFile.id == file_id)
+                .options(
+                    selectinload(EpisodeFile.episode)
+                    .selectinload(Episode.season)
+                    .selectinload(Season.show),
+                    selectinload(EpisodeFile.episode).selectinload(
+                        Episode.episode_files
+                    ),
+                )
+            )
+            return (await self.db.execute(stmt)).unique().scalar_one_or_none()
+        except SQLAlchemyError:
+            log.exception(
+                "Database error while retrieving episode_file %s for arr shim", file_id
+            )
+            raise
+
     async def get_show_ids(self) -> list[ShowId]:
         """Return all show primary keys without eager-loading the library tree."""
         try:
@@ -649,6 +723,41 @@ class ShowRepository:
                 f"Database error while retrieving season for episode {episode_id}: {e}"
             )
             raise
+
+    async def get_episodes_with_seasons(
+        self, episode_ids: list[EpisodeId]
+    ) -> dict[EpisodeId, tuple[SeasonSchema, EpisodeSchema]]:
+        """Batch-fetch episodes and their parent seasons for import matching."""
+        if not episode_ids:
+            return {}
+        try:
+            stmt = (
+                select(Episode)
+                .where(Episode.id.in_(episode_ids))
+                .options(
+                    selectinload(Episode.episode_files),
+                    selectinload(Episode.season)
+                    .selectinload(Season.episodes)
+                    .selectinload(Episode.episode_files),
+                )
+            )
+            episodes = (await self.db.execute(stmt)).unique().scalars().all()
+            result: dict[EpisodeId, tuple[SeasonSchema, EpisodeSchema]] = {}
+            for episode in episodes:
+                season = episode.season
+                if season is None:
+                    continue
+                result[EpisodeId(episode.id)] = (
+                    SeasonSchema.model_validate(season),
+                    EpisodeSchema.model_validate(episode),
+                )
+        except SQLAlchemyError:
+            log.exception(
+                "Database error while batch-retrieving episodes %s", episode_ids
+            )
+            raise
+        else:
+            return result
 
     async def get_season_by_number(
         self, season_number: int, show_id: ShowId
@@ -1092,6 +1201,35 @@ class ShowRepository:
                 f"Database error retrieving episode files for season_id {season_id}"
             )
             raise
+
+    async def get_episode_files_by_season_ids(
+        self, season_ids: list[SeasonId]
+    ) -> dict[SeasonId, list[EpisodeFileSchema]]:
+        """Retrieve episode files for multiple seasons in one query."""
+        if not season_ids:
+            return {}
+        try:
+            stmt = (
+                select(EpisodeFile, Episode.season_id)
+                .join(Episode, Episode.id == EpisodeFile.episode_id)
+                .where(Episode.season_id.in_(season_ids))
+            )
+            rows = (await self.db.execute(stmt)).all()
+            grouped: dict[SeasonId, list[EpisodeFileSchema]] = {
+                season_id: [] for season_id in season_ids
+            }
+            for episode_file, season_id in rows:
+                grouped[SeasonId(season_id)].append(
+                    EpisodeFileSchema.model_validate(episode_file)
+                )
+        except SQLAlchemyError:
+            log.exception(
+                "Database error retrieving episode files for season_ids %s",
+                season_ids,
+            )
+            raise
+        else:
+            return grouped
 
     async def delete_episode_file(self, file_id: UUID) -> None:
         """Delete a specific episode file record from the database."""

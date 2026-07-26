@@ -15,7 +15,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 The default `:latest` image is slim and ships a libtorrent client but **no**
 Chromium. The in-process Cloudflare `native` solver needs Chromium + Xvfb, which
-are bundled only in the **`-cf`** variant (`...:latest-cf`) — pull that tag if
+are bundled only in the **`-cf`** variant — a separate repository,
+`ghcr.io/miramedia-app/miramedia-cf:<version>` — so pull that if
 you enable `[cloudflare]` with `solver = "native"` (budget ~2 GB RAM for the
 `api` container; the compose file sets this limit). On low-RAM NAS hardware,
 follow the [Synology guide](synology) for tuned concurrency, or keep the bypass
@@ -61,8 +62,11 @@ wget -O ./config/config.toml https://github.com/miramedia-app/miramedia/releases
 ```
 
 If you skip this step, the container copies `config.example.toml` to
-`/app/config/config.toml` on first boot and warns you to change
-`token_secret`.
+`/app/config/config.toml` on first boot. Either way the entrypoint replaces the
+`CHANGE_ME_GENERATE_RANDOM_STRING` placeholder with a generated
+`auth.token_secret` (on first boot, and again later if the placeholder is still
+there), so the app starts with a persistent secret and sessions survive
+restarts.
 
 #### Edit the configuration
 
@@ -112,18 +116,38 @@ your media library on the **same volume/mount** or imports fall back to slow
 copies (and may fail on space). See
 [Troubleshooting](../troubleshooting#hard-linking).
 
+## Container runtime
+
+- The container **starts as root**, fixes ownership on `/app/config` and
+  `/data`, then drops to the unprivileged `miramedia` user via `gosu` for
+  migrations and the server itself. Nothing long-running stays root.
+- While still root it also matches the mounted Docker socket's GID and adds
+  the app user to that group, so in-app updates work without extra compose
+  wiring. This only applies when the service runs as root — pin a non-root
+  `user:` and you must supply
+  [`group_add`](../configuration/updates#in-app-apply-opt-in) yourself.
+- Both services set `security_opt: [no-new-privileges:true]`, which blocks
+  setuid escalation inside the container. Keep it. The Synology compose adds
+  `seccomp:unconfined` on top for the Chromium `clone3()` issue — see the
+  [Synology guide](synology).
+
 ## Docker images
 
 Images are published to GitHub Container Registry:
 
-- `ghcr.io/miramedia-app/miramedia`
+- `ghcr.io/miramedia-app/miramedia` — slim (default).
+- `ghcr.io/miramedia-app/miramedia-cf` — same app plus Chromium + Xvfb, for
+  the Cloudflare `native` solver.
 
 ### Tags
 
-- `latest` — latest stable release.
-- `master` — latest commit on the main branch (may be unstable).
-- `X.Y.Z`, `X.Y`, `X` — version pins (e.g. `1.12.0`, `1.12`, `1`).
-- `pr-<number>` — build for a specific pull request.
+- `latest` — latest stable release. **Slim repo only** — the `-cf` repo
+  publishes version tags but no `latest`.
+- `X.Y.Z`, `X.Y`, `X` — version pins (e.g. `1.0.12`, `1.0`, `1`), published to
+  both repos.
+
+Images are built only on tagged releases, so there is no rolling
+branch/PR tag — pin a version if you don't want `latest` to move under you.
 
 <Callout type="info">
 

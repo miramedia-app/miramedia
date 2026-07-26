@@ -139,7 +139,6 @@ from miramedia.torrents.schemas import (  # noqa: E402
     RichTorrent,
     Torrent,
     TorrentId,
-    TorrentMediaContext,
 )
 from miramedia.torrents.service import TorrentService  # noqa: E402
 from miramedia.torrents.utils import get_torrent_filepath  # noqa: E402
@@ -1364,10 +1363,9 @@ class ShowService(MediaService[Show, ShowId]):
         """
         Get torrents for a given show.
 
-        Per-torrent metadata queries (status, seasons, episodes, files,
-        import progress) run serially: they share the request-scoped
-        AsyncSession, which is not safe for concurrent use (asyncpg raises
-        "another operation is in progress").
+        Enrichment (live status, show context, import progress) is batched via
+        ``TorrentService._rich_torrents_for_ids`` — three set-based repository
+        queries plus concurrent live-status RPC with the DB session released first.
 
         :param show: The show.
         :return: A list of RichTorrent objects.
@@ -1375,52 +1373,11 @@ class ShowService(MediaService[Show, ShowId]):
         raw_torrents = await self.show_repository.get_torrents_by_show_id(
             show_id=show.id
         )
-
-        async def _enrich(t: Torrent) -> RichTorrent:
-            try:
-                t = await self.torrent_service.get_torrent_status(t)
-            except RuntimeError:
-                pass
-            # Serial — same shared AsyncSession across these four calls.
-            # Parallel gather would race the single asyncpg connection.
-            seasons = await self.show_repository.get_seasons_by_torrent_id(
-                torrent_id=t.id,
-            )
-            episodes = await self.show_repository.get_episodes_by_torrent_id(
-                torrent_id=t.id,
-            )
-            episode_files = await self.torrent_service.get_episode_files_of_torrent(
-                torrent=t,
-            )
-            import_progress = await self.torrent_service.compute_import_progress(t)
-            variant = episode_files[0].variant if episode_files else ""
-            return RichTorrent(
-                id=t.id,
-                status=t.status,
-                progress=t.progress,
-                num_peers=t.num_peers,
-                num_seeds=t.num_seeds,
-                download_speed=t.download_speed,
-                title=t.title,
-                quality=t.quality,
-                hash=t.hash,
-                usenet=t.usenet,
-                variant=variant,
-                import_progress=import_progress,
-                media=TorrentMediaContext(
-                    media_type="show",
-                    media_id=show.id,
-                    media_name=show.name,
-                    media_year=show.year,
-                    metadata_provider=show.metadata_provider,
-                    seasons=sorted(seasons) if seasons else None,
-                    episodes=sorted(episodes)
-                    if len(seasons) == 1 and episodes
-                    else None,
-                ),
-            )
-
-        return [await _enrich(t) for t in raw_torrents]
+        return await self.torrent_service._rich_torrents_for_ids(
+            raw_torrents,
+            live_status=True,
+            single_season_episodes_only=True,
+        )
 
     async def _auto_download_first_valid(
         self,
@@ -1718,6 +1675,7 @@ class ShowService(MediaService[Show, ShowId]):
                 status=ImportOutcome.imported,
             )
             await self._trigger_subtitle_search_for_episode(episode.id)
+            await self._trigger_bazarr_notify_for_episode(dup_row.id, episode.id)
             from miramedia.media_state import refresh_media_state
 
             await refresh_media_state(self.show_repository.db, show_id=show.id)
@@ -1794,8 +1752,9 @@ class ShowService(MediaService[Show, ShowId]):
                 extra=extra,
                 status=ImportOutcome.imported,
             )
+            imported_file_id = existing_file_id
         else:
-            await self.show_repository.add_episode_file(
+            added = await self.show_repository.add_episode_file(
                 episode_file=EpisodeFile(
                     episode_id=episode.id,
                     quality=chosen_quality,
@@ -1811,8 +1770,10 @@ class ShowService(MediaService[Show, ShowId]):
                     attempt_count=1,
                 )
             )
+            imported_file_id = added.id
 
         await self._trigger_subtitle_search_for_episode(episode.id)
+        await self._trigger_bazarr_notify_for_episode(imported_file_id, episode.id)
         from miramedia.media_state import refresh_media_state
 
         await refresh_media_state(self.show_repository.db, show_id=show.id)
@@ -1844,6 +1805,30 @@ class ShowService(MediaService[Show, ShowId]):
         except Exception:
             log.exception(
                 f"Subtitle search failed for episode {episode_id} after import"
+            )
+
+    async def _trigger_bazarr_notify_for_episode(
+        self, episode_file_id: UUID, episode_id: EpisodeId
+    ) -> None:
+        """Best-effort Bazarr webhook after a just-imported episode file.
+
+        No-op unless Bazarr is enabled. Never raises into the import flow.
+        """
+        try:
+            from miramedia.subtitles.repository import SubtitleRepository
+            from miramedia.subtitles.service import SubtitleService
+
+            subtitle_service = SubtitleService(
+                subtitle_repository=SubtitleRepository(self.show_repository.db),
+                show_service=self,
+            )
+            await subtitle_service.notify_bazarr_episode_imported(
+                self.show_repository.db, episode_file_id, episode_id
+            )
+        except Exception:
+            log.exception(
+                "Bazarr notify failed for episode file %s after import",
+                episode_file_id,
             )
 
     async def import_show_from_torrent(self, show: Show, torrent: Torrent) -> None:
@@ -1917,11 +1902,16 @@ class ShowService(MediaService[Show, ShowId]):
 
         imported_episodes_by_season: dict[int, list[int]] = {}
 
+        lookup = await self.show_repository.get_episodes_with_seasons(
+            [ef.episode_id for ef in episode_files]
+        )
+
         for episode_file in episode_files:
-            season = await self.get_season_by_episode(
-                episode_id=episode_file.episode_id
-            )
-            episode = await self.get_episode(episode_file.episode_id)
+            pair = lookup.get(episode_file.episode_id)
+            if pair is None:
+                msg = f"Season not found for episode {episode_file.episode_id}"
+                raise NotFoundError(msg)
+            season, episode = pair
 
             matched_video = next(
                 (
@@ -2153,12 +2143,31 @@ class ShowService(MediaService[Show, ShowId]):
                             fresh_episode_data.number
                         ]
 
-                        await self.show_repository.update_episode_attributes(
-                            episode_id=existing_episode.id,
-                            title=fresh_episode_data.title,
-                            overview=fresh_episode_data.overview,
-                            air_date=fresh_episode_data.air_date,
+                        # Repository treats None as "no change", so only a
+                        # non-None differing value can write; diff in memory
+                        # first to avoid a SELECT+UPDATE round-trip per
+                        # episode on the (common) nothing-changed refresh.
+                        changed = any(
+                            fresh_value is not None and fresh_value != current_value
+                            for fresh_value, current_value in (
+                                (fresh_episode_data.title, existing_episode.title),
+                                (
+                                    fresh_episode_data.overview,
+                                    existing_episode.overview,
+                                ),
+                                (
+                                    fresh_episode_data.air_date,
+                                    existing_episode.air_date,
+                                ),
+                            )
                         )
+                        if changed:
+                            await self.show_repository.update_episode_attributes(
+                                episode_id=existing_episode.id,
+                                title=fresh_episode_data.title,
+                                overview=fresh_episode_data.overview,
+                                air_date=fresh_episode_data.air_date,
+                            )
                     else:
                         # Add new episode — inherit skipped from season
                         log.debug(
@@ -2310,6 +2319,14 @@ class ShowService(MediaService[Show, ShowId]):
         any_imported = False
         total_matched = 0
         total_skipped_already_imported = 0
+        season_ids_for_files = [
+            season.id
+            for season in show.seasons
+            if not getattr(season, "skipped", False)
+        ]
+        files_by_season_id = await self.show_repository.get_episode_files_by_season_ids(
+            season_ids_for_files
+        )
         for season in show.seasons:
             if getattr(season, "skipped", False):
                 log.info(
@@ -2318,9 +2335,7 @@ class ShowService(MediaService[Show, ShowId]):
                     show.name,
                 )
                 continue
-            season_files = await self.show_repository.get_episode_files_by_season_id(
-                season_id=season.id
-            )
+            season_files = files_by_season_id.get(season.id, [])
 
             # Inode set of already-linked files in this season. Source videos
             # whose inode matches one of these are already imported under a
@@ -2328,18 +2343,27 @@ class ShowService(MediaService[Show, ShowId]):
             # double-link. ``import_episode_from_file`` derives the collision
             # ``extra`` from the file's detected components, so the scan loop
             # no longer pre-computes any variant.
-            existing_inodes: set[int] = set()
+            resolved_paths: list[Path] = []
             for ef in season_files:
                 try:
                     path = await self.resolve_episode_file_path(ef)
                 except Exception:
                     path = None
-                if path is None:
-                    continue
-                try:
-                    existing_inodes.add(path.stat().st_ino)
-                except OSError:
-                    continue
+                if path is not None:
+                    resolved_paths.append(path)
+
+            def _collect_inodes(paths: list[Path]) -> set[int]:
+                inodes: set[int] = set()
+                for path in paths:
+                    try:
+                        inodes.add(path.stat().st_ino)
+                    except OSError:
+                        continue
+                return inodes
+
+            existing_inodes: set[int] = await asyncio.to_thread(
+                _collect_inodes, resolved_paths
+            )
 
             for episode in season.episodes:
                 if getattr(episode, "skipped", False):

@@ -35,6 +35,7 @@ log = logging.getLogger(__name__)
 
 TOKEN_PREFIX = "mm_"  # noqa: S105 -- public prefix, not a secret
 TOKEN_BYTES = 24  # 24 bytes -> 32-char base64url body (≈192 bits of entropy)
+_LAST_USED_WRITE_INTERVAL_S = 60
 
 
 class UserApiToken(Base):
@@ -117,6 +118,7 @@ class DatabaseTokenStrategy(Strategy):
                         UserApiToken.id,
                         UserApiToken.user_id,
                         UserApiToken.expires_at,
+                        UserApiToken.last_used_at,
                     ).where(UserApiToken.token_hash == token_hash)
                 )
             ).first()
@@ -124,12 +126,18 @@ class DatabaseTokenStrategy(Strategy):
                 return None
             if row.expires_at is not None and row.expires_at < now:
                 return None
-            await db.execute(
-                sa_update(UserApiToken)
-                .where(UserApiToken.id == row.id)
-                .values(last_used_at=now)
+            stale = (
+                row.last_used_at is None
+                or (now - row.last_used_at).total_seconds()
+                >= _LAST_USED_WRITE_INTERVAL_S
             )
-            await db.commit()
+            if stale:
+                await db.execute(
+                    sa_update(UserApiToken)
+                    .where(UserApiToken.id == row.id)
+                    .values(last_used_at=now)
+                )
+                await db.commit()
             user = await db.get(UserModel, row.user_id)
             if user is None or not user.is_active:
                 return None

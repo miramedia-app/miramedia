@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
@@ -21,6 +22,7 @@ from miramedia.streams.transcode import (
     hls_cache_root,
     hls_playlist_ready,
     playlist_path,
+    schedule_hls_warm,
     segment_dir,
 )
 
@@ -301,6 +303,46 @@ def test_ensure_hls_playlist_returns_playlist_after_encode(
     assert hls_playlist_ready(source)
 
 
+@pytest.mark.usefixtures("hls_cache")
+def test_cancelled_waiter_does_not_kill_shared_encode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source(tmp_path)
+    encode_started = asyncio.Event()
+    encode_complete = asyncio.Event()
+    encode_count = 0
+    encode_ran_to_completion = False
+
+    async def _slow_fake_encode(src: Path) -> None:
+        nonlocal encode_count, encode_ran_to_completion
+        encode_count += 1
+        encode_started.set()
+        await asyncio.sleep(0.5)
+        out_dir = segment_dir(src)
+        playlist = out_dir / "index.m3u8"
+        _write_playlist_segment(playlist, out_dir)
+        encode_ran_to_completion = True
+        encode_complete.set()
+
+    monkeypatch.setattr(transcode, "_encode_hls", _slow_fake_encode)
+
+    async def _run_concurrent() -> None:
+        first = asyncio.create_task(ensure_hls_playlist(source))
+        await encode_started.wait()
+        second = asyncio.create_task(ensure_hls_playlist(source))
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        result = await second
+        await encode_complete.wait()
+        assert result == segment_dir(source) / "index.m3u8"
+        assert encode_count == 1
+        assert encode_ran_to_completion
+
+    _run(_run_concurrent())
+
+
 def test_hls_cache_root_uses_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -308,3 +350,75 @@ def test_hls_cache_root_uses_env_override(
     monkeypatch.setenv("MIRAMEDIA_HLS_CACHE", str(custom))
     assert hls_cache_root() == custom
     assert custom.is_dir()
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_schedule_hls_warm_logs_unexpected_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = _make_source(tmp_path, "crash-test.mkv")
+    monkeypatch.setattr(transcode, "hls_transcode_available", lambda: True)
+
+    async def _boom(_src: Path) -> Path:
+        msg = "boom"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(transcode, "ensure_hls_playlist", _boom)
+
+    async def _run_warm() -> None:
+        schedule_hls_warm(source)
+        task = next(iter(transcode._warm_tasks))
+        with pytest.raises(ValueError, match="boom"):
+            await task
+
+    with caplog.at_level(logging.ERROR, logger="miramedia.streams.transcode"):
+        _run(_run_warm())
+
+    crashed = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "crashed" in r.message
+        and source.name in r.message
+    ]
+    assert len(crashed) == 1
+    assert crashed[0].exc_info is not None
+    assert crashed[0].exc_info[0] is ValueError
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_schedule_hls_warm_logs_hls_transcode_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = _make_source(tmp_path, "failed.mkv")
+    monkeypatch.setattr(transcode, "hls_transcode_available", lambda: True)
+
+    async def _fail(_src: Path) -> Path:
+        msg = "encode blew up"
+        raise HlsTranscodeError(msg)
+
+    monkeypatch.setattr(transcode, "ensure_hls_playlist", _fail)
+
+    async def _run_warm() -> None:
+        schedule_hls_warm(source)
+        task = next(iter(transcode._warm_tasks))
+        with pytest.raises(HlsTranscodeError, match="encode blew up"):
+            await task
+
+    with caplog.at_level(logging.ERROR, logger="miramedia.streams.transcode"):
+        _run(_run_warm())
+
+    failed = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "failed" in r.message
+        and source.name in r.message
+        and "encode blew up" in r.message
+    ]
+    assert len(failed) == 1
+    assert not failed[0].exc_info

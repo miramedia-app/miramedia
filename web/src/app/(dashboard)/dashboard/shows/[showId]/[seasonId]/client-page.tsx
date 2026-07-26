@@ -4,13 +4,8 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRouteUuid } from "@/lib/use-route-id";
-import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { DashboardHeader } from "@/components/dashboard-header";
-import apiClient from "@/lib/api/client";
-import type { components } from "@/lib/api/api";
-
-type Show = components["schemas"]["PublicShow"];
 
 // There is no separate season page — season details live inline on
 // the show page. This page exists to satisfy
@@ -19,19 +14,6 @@ type Show = components["schemas"]["PublicShow"];
 export default function SeasonDetailClientPage() {
   const showId = useRouteUuid("showId", 0);
   const router = useRouter();
-
-  const showQuery = useQuery({
-    queryKey: ["show", showId],
-    queryFn: async ({ signal }) => {
-      const { data, error } = await apiClient.GET("/api/v1/shows/{show_id}", {
-        signal,
-        params: { path: { show_id: showId! } },
-      });
-      if (error) throw error;
-      return data as Show;
-    },
-    enabled: !!showId,
-  });
 
   React.useEffect(() => {
     if (showId) router.replace(`/dashboard/shows/${showId}`);
@@ -44,7 +26,7 @@ export default function SeasonDetailClientPage() {
           { label: "Dashboard", href: "/dashboard" },
           { label: "Shows", href: "/dashboard/shows" },
           {
-            label: showQuery.data?.name ?? "Show",
+            label: "Show",
             href: showId ? `/dashboard/shows/${showId}` : undefined,
           },
           { label: "Season" },

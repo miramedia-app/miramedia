@@ -15,6 +15,8 @@ _background_tasks: set[asyncio.Task[None]] = set()
 # import writes collapse into one rebuild whose DB session is opened only AFTER
 # the debounce window elapses (see _debounced_rebuild).
 _rebuild_debounce: asyncio.Task[None] | None = None
+_rebuild_waiting = False  # True while inside the debounce sleep (safe to cancel).
+_rerun_requested = False  # Set when a schedule arrives during an active rebuild.
 _REBUILD_DEBOUNCE_S = 2.0
 
 
@@ -31,15 +33,19 @@ def schedule_torrent_queue_sync(torrent_id: UUID) -> None:
 
 def schedule_import_queue_rebuild() -> None:
     """Debounced full rebuild after scan cache or bulk import changes."""
-    global _rebuild_debounce
+    global _rebuild_debounce, _rerun_requested
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    # Coalesce a burst into one rebuild: a fresh call cancels the pending one
-    # while it is still inside its debounce sleep (before any session is open).
+    # Coalesce bursts during the debounce sleep by cancelling and restarting the
+    # timer. Once a rebuild is running we never cancel it; record a rerun instead.
     if _rebuild_debounce is not None and not _rebuild_debounce.done():
-        _rebuild_debounce.cancel()
+        if _rebuild_waiting:
+            _rebuild_debounce.cancel()
+        else:
+            _rerun_requested = True
+            return
     task = loop.create_task(_debounced_rebuild())
     _rebuild_debounce = task
     _background_tasks.add(task)
@@ -47,15 +53,21 @@ def schedule_import_queue_rebuild() -> None:
 
 
 async def _debounced_rebuild() -> None:
-    # Sleep BEFORE opening the session so a later schedule can cancel us during
-    # the window without ever holding a DB connection. The session is opened
-    # once, at fire time, inside _rebuild_queue, so it stays alive for the whole
-    # rebuild — unlike the old path that opened then closed it before the sleep.
-    try:
-        await asyncio.sleep(_REBUILD_DEBOUNCE_S)
-    except asyncio.CancelledError:
-        return
-    await _rebuild_queue()
+    global _rebuild_waiting, _rerun_requested
+    while True:
+        # Sleep BEFORE opening the session so a later schedule can cancel us
+        # during the window without ever holding a DB connection.
+        _rebuild_waiting = True
+        try:
+            await asyncio.sleep(_REBUILD_DEBOUNCE_S)
+        except asyncio.CancelledError:
+            _rebuild_waiting = False
+            return
+        _rebuild_waiting = False
+        await asyncio.shield(_rebuild_queue())
+        if not _rerun_requested:
+            break
+        _rerun_requested = False
 
 
 async def _torrent_queue_sync(torrent_id: UUID) -> None:

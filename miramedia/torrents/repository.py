@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import (
@@ -486,6 +487,20 @@ class TorrentRepository:
             func.lower(TorrentBlock.info_hash) == self._normalize_hash(info_hash)
         )
         return (await self.db.execute(stmt)).scalar_one_or_none() is not None
+
+    async def get_blocked_hashes(self, info_hashes: Sequence[str]) -> set[str]:
+        """Return the subset of ``info_hashes`` present in the deny-list.
+
+        Normalized (stripped, lowercased) on both sides — historical rows may
+        be uppercase. Returns normalized hashes.
+        """
+        normalized = {self._normalize_hash(h) for h in info_hashes if h and h.strip()}
+        if not normalized:
+            return set()
+        stmt = select(func.lower(TorrentBlock.info_hash)).where(
+            func.lower(TorrentBlock.info_hash).in_(normalized)
+        )
+        return set((await self.db.execute(stmt)).scalars().all())
 
     async def add_blocked_hash(
         self,

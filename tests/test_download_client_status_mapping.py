@@ -1,4 +1,4 @@
-"""Characterization tests for qBittorrent and Transmission status mapping (Plan 099)."""
+"""Characterization tests for qBittorrent, Transmission, and SABnzbd status mapping."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from miramedia.torrents.backends.qbittorrent import QbittorrentDownloadClient
+from miramedia.torrents.backends.sabnzbd import SabnzbdDownloadClient
 from miramedia.torrents.backends.transmission import TransmissionDownloadClient
 from miramedia.torrents.models import Quality
 from miramedia.torrents.schemas import Torrent, TorrentStatus
@@ -23,6 +24,11 @@ TR_PROGRESS_ROUNDED = 45.7
 TR_PEERS = 3
 TR_SEEDS = 5
 TR_DL_SPEED = 12345
+
+SAB_PROGRESS_INPUT = 45.67
+SAB_PROGRESS_ROUNDED = 45.7
+SAB_KBPERSEC = 12
+SAB_DL_SPEED = SAB_KBPERSEC * 1024
 
 
 def _sample_torrent() -> Torrent:
@@ -208,3 +214,119 @@ def test_transmission_get_torrent_status_error_flag_overrides_mapped_status(
 
     assert result[0] == TorrentStatus.error
     assert result[1:] == (TR_PROGRESS_ROUNDED, TR_PEERS, TR_SEEDS, TR_DL_SPEED)
+
+
+def _make_sabnzbd_client(api: MagicMock) -> SabnzbdDownloadClient:
+    client = object.__new__(SabnzbdDownloadClient)
+    client.client = api
+    return client
+
+
+def _sab_queue(
+    status: str,
+    *,
+    slots: list[dict[str, object]] | None = None,
+    kbpersec: object = SAB_KBPERSEC,
+) -> dict[str, object]:
+    if slots is None:
+        slots = [{"percentage": SAB_PROGRESS_INPUT}]
+    return {
+        "queue": {
+            "status": status,
+            "slots": slots,
+            "kbpersec": kbpersec,
+        }
+    }
+
+
+def _expected_sab_mapping(
+    state: str,
+) -> tuple[TorrentStatus, float, int, int, int]:
+    if state in SabnzbdDownloadClient.DOWNLOADING_STATE:
+        return (
+            TorrentStatus.downloading,
+            SAB_PROGRESS_ROUNDED,
+            0,
+            0,
+            SAB_DL_SPEED,
+        )
+    if state in SabnzbdDownloadClient.FINISHED_STATE:
+        return (TorrentStatus.finished, 100.0, 0, 0, 0)
+    if state in SabnzbdDownloadClient.ERROR_STATE:
+        return (TorrentStatus.error, SAB_PROGRESS_ROUNDED, 0, 0, SAB_DL_SPEED)
+    return (TorrentStatus.unknown, SAB_PROGRESS_ROUNDED, 0, 0, SAB_DL_SPEED)
+
+
+_SAB_STATES = sorted(
+    {
+        *SabnzbdDownloadClient.DOWNLOADING_STATE,
+        *SabnzbdDownloadClient.FINISHED_STATE,
+        *SabnzbdDownloadClient.ERROR_STATE,
+        *SabnzbdDownloadClient.UNKNOWN_STATE,
+        "SomethingNew",
+    }
+)
+
+
+@pytest.mark.parametrize("state", _SAB_STATES)
+def test_sabnzbd_get_torrent_status_maps_client_state(state: str) -> None:
+    api = MagicMock()
+    api.get_downloads.return_value = _sab_queue(state)
+    client = _make_sabnzbd_client(api)
+    torrent = _sample_torrent()
+
+    result = client.get_torrent_status(torrent)
+
+    assert result == _expected_sab_mapping(state)
+    api.get_downloads.assert_called_once_with(nzo_ids=torrent.hash)
+
+
+def test_sabnzbd_get_torrent_status_empty_slots_returns_zero_progress() -> None:
+    api = MagicMock()
+    api.get_downloads.return_value = _sab_queue("Downloading", slots=[])
+    client = _make_sabnzbd_client(api)
+
+    result = client.get_torrent_status(_sample_torrent())
+
+    assert result == (TorrentStatus.downloading, 0.0, 0, 0, SAB_DL_SPEED)
+
+
+def test_sabnzbd_get_torrent_status_non_numeric_percentage_returns_zero_progress() -> (
+    None
+):
+    api = MagicMock()
+    api.get_downloads.return_value = _sab_queue(
+        "Downloading", slots=[{"percentage": "N/A"}]
+    )
+    client = _make_sabnzbd_client(api)
+
+    result = client.get_torrent_status(_sample_torrent())
+
+    assert result == (TorrentStatus.downloading, 0.0, 0, 0, SAB_DL_SPEED)
+
+
+def test_sabnzbd_get_torrent_status_non_numeric_kbpersec_returns_zero_speed() -> None:
+    api = MagicMock()
+    api.get_downloads.return_value = _sab_queue("Downloading", kbpersec="N/A")
+    client = _make_sabnzbd_client(api)
+
+    result = client.get_torrent_status(_sample_torrent())
+
+    assert result == (TorrentStatus.downloading, SAB_PROGRESS_ROUNDED, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "state",
+    ["Downloading", "Completed", "Failed", "Unknown"],
+)
+def test_sabnzbd_get_torrent_status_peers_and_seeds_always_zero(
+    state: str,
+) -> None:
+    api = MagicMock()
+    api.get_downloads.return_value = _sab_queue(state)
+    client = _make_sabnzbd_client(api)
+
+    result = client.get_torrent_status(_sample_torrent())
+
+    assert result[2] == 0
+    assert result[3] == 0

@@ -11,6 +11,7 @@ from sqlalchemy.exc import (
     SQLAlchemyError,
 )
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
 from sqlalchemy.sql.base import ExecutableOption
 
@@ -71,6 +72,10 @@ def _movie_schema_from_row_mapping(row: Mapping[str, Any]) -> MovieSchema:
     payload = dict(row)
     payload["id"] = MovieId(payload["id"])
     return MovieSchema.model_validate(payload)
+
+
+def _movie_file_eager_loads() -> tuple[ExecutableOption, ...]:
+    return (selectinload(Movie.movie_files),)
 
 
 def _movie_summary_eager_loads() -> tuple[ExecutableOption, ...]:
@@ -277,6 +282,30 @@ class MovieRepository:
             return [MovieSchema.model_validate(movie) for movie in results]
         except SQLAlchemyError:
             log.exception("Database error while retrieving all movies")
+            raise
+
+    async def get_all_movies_with_files(self) -> list[Movie]:
+        """Return every movie ORM row with movie_files loaded."""
+        try:
+            stmt = select(Movie).options(*_movie_file_eager_loads())
+            return list((await self.db.execute(stmt)).scalars().unique().all())
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving all movies for arr shim")
+            raise
+
+    async def get_movie_with_files_by_id(self, movie_id: UUID) -> Movie | None:
+        """Return one movie ORM row with movie_files loaded, or ``None``."""
+        try:
+            stmt = (
+                select(Movie)
+                .where(Movie.id == movie_id)
+                .options(*_movie_file_eager_loads())
+            )
+            return (await self.db.execute(stmt)).unique().scalar_one_or_none()
+        except SQLAlchemyError:
+            log.exception(
+                "Database error while retrieving movie %s for arr shim", movie_id
+            )
             raise
 
     async def get_movie_ids(self) -> list[MovieId]:

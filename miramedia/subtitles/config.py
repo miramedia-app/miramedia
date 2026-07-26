@@ -58,8 +58,9 @@ class NativeSubtitleConfig(BaseSettings):
 
 class BazarrConfig(BaseSettings):
     enabled: bool = False
-    url: str = ""
-    api_key: str = ""
+    url: str = ""  # Bazarr's own base URL (outbound, plan 136)
+    api_key: str = ""  # Bazarr's API key (outbound, plan 136)
+    shim_api_key: str = ""  # key Bazarr uses to call our Sonarr/Radarr shim
 
 
 class SubtitleConfig(BaseSettings):

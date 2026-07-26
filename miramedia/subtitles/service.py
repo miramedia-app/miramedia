@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,8 @@ from miramedia.torrents.quality_naming import NameParts
 from miramedia.torrents.schemas import Quality
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from miramedia.subtitles.models import SubtitleRecord
 
 log = logging.getLogger(__name__)
@@ -855,31 +858,127 @@ class SubtitleService:
 
     # --- Bazarr integration ---
 
-    async def search_episode_subtitles_bazarr(self, episode_id: EpisodeId) -> bool:
-        """Trigger subtitle search via Bazarr for an episode."""
+    async def notify_bazarr_episode_imported(
+        self,
+        db: AsyncSession,
+        episode_file_uuid: uuid.UUID,
+        episode_uuid: EpisodeId,
+    ) -> None:
+        """Push Bazarr's Sonarr webhook after a single episode file import."""
+        await self.notify_bazarr_episodes_imported(
+            db, [(episode_file_uuid, episode_uuid)]
+        )
+
+    async def notify_bazarr_episodes_imported(
+        self,
+        db: AsyncSession,
+        pairs: Sequence[tuple[uuid.UUID, EpisodeId]],
+    ) -> None:
+        """Push Bazarr's Sonarr webhook for a batch of imported episode files.
+
+        Sonarr's ``Download`` webhook carries lists, so a season pack is one
+        POST rather than one per file. No-op when Bazarr is disabled or the
+        batch is empty. Never raises — Bazarr's periodic sync is the backstop
+        when the webhook fails.
+        """
+        config = self._get_config()
+        if not config.subtitles.bazarr.enabled or not pairs:
+            return
+
+        try:
+            from miramedia.database import release_session_before_external_io
+            from miramedia.subtitles.arr_ids import get_or_create_arr_ids
+
+            file_uuids = [file_uuid for file_uuid, _ in pairs]
+            episode_uuids = [episode_uuid for _, episode_uuid in pairs]
+            file_map = await get_or_create_arr_ids(db, "episode_file", file_uuids)
+            episode_map = await get_or_create_arr_ids(db, "episode", episode_uuids)
+            file_arr_ids = [file_map[u] for u in file_uuids if u in file_map]
+            episode_arr_ids = [
+                episode_map[u] for u in episode_uuids if u in episode_map
+            ]
+            if not file_arr_ids or not episode_arr_ids:
+                log.warning(
+                    "Bazarr episode notify skipped: arr id mapping missing for %s",
+                    file_uuids,
+                )
+                return
+
+            await release_session_before_external_io(db)
+
+            client = BazarrClient(
+                url=config.subtitles.bazarr.url,
+                api_key=config.subtitles.bazarr.api_key,
+            )
+            ok = await asyncio.to_thread(
+                client.notify_episode_files_imported,
+                file_arr_ids,
+                episode_arr_ids,
+            )
+            if not ok:
+                log.warning(
+                    "Bazarr episode import notify failed for files %s",
+                    file_uuids,
+                )
+        except Exception:
+            log.warning(
+                "Bazarr episode import notify failed for files %s",
+                [file_uuid for file_uuid, _ in pairs],
+                exc_info=True,
+            )
+
+    async def notify_bazarr_movie_imported(
+        self,
+        db: AsyncSession,
+        movie_file_uuid: uuid.UUID,
+        movie_uuid: MovieId,
+    ) -> None:
+        """Push Bazarr's Radarr webhook after a movie file import.
+
+        No-op when Bazarr is disabled. Never raises — Bazarr's periodic sync
+        is the backstop when the webhook fails.
+        """
         config = self._get_config()
         if not config.subtitles.bazarr.enabled:
-            log.warning("Bazarr integration is disabled")
-            return False
+            return
 
-        client = BazarrClient(
-            url=config.subtitles.bazarr.url,
-            api_key=config.subtitles.bazarr.api_key,
-        )
-        return await asyncio.to_thread(client.search_episode_subtitles, str(episode_id))
+        try:
+            from miramedia.database import release_session_before_external_io
+            from miramedia.subtitles.arr_ids import get_or_create_arr_ids
 
-    async def search_movie_subtitles_bazarr(self, movie_id: MovieId) -> bool:
-        """Trigger subtitle search via Bazarr for a movie."""
-        config = self._get_config()
-        if not config.subtitles.bazarr.enabled:
-            log.warning("Bazarr integration is disabled")
-            return False
+            file_map = await get_or_create_arr_ids(db, "movie_file", [movie_file_uuid])
+            movie_map = await get_or_create_arr_ids(db, "movie", [movie_uuid])
+            movie_file_arr_id = file_map.get(movie_file_uuid)
+            movie_arr_id = movie_map.get(movie_uuid)
+            if movie_file_arr_id is None or movie_arr_id is None:
+                log.warning(
+                    "Bazarr movie notify skipped: arr id mapping missing for %s",
+                    movie_file_uuid,
+                )
+                return
 
-        client = BazarrClient(
-            url=config.subtitles.bazarr.url,
-            api_key=config.subtitles.bazarr.api_key,
-        )
-        return await asyncio.to_thread(client.search_movie_subtitles, str(movie_id))
+            await release_session_before_external_io(db)
+
+            client = BazarrClient(
+                url=config.subtitles.bazarr.url,
+                api_key=config.subtitles.bazarr.api_key,
+            )
+            ok = await asyncio.to_thread(
+                client.notify_movie_file_imported,
+                movie_file_arr_id,
+                movie_arr_id,
+            )
+            if not ok:
+                log.warning(
+                    "Bazarr movie import notify failed for file %s",
+                    movie_file_uuid,
+                )
+        except Exception:
+            log.warning(
+                "Bazarr movie import notify failed for file %s",
+                movie_file_uuid,
+                exc_info=True,
+            )
 
 
 def _make_subtitle_record_model(

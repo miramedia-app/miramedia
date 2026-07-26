@@ -6,7 +6,7 @@ description: "Run MiraMedia on a Synology NAS or other low-RAM Docker host."
 import { Callout } from "fumadocs-ui/components/callout";
 
 A dedicated `docker-compose.synology.yaml` targets Synology DSM (and similar
-low-RAM NAS hosts). It differs from the standard compose in four ways that
+low-RAM NAS hosts). It differs from the standard compose in five ways that
 matter on a NAS.
 
 ## What's different
@@ -27,6 +27,13 @@ matter on a NAS.
   `MIRAMEDIA_SHA1_CONCURRENCY=1` / `MIRAMEDIA_CHROMIUM_CONCURRENCY=1`, sized for
   ~2 GB RAM. See [Environment Variables](/docs/advanced-features/environment-variables)
   and `.env.example` for what each knob does.
+- **`group_add: ["0"]`** so the pinned non-root user can still reach
+  `/var/run/docker.sock` for [in-app updates](/docs/configuration/updates).
+  Because `user:` fixes the primary GID, a supplementary group is the only way
+  to grant socket access. DSM ships the socket as `root:root` mode `660`, so
+  group `0` works — **verify on your NAS** with
+  `stat -c '%g' /var/run/docker.sock` and change it if it differs. Without
+  this, applying an update fails with `[Errno 13] Permission denied`.
 - **Absolute `/volume1` bind mounts** so files live on the NAS volume, not in
   the Docker layer.
 
@@ -55,10 +62,16 @@ torrent_directory = "/data/torrents"
 
 ## Image source
 
-The Synology compose references `image: miramedia:local`, loaded on the NAS
-via `docker load < miramedia-local-amd64.tar.gz`. Switch it to
-`ghcr.io/miramedia-app/miramedia:<tag>` once you want the in-app updater to
-pull published images.
+The Synology compose points at the published
+`ghcr.io/miramedia-app/miramedia:latest`, which is what the in-app updater
+pulls. To run a locally built image instead, set `image: miramedia:local` and
+load it on the NAS with `docker load < miramedia-local-amd64.tar.gz` — in-app
+apply won't work against a local-only tag.
+
+For the Cloudflare `native` solver you need the Chromium variant —
+`ghcr.io/miramedia-app/miramedia-cf:<version>` (a separate repo, version tags
+only), or build it locally with `--target app-cf -t miramedia:local-cf`. The
+slim default image has no Chromium.
 
 <Callout type="warn">
 

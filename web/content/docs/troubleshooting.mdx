@@ -22,6 +22,21 @@ shows the console stream. Set `MIRAMEDIA_LOG_LEVEL=DEBUG` for detail. See
 - If you've lost access, a superuser can reset another user's password from
   **System → Users**.
 
+## Everyone is logged out after every restart
+
+`auth.token_secret` isn't stable. Either it's unset (a random one is generated
+per process) or `MIRAMEDIA_ALLOW_INSECURE_TOKEN_SECRET=1` is masking a
+placeholder/too-short value. Set a persistent secret
+(`openssl rand -hex 32`) — see
+[Authentication](configuration/authentication).
+
+## The container won't start: "token_secret must be a random string"
+
+The configured secret is the shipped placeholder or under 32 characters, and
+the app refuses to boot with it. The Docker entrypoint normally rewrites the
+placeholder for you; this surfaces on bare-metal runs or when the secret comes
+from an env var / mounted file. Set a real value.
+
 ## OAuth / OIDC login fails
 
 - Verify the provider's client id/secret and discovery endpoint.
@@ -54,6 +69,23 @@ directories on the same volume — see
 - If you use a qBittorrent category save path, confirm the
   [path mapping](advanced-features/qbittorrent-category).
 - The scheduler retries due imports automatically with backoff.
+- A release that only ships as `.rar`/`.7z` is **not** unpacked — the log
+  shows `Skipping unsupported archive`. Only `zip`/`tar`/`gz`/`bz2` are
+  extracted; grab a different release. See
+  [Archives inside downloads](features/downloads-and-imports#archives-inside-downloads).
+
+## Season 0 specials never download
+
+Expected: `misc.download_specials` is `false` by default, so specials show as
+**skipped** and sit out the auto-download sweep. Set it to `true`, or download
+them by hand from the show page.
+
+## Saving settings says the revision changed
+
+Two edits raced (another admin, or a second tab). Settings saves are
+compare-and-swap against a stored revision — the losing write is rejected
+instead of silently clobbering the other one. Reload the Settings page and
+re-apply your change.
 
 ## Cloudflare bypass fails / "network service crashed"
 
@@ -63,6 +95,28 @@ syscall. Add `security_opt: [seccomp:unconfined]` to the `api` service (the
 shipped `docker-compose.synology.yaml` already does this). See the
 [Synology guide](installation/synology). If Chromium is OOM-killed on a small
 NAS, disable the bypass with `enabled = false` under `[cloudflare]`.
+
+## In-app update fails with "Permission denied"
+
+`[Errno 13] Permission denied` when applying an update means the container
+user can't open `/var/run/docker.sock`. It happens when the service pins a
+non-root `user:` (the Synology compose does) — the socket's group isn't
+carried, and because `user:` fixes the primary GID, only `group_add` can grant
+it. Check the socket's group on the host and add it:
+
+```bash
+stat -c '%g' /var/run/docker.sock
+```
+
+```yaml title="docker-compose.yaml (excerpt)"
+services:
+  api:
+    group_add:
+      - "0" # replace with the GID printed above
+```
+
+See [Updates](configuration/updates) and the
+[Synology guide](installation/synology).
 
 ## Docker image pull errors (401/403)
 

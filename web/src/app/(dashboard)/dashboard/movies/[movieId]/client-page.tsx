@@ -39,6 +39,7 @@ import { MovieSettingsSheet } from "@/components/movies/movie-settings-sheet";
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
 import apiClient from "@/lib/api/client";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import {
   formatFileSuffix,
   getFullyQualifiedMediaName,
@@ -111,6 +112,12 @@ export default function MovieDetailClientPage() {
     },
     enabled: !!movieId && bundleTorrents !== undefined,
     initialData: bundleTorrents,
+    // The bundle just delivered this exact list, so treat it as fresh for a
+    // beat and skip the redundant mount refetch. The refetchInterval predicate
+    // still polls at 5s while a torrent is Downloading and SSE/invalidations
+    // still force refetches on real changes.
+    initialDataUpdatedAt: () => bundleQuery.dataUpdatedAt,
+    staleTime: 5_000,
     refetchInterval: (q) => {
       const list = q.state.data ?? [];
       const hasActive = list.some((t) => getTorrentStatusString(t.status) === "Downloading");
@@ -220,15 +227,19 @@ export default function MovieDetailClientPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-            params: { path: { torrent_id: id } },
-          }),
-        ),
+      const { ok, failed, failedItems } = await bulkMutate(ids, (id) =>
+        apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
+          params: { path: { torrent_id: id } },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} deleted`);
-      setSelectedTorrents(new Set());
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} deleted`);
+      } else if (ok === 0) {
+        toast.error("Failed to delete some torrents");
+      } else {
+        toast.warning(`${ok} deleted, ${failed} failed`);
+      }
+      setSelectedTorrents(new Set(failedItems));
       await invalidateAll();
     } catch {
       toast.error("Failed to delete some torrents");
@@ -241,14 +252,18 @@ export default function MovieDetailClientPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-            params: { path: { torrent_id: id } },
-          }),
-        ),
+      const { ok, failed } = await bulkMutate(ids, (id) =>
+        apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
+          params: { path: { torrent_id: id } },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} paused`);
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} paused`);
+      } else if (ok === 0) {
+        toast.error("Failed to pause some torrents");
+      } else {
+        toast.warning(`${ok} paused, ${failed} failed`);
+      }
       await invalidateAll();
     } catch {
       toast.error("Failed to pause some torrents");
@@ -261,14 +276,18 @@ export default function MovieDetailClientPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-            params: { path: { torrent_id: id } },
-          }),
-        ),
+      const { ok, failed } = await bulkMutate(ids, (id) =>
+        apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
+          params: { path: { torrent_id: id } },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} resumed`);
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} resumed`);
+      } else if (ok === 0) {
+        toast.error("Failed to resume some torrents");
+      } else {
+        toast.warning(`${ok} resumed, ${failed} failed`);
+      }
       await invalidateAll();
     } catch {
       toast.error("Failed to resume some torrents");
@@ -280,31 +299,34 @@ export default function MovieDetailClientPage() {
   async function bulkDeleteFiles() {
     if (!selectedFiles.size || !movie) return;
     setBulkWorking(true);
-    const count = selectedFiles.size;
     try {
-      await Promise.all(
-        [...selectedFiles].map((key) => {
-          if (key.startsWith("sub:")) {
-            const fileName = key.slice(4);
-            return apiClient.DELETE("/api/v1/subtitles/movies/{movie_id}/files", {
-              params: {
-                path: { movie_id: movie.id! },
-                query: { file_name: fileName },
-              },
-            });
-          } else {
-            const fileId = key.slice(5);
-            return apiClient.DELETE("/api/v1/movies/{movie_id}/files/{file_id}", {
-              params: {
-                path: { movie_id: movie.id!, file_id: fileId },
-                query: { delete_from_disk: true },
-              },
-            });
-          }
-        }),
-      );
-      toast.success(`${count} file${count !== 1 ? "s" : ""} deleted`);
-      setSelectedFiles(new Set());
+      const { ok, failed, failedItems } = await bulkMutate([...selectedFiles], (key) => {
+        if (key.startsWith("sub:")) {
+          const fileName = key.slice(4);
+          return apiClient.DELETE("/api/v1/subtitles/movies/{movie_id}/files", {
+            params: {
+              path: { movie_id: movie.id! },
+              query: { file_name: fileName },
+            },
+          });
+        } else {
+          const fileId = key.slice(5);
+          return apiClient.DELETE("/api/v1/movies/{movie_id}/files/{file_id}", {
+            params: {
+              path: { movie_id: movie.id!, file_id: fileId },
+              query: { delete_from_disk: true },
+            },
+          });
+        }
+      });
+      if (failed === 0) {
+        toast.success(`${ok} file${ok !== 1 ? "s" : ""} deleted`);
+      } else if (ok === 0) {
+        toast.error("Failed to delete some files");
+      } else {
+        toast.warning(`${ok} deleted, ${failed} failed`);
+      }
+      setSelectedFiles(new Set(failedItems));
       await invalidateAll();
     } finally {
       setBulkWorking(false);

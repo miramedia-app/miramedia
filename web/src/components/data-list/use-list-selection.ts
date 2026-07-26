@@ -16,12 +16,41 @@ export interface ListSelectionState {
 export interface UseListSelectionOptions {
   /** Ordered list of selectable ids (filtered + paginated view order). */
   ids: string[];
+  /**
+   * Full filtered id list across every page. `selectAll` operates on this so
+   * "Select all N" selects N rows, not just the current page. Defaults to
+   * `ids`; range/shift selection always stays page-scoped.
+   */
+  allIds?: string[];
   /** Ids that cannot be selected (e.g. current user). */
   disabledIds?: Set<string>;
 }
 
+/**
+ * Header checkbox state for a selection, over the full filtered id list.
+ * Pure so it can be unit-tested outside a DOM environment.
+ */
+export function selectionHeaderState(
+  ids: string[],
+  disabledIds: Set<string> | undefined,
+  selected: Set<string>,
+): { allSelected: boolean; someSelected: boolean } {
+  let selectable = 0;
+  let selectedCount = 0;
+  for (const id of ids) {
+    if (disabledIds?.has(id)) continue;
+    selectable++;
+    if (selected.has(id)) selectedCount++;
+  }
+  return {
+    allSelected: selectable > 0 && selectedCount === selectable,
+    someSelected: selectedCount > 0 && selectedCount < selectable,
+  };
+}
+
 export function useListSelection({
   ids,
+  allIds,
   disabledIds,
 }: UseListSelectionOptions): ListSelectionState {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -88,8 +117,9 @@ export function useListSelection({
   );
 
   const selectAll = React.useCallback(() => {
-    setSelected(new Set(ids.filter((id) => !isDisabled(id))));
-  }, [ids, isDisabled]);
+    const source = allIds ?? ids;
+    setSelected(new Set(source.filter((id) => !isDisabled(id))));
+  }, [allIds, ids, isDisabled]);
 
   const clear = React.useCallback(() => setSelected(new Set()), []);
 

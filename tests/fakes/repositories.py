@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -61,6 +62,21 @@ class FakeShowRepository:
         msg = f"season not found for episode {episode_id}"
         raise KeyError(msg)
 
+    async def get_episodes_with_seasons(
+        self, episode_ids: list[EpisodeId]
+    ) -> dict[EpisodeId, tuple[Season, Episode]]:
+        self.get_episodes_with_seasons_calls = (
+            getattr(self, "get_episodes_with_seasons_calls", 0) + 1
+        )
+        out: dict[EpisodeId, tuple[Season, Episode]] = {}
+        for episode_id in episode_ids:
+            episode = self.episodes.get(episode_id)
+            if episode is None:
+                continue
+            season = _season_for_episode(self, episode_id)
+            out[episode_id] = (season, episode)
+        return out
+
     async def batch_episodes_with_context(
         self, episode_ids: list[EpisodeId]
     ) -> dict[EpisodeId, object]:
@@ -101,6 +117,22 @@ class FakeShowRepository:
             for f in self.episode_files.values()
             if _season_for_episode(self, f.episode_id).id == season_id
         ]
+
+    async def get_episode_files_by_season_ids(
+        self, season_ids: list[SeasonId]
+    ) -> dict[SeasonId, list[EpisodeFile]]:
+        self.get_episode_files_by_season_ids_calls = (
+            getattr(self, "get_episode_files_by_season_ids_calls", 0) + 1
+        )
+        season_id_set = set(season_ids)
+        grouped: dict[SeasonId, list[EpisodeFile]] = {
+            season_id: [] for season_id in season_ids
+        }
+        for episode_file in self.episode_files.values():
+            season = _season_for_episode(self, episode_file.episode_id)
+            if season.id in season_id_set:
+                grouped[season.id].append(episode_file)
+        return grouped
 
     async def get_torrents_by_show_id(self, *, show_id: ShowId) -> list[Torrent]:
         return list(self.torrents_by_show.get(show_id, []))
@@ -277,6 +309,9 @@ class FakeMovieRepository:
     async def get_movie_file_by_id(self, file_id: UUID) -> MovieFile | None:
         return self.movie_files.get(file_id)
 
+    async def get_torrents_by_movie_id(self, *, movie_id: MovieId) -> list[Torrent]:
+        return list(self.torrents_by_movie.get(movie_id, []))
+
 
 class FakeTorrentRepository:
     def __init__(
@@ -293,6 +328,23 @@ class FakeTorrentRepository:
         self.movie_files: dict[TorrentId, list[MovieFile]] = {}
         self.show_of_torrent: dict[TorrentId, Show] = {}
         self.movie_of_torrent: dict[TorrentId, Movie] = {}
+        self.blocked_hashes: set[str] = set()
+
+    @staticmethod
+    def _normalize_hash(info_hash: str) -> str:
+        return info_hash.strip().lower()
+
+    async def is_hash_blocked(self, info_hash: str) -> bool:
+        if not info_hash:
+            return False
+        return self._normalize_hash(info_hash) in self.blocked_hashes
+
+    async def get_blocked_hashes(self, info_hashes: Sequence[str]) -> set[str]:
+        normalized = {self._normalize_hash(h) for h in info_hashes if h and h.strip()}
+        if not normalized:
+            return set()
+        self.get_blocked_hashes_calls = getattr(self, "get_blocked_hashes_calls", 0) + 1
+        return normalized & self.blocked_hashes
 
     async def get_torrent_by_id(self, *, torrent_id: TorrentId) -> Torrent | None:
         return self.torrents.get(torrent_id)
@@ -328,6 +380,88 @@ class FakeTorrentRepository:
 
     async def get_movie_of_torrent(self, torrent_id: TorrentId) -> Movie | None:
         return self.movie_of_torrent.get(torrent_id)
+
+    async def get_show_contexts_for_torrents(
+        self, torrent_ids: list[TorrentId]
+    ) -> dict[TorrentId, dict]:
+        self.show_context_batch_calls = getattr(self, "show_context_batch_calls", 0) + 1
+        if not torrent_ids or self.show_repo is None:
+            return {}
+        result: dict[TorrentId, dict] = {}
+        for tid in torrent_ids:
+            files = self.episode_files.get(tid, [])
+            if not files:
+                continue
+            show = self.show_of_torrent.get(tid)
+            if show is None:
+                continue
+            ctx = result.setdefault(
+                tid,
+                {
+                    "show_id": show.id,
+                    "show_name": show.name,
+                    "show_year": show.year,
+                    "metadata_provider": show.metadata_provider,
+                    "seasons": set(),
+                    "episodes": set(),
+                    "variant": files[0].variant or "",
+                },
+            )
+            for ef in files:
+                episode = self.show_repo.episodes.get(ef.episode_id)
+                if episode is None:
+                    continue
+                season = _season_for_episode(self.show_repo, ef.episode_id)
+                ctx["seasons"].add(int(season.number))
+                ctx["episodes"].add(int(episode.number))
+        return result
+
+    async def get_movie_contexts_for_torrents(
+        self, torrent_ids: list[TorrentId]
+    ) -> dict[TorrentId, dict]:
+        self.movie_context_batch_calls = (
+            getattr(self, "movie_context_batch_calls", 0) + 1
+        )
+        if not torrent_ids:
+            return {}
+        result: dict[TorrentId, dict] = {}
+        for tid in torrent_ids:
+            files = self.movie_files.get(tid, [])
+            if not files:
+                continue
+            movie = self.movie_of_torrent.get(tid)
+            if movie is None:
+                continue
+            if tid in result:
+                continue
+            result[tid] = {
+                "movie_id": movie.id,
+                "movie_name": movie.name,
+                "movie_year": movie.year,
+                "metadata_provider": movie.metadata_provider,
+                "variant": files[0].variant or "",
+            }
+        return result
+
+    async def get_import_status_aggregates_for_torrents(
+        self, torrent_ids: list[TorrentId]
+    ) -> dict[TorrentId, list]:
+        self.import_status_batch_calls = (
+            getattr(self, "import_status_batch_calls", 0) + 1
+        )
+        if not torrent_ids:
+            return {}
+        result: dict[TorrentId, list] = {tid: [] for tid in torrent_ids}
+        for tid in torrent_ids:
+            for ef in self.episode_files.get(tid, []):
+                result[tid].append(
+                    (ef.import_status, ef.import_error, ef.last_attempt_at)
+                )
+            for mf in self.movie_files.get(tid, []):
+                result[tid].append(
+                    (mf.import_status, mf.import_error, mf.last_attempt_at)
+                )
+        return result
 
     async def get_all_torrents(self) -> list[Torrent]:
         return list(self.torrents.values())

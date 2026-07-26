@@ -184,15 +184,26 @@ class SeerrSyncService:
             try:
                 media_type = "movie" if row.media_type == MediaType.movie else "tv"
                 seasons = [row.season_number] if row.season_number is not None else None
-                # Release before the cluster of async Seerr HTTP calls
-                # (create_request + optional approve/decline). Session
-                # re-checks out on the update_request write below.
+                # Release before create_request. Persist the Seerr link
+                # immediately after a successful create so a failed
+                # approve/decline cannot cause a duplicate create on the
+                # next cycle; moderation state is reconciled by the
+                # regular reconcile pass.
                 await release_session_before_external_io(self.repository.db)
                 created = await self.client.create_request(
                     media_type, tmdb_id, seasons=seasons
                 )
                 if created is None:
                     continue
+                await self.repository.update_request(
+                    row.id,
+                    seerr_request_id=created.request_id,
+                    seerr_media_id=created.media_id,
+                )
+                pushed += 1
+                # update_request re-checked out the session; release again
+                # before the optional approve/decline HTTP calls.
+                await release_session_before_external_io(self.repository.db)
                 if row.status in (
                     RequestStatus.approved,
                     RequestStatus.downloading,
@@ -201,12 +212,6 @@ class SeerrSyncService:
                     await self.client.approve(created.request_id)
                 elif row.status == RequestStatus.rejected:
                     await self.client.decline(created.request_id)
-                await self.repository.update_request(
-                    row.id,
-                    seerr_request_id=created.request_id,
-                    seerr_media_id=created.media_id,
-                )
-                pushed += 1
             except httpx.HTTPError:
                 log.warning(
                     "Seerr push failed for request %s",

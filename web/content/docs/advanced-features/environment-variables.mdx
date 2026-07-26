@@ -44,6 +44,16 @@ In production the backend serves the static frontend itself.
 
 See [Logging](../configuration/logging).
 
+## Escape hatches
+
+- `MIRAMEDIA_ALLOW_INSECURE_TOKEN_SECRET` — when `1`, a placeholder or
+  too-short `auth.token_secret` logs a warning and falls back to an ephemeral
+  per-process secret instead of aborting startup. Sessions then die on every
+  restart. See [Authentication](../configuration/authentication).
+- `MIRAMEDIA_CHROMIUM_NUKE` — when `1`, the Cloudflare bypass may blanket-kill
+  **every** `chrom*` process it can see, not just the ones it started. Only for
+  a wedged container you cannot restart; leave unset otherwise.
+
 ## Performance & concurrency
 
 All optional; defaults live in code. The full annotated list is in

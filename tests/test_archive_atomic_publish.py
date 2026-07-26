@@ -552,6 +552,23 @@ def test_missing_atomic_primitive_cleans_private_build(tmp_path: Path) -> None:
     assert len(list(dest.parent.glob(f"{PRIVATE_BUILD_PREFIX}*"))) == 1
 
 
+def test_duplicate_publish_cleans_private_build_dir(tmp_path: Path) -> None:
+    """Re-publishing an identical archive must not leak .mm-publish-* directories."""
+    archive = tmp_path / "release.zip"
+    dest = tmp_path / "import"
+    dest.mkdir()
+    _write_zip(archive, {"clip.mkv": b"same"})
+    first = extract_archive_to_directory(archive, dest)
+    second = extract_archive_to_directory(archive, dest)
+
+    assert second == first
+    parent = dest.parent
+    publish_dirs = [
+        p for p in parent.iterdir() if p.name.startswith(PRIVATE_BUILD_PREFIX)
+    ]
+    assert publish_dirs == []
+
+
 def test_raced_identical_winner_returns_existing_container(tmp_path: Path) -> None:
     from miramedia.imports import archive_publication as publication
 
@@ -565,7 +582,9 @@ def test_raced_identical_winner_returns_existing_container(tmp_path: Path) -> No
     _write_zip(archive, {"clip.mkv": b"same"})
 
     real_try_open = publication._try_open_container
+    real_rename = publication.atomic_rename_noreplace
     open_calls = 0
+    rename_calls = 0
 
     def _hide_existing_once(parent_fd: int, container_name: str) -> int | None:
         nonlocal open_calls
@@ -574,9 +593,13 @@ def test_raced_identical_winner_returns_existing_container(tmp_path: Path) -> No
             return None
         return real_try_open(parent_fd, container_name)
 
-    def _race_win(*_args: object, **_kwargs: object) -> None:
-        race_msg = "simulated race"
-        raise FileExistsError(race_msg)
+    def _race_win(*args: object, **_kwargs: object) -> None:
+        nonlocal rename_calls
+        rename_calls += 1
+        if rename_calls == 1:
+            race_msg = "simulated race"
+            raise FileExistsError(race_msg)
+        real_rename(*args, **_kwargs)
 
     with (
         patch.object(
@@ -588,6 +611,11 @@ def test_raced_identical_winner_returns_existing_container(tmp_path: Path) -> No
 
     assert raced == first
     assert len(container_paths(dest)) == 1
+    parent = dest.parent
+    publish_dirs = [
+        p for p in parent.iterdir() if p.name.startswith(PRIVATE_BUILD_PREFIX)
+    ]
+    assert publish_dirs == []
 
 
 def test_raced_non_identical_winner_raises_collision(tmp_path: Path) -> None:
@@ -696,6 +724,12 @@ def test_successful_publish_has_payload_not_empty_container(tmp_path: Path) -> N
     assert container.name == container_name_for_digest(
         canonical_tree_digest_from_path(container / "payload")
     )
+    parent = dest.parent
+    publish_dirs = [
+        p for p in parent.iterdir() if p.name.startswith(PRIVATE_BUILD_PREFIX)
+    ]
+    assert publish_dirs == []
+    assert len(container_paths(dest)) == 1
 
 
 def canonical_tree_digest_from_path(payload_root: Path) -> str:

@@ -187,16 +187,14 @@ class TorrentService:
         if not hashes:
             return results
 
-        blocked: set[str] = set()
-        for h in set(hashes.values()):
-            if await self.torrent_repository.is_hash_blocked(h):
-                blocked.add(h)
+        unique_hashes = set(hashes.values())
+        blocked = await self.torrent_repository.get_blocked_hashes(unique_hashes)
 
         if not blocked:
             log.info(
                 "Deny-list filter: checked %d magnet hash(es) against deny-list, none blocked. Hashes: %s",
-                len(set(hashes.values())),
-                sorted(set(hashes.values())),
+                len(unique_hashes),
+                sorted(unique_hashes),
             )
             return results
 
@@ -1130,6 +1128,7 @@ class TorrentService:
         show_ctx: dict,
         movie_ctx: dict,
         progress_rows: dict,
+        single_season_episodes_only: bool = False,
     ) -> list[RichTorrent]:
         result: list[RichTorrent] = []
         for t in torrents:
@@ -1138,14 +1137,20 @@ class TorrentService:
             if t.id in show_ctx:
                 ctx = show_ctx[t.id]
                 variant = ctx["variant"]
+                seasons = sorted(ctx["seasons"]) if ctx["seasons"] else None
+                episodes = sorted(ctx["episodes"]) if ctx["episodes"] else None
+                if single_season_episodes_only and (
+                    seasons is None or len(seasons) != 1
+                ):
+                    episodes = None
                 media = TorrentMediaContext(
                     media_type="show",
                     media_id=ctx["show_id"],
                     media_name=ctx["show_name"],
                     media_year=ctx["show_year"],
                     metadata_provider=ctx["metadata_provider"],
-                    seasons=sorted(ctx["seasons"]) if ctx["seasons"] else None,
-                    episodes=sorted(ctx["episodes"]) if ctx["episodes"] else None,
+                    seasons=seasons,
+                    episodes=episodes,
                 )
             elif t.id in movie_ctx:
                 ctx = movie_ctx[t.id]
@@ -1179,7 +1184,11 @@ class TorrentService:
         return result
 
     async def _rich_torrents_for_ids(
-        self, torrents: list[Torrent], *, live_status: bool
+        self,
+        torrents: list[Torrent],
+        *,
+        live_status: bool,
+        single_season_episodes_only: bool = False,
     ) -> list[RichTorrent]:
         if not torrents:
             return []
@@ -1202,6 +1211,7 @@ class TorrentService:
             show_ctx=show_ctx,
             movie_ctx=movie_ctx,
             progress_rows=progress_rows,
+            single_season_episodes_only=single_season_episodes_only,
         )
 
     async def get_all_torrents_with_context(

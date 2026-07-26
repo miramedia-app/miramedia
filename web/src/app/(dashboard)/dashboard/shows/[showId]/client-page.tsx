@@ -37,6 +37,7 @@ import { SearchTorrentButton } from "@/components/download-dialogs/download-medi
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
 import apiClient from "@/lib/api/client";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import { formatFileSuffix, getTorrentQualityString, getTorrentStatusString } from "@/lib/utils";
 import dynamic from "next/dynamic";
 const VideoPlayerDialog = dynamic(
@@ -158,6 +159,12 @@ export default function ShowDetailClientPage() {
     },
     enabled: !!showId && bundleTorrents !== undefined,
     initialData: bundleTorrents,
+    // The bundle just delivered this exact list, so treat it as fresh for a
+    // beat and skip the redundant mount refetch. The refetchInterval predicate
+    // still polls at 5s while a torrent is Downloading and SSE/invalidations
+    // still force refetches on real changes.
+    initialDataUpdatedAt: () => bundleQuery.dataUpdatedAt,
+    staleTime: 5_000,
     refetchInterval: (q) => {
       const list = q.state.data ?? [];
       const hasActive = list.some((t) => getTorrentStatusString(t.status) === "Downloading");
@@ -416,15 +423,19 @@ export default function ShowDetailClientPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-            params: { path: { torrent_id: id } },
-          }),
-        ),
+      const { ok, failed, failedItems } = await bulkMutate(ids, (id) =>
+        apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
+          params: { path: { torrent_id: id } },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} deleted`);
-      setSelectedTorrents(new Set());
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} deleted`);
+      } else if (ok === 0) {
+        toast.error("Failed to delete some torrents");
+      } else {
+        toast.warning(`${ok} deleted, ${failed} failed`);
+      }
+      setSelectedTorrents(new Set(failedItems));
       await invalidateAll();
     } catch {
       toast.error("Failed to delete some torrents");
@@ -452,14 +463,18 @@ export default function ShowDetailClientPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-            params: { path: { torrent_id: id } },
-          }),
-        ),
+      const { ok, failed } = await bulkMutate(ids, (id) =>
+        apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
+          params: { path: { torrent_id: id } },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} paused`);
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} paused`);
+      } else if (ok === 0) {
+        toast.error("Failed to pause some torrents");
+      } else {
+        toast.warning(`${ok} paused, ${failed} failed`);
+      }
       await invalidateAll();
     } catch {
       toast.error("Failed to pause some torrents");
@@ -472,14 +487,18 @@ export default function ShowDetailClientPage() {
     if (!ids.length) return;
     setBulkWorking(true);
     try {
-      await Promise.all(
-        ids.map((id) =>
-          apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-            params: { path: { torrent_id: id } },
-          }),
-        ),
+      const { ok, failed } = await bulkMutate(ids, (id) =>
+        apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
+          params: { path: { torrent_id: id } },
+        }),
       );
-      toast.success(`${ids.length} torrent${ids.length !== 1 ? "s" : ""} resumed`);
+      if (failed === 0) {
+        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} resumed`);
+      } else if (ok === 0) {
+        toast.error("Failed to resume some torrents");
+      } else {
+        toast.warning(`${ok} resumed, ${failed} failed`);
+      }
       await invalidateAll();
     } catch {
       toast.error("Failed to resume some torrents");
@@ -495,15 +514,11 @@ export default function ShowDetailClientPage() {
     if (!allSelectedEpisodes.length) return;
     setBulkWorking(true);
     try {
-      const results = await Promise.all(
-        allSelectedEpisodes.map((id) =>
-          apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
-            params: { path: { episode_id: id }, query: { skipped } },
-          }),
-        ),
+      const { ok, failed } = await bulkMutate(allSelectedEpisodes, (id) =>
+        apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
+          params: { path: { episode_id: id }, query: { skipped } },
+        }),
       );
-      const failed = results.filter((r) => r.error).length;
-      const ok = results.length - failed;
       if (ok > 0) {
         toast.success(
           skipped
@@ -524,33 +539,36 @@ export default function ShowDetailClientPage() {
   async function bulkDeleteFiles() {
     if (!selectedFiles.size) return;
     setBulkWorking(true);
-    const count = selectedFiles.size;
     try {
-      await Promise.all(
-        [...selectedFiles].map((key) => {
-          if (key.startsWith("file:")) {
-            const fileId = key.slice(5);
-            return apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
-              params: {
-                path: { file_id: fileId },
-                query: { delete_from_disk: true },
-              },
-            });
-          }
-          // subtitle key: `<episodeId>:sub:<fileName>`
-          const colonIdx = key.indexOf(":");
-          const episodeId = key.slice(0, colonIdx);
-          const fileName = key.slice(colonIdx + 1).replace(/^sub:/, "");
-          return apiClient.DELETE("/api/v1/subtitles/episodes/{episode_id}/files", {
+      const { ok, failed, failedItems } = await bulkMutate([...selectedFiles], (key) => {
+        if (key.startsWith("file:")) {
+          const fileId = key.slice(5);
+          return apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
             params: {
-              path: { episode_id: episodeId },
-              query: { file_name: fileName },
+              path: { file_id: fileId },
+              query: { delete_from_disk: true },
             },
           });
-        }),
-      );
-      toast.success(`${count} file${count !== 1 ? "s" : ""} deleted`);
-      setSelectedFiles(new Set());
+        }
+        // subtitle key: `<episodeId>:sub:<fileName>`
+        const colonIdx = key.indexOf(":");
+        const episodeId = key.slice(0, colonIdx);
+        const fileName = key.slice(colonIdx + 1).replace(/^sub:/, "");
+        return apiClient.DELETE("/api/v1/subtitles/episodes/{episode_id}/files", {
+          params: {
+            path: { episode_id: episodeId },
+            query: { file_name: fileName },
+          },
+        });
+      });
+      if (failed === 0) {
+        toast.success(`${ok} file${ok !== 1 ? "s" : ""} deleted`);
+      } else if (ok === 0) {
+        toast.error("Failed to delete some files");
+      } else {
+        toast.warning(`${ok} deleted, ${failed} failed`);
+      }
+      setSelectedFiles(new Set(failedItems));
       await Promise.all([invalidateSeasonFiles(), invalidateAll()]);
     } finally {
       setBulkWorking(false);
@@ -621,17 +639,19 @@ export default function ShowDetailClientPage() {
           params: { path: { episode_id: t.episodeId }, query: { skipped: true } },
         });
         const files = getEpisodeFiles(t.seasonId, t.episodeId);
-        await Promise.all(
-          files.map((f) =>
-            apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
-              params: {
-                path: { file_id: f.id! },
-                query: { delete_from_disk: true },
-              },
-            }),
-          ),
+        const { failed } = await bulkMutate(files, (f) =>
+          apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
+            params: {
+              path: { file_id: f.id! },
+              query: { delete_from_disk: true },
+            },
+          }),
         );
-        toast.success("Episode files deleted and marked as skipped");
+        if (failed > 0) {
+          toast.error(`${failed} episode file${failed === 1 ? "" : "s"} could not be deleted`);
+        } else {
+          toast.success("Episode files deleted and marked as skipped");
+        }
         await Promise.all([invalidateSeasonFiles(t.seasonId), invalidateAll()]);
       } else if (t.type === "season") {
         const { response } = await apiClient.DELETE("/api/v1/seasons/{season_id}", {

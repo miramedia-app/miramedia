@@ -34,6 +34,24 @@ import { Callout } from "fumadocs-ui/components/callout";
 - If `misc.cleanup_after_import` is on (default), a fully-imported torrent is
   removed from the client with its data.
 
+## Archives inside downloads
+
+Releases that ship the video inside an archive are unpacked before matching.
+Extraction never writes straight into a library or download folder: entries
+are validated in a restricted staging area (path containment, regular files
+only, entry/size limits — 10,000 entries, 50 GiB expanded) and only then
+published into a digest-named container next to the archive.
+
+| Format                                              | Handling            |
+| --------------------------------------------------- | ------------------- |
+| `zip`, `tar`, `tar.gz`, `tar.bz2`, `gzip`, `bzip2`  | Extracted           |
+| `rar`, `7z`, `freearc`, `tar.xz`, zip64             | Skipped (fail-closed) |
+
+Unsupported formats are logged as a `WARNING` and the rest of the download
+still imports. Only bounded stdlib parsers are used — `rar`/`7z` need
+unvetted external binaries, and `tar.xz`/zip64 cannot be safely preflighted.
+If a release only ships as `.rar`, grab a different release.
+
 ## Integrity audit (optional)
 
 Off by default. When `misc.integrity_check_enabled` is on, every newly

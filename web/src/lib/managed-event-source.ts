@@ -8,7 +8,9 @@
  *    stalled-error state with a timer so a truly-dead server can't hang forever.
  *  - `onDone` is invoked at most once, with the terminal outcome.
  *  - `close()` is idempotent and tears down without firing `onDone` (a
- *    user-/caller-initiated abort is not a terminal stream outcome).
+ *    user-/caller-initiated abort is not a terminal stream outcome). Callers
+ *    that need to settle pending state on an abort use `onAbort`, which fires
+ *    only on that branch — never for a terminal outcome.
  *
  * Named SSE events (`addEventListener("results", …)`) are supported via the
  * `events` map; plain `message` events via `onMessage`. A normal end-of-stream
@@ -33,13 +35,19 @@ export interface ManagedEventSourceOptions {
   doneEvent?: string;
   /** Invoked at most once with the terminal outcome. Not called on `close()`. */
   onDone?: (outcome: ManagedEventSourceOutcome) => void;
+  /**
+   * Invoked at most once, from a caller-initiated `close()` that actually tore
+   * the stream down. Never invoked for a terminal outcome (that is `onDone`),
+   * and never after `onDone` has fired for the same handle.
+   */
+  onAbort?: () => void;
   /** Cap (ms) on the stalled-error state before reporting `"timeout"`. */
   timeoutMs?: number;
   withCredentials?: boolean;
 }
 
 export interface ManagedEventSource {
-  /** Idempotent teardown. Does not fire `onDone`. */
+  /** Idempotent teardown. Does not fire `onDone`; fires `onAbort` once. */
   close: () => void;
 }
 
@@ -47,7 +55,7 @@ export function createManagedEventSource(
   url: string,
   opts: ManagedEventSourceOptions,
 ): ManagedEventSource {
-  const { events, onMessage, doneEvent, onDone, timeoutMs, withCredentials } = opts;
+  const { events, onMessage, doneEvent, onDone, onAbort, timeoutMs, withCredentials } = opts;
 
   const es = new EventSource(url, { withCredentials: withCredentials ?? false });
 
@@ -61,8 +69,17 @@ export function createManagedEventSource(
     }
   };
 
+  // Registered named-event listeners, so teardown can detach them. `es.close()`
+  // alone stops delivery in a real browser, but detaching keeps the handle from
+  // pinning caller closures (and the state they capture) alive after teardown.
+  const registered: Array<[string, EventListener]> = [];
+
   const teardown = () => {
     clearErrorTimer();
+    for (const [name, handler] of registered) es.removeEventListener(name, handler);
+    registered.length = 0;
+    es.onmessage = null;
+    es.onerror = null;
     es.close();
   };
 
@@ -76,14 +93,19 @@ export function createManagedEventSource(
 
   if (onMessage) es.onmessage = onMessage;
 
+  const listen = (name: string, handler: EventListener) => {
+    es.addEventListener(name, handler);
+    registered.push([name, handler]);
+  };
+
   if (events) {
     for (const [name, handler] of Object.entries(events)) {
-      es.addEventListener(name, handler as EventListener);
+      listen(name, handler as EventListener);
     }
   }
 
   if (doneEvent) {
-    es.addEventListener(doneEvent, () => complete("completed"));
+    listen(doneEvent, () => complete("completed"));
   }
 
   es.onerror = () => {
@@ -100,9 +122,11 @@ export function createManagedEventSource(
     close: () => {
       if (done) return;
       // Mark terminal so a later `done`/`onerror` can't fire `onDone` after a
-      // caller-initiated abort.
+      // caller-initiated abort. The same flag guarantees `onAbort` fires at
+      // most once, and never once `onDone` has already fired.
       done = true;
       teardown();
+      onAbort?.();
     },
   };
 }

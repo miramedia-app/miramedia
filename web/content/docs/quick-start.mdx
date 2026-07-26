@@ -49,8 +49,12 @@ openssl rand -hex 32
 
 <Callout type="warn">
 
-If `token_secret` is left at the placeholder (or unset), every restart
-invalidates all sessions. Set a stable random value.
+The Docker entrypoint generates a `token_secret` for you if the shipped
+placeholder is still in the file, so you won't be locked out by skipping this.
+Setting your own is still the right move — it's the one value you want to keep
+across config rebuilds, and outside Docker a placeholder aborts startup. If no
+usable secret exists at all, one is generated per process and every restart
+invalidates all sessions.
 
 </Callout>
 

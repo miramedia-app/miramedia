@@ -81,6 +81,12 @@ class Movie(Base):
     # Denormalized: any imported movie_file row (refreshed on import/delete).
     downloaded: Mapped[bool] = mapped_column(default=False, index=True)
 
+    movie_files: Mapped[list["MovieFile"]] = relationship(
+        "MovieFile",
+        back_populates="movie",
+        cascade="all, delete",
+    )
+
 
 class MovieFile(Base):
     __tablename__ = "movie_file"
@@ -138,3 +144,4 @@ class MovieFile(Base):
     sha1: Mapped[str | None] = mapped_column(default=None, nullable=True)
 
     torrent = relationship("Torrent", back_populates="movie_files", uselist=False)
+    movie: Mapped["Movie"] = relationship("Movie", back_populates="movie_files")

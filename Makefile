@@ -15,7 +15,7 @@ FRONTEND_SVC ?= web
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
 	lint format format-check ty test integration-test migration-head-audit check audit \
 	frontend-bootstrap frontend-generate \
-	tsc frontend-build frontend-test frontend-lint
+	tsc frontend-build frontend-test frontend-lint plans-link
 
 help:
 	@echo "Usage:"
@@ -39,6 +39,7 @@ help:
 	@echo "  make tsc                    # Type-check the Next.js frontend"
 	@echo "  make frontend-test          # Run the frontend unit tests (vitest, no backend/browser)"
 	@echo "  make frontend-lint          # Frontend lint + format check (oxlint, oxfmt --check)"
+	@echo "  make plans-link             # Symlink the shared (untracked) plans/ dir into this worktree"
 
 # Core lifecycle
 up:
@@ -115,9 +116,11 @@ frontend-bootstrap:
 audit:
 	@uv export --locked --no-dev --format requirements-txt > /tmp/req.txt
 	@uvx pip-audit --strict -r /tmp/req.txt --disable-pip
+	@cd web && pnpm audit --audit-level high
 
-# CI parity minus OpenAPI/api.d.ts drift checks (those are PR-only in ci.yml).
-check: lint format-check ty test tsc
+# CI parity minus OpenAPI/api.d.ts drift checks (PR-only in ci.yml) and the
+# frontend production build (slow; typecheck covers most build breaks).
+check: lint format-check ty test tsc frontend-test frontend-lint
 
 # Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
 # collections + Next type declarations, and nothing here runs `next build`, so
@@ -150,3 +153,12 @@ integration-test:
 
 migration-head-audit:
 	@uv run --python 3.13 python scripts/migration_head_audit.py
+
+# plans/ is untracked but lives in the shared .git common dir, so every worktree
+# can see the same files via a symlink. Run once per fresh worktree.
+plans-link:
+	@target="$$(git rev-parse --path-format=absolute --git-common-dir)/plans"; \
+	mkdir -p "$$target"; \
+	if [ -L plans ] || [ ! -e plans ]; then ln -sfn "$$target" plans; \
+	else echo "plans/ exists as a real directory here; move or remove it first" >&2; exit 1; fi
+	@echo "plans -> $$(readlink plans)"

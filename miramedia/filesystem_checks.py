@@ -41,7 +41,10 @@ def run_filesystem_checks(config: MiraMediaConfig, log: Logger) -> None:
         log.exception("Hardlink creation failed, falling back to copying files")
         shutil.copy(src=test_torrent_file, dst=test_hardlink)
     finally:
-        test_hardlink.unlink()
-        test_torrent_file.unlink()
-        torrent_dir.rmdir()
-        test_dir.rmdir()
+        test_hardlink.unlink(missing_ok=True)
+        test_torrent_file.unlink(missing_ok=True)
+        for leftover in (torrent_dir, test_dir):
+            try:
+                leftover.rmdir()
+            except OSError:
+                log.warning("Could not remove preflight test dir %s", leftover)

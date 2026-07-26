@@ -28,6 +28,14 @@ automatically — including new episodes as they air.
 - Per show it skips when there are already active downloads, caps the number
   of simultaneous downloads, and prefers season packs when most of a season
   is missing.
+- **Season 0 specials are excluded by default.** While
+  `misc.download_specials` is `false`, specials are marked **skipped** when a
+  show (or a newly aired season 0) is added, so they read as skipped rather
+  than missing and the sweep ignores them. The stored flag is the source of
+  truth — mark an individual special **wanted** and it stays wanted. Turning
+  the setting on affects shows/seasons added from then on; existing skipped
+  specials stay skipped until you un-skip them. Manual downloads work either
+  way.
 
 <Callout type="info">
 

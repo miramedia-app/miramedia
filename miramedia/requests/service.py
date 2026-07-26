@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import UUID
 
@@ -38,9 +39,9 @@ async def _resolve_imdb_id(
         return None
     try:
         if media_type == MediaType.movie:
-            movie = provider.get_movie_metadata(external_id)
+            movie = await asyncio.to_thread(provider.get_movie_metadata, external_id)
             return movie.imdb_id
-        show = provider.get_show_metadata(external_id)
+        show = await asyncio.to_thread(provider.get_show_metadata, external_id)
     except Exception:
         log.warning(
             "Failed to resolve IMDb ID for %s external_id=%s via provider=%s",

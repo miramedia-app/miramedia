@@ -10,10 +10,24 @@ default; OpenID Connect can be enabled alongside it.
 
 ## Settings (`[auth]`)
 
-- `token_secret` — secret key for signing sessions. Generate with
-  `openssl rand -hex 32`. If unset, a random value is generated **per
-  process**, so every restart logs everyone out — always set a stable value.
+- `token_secret` — secret key for signing sessions. Must be at least 32
+  characters; generate one with `openssl rand -hex 32`.
+  - **Omitted entirely** — a random secret is generated per process and a
+    warning is logged. Sessions do not survive a restart and replicas do not
+    share them.
+  - **Left at the `CHANGE_ME_GENERATE_RANDOM_STRING` placeholder or shorter
+    than 32 characters** — startup **fails**. The Docker entrypoint heals
+    this for you by rewriting the placeholder in `config.toml` with a
+    generated secret on boot; a bare-metal run does not. Set
+    `MIRAMEDIA_ALLOW_INSECURE_TOKEN_SECRET=1` to downgrade the error to a
+    warning and run with an ephemeral secret instead.
 - `session_lifetime` — session length in seconds. Default `86400` (1 day).
+  Must be between 1 second and 366 days; anything else is rejected at
+  startup.
+- `cookie_secure` — force the `Secure` flag on the session cookie. Default
+  is auto: `true` when `misc.frontend_url` is `https`. Set it explicitly only
+  when the browser-visible scheme differs from `frontend_url` (e.g. a
+  TLS-terminating proxy in front of an `http` URL).
 - `email_password_resets` — enable emailed password-reset links. Default
   `false`. Requires SMTP (see [Notifications](notifications)).
 - `admin_emails` — _deprecated._ A list of emails that are auto-promoted to

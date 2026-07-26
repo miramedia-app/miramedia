@@ -119,7 +119,7 @@ docker-compose.override.yml
 .claude/
 .aider*
 skills-lock.json
-plans/
+plans
 
 # ---- Misc ----
 *.bak

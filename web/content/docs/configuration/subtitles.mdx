@@ -62,11 +62,54 @@ load — but you should delete them. Use `opensubtitlescom` instead.
 
 ## Bazarr (`[subtitles.bazarr]`)
 
-Optional external integration, an alternative to native search.
+Optional external integration — an alternative to native search. MiraMedia
+**impersonates Sonarr and Radarr read-only** via a compatibility shim
+(`/sonarr` and `/radarr` on your MiraMedia origin). Bazarr syncs your library
+through that shim, downloads subtitle files to disk, and MiraMedia's subtitle
+status reads the filesystem so downloads appear automatically after the next
+status scan.
+
+When MiraMedia imports a video file, it pushes Bazarr's inbound Sonarr/Radarr
+**Download** webhook so Bazarr searches immediately instead of waiting for its
+next periodic sync.
+
+### Settings
 
 - `enabled` — default `false`.
-- `url`
-- `api_key`
+- `url` — Bazarr's own base URL (outbound from MiraMedia to Bazarr).
+- `api_key` — Bazarr's API key (outbound).
+- `shim_api_key` — API key Bazarr uses when calling MiraMedia's shim. Set this
+  in MiraMedia, then paste the same value into Bazarr's Sonarr/Radarr
+  connection settings.
+
+### Setup in Bazarr
+
+1. Enable `[subtitles.bazarr]` in MiraMedia and set `shim_api_key` (generate a
+   random hex string).
+2. In Bazarr, add a **Sonarr** instance with URL
+   `<your-miramedia-origin>/sonarr` and API key = `shim_api_key`.
+3. Add a **Radarr** instance with URL `<your-miramedia-origin>/radarr` and the
+   same shim key.
+4. Set `url` and `api_key` in MiraMedia to Bazarr's address and API key so
+   import webhooks can reach Bazarr.
+5. Configure subtitle providers and language profiles in Bazarr as usual.
+
+Use the **Test** button in MiraMedia Settings → Subtitles to verify outbound
+connectivity to Bazarr.
+
+### Mount parity
+
+Bazarr must see your media files at the **same paths** MiraMedia reports
+through the shim (or configure equivalent path mappings in Bazarr). If paths
+differ, Bazarr cannot write subtitle files next to the video and MiraMedia
+will not detect them.
+
+### SignalR log noise
+
+Bazarr logs periodic SignalR reconnect attempts against Sonarr/Radarr. The
+shim does not implement SignalR — this is harmless. Library sync is driven by
+Bazarr's periodic tasks plus the instant **Download** webhooks MiraMedia sends
+on import.
 
 ## Example
 
@@ -98,8 +141,9 @@ api_key = ""
 
 [subtitles.bazarr]
 enabled = false
-url = ""
+url = "http://localhost:6767"
 api_key = ""
+shim_api_key = ""
 ```
 
 Subtitle language badges appear on movie and season detail pages. Subtitles

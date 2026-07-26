@@ -46,6 +46,7 @@ from miramedia.shows.models import (  # noqa: E402
     Season,
     Show,
 )
+from miramedia.subtitles.arr_ids import ArrIdMap  # noqa: E402, F401
 from miramedia.subtitles.models import SubtitleRecord  # noqa: E402, F401
 from miramedia.torrents.models import (  # noqa: E402, F401
     ManualParseToken,

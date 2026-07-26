@@ -8,11 +8,12 @@ import os
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from starlette.responses import FileResponse
 
+from miramedia.auth.users import current_active_user, current_superuser
 from miramedia.config import MiraMediaConfig
 from miramedia.database import DbSessionDependency
 
@@ -40,18 +41,7 @@ def _get_expected_alembic_head() -> str | None:
     return _EXPECTED_ALEMBIC_HEAD
 
 
-@router.get("/health")
-async def hello_world() -> dict:
-    """Healthcheck must never raise — partial degradation is reported via
-    per-section ``.ok`` flags so the docker compose healthcheck does not flap
-    when an optional subsystem (cache, pool) is temporarily unavailable.
-
-    DB pings use a dedicated ``NullPool`` engine so a saturated request /
-    background pool cannot stall the liveness probe. Both real pools' stats
-    are reported. An ``alembic`` section flags head-mismatch (deployed app
-    expects revision X but DB is at Y) which would otherwise silently
-    surface as ``UndefinedColumn`` errors on the first hot path.
-    """
+async def _detailed_health() -> dict:
     payload: dict = {
         "status": "ok",
         "version": os.getenv("PUBLIC_VERSION"),
@@ -89,7 +79,8 @@ async def hello_world() -> dict:
                     "overflow": p.overflow(),
                 }
             except Exception as exc:
-                pools[name] = {"error": str(exc)}
+                log.warning("health check section failed", exc_info=exc)
+                pools[name] = {"error": "unavailable"}
         db_section["pools"] = pools
 
         # Refresh pool gauges for the /metrics endpoint while we're here —
@@ -100,7 +91,8 @@ async def hello_world() -> dict:
         except Exception:  # noqa: S110 — best-effort gauge refresh, non-fatal
             pass
     except Exception as exc:
-        db_section = {"ok": False, "error": str(exc)}
+        log.warning("health check section failed", exc_info=exc)
+        db_section = {"ok": False, "error": "unavailable"}
     payload["db"] = db_section
 
     # Alembic head vs DB head — divergence means the deployed image expects a
@@ -123,7 +115,8 @@ async def hello_world() -> dict:
             "current_revision": current,
         }
     except Exception as exc:
-        alembic_section = {"ok": False, "error": str(exc)}
+        log.warning("health check section failed", exc_info=exc)
+        alembic_section = {"ok": False, "error": "unavailable"}
     payload["alembic"] = alembic_section
 
     # Metadata cache stats — uses get_all_cache_stats() from the cache module.
@@ -146,10 +139,44 @@ async def hello_world() -> dict:
             },
         }
     except Exception as exc:
-        cache_section = {"ok": False, "error": str(exc)}
+        log.warning("health check section failed", exc_info=exc)
+        cache_section = {"ok": False, "error": "unavailable"}
     payload["cache"] = cache_section
 
     return payload
+
+
+@router.get("/health")
+async def hello_world() -> dict:
+    """Healthcheck must never raise — partial degradation is reported via
+    per-section ``.ok`` flags so the docker compose healthcheck does not flap
+    when an optional subsystem (cache, pool) is temporarily unavailable.
+
+    DB pings use a dedicated ``NullPool`` engine so a saturated request /
+    background pool cannot stall the liveness probe. Both real pools' stats
+    are reported. An ``alembic`` section flags head-mismatch (deployed app
+    expects revision X but DB is at Y) which would otherwise silently
+    surface as ``UndefinedColumn`` errors on the first hot path.
+
+    Anonymous callers receive liveness plus per-section ``ok`` booleans only;
+    use ``GET /health/details`` (superuser) for the full diagnostic payload.
+    """
+    detailed = await _detailed_health()
+    return {
+        "status": detailed["status"],
+        "db": {"ok": detailed["db"]["ok"]},
+        "alembic": {"ok": detailed["alembic"]["ok"]},
+        "cache": {"ok": detailed["cache"]["ok"]},
+    }
+
+
+@router.get(
+    "/health/details",
+    dependencies=[Depends(current_superuser)],
+)
+async def health_details() -> dict:
+    """Full health diagnostics for operators (superuser only)."""
+    return await _detailed_health()
 
 
 class FeatureFlags(BaseModel):
@@ -176,7 +203,10 @@ class DashboardSummary(BaseModel):
     imports_ambiguous: int = 0
 
 
-@router.get("/dashboard/summary")
+@router.get(
+    "/dashboard/summary",
+    dependencies=[Depends(current_active_user)],
+)
 async def get_dashboard_summary(db: DbSessionDependency) -> DashboardSummary:
     """One cheap dashboard-count read instead of several parallel requests."""
     from miramedia.file_status import ImportOutcome
@@ -237,7 +267,12 @@ async def serve_image(
     filename: str,
     w: Annotated[int | None, Query(ge=64, le=1200)] = None,
 ) -> FileResponse:
-    file_path = config.misc.image_directory / filename
+    base = config.misc.image_directory.resolve()
+    file_path = (config.misc.image_directory / filename).resolve()
+    if not file_path.is_relative_to(base):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Image not found"
+        )
     if not file_path.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Image not found"

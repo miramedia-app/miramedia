@@ -97,10 +97,65 @@ def test_import_file_overwrite_false_raises_conflict(tmp_path: Path) -> None:
     src = tmp_path / "source.mkv"
     src.write_bytes(b"content")
     dst = tmp_path / "target.mkv"
-    dst.write_bytes(b"something else entirely")  # different size, different content
+    original_bytes = b"something else entirely"
+    dst.write_bytes(original_bytes)  # different size, different content
 
     with pytest.raises(ImportConflictError):
         import_file(dst, src, overwrite=False)
+
+    assert dst.read_bytes() == original_bytes
+
+
+def test_import_file_copy_failure_preserves_existing_target(tmp_path: Path) -> None:
+    """When publish fails, an existing target must survive with its original bytes."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"new source content here")
+    dst = tmp_path / "target.mkv"
+    original_bytes = b"old target"
+    dst.write_bytes(original_bytes)
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with (
+        patch.object(Path, "hardlink_to", _failing_hardlink),
+        patch("miramedia.imports.files.shutil.copy", side_effect=OSError("disk full")),
+    ):
+        with pytest.raises(DiskSpaceError):
+            import_file(dst, src, overwrite=True)
+
+    assert dst.read_bytes() == original_bytes
+    assert not (tmp_path / "target.mkv.mmpart").exists()
+
+
+def test_import_file_copy_fallback_replaces_existing_target(tmp_path: Path) -> None:
+    """Hardlink failure with overwrite=True falls back to copy; target replaced, no .mmpart."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"copy fallback content")
+    dst = tmp_path / "target.mkv"
+    dst.write_bytes(b"old")  # different size -> bypass idempotency short-circuits
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with patch.object(Path, "hardlink_to", _failing_hardlink):
+        import_file(dst, src, overwrite=True)
+
+    assert dst.read_bytes() == b"copy fallback content"
+    assert not (tmp_path / "target.mkv.mmpart").exists()
+
+
+def test_import_file_hardlink_replace_leaves_no_mmpart(tmp_path: Path) -> None:
+    """Successful hardlink publish replaces target atomically; no .mmpart left behind."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"new longer content here")
+    dst = tmp_path / "target.mkv"
+    dst.write_bytes(b"old")
+
+    import_file(dst, src, overwrite=True)
+
+    assert dst.stat().st_ino == src.stat().st_ino
+    assert not (tmp_path / "target.mkv.mmpart").exists()
 
 
 def test_import_file_copy_fallback_on_oserror(tmp_path: Path) -> None:

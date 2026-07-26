@@ -242,7 +242,7 @@ def publish_staging_tree(
         dir_fd=parent_fd,
     )
     private_stat = os.fstat(private_fd)
-    published = False
+    container_installed = False
     installed_staging = False
     payload_verified = False
     digest = ""
@@ -277,7 +277,6 @@ def publish_staging_tree(
         if existing_fd is not None:
             try:
                 if _published_container_matches(existing_fd, digest):
-                    published = True
                     return container_path
             finally:
                 os.close(existing_fd)
@@ -291,12 +290,12 @@ def publish_staging_tree(
                 destination_fd,
                 container_name,
             )
+            container_installed = True
         except FileExistsError as exc:
             raced_fd = _try_open_container(destination_fd, container_name)
             if raced_fd is not None:
                 try:
                     if _published_container_matches(raced_fd, digest):
-                        published = True
                         return container_path
                 finally:
                     os.close(raced_fd)
@@ -318,7 +317,6 @@ def publish_staging_tree(
             )
         finally:
             os.close(published_fd)
-        published = True
         return container_path
     finally:
         # Re-stat through the still-open fd: installing the payload and the
@@ -326,7 +324,7 @@ def publish_staging_tree(
         # would read as a replacement to same_inode_generation().
         current_private_stat = os.fstat(private_fd)
         os.close(private_fd)
-        if not published:
+        if not container_installed:
             allow_recursive_cleanup = (not installed_staging) or payload_verified
             quarantine_owned_directory(
                 parent_fd,

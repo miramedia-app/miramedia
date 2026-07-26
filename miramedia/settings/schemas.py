@@ -349,6 +349,7 @@ class BazarrSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     url: str | None = None
     api_key: str | None = None
+    shim_api_key: str | None = None
 
 
 class SubtitleSettingsSchema(SettingsSectionSchema):

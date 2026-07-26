@@ -36,8 +36,10 @@ non-device almost everywhere, regardless of IP. The fix is a browser with a
 default `:latest` tag ships **without** Chromium. The `native` solver therefore
 needs one of:
 
-- the **`-cf` image variant** (`ghcr.io/miramedia-app/miramedia:latest-cf`),
-  which bundles Chromium + Xvfb + fonts, **or**
+- the **`-cf` image variant**, which is its own repository —
+  `ghcr.io/miramedia-app/miramedia-cf:<version>` (e.g. `:1.0.12`). It bundles
+  Chromium + Xvfb + fonts. Note there is **no `latest` tag** on the `-cf`
+  repo; pin a version. **or**
 - an explicit `browser_path` to a Chrome/Chromium already on the host, **or**
 - an **external solver** (`remote`/`byparr`/`flaresolverr`/`browser_run`/
   `firecrawl`) — none of which need a local Chromium, so they run fine on slim.
@@ -189,7 +191,8 @@ solve_timeout_seconds = 180
 
 <Callout type="info">
 
-The **`-cf`** image variant (`...:latest-cf`) bundles Chromium and the Xvfb
+The **`-cf`** image variant (`ghcr.io/miramedia-app/miramedia-cf:<version>`)
+bundles Chromium and the Xvfb
 display server, so the `native` solver works with no extra setup. The default
 slim image does not — use `-cf`, an external solver, or a custom image with
 Chromium + Xvfb present.

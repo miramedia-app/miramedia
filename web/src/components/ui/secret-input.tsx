@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
 type Props = {
+  id?: string;
   value: string | null | undefined;
   onValueChange?: (value: string) => void;
   placeholder?: string;
@@ -14,6 +15,7 @@ type Props = {
 };
 
 export function SecretInput({
+  id,
   value,
   onValueChange,
   placeholder = "Not set",
@@ -24,6 +26,7 @@ export function SecretInput({
   return (
     <div className={cn("relative", className)}>
       <Input
+        id={id}
         type={revealed ? "text" : "password"}
         value={value ?? ""}
         onChange={(e) => onValueChange?.(e.target.value)}

@@ -3,6 +3,8 @@
 .gitignore
 .gitattributes
 .github
+# Symlink into .git/plans — would land in the image dangling.
+plans
 
 # Editor / IDE
 .vscode

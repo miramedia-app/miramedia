@@ -16,7 +16,15 @@ flow, how often background jobs run, and how files and folders are named.
 - `cors_urls` — list of origins allowed to call the API. No trailing slashes.
   Only matters when the UI is served from a different origin than the API
   (e.g. local development).
-- `development` — development mode toggle. Default `false`.
+- `trusted_proxy_hosts` — hosts allowed to set `X-Forwarded-*`. Defaults to
+  loopback plus the private ranges (`127.0.0.1`, `::1`, `10.0.0.0/8`,
+  `172.16.0.0/12`, `192.168.0.0/16`), so a direct client cannot spoof the
+  forwarded scheme/host. Set to `"*"` to trust every proxy (old behaviour —
+  not recommended when the app is reachable from the internet). Widen it if
+  your reverse proxy sits outside those ranges and OAuth redirects or
+  generated links come out with the wrong scheme.
+- `development` — development mode toggle. Default `false`. Also lowers the
+  root log level to `DEBUG`.
 
 ## Media directories
 
@@ -46,6 +54,9 @@ imports fall back to copying and may fail on disk space.
   individually (`null` = follow the global default).
 - `auto_download_interval_hours` — how often the continuous-download job runs.
   Default `1`.
+- `download_specials` — include Season 0 specials in automatic downloads.
+  Default `false`. While off, specials are surfaced as **skipped** and left
+  out of the sweep; you can still download them by hand.
 
 ## Integrity check (optional)
 
@@ -58,11 +69,24 @@ imports fall back to copying and may fail on disk space.
 - `auto_pick_confidence_threshold` — on **Imports**, when the top
   candidate's match confidence is above this, it's highlighted as the primary
   pick. Default `0.8`.
+- `import_sweep_interval_minutes` — how often the background sweep imports
+  finished downloads. Default `5`. Manual imports are unaffected.
 
-## Log retention
+Library-scan behaviour lives in its own section — see [Imports](imports).
+
+## Retention
 
 - `log_retention_days` — database log rows older than this are pruned daily.
   Default `30`. See [Logging](logging).
+- `indexer_query_result_retention_days` — cached indexer search rows older
+  than this are purged by a nightly job. Default `7`.
+
+## Metrics
+
+- `metrics_public` — when `true`, `GET /api/v1/metrics` (Prometheus) is
+  readable without authentication. Default `false` — only superusers may
+  scrape. Turn it on only if the endpoint is firewalled from end users. See
+  [Performance Tuning](../advanced-features/performance#observability).
 
 ## Naming templates (`[misc.naming]`)
 

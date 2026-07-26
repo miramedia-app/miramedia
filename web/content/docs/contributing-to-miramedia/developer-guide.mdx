@@ -11,6 +11,37 @@ import { Callout } from "fumadocs-ui/components/callout";
 - `web/`: Frontend Next.js application (React 19, Tailwind v4, shadcn/ui, static export SPA)
 - `web/content/docs/`: This documentation (Fumadocs MDX)
 - `alembic/`: Database migrations
+- `tests/`: Backend test suite (`tests/integration/` holds the Postgres-only suites)
+
+The backend is split per domain — `shows`, `movies`, `torrents`, `indexers`,
+`imports`, `streams`, `subtitles`, `metadata`, `auth`, `notifications`,
+`requests`, `logs`, `settings`, `updates` — each following a
+**router / service / repository** split and mounted under
+`/api/v1/{domain}/`. Pluggable providers live in a module's `backends/`
+(indexer backends, request backends, …); `indexers/sites/` holds the native
+scraper definitions.
+
+Shared pieces worth knowing:
+
+- `main.py` — app assembly and router wiring; `startup.py` — boot sequence.
+- `core/router.py` — health, feature flags, dashboard summary, static images.
+- `config.py` — pydantic-settings TOML loader; per-domain `config.py` modules
+  define each section's schema.
+- `settings/` — the DB-backed override layer behind **System → Settings**
+  (validation, compare-and-swap mutation, live reload).
+- `imports/` — the import pipeline: `files.py`, `matching.py`, the
+  `archive_*` modules (safe extraction/publication), and the queue.
+- `subtitles/arr_shim/` — the read-only Sonarr/Radarr compatibility surface
+  Bazarr talks to, mounted outside `/api/v1` at `/sonarr` and `/radarr`.
+- `scheduler.py` — taskiq scheduler; `observability/` and `ops/` — Web Vitals
+  ingest and operator endpoints.
+
+<Callout type="warn">
+
+A new SQLAlchemy model must be imported in `alembic/env.py`, or autogenerate
+won't see it.
+
+</Callout>
 
 ## Special Dev Configuration﻿
 
@@ -23,7 +54,9 @@ MiraMedia uses various environment variables for configuration. In the Docker de
 - `BASE_PATH`\
   Base path for the app (for subdirectory deployments).
 - `PUBLIC_VERSION`\
-  Version string displayed in `/api/v1/health`.
+  Version string reported by `GET /api/v1/system/version` and included in the
+  superuser `GET /api/v1/health/details` payload. Injected at image build from
+  the release tag; falls back to the packaged version when unset.
 - `FRONTEND_FILES_DIR`\
   Directory for built frontend files (e.g. `/app/web/build` in Docker).
 - `MIRAMEDIA_MISC__DEVELOPMENT`\
@@ -193,22 +226,40 @@ uv run alembic upgrade head
 ### Run the backend (development mode)
 
 ```bash
-uv run fastapi run miramedia/main.py --reload --port 8001
+uv run --python 3.13 fastapi run miramedia/main.py --reload --port 8001
 ```
 
-### Formatting & linting
+<Callout type="warn">
 
-- Format code:
+Always pass `--python 3.13` to `uv run`. The `libtorrent` wheel used by the
+native download client is published for cp313 only, so a newer interpreter
+breaks the install. CI pins `UV_PYTHON=3.13` for the same reason.
 
-```bash
-ruff format .
-```
+</Callout>
 
-- Lint code:
+### The quality gate
 
-```bash
-ruff check .
-```
+`make check` is the CI-parity target — run it before opening a PR. It chains:
+
+| Step             | Command                | Covers                                     |
+| ---------------- | ---------------------- | ------------------------------------------ |
+| `lint`           | `ruff check .`         | Backend lint                               |
+| `format-check`   | `ruff format --check`  | Backend formatting                         |
+| `ty`             | `ty`                   | Backend type check (config in `pyproject.toml` under `[tool.ty]`) |
+| `test`           | `pytest`               | Backend suite — **no live Postgres needed**; keep it that way |
+| `tsc`            | `pnpm typecheck`       | Frontend types                             |
+| `frontend-test`  | `vitest`               | Frontend unit tests (Node-only, no backend) |
+| `frontend-lint`  | ESLint + format check  | Frontend lint                              |
+
+Related targets:
+
+- `make format` — apply backend formatting.
+- `make openapi` — regenerate `web/src/lib/api/api.d.ts` from the backend
+  schema. Run it after **any** change to request/response shapes.
+- `make integration-test` — the PostgreSQL-backed suites, which `make test`
+  deliberately does not collect. Needs a live database.
+- `make migration-head-audit` — checks for divergent Alembic heads.
+- `make audit` — `pip-audit` over locked prod deps plus `pnpm audit`.
 
 ## Setting up the frontend development environment (Local, Optional)
 
@@ -247,6 +298,17 @@ Update `NEXT_PUBLIC_API_URL` if your backend is not at `http://localhost:8001`
 pnpm install
 pnpm dev
 ```
+
+<Callout type="warn">
+
+On a fresh clone `pnpm install --frozen-lockfile` is **not** enough: pnpm 10
+blocks postinstall scripts, so the Fumadocs collections (`web/.source`) and
+Next's type declarations are missing. Use `make frontend-bootstrap` (install +
+generate), or run `pnpm run generate` before typechecking. `pnpm build` and
+`pnpm run generate` each invoke `fumadocs-mdx` themselves — never wrap another
+generation step around them.
+
+</Callout>
 
 ### Format & lint
 
