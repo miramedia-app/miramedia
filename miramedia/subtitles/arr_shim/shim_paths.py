@@ -71,21 +71,30 @@ def rootfolder_payloads(roots: Sequence[Path]) -> list[dict[str, object]]:
     for index, root in enumerate(roots, start=1):
         accessible = False
         free_space = 0
+        path = str(root)
         try:
-            accessible = root.is_dir()
+            if root.is_dir():
+                accessible = True
+                path = str(root.resolve())
+                try:
+                    free_space = shutil.disk_usage(root).free
+                except OSError:
+                    free_space = 0
+            elif not root.exists():
+                # Missing-but-configured roots are created lazily on first
+                # import; reporting false makes Bazarr skip the whole library.
+                accessible = True
+                path = str(root)
+            else:
+                accessible = False
+                try:
+                    path = str(root.resolve())
+                except OSError:
+                    path = str(root)
         except OSError:
             accessible = False
-        if accessible:
-            path = str(root.resolve())
-            try:
-                free_space = shutil.disk_usage(root).free
-            except OSError:
-                free_space = 0
-        else:
-            try:
-                path = str(root.resolve()) if root.exists() else str(root)
-            except OSError:
-                path = str(root)
+            free_space = 0
+            path = str(root)
         payloads.append(
             {
                 "id": index,

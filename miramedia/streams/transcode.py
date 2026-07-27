@@ -214,15 +214,18 @@ async def ensure_hls_playlist(source: Path) -> Path:
             task = asyncio.create_task(_encode_hls(source))
             _inflight[key] = task
 
-    try:
-        # A waiter (playlist request) may be cancelled on client disconnect;
-        # shield so cancellation stays local to that waiter and never kills
-        # the shared encode other viewers / the warm task are awaiting.
-        await asyncio.shield(task)
-    finally:
-        async with _inflight_lock:
-            if _inflight.get(key) is task:
-                _inflight.pop(key, None)
+            def _cleanup(t: asyncio.Task[None], *, _key: str = key) -> None:
+                # Done-callbacks run on the loop; dict ops are atomic there, so
+                # no need to take the async lock (and we can't await here).
+                if _inflight.get(_key) is t:
+                    _inflight.pop(_key, None)
+
+            task.add_done_callback(_cleanup)
+
+    # A waiter (playlist request) may be cancelled on client disconnect;
+    # shield so cancellation stays local to that waiter and never kills
+    # the shared encode other viewers / the warm task are awaiting.
+    await asyncio.shield(task)
 
     playlist = segment_dir(source) / "index.m3u8"
     if not hls_playlist_ready(source):

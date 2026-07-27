@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,6 +18,32 @@ def test_import_sweep_lock_serializes_overlapping_acquisition() -> None:
             assert lock.locked() is True
             # Non-blocking check: second acquire would block; locked() is True.
             assert scheduler._import_sweep_lock("test-key") is lock
+
+    asyncio.run(run())
+
+
+def test_integrity_sweep_skips_when_lock_held() -> None:
+    async def run() -> None:
+        lock = scheduler._import_sweep_lock("integrity")
+        async with lock:
+            config = MagicMock()
+            config.misc.integrity_check_enabled = True
+
+            def _background_session_should_not_run() -> None:
+                msg = "integrity sweep should skip while lock is held"
+                raise AssertionError(msg)
+
+            with (
+                patch(
+                    "miramedia.config.MiraMediaConfig",
+                    return_value=config,
+                ),
+                patch(
+                    "miramedia.database.background_session",
+                    side_effect=_background_session_should_not_run,
+                ),
+            ):
+                await scheduler.verify_imported_files_task()
 
     asyncio.run(run())
 

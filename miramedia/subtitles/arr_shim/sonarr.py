@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
@@ -102,7 +103,7 @@ async def get_episode_file(
 
 @router.get("/rootfolder")
 async def list_rootfolders() -> list[dict[str, Any]]:
-    return sonarr_service.list_rootfolders()
+    return await asyncio.to_thread(sonarr_service.list_rootfolders)
 
 
 @router.get("/tag")

@@ -163,11 +163,11 @@ def test_has_file_true_emits_movie_file_id_and_movie_file() -> None:
     assert payload["movieFile"]["id"] == 9
 
 
-def test_rootfolder_inaccessible_when_path_missing() -> None:
+def test_rootfolder_accessible_when_path_missing() -> None:
     missing = Path("/nonexistent/rootfolder-test-path")
     payloads = shim_paths.rootfolder_payloads([missing])
     assert len(payloads) == 1
-    assert payloads[0]["accessible"] is False
+    assert payloads[0]["accessible"] is True
     assert payloads[0]["freeSpace"] == 0
 
 

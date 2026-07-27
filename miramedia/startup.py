@@ -206,6 +206,7 @@ def schedule_import_queue_warmup() -> None:
             from miramedia.imports.queue.sync import rebuild_import_queue
             from miramedia.imports.repository import (
                 STALE_QUEUED_IMPORT_GRACE,
+                STALLED_WORKER_GRACE,
                 ImportsRepository,
             )
             from miramedia.imports.service import ImportsService
@@ -221,17 +222,22 @@ def schedule_import_queue_warmup() -> None:
                                 show_service=show_service,
                                 movie_service=movie_service,
                             )
-                            # Only reclaim unstarted queued rows whose dispatch
-                            # timestamp is past the grace window.
-                            reclaimed = (
-                                await service.repository.reclaim_stale_queued_imports(
-                                    older_than=STALE_QUEUED_IMPORT_GRACE
-                                )
+                            repo = service.repository
+                            reclaimed = await repo.reclaim_stale_queued_imports(
+                                older_than=STALE_QUEUED_IMPORT_GRACE
+                            )
+                            stalled = await repo.reclaim_stalled_worker_imports(
+                                older_than=STALLED_WORKER_GRACE
                             )
                             if reclaimed:
                                 log.info(
                                     "Reclaimed %d orphaned queued import(s) on startup",
                                     reclaimed,
+                                )
+                            if stalled:
+                                log.info(
+                                    "Reclaimed %d stalled import worker row(s) on startup",
+                                    stalled,
                                 )
                             await rebuild_import_queue(db, service)
         except Exception:

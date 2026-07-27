@@ -2,6 +2,8 @@
 
 import * as React from "react";
 
+import { pruneSelection } from "./selection-utils";
+
 export interface ListSelectionState {
   selected: Set<string>;
   isSelected: (id: string) => boolean;
@@ -122,6 +124,23 @@ export function useListSelection({
   }, [allIds, ids, isDisabled]);
 
   const clear = React.useCallback(() => setSelected(new Set()), []);
+
+  // Keep the selection intersected with the current filtered id universe.
+  // Without this, "select all" over 500 filtered rows keeps reporting 500 in
+  // the toolbar after the filter narrows, while bulk actions only ever run on
+  // the rows still present — the count shown must equal the items acted on.
+  //
+  // `pruneSelection` returns null when nothing was dropped, so the state
+  // update is a no-op and the effect can safely re-run even if a consumer
+  // recreates `ids`/`allIds` every render (no update loop).
+  const universe = allIds ?? ids;
+  React.useEffect(() => {
+    // An empty universe is ambiguous: it also happens during the loading /
+    // empty-flash window before data arrives. Selection is cleared explicitly
+    // by the consumer's clear-on-filter paths in that case, so skip here.
+    if (universe.length === 0) return;
+    setSelected((prev) => pruneSelection(prev, universe) ?? prev);
+  }, [universe]);
 
   // Stable wrapper around `selected.has` — `selection.isSelected` retains
   // identity across renders so downstream useMemos (selectedItems, the

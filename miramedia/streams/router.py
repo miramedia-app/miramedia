@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import mimetypes
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
@@ -61,6 +62,9 @@ router = APIRouter(
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".webm", ".mov", ".m4v", ".ts", ".wmv"}
 SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".sub"}
 _VTT_CACHE: TTLCache = TTLCache(maxsize=512, ttl=3600)
+# TTLCache is not thread-safe and _convert_srt_to_vtt runs in to_thread
+# workers; guard every access (matches metadata/cache.py).
+_VTT_CACHE_LOCK = threading.Lock()
 _MAX_SRT_BYTES = 5 * 1024 * 1024
 
 FileIdQuery = Annotated[UUID, Query()]
@@ -614,13 +618,15 @@ def _convert_srt_to_vtt(srt_path: Path) -> str:
     if stat.st_size > _MAX_SRT_BYTES:
         raise HTTPException(status_code=413, detail="Subtitle file too large")
     cache_key = (str(srt_path), stat.st_mtime_ns, stat.st_size)
-    cached = _VTT_CACHE.get(cache_key)
+    with _VTT_CACHE_LOCK:
+        cached = _VTT_CACHE.get(cache_key)
     if cached is not None:
         return cached
     content = srt_path.read_text(encoding="utf-8", errors="replace")
     vtt = "WEBVTT\n\n"
     vtt += re.sub(r"(\d{2}:\d{2}:\d{2}),(\d{3})", r"\1.\2", content)
-    _VTT_CACHE[cache_key] = vtt
+    with _VTT_CACHE_LOCK:
+        _VTT_CACHE[cache_key] = vtt
     return vtt
 
 

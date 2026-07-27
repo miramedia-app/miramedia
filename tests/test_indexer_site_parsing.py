@@ -10,11 +10,12 @@ import json
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
+from urllib.parse import parse_qs, unquote, urlparse
 
 import pytest
 from selectolax.parser import HTMLParser
 
-from miramedia.indexers.sites.base import build_magnet
+from miramedia.indexers.sites.base import DEFAULT_TRACKERS, build_magnet
 from miramedia.indexers.sites.eztv import EztvSite
 from miramedia.indexers.sites.limetorrents import LimeTorrentsSite
 from miramedia.indexers.sites.nyaa import NyaaSite
@@ -25,6 +26,13 @@ from miramedia.indexers.sites.yts import YtsSite
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "indexer_sites"
 
+_VALID_HEX_HASH = "aabbccddeeff00112233445566778899aabbccdd"
+_VALID_BASE32_HASH = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+def _magnet_query_params(magnet: str) -> dict[str, list[str]]:
+    return parse_qs(urlparse(magnet).query)
+
 
 def _load_fixture(name: str) -> str:
     return (FIXTURES_DIR / name).read_text()
@@ -32,6 +40,76 @@ def _load_fixture(name: str) -> str:
 
 def _load_json_fixture(name: str) -> Any:
     return json.loads(_load_fixture(name))
+
+
+# ---------------------------------------------------------------------------
+# build_magnet — URL-encode dn and validate info hashes
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMagnet:
+    def test_dn_encoding_blocks_injected_tracker_params(self) -> None:
+        title = "Release &tr=udp://evil.example:80/announce"
+        magnet = build_magnet(_VALID_HEX_HASH, title)
+        params = _magnet_query_params(magnet)
+
+        assert len(params["tr"]) == len(DEFAULT_TRACKERS)
+        assert all("evil.example" not in tr for tr in params["tr"])
+        assert unquote(params["dn"][0]) == title
+
+    def test_dn_encoding_preserves_spaces_and_hash(self) -> None:
+        title = "My Release 1080p #1"
+        magnet = build_magnet(_VALID_HEX_HASH, title)
+
+        assert " " not in magnet
+        assert "#" not in magnet
+        params = _magnet_query_params(magnet)
+        assert unquote(params["dn"][0]) == title
+
+    def test_accepts_valid_hex_and_base32_hashes(self) -> None:
+        mixed_hex = "AaBbCcDdEeFf00112233445566778899AaBbCcDd"
+        base32 = _VALID_BASE32_HASH.lower()
+        assert build_magnet(mixed_hex, "title").startswith(
+            f"magnet:?xt=urn:btih:{mixed_hex}&dn="
+        )
+        assert build_magnet(base32, "title").startswith(
+            f"magnet:?xt=urn:btih:{base32}&dn="
+        )
+
+    @pytest.mark.parametrize(
+        "info_hash",
+        [
+            "a" * 39,
+            "g" * 40,
+        ],
+    )
+    def test_rejects_invalid_info_hash(self, info_hash: str) -> None:
+        with pytest.raises(ValueError, match=r"Invalid btih info hash"):
+            build_magnet(info_hash, "title")
+
+    def test_eztv_row_with_ampersand_in_title_uses_default_trackers(
+        self,
+    ) -> None:
+        payload = {
+            "torrents": [
+                {
+                    "id": 99,
+                    "hash": _VALID_HEX_HASH,
+                    "filename": "Show & Partner S01E01",
+                    "size_bytes": 100,
+                    "seeds": 10,
+                }
+            ]
+        }
+        site = EztvSite()
+        with patch.object(site, "_fetch_json", return_value=payload):
+            results = site._fetch_eztv_api({"limit": 100, "page": 1})
+
+        assert len(results) == 1
+        params = _magnet_query_params(results[0].download_url)
+        assert len(params["tr"]) == len(DEFAULT_TRACKERS)
+        assert set(params["tr"]) == set(DEFAULT_TRACKERS)
+        assert unquote(params["dn"][0]) == "Show & Partner S01E01"
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +365,34 @@ class TestEztvParsing:
             results = site._fetch_eztv_api({"limit": 100, "page": 1})
         assert results == []
 
+    def test_drops_row_with_invalid_info_hash(self, site: EztvSite) -> None:
+        payload = {
+            "torrents": [
+                {
+                    "id": 1,
+                    "hash": "nothex",
+                    "filename": "Bad.Hash.S01E01.x264",
+                    "size_bytes": 100,
+                    "seeds": 5,
+                },
+                {
+                    "id": 2,
+                    "hash": _VALID_HEX_HASH,
+                    "filename": "Good.Hash.S01E02.x264",
+                    "size_bytes": 200,
+                    "seeds": 10,
+                },
+            ]
+        }
+        with patch.object(site, "_fetch_json", return_value=payload):
+            results = site._fetch_eztv_api({"limit": 100, "page": 1})
+
+        assert len(results) == 1
+        assert results[0].title == "Good.Hash.S01E02.x264"
+        assert results[0].download_url == build_magnet(
+            _VALID_HEX_HASH, "Good.Hash.S01E02.x264"
+        )
+
 
 # ---------------------------------------------------------------------------
 # The Pirate Bay — ApiBay JSON
@@ -321,6 +427,32 @@ class TestThePirateBayParsing:
         with patch.object(site, "_fetch_json", return_value=payload):
             results = site._search_tpb("nonexistent")
         assert results == []
+
+    def test_drops_row_with_invalid_info_hash(self, site: ThePirateBaySite) -> None:
+        payload = [
+            {
+                "id": "1",
+                "name": "Bad Hash Release",
+                "info_hash": "nothex",
+                "size": "100",
+                "seeders": "5",
+            },
+            {
+                "id": "2",
+                "name": "Good Hash Release",
+                "info_hash": _VALID_HEX_HASH,
+                "size": "200",
+                "seeders": "10",
+            },
+        ]
+        with patch.object(site, "_fetch_json", return_value=payload):
+            results = site._search_tpb("test")
+
+        assert len(results) == 1
+        assert results[0].title == "Good Hash Release"
+        assert results[0].download_url == build_magnet(
+            _VALID_HEX_HASH, "Good Hash Release"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +489,43 @@ class TestYtsParsing:
         with patch.object(site, "_fetch_json", return_value=payload):
             results = site._search_yts("nonexistent")
         assert results == []
+
+    def test_drops_row_with_invalid_info_hash(self, site: YtsSite) -> None:
+        payload = {
+            "status": "ok",
+            "data": {
+                "movies": [
+                    {
+                        "title": "Test Movie",
+                        "title_long": "Test Movie (2024)",
+                        "torrents": [
+                            {
+                                "hash": "nothex",
+                                "quality": "1080p",
+                                "type": "bluray",
+                                "size_bytes": 100,
+                                "seeds": 5,
+                            },
+                            {
+                                "hash": _VALID_HEX_HASH,
+                                "quality": "720p",
+                                "type": "web",
+                                "size_bytes": 200,
+                                "seeds": 10,
+                            },
+                        ],
+                    }
+                ]
+            },
+        }
+        with patch.object(site, "_fetch_json", return_value=payload):
+            results = site._search_yts("test movie")
+
+        assert len(results) == 1
+        assert results[0].title == "Test Movie (2024) 720p web"
+        assert results[0].download_url == build_magnet(
+            _VALID_HEX_HASH, "Test Movie (2024) 720p web"
+        )
 
 
 # ---------------------------------------------------------------------------

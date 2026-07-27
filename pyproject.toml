@@ -1,6 +1,6 @@
 [project]
 name = "miramedia"
-version = "1.0.12"
+version = "1.0.13"
 description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [

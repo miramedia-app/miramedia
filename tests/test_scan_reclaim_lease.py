@@ -20,10 +20,14 @@ from miramedia.imports.repository import (
     COMPENSATE_SCAN_CACHE_CLAIM_SQL,
     COMPLETE_MANUAL_SCAN_IMPORT_SQL,
     RECLAIM_STALE_QUEUED_IMPORT_SQL,
+    RECLAIM_STALLED_WORKER_IMPORT_SQL,
     RESET_IMPORT_BATCH_IF_IDLE_SQL,
     SELECT_QUEUED_IMPORT_SNAPSHOT_SQL,
+    SELECT_STARTED_IMPORT_SNAPSHOT_SQL,
     STALE_QUEUED_IMPORT_GRACE,
+    STALLED_WORKER_GRACE,
     STAMP_LEGACY_QUEUED_AT_SQL,
+    STAMP_LEGACY_WORKER_STARTED_AT_SQL,
     ImportsRepository,
     ScanClaimResult,
     ScanWorkerBeginResult,
@@ -63,6 +67,18 @@ class _SnapshotRow:
         self.queued_at = queued_at
 
 
+class _StartedSnapshotRow:
+    def __init__(
+        self,
+        directory: str,
+        claim_token: str | None,
+        worker_started_at: str | None,
+    ) -> None:
+        self.directory = directory
+        self.claim_token = claim_token
+        self.worker_started_at = worker_started_at
+
+
 def _sql_text(stmt: object) -> str:
     if isinstance(stmt, TextClause):
         return stmt.text
@@ -92,6 +108,23 @@ class _StatefulScanCache:
             )
         return out
 
+    def started_snapshot_rows(self) -> list[_StartedSnapshotRow]:
+        out: list[_StartedSnapshotRow] = []
+        for directory, payload in self.rows.items():
+            if payload.get("status") != "queued":
+                continue
+            worker_started_at = payload.get("worker_started_at")
+            if worker_started_at is None:
+                continue
+            out.append(
+                _StartedSnapshotRow(
+                    directory=directory,
+                    claim_token=payload.get("claim_token"),  # type: ignore[arg-type]
+                    worker_started_at=worker_started_at,  # type: ignore[arg-type]
+                )
+            )
+        return out
+
     def execute(
         self, stmt: object, params: dict[str, Any] | None = None
     ) -> _FakeResult:
@@ -100,6 +133,9 @@ class _StatefulScanCache:
 
         if sql == SELECT_QUEUED_IMPORT_SNAPSHOT_SQL.strip():
             return _FakeResult(self.snapshot_rows())
+
+        if sql == SELECT_STARTED_IMPORT_SNAPSHOT_SQL.strip():
+            return _FakeResult(self.started_snapshot_rows())
 
         if sql == RESET_IMPORT_BATCH_IF_IDLE_SQL.strip():
             if not any(p.get("status") == "queued" for p in self.rows.values()):
@@ -154,6 +190,42 @@ class _StatefulScanCache:
                 payload.get("status") == "queued"
                 and payload.get("worker_started_at") is None
                 and queued_at == expected_queued
+                and token_match
+            ):
+                payload.pop("queued_at", None)
+                payload.pop("claim_token", None)
+                payload.pop("worker_started_at", None)
+                payload["status"] = "failed"
+                payload["import_error"] = params["error"]
+                return _FakeResult([(directory,)])
+            return _FakeResult([])
+
+        if sql == STAMP_LEGACY_WORKER_STARTED_AT_SQL.strip():
+            worker_started_at = payload.get("worker_started_at")
+            expected = params["expected_worker_started_at"]
+            started_match = (expected is None and worker_started_at is None) or (
+                worker_started_at == expected
+            )
+            if (
+                payload.get("status") == "queued"
+                and worker_started_at is not None
+                and started_match
+            ):
+                payload["worker_started_at"] = params["worker_started_at"]
+                return _FakeResult([(directory,)])
+            return _FakeResult([])
+
+        if sql == RECLAIM_STALLED_WORKER_IMPORT_SQL.strip():
+            worker_started_at = payload.get("worker_started_at")
+            claim_token = payload.get("claim_token")
+            expected_started = params["expected_worker_started_at"]
+            expected_token = params["expected_claim_token"]
+            token_match = (expected_token is None and claim_token is None) or (
+                claim_token == expected_token
+            )
+            if (
+                payload.get("status") == "queued"
+                and worker_started_at == expected_started
                 and token_match
             ):
                 payload.pop("queued_at", None)
@@ -571,3 +643,133 @@ def test_reclaim_resets_batch_in_same_commit_and_rolls_back_on_error() -> None:
         repo.db.commit.assert_not_awaited()
 
     asyncio.run(_run_failure())
+
+
+def test_stalled_worker_old_row_reclaims() -> None:
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-a",
+                "queued_at": _OLD,
+                "worker_started_at": _OLD,
+            }
+        }
+    )
+    repo = _repo_with_state(state)
+    now = datetime.fromisoformat(_OLD) + STALLED_WORKER_GRACE + timedelta(minutes=1)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(now),
+        ):
+            reclaimed = await repo.reclaim_stalled_worker_imports(
+                older_than=STALLED_WORKER_GRACE
+            )
+        assert reclaimed == 1
+        row = state.rows[directory]
+        assert row["status"] == "failed"
+        assert "process died mid-import" in str(row["import_error"])
+        assert "worker_started_at" not in row
+        assert "claim_token" not in row
+        assert "queued_at" not in row
+
+    asyncio.run(_run())
+
+
+def test_stalled_worker_fresh_row_untouched() -> None:
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-a",
+                "queued_at": _OLD,
+                "worker_started_at": _FRESH,
+            }
+        }
+    )
+    repo = _repo_with_state(state)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(datetime.fromisoformat(_FRESH)),
+        ):
+            reclaimed = await repo.reclaim_stalled_worker_imports(
+                older_than=STALLED_WORKER_GRACE
+            )
+        assert reclaimed == 0
+        assert state.rows[directory]["status"] == "queued"
+
+    asyncio.run(_run())
+
+
+def test_stalled_worker_malformed_timestamp_stamped_then_reclaimed() -> None:
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-a",
+                "worker_started_at": "not-a-timestamp",
+            }
+        }
+    )
+    repo = _repo_with_state(state)
+    first_seen = datetime.fromisoformat(_FRESH)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(first_seen),
+        ):
+            reclaimed = await repo.reclaim_stalled_worker_imports(
+                older_than=STALLED_WORKER_GRACE
+            )
+        assert reclaimed == 0
+        assert state.rows[directory]["worker_started_at"] == first_seen.isoformat()
+
+        expired = first_seen + STALLED_WORKER_GRACE + timedelta(minutes=1)
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(expired),
+        ):
+            reclaimed = await repo.reclaim_stalled_worker_imports(
+                older_than=STALLED_WORKER_GRACE
+            )
+        assert reclaimed == 1
+        assert state.rows[directory]["status"] == "failed"
+
+    asyncio.run(_run())
+
+
+def test_stalled_worker_reclaim_resets_batch_and_schedules_rebuild() -> None:
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-a",
+                "worker_started_at": _OLD,
+            }
+        }
+    )
+    state.batch_total = 3
+    repo = _repo_with_state(state)
+    now = datetime.fromisoformat(_OLD) + STALLED_WORKER_GRACE + timedelta(minutes=1)
+    rebuild = patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild")
+
+    async def _run() -> None:
+        with rebuild as rebuild_mock, _patch_repo_now(now):
+            reclaimed = await repo.reclaim_stalled_worker_imports(
+                older_than=STALLED_WORKER_GRACE
+            )
+        assert reclaimed == 1
+        repo.db.commit.assert_awaited_once()
+        rebuild_mock.assert_called_once()
+        assert state.batch_total == 0
+
+    asyncio.run(_run())

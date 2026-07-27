@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID
 
 import httpx
@@ -148,6 +149,7 @@ class StubRepository:
     update_calls: list[tuple[MediaRequestId, dict[str, Any]]] = field(
         default_factory=list
     )
+    db: object = field(default_factory=MagicMock)
 
     async def get_request(self, request_id: MediaRequestId) -> MediaRequest:
         self.call_log.append(f"get_request:{request_id}")
@@ -602,3 +604,144 @@ def test_delete_write_through_client_none_with_linked_seerr_id_skips_seerr() -> 
 
     assert native.delete_calls == [request_id]
     assert repository.call_log == [f"get_request:{request_id}"]
+
+
+# ---------------------------------------------------------------------------
+# Session release before Seerr / external I/O
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("method", "client_method", "id_field", "linked_id"),
+    [
+        ("approve_request", "approve", "seerr_request_id", 42),
+        ("reject_request", "decline", "seerr_request_id", 42),
+        ("mark_downloaded", "mark_media_available", "seerr_media_id", 99),
+    ],
+)
+def test_write_through_releases_session_before_seerr_call(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    client_method: str,
+    id_field: str,
+    linked_id: int,
+) -> None:
+    calls: list[str] = []
+    request_id = MediaRequestId(uuid.uuid4())
+    native_result = _request(**{id_field: linked_id})
+    native = StubNative()
+    if method == "approve_request":
+        native.approve_result = native_result
+    elif method == "reject_request":
+        native.reject_result = native_result
+    else:
+        native.mark_downloaded_result = native_result
+
+    client = StubSeerrClient()
+
+    async def _release(_db: object) -> None:
+        calls.append("release")
+
+    original_client_method = getattr(client, client_method)
+
+    async def _tracked_client_method(*args: object, **kwargs: object) -> None:
+        calls.append(client_method)
+        return await original_client_method(*args, **kwargs)
+
+    monkeypatch.setattr(client, client_method, _tracked_client_method)
+    monkeypatch.setattr(
+        "miramedia.requests.backends.composite.release_session_before_external_io",
+        _release,
+    )
+
+    provider = _provider(native, StubRepository(), client)
+    _invoke_write_through(provider, method, request_id)
+
+    assert calls.index("release") < calls.index(client_method)
+
+
+def test_delete_write_through_releases_session_before_seerr_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    request_id = MediaRequestId(uuid.uuid4())
+    repository = StubRepository(
+        rows={request_id: _request(seerr_request_id=55)},
+    )
+    native = StubNative()
+    client = StubSeerrClient()
+
+    async def _release(_db: object) -> None:
+        calls.append("release")
+
+    original_delete = client.delete_request
+
+    async def _tracked_delete(request_id: int) -> None:
+        calls.append("delete_request")
+        return await original_delete(request_id)
+
+    monkeypatch.setattr(client, "delete_request", _tracked_delete)
+    monkeypatch.setattr(
+        "miramedia.requests.backends.composite.release_session_before_external_io",
+        _release,
+    )
+
+    run_async(_provider(native, repository, client).delete_request(request_id))
+
+    assert calls.index("release") < calls.index("delete_request")
+
+
+def test_push_new_releases_session_before_resolve_tmdb_and_create_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    request = _request(status=RequestStatus.approved, media_type=MediaType.movie)
+    repository = StubRepository(rows={request.id: request})
+    client = StubSeerrClient(
+        create_result=SeerrRequest(
+            request_id=111,
+            media_id=222,
+            media_type="movie",
+            request_status=1,
+            media_status=1,
+            tmdb_id=555,
+            imdb_id=None,
+            seasons=[],
+        )
+    )
+
+    async def _release(_db: object) -> None:
+        calls.append("release")
+
+    async def _resolve_ok(*_args: object, **_kwargs: object) -> int:
+        calls.append("resolve_tmdb")
+        return 555
+
+    original_create = client.create_request
+
+    async def _tracked_create(
+        media_type: str,
+        tmdb_id: int,
+        *,
+        seasons: list[int] | None = None,
+    ) -> SeerrRequest | None:
+        calls.append("create_request")
+        return await original_create(media_type, tmdb_id, seasons=seasons)
+
+    monkeypatch.setattr(
+        "miramedia.requests.backends.composite.release_session_before_external_io",
+        _release,
+    )
+    monkeypatch.setattr(
+        "miramedia.requests.sync.resolve_tmdb",
+        _resolve_ok,
+    )
+    monkeypatch.setattr(client, "create_request", _tracked_create)
+
+    run_async(_provider(StubNative(), repository, client)._push_new(request))
+
+    assert calls.index("release") < calls.index("resolve_tmdb")
+    assert calls[calls.index("resolve_tmdb") + 1] == "release"
+    assert calls.index("release", calls.index("resolve_tmdb") + 1) < calls.index(
+        "create_request"
+    )

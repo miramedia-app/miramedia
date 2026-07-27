@@ -2,53 +2,9 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.12"
+    "version": "1.0.13"
   },
   "paths": {
-    "/radarr/api/v3/system/status": {
-      "get": {
-        "summary": "Radarr System Status V3",
-        "operationId": "radarr_system_status_v3_radarr_api_v3_system_status_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "type": "object",
-                  "title": "Response Radarr System Status V3 Radarr Api V3 System Status Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/radarr/api/system/status": {
-      "get": {
-        "summary": "Radarr System Status Legacy",
-        "operationId": "radarr_system_status_legacy_radarr_api_system_status_get",
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "type": "object",
-                  "title": "Response Radarr System Status Legacy Radarr Api System Status Get"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/health": {
       "get": {
         "summary": "Hello World",

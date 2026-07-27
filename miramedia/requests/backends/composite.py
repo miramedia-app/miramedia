@@ -14,6 +14,7 @@ from uuid import UUID
 
 import httpx
 
+from miramedia.database import release_session_before_external_io
 from miramedia.requests.backends.abstract_request_provider import (
     AbstractRequestProvider,
 )
@@ -87,6 +88,9 @@ class CompositeRequestProvider(AbstractRequestProvider):
     ) -> MediaRequest:
         result = await self.native.approve_request(request_id, decided_by_id)
         if self.client is not None and result.seerr_request_id is not None:
+            # Release before async Seerr HTTP so the conn isn't held through
+            # provider latency.
+            await release_session_before_external_io(self.repository.db)
             await self._safe_seerr(
                 "approve", self.client.approve(result.seerr_request_id)
             )
@@ -97,6 +101,9 @@ class CompositeRequestProvider(AbstractRequestProvider):
     ) -> MediaRequest:
         result = await self.native.reject_request(request_id, decided_by_id)
         if self.client is not None and result.seerr_request_id is not None:
+            # Release before async Seerr HTTP so the conn isn't held through
+            # provider latency.
+            await release_session_before_external_io(self.repository.db)
             await self._safe_seerr(
                 "decline", self.client.decline(result.seerr_request_id)
             )
@@ -107,6 +114,9 @@ class CompositeRequestProvider(AbstractRequestProvider):
         seerr_request_id = row.seerr_request_id
         await self.native.delete_request(request_id)
         if self.client is not None and seerr_request_id is not None:
+            # Release before async Seerr HTTP so the conn isn't held through
+            # provider latency.
+            await release_session_before_external_io(self.repository.db)
             await self._safe_seerr(
                 "delete",
                 self.client.delete_request(seerr_request_id),
@@ -118,6 +128,9 @@ class CompositeRequestProvider(AbstractRequestProvider):
     async def mark_downloaded(self, request_id: MediaRequestId) -> MediaRequest:
         result = await self.native.mark_downloaded(request_id)
         if self.client is not None and result.seerr_media_id is not None:
+            # Release before async Seerr HTTP so the conn isn't held through
+            # provider latency.
+            await release_session_before_external_io(self.repository.db)
             await self._safe_seerr(
                 "mark_available",
                 self.client.mark_media_available(result.seerr_media_id),
@@ -136,6 +149,9 @@ class CompositeRequestProvider(AbstractRequestProvider):
         from miramedia.requests.sync import resolve_tmdb
 
         try:
+            # resolve_tmdb may call Seerr; release so the conn isn't held
+            # idle-in-TX through provider latency.
+            await release_session_before_external_io(self.repository.db)
             tmdb_id = await resolve_tmdb(self.repository, self.client, request)
         except httpx.HTTPError:
             tmdb_id = None
@@ -144,6 +160,9 @@ class CompositeRequestProvider(AbstractRequestProvider):
         media_type = "movie" if request.media_type == MediaType.movie else "tv"
         seasons = [request.season_number] if request.season_number is not None else None
         try:
+            # Release before create_request so the conn isn't held
+            # idle-in-TX through Seerr latency.
+            await release_session_before_external_io(self.repository.db)
             created = await self.client.create_request(
                 media_type, tmdb_id, seasons=seasons
             )

@@ -1,4 +1,5 @@
 import html
+import logging
 
 import miramedia.notifications.utils
 from miramedia.config import MiraMediaConfig
@@ -6,6 +7,8 @@ from miramedia.notifications.schemas import MessageNotification
 from miramedia.notifications.service_providers.abstract_notification_service_provider import (
     AbstractNotificationServiceProvider,
 )
+
+log = logging.getLogger(__name__)
 
 
 class EmailNotificationServiceProvider(AbstractNotificationServiceProvider):
@@ -30,9 +33,13 @@ class EmailNotificationServiceProvider(AbstractNotificationServiceProvider):
                 </html>
                 """
 
+        ok = True
         for email in self.config.emails:
-            miramedia.notifications.utils.send_email(
-                subject=subject, html=html_body, addressee=email
-            )
-
-        return True
+            try:
+                miramedia.notifications.utils.send_email(
+                    subject=subject, html=html_body, addressee=email
+                )
+            except Exception:
+                log.warning("Email notification to one recipient failed", exc_info=True)
+                ok = False
+        return ok

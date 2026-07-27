@@ -61,7 +61,15 @@ class ThePirateBaySite(BaseSite):
             if not name or not info_hash or item.get("id") == "0":
                 continue
 
-            magnet = build_magnet(info_hash, name)
+            try:
+                magnet = build_magnet(info_hash, name)
+            except ValueError:
+                log.warning(
+                    "%s: dropping row with invalid info hash (len=%d)",
+                    "thepiratebay",
+                    len(info_hash.strip()),
+                )
+                continue
 
             try:
                 size = int(item.get("size", 0))

@@ -75,7 +75,15 @@ class EztvSite(BaseSite):
             if not download_url:
                 info_hash = t.get("hash", "")
                 if info_hash:
-                    download_url = build_magnet(info_hash, title)
+                    try:
+                        download_url = build_magnet(info_hash, title)
+                    except ValueError:
+                        log.warning(
+                            "%s: dropping row with invalid info hash (len=%d)",
+                            "eztv",
+                            len(info_hash.strip()),
+                        )
+                        continue
                 else:
                     continue
 

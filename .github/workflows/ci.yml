@@ -18,8 +18,8 @@ jobs:
       # until the wheel gap closes.
       UV_PYTHON: "3.13"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - name: Sync dependencies (frozen)
@@ -56,8 +56,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - name: Sync dependencies (frozen)
@@ -83,8 +83,8 @@ jobs:
     env:
       UV_PYTHON: "3.13"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - name: Sync dependencies (frozen)
@@ -92,7 +92,7 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           package_json_file: web/package.json
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
@@ -113,13 +113,13 @@ jobs:
       run:
         working-directory: web
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         # version intentionally omitted: pnpm/action-setup reads the
         # "packageManager" field from web/package.json (pnpm@10.30.3)
         with:
           package_json_file: web/package.json
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
@@ -144,23 +144,26 @@ jobs:
       - name: Build
         run: pnpm run build:generated
 
-  # Regenerate the OpenAPI spec + client types on main and commit them if they
-  # drift, so the Pages docs site (which renders the committed web/public/openapi.json)
-  # is never stale — no manual `make openapi` needed. Runs only on direct pushes to
-  # main (fork PRs can't be pushed to; the PR-only drift checks above gate those).
-  # The commit re-triggers this workflow, but the regen is idempotent: the second
-  # run finds no diff, commits nothing, and stops — no loop. That web/** commit is
-  # what makes the Docs workflow redeploy with the fresh spec.
+  # Regenerate the OpenAPI spec + client types on main and open a PR if they drift,
+  # so the Pages docs site (which renders the committed web/public/openapi.json) is
+  # never stale — no manual `make openapi` needed. Runs only on direct pushes to main
+  # (fork PRs can't be pushed to; the PR-only drift checks above gate those).
+  #
+  # This deliberately does NOT push to main: main stays authored by humans. The job
+  # force-pushes a fixed branch and reuses the open PR, so repeated drift updates one
+  # PR instead of stacking new ones. Merging it is what makes the Docs workflow
+  # redeploy with the fresh spec.
   openapi-sync:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     env:
       UV_PYTHON: "3.13"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - name: Sync dependencies (frozen)
@@ -168,7 +171,7 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           package_json_file: web/package.json
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
@@ -178,26 +181,45 @@ jobs:
         working-directory: web
       - name: Regenerate OpenAPI spec + client types
         run: make openapi
-      - name: Commit if changed
-        # checkout@v6 persists the GITHUB_TOKEN credentials, so a plain push works.
+      - name: Open sync PR if changed
+        # checkout@v7 persists the GITHUB_TOKEN credentials, so a plain push works.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: chore/openapi-sync
         run: |
           if git diff --quiet -- web/public/openapi.json web/src/lib/api/api.d.ts; then
-            echo "OpenAPI spec + types already in sync — nothing to commit."
+            echo "OpenAPI spec + types already in sync — nothing to do."
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
           git add web/public/openapi.json web/src/lib/api/api.d.ts
           git commit -m "Sync OpenAPI spec + client types"
-          git push
+          # Force-push: the branch is a disposable snapshot of the latest main + regen.
+          git push --force origin "$BRANCH"
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            echo "Existing sync PR updated."
+          else
+            gh pr create \
+              --head "$BRANCH" \
+              --base main \
+              --title "Sync OpenAPI spec + client types" \
+              --body "\`make openapi\` output drifted from the committed files on main.
+
+          Regenerated \`web/public/openapi.json\` and \`web/src/lib/api/api.d.ts\`. Merging this
+          keeps the Pages docs site in sync with the live API schema.
+
+          Opened automatically by the \`openapi-sync\` job in \`.github/workflows/ci.yml\`."
+          fi
 
   security-audit:
     runs-on: ubuntu-latest
     env:
       UV_PYTHON: "3.13"
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - name: pip-audit
@@ -207,7 +229,7 @@ jobs:
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
         with:
           package_json_file: web/package.json
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm

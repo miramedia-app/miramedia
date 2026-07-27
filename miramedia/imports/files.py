@@ -8,9 +8,13 @@ separation, hardlink/copy publishing, free-space checks — lives in the imports
 domain, not the torrents domain.
 """
 
+import glob
 import logging
+import os
 import re
 import shutil
+import time
+import uuid
 from collections.abc import Iterable, Mapping
 from pathlib import Path, UnsupportedOperation
 
@@ -155,6 +159,56 @@ def extract_archives(files: list) -> None:
             log.exception("Failed to safely extract archive %s", file)
 
 
+def _raise_unless_same_content(
+    source_file: Path,
+    target_file: Path,
+    *,
+    phase: str,
+) -> None:
+    """Return on idempotent match; raise :class:`ImportConflictError` otherwise."""
+    try:
+        src_stat = source_file.stat()
+        dst_stat = target_file.stat()
+    except OSError:
+        src_stat = dst_stat = None
+    if (
+        src_stat is not None
+        and dst_stat is not None
+        and (
+            (dst_stat.st_ino == src_stat.st_ino and dst_stat.st_dev == src_stat.st_dev)
+            or (target_file.is_file() and dst_stat.st_size == src_stat.st_size)
+        )
+    ):
+        log.debug(
+            "Target %s re-published by a concurrent import; treating as done",
+            target_file,
+        )
+        return
+    msg = f"Target {target_file} reappeared during {phase}"
+    raise ImportConflictError(msg)
+
+
+def _publish(
+    tmp: Path,
+    target: Path,
+    *,
+    source_file: Path,
+    overwrite: bool,
+) -> None:
+    if overwrite:
+        tmp.replace(target)
+        return
+    try:
+        os.link(tmp, target)
+    except FileExistsError:
+        _raise_unless_same_content(source_file, target, phase="publish")
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def import_file(
     target_file: Path,
     source_file: Path,
@@ -207,55 +261,35 @@ def import_file(
     # is only ever written by replace from a fully-published temp — never unlinked
     # up front. A kill/power-loss mid-copy leaves only the .mmpart temp, never a
     # truncated file at the canonical path the importer would mistake for finished.
-    tmp_target = target_file.with_name(target_file.name + ".mmpart")
-    try:
-        tmp_target.unlink()
-    except OSError:
-        pass
+    tmp_target = target_file.with_name(
+        f"{target_file.name}.{uuid.uuid4().hex[:12]}.mmpart"
+    )
+    # Sweep stale temps from prior interrupted imports of this target. Unique
+    # names mean nobody else's live temp matches ours; anything matching the
+    # glob older than 24h is an orphan (best-effort cleanup).
+    now = time.time()
+    for stale in target_file.parent.glob(f"{glob.escape(target_file.name)}.*.mmpart"):
+        try:
+            st = stale.stat()
+        except OSError:
+            continue
+        if now - st.st_mtime > 86400:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
 
     try:
         tmp_target.hardlink_to(source_file)
-    except FileExistsError as exc:
-        # TOCTOU race: a concurrent import re-published the target while we were
-        # linking into the temp. If the file now at the canonical path is the same
-        # content as our source (same inode, or a complete copy of equal size),
-        # the other writer already finished this exact import — treat it as an
-        # idempotent success instead of recording a false ``failed_io`` that
-        # would outlive the torrent and inflate the dashboard badge.
+    except FileExistsError:
         try:
-            src_stat = source_file.stat()
-            dst_stat = target_file.stat()
-        except OSError:
-            src_stat = dst_stat = None
-        if (
-            src_stat is not None
-            and dst_stat is not None
-            and (
-                (
-                    dst_stat.st_ino == src_stat.st_ino
-                    and dst_stat.st_dev == src_stat.st_dev
-                )
-                or (target_file.is_file() and dst_stat.st_size == src_stat.st_size)
-            )
-        ):
-            log.debug(
-                "Target %s re-published by a concurrent import; treating as done",
-                target_file,
-            )
+            _raise_unless_same_content(source_file, target_file, phase="link")
+        finally:
             try:
                 tmp_target.unlink()
             except OSError:
                 pass
-            return
-        # Genuine conflict (different content occupies the path). Surface as a
-        # structured error so callers record failed_io rather than silently
-        # treating the import as successful.
-        try:
-            tmp_target.unlink()
-        except OSError:
-            pass
-        msg = f"Target {target_file} reappeared during link"
-        raise ImportConflictError(msg) from exc
+        return
     except (OSError, UnsupportedOperation, NotImplementedError) as exc:
         log.warning(
             "Hardlink %s -> %s failed (%s); falling back to copy",
@@ -264,13 +298,33 @@ def import_file(
             exc,
         )
     else:
-        tmp_target.replace(target_file)
+        # Hardlinks share the source inode's mtime; stamp now so the stale sweep
+        # measures temp age, not download age. Also updates the source inode.
+        try:
+            os.utime(tmp_target, None)
+        except OSError:
+            pass
+        _publish(
+            tmp_target,
+            target_file,
+            source_file=source_file,
+            overwrite=overwrite,
+        )
         return
 
     try:
         ensure_free_space(target_file.parent, source_file.stat().st_size)
         shutil.copy(src=source_file, dst=tmp_target)
-        tmp_target.replace(target_file)
+        try:
+            os.utime(tmp_target, None)
+        except OSError:
+            pass
+        _publish(
+            tmp_target,
+            target_file,
+            source_file=source_file,
+            overwrite=overwrite,
+        )
     except OSError as exc:
         try:
             tmp_target.unlink()

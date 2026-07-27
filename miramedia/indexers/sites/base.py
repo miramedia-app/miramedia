@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from typing import TYPE_CHECKING
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -83,11 +84,22 @@ DEFAULT_TRACKERS = [
     "udp://open.demonii.com:1337/announce",
 ]
 
+_BTIH_RE = re.compile(r"^(?:[0-9A-Fa-f]{40}|[A-Za-z2-7]{32})$")
+
 
 def build_magnet(info_hash: str, name: str) -> str:
-    """Build a magnet URI from an info hash and display name."""
-    trackers = "&".join(f"tr={t}" for t in DEFAULT_TRACKERS)
-    return f"magnet:?xt=urn:btih:{info_hash}&dn={name}&{trackers}"
+    """Build a magnet URI from an info hash and display name.
+
+    Raises ``ValueError`` on a malformed info hash — scraped rows with a
+    broken hash must be dropped by the caller's existing per-row error
+    handling rather than produce a magnet the client can't use.
+    """
+    cleaned = info_hash.strip()
+    if not _BTIH_RE.match(cleaned):
+        msg = f"Invalid btih info hash (len={len(cleaned)})"
+        raise ValueError(msg)
+    trackers = "&".join(f"tr={quote(t, safe='')}" for t in DEFAULT_TRACKERS)
+    return f"magnet:?xt=urn:btih:{cleaned}&dn={quote(name, safe='')}&{trackers}"
 
 
 class BaseSite(ABC):

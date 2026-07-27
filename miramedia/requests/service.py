@@ -3,6 +3,7 @@ import logging
 from uuid import UUID
 
 from miramedia.config import MiraMediaConfig
+from miramedia.database import release_session_before_external_io
 from miramedia.requests.backends.abstract_request_provider import (
     AbstractRequestProvider,
 )
@@ -55,6 +56,14 @@ async def _resolve_imdb_id(
         return show.imdb_id
 
 
+async def _release_provider_session(provider: AbstractRequestProvider) -> None:
+    db = getattr(getattr(provider, "repository", None), "db", None)
+    if db is not None:
+        # Blocking metadata-provider HTTP (timeout=60) must not hold the
+        # request's connection idle-in-transaction.
+        await release_session_before_external_io(db)
+
+
 class RequestService:
     def __init__(self, provider: AbstractRequestProvider) -> None:
         self.provider = provider
@@ -72,6 +81,7 @@ class RequestService:
         # imdb_id, so requests would otherwise sit unfulfillable when the
         # native indexer (IMDb-only) is the configured download path.
         if not data.imdb_id:
+            await _release_provider_session(self.provider)
             resolved = await _resolve_imdb_id(
                 data.media_type, data.external_id, data.metadata_provider
             )
@@ -86,6 +96,7 @@ class RequestService:
         """Resolve and persist the IMDb ID on an existing request, if possible."""
         if request.imdb_id:
             return request
+        await _release_provider_session(self.provider)
         resolved = await _resolve_imdb_id(
             request.media_type, request.external_id, request.metadata_provider
         )

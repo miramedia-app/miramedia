@@ -23,6 +23,13 @@ _SINGLETON_ID = "current"
 # Grace window before an unstarted queued row may be automatically reclaimed.
 STALE_QUEUED_IMPORT_GRACE = timedelta(minutes=30)
 
+# A worker that set worker_started_at but whose process died leaves the row
+# permanently queued (no heartbeat exists to fence a live copy). Reclaim only
+# after a grace long enough that no legitimate single-file NAS copy is still
+# running. If a worker heartbeat is ever added (payload worker_heartbeat_at),
+# shrink this grace and key on the heartbeat instead.
+STALLED_WORKER_GRACE = timedelta(hours=6)
+
 CLAIM_SCAN_CACHE_ROW_SQL = """
 UPDATE scan_result_cache
 SET payload = (payload - 'import_error' - 'claim_token' - 'worker_started_at')
@@ -90,9 +97,55 @@ WHERE directory = :directory
 RETURNING directory
 """
 
+SELECT_STARTED_IMPORT_SNAPSHOT_SQL = """
+SELECT directory,
+       payload->>'claim_token' AS claim_token,
+       payload->>'worker_started_at' AS worker_started_at
+FROM scan_result_cache
+WHERE payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NOT NULL
+"""
+
+STAMP_LEGACY_WORKER_STARTED_AT_SQL = """
+UPDATE scan_result_cache
+SET payload = payload || jsonb_build_object(
+    'worker_started_at', CAST(:worker_started_at AS text)
+)
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' IS NOT NULL
+  AND (
+    (CAST(:expected_worker_started_at AS text) IS NULL
+     AND payload->>'worker_started_at' IS NULL)
+    OR payload->>'worker_started_at' = CAST(:expected_worker_started_at AS text)
+  )
+RETURNING directory
+"""
+
+RECLAIM_STALLED_WORKER_IMPORT_SQL = """
+UPDATE scan_result_cache
+SET payload = (payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
+WHERE directory = :directory
+  AND payload->>'status' = 'queued'
+  AND payload->>'worker_started_at' = CAST(:expected_worker_started_at AS text)
+  AND (
+    (CAST(:expected_claim_token AS text) IS NULL AND payload->>'claim_token' IS NULL)
+    OR payload->>'claim_token' = CAST(:expected_claim_token AS text)
+  )
+RETURNING directory
+"""
+
 _STALE_RECLAIM_ERROR = (
     "Import was interrupted before completing (worker restarted). "
     "Press Import to retry."
+)
+
+_STALLED_WORKER_ERROR = (
+    "Import worker did not finish (process died mid-import); retry the import"
 )
 
 COMPENSATE_SCAN_CACHE_CLAIM_SQL = """
@@ -194,6 +247,15 @@ def _queued_before(queued_at: str | None, cutoff: datetime) -> bool:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
     return ts < cutoff
+
+
+def _worker_started_at_valid(worker_started_at: str | None) -> bool:
+    return _queued_at_valid(worker_started_at)
+
+
+def _worker_started_before(worker_started_at: str | None, cutoff: datetime) -> bool:
+    """True if a parseable ``worker_started_at`` is older than ``cutoff``."""
+    return _queued_before(worker_started_at, cutoff)
 
 
 class ImportsRepository:
@@ -310,10 +372,11 @@ class ImportsRepository:
     async def reclaim_stale_queued_imports(self, *, older_than: timedelta) -> int:
         """Recover dispatched-but-not-started queued rows only.
 
-        Automatic reclaim never touches rows after ``begin_manual_scan_worker``
-        succeeds — filesystem mutation may still be running and cannot be fenced
-        cooperatively. Legacy rows with missing/invalid ``queued_at`` are stamped
-        once, then become eligible only after the normal grace interval.
+        Two-tier automatic reclaim: unstarted rows use ``older_than`` (typically
+        ``STALE_QUEUED_IMPORT_GRACE``); started rows are handled by
+        :meth:`reclaim_stalled_worker_imports` with ``STALLED_WORKER_GRACE``.
+        Legacy rows with missing/invalid ``queued_at`` are stamped once, then
+        become eligible only after the normal grace interval.
         """
         cutoff = _utc_now() - older_than
         snapshot_result = await self.db.execute(text(SELECT_QUEUED_IMPORT_SNAPSHOT_SQL))
@@ -346,6 +409,64 @@ class ImportsRepository:
                         "expected_claim_token": row.claim_token,
                         "expected_queued_at": queued_at,
                         "error": _STALE_RECLAIM_ERROR,
+                    },
+                )
+                if result.first() is not None:
+                    reclaimed += 1
+
+            if reclaimed == 0 and stamped == 0:
+                return 0
+            if reclaimed > 0:
+                await self._reset_import_batch_if_idle_in_tx()
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+
+        schedule_import_queue_rebuild()
+        return reclaimed
+
+    async def reclaim_stalled_worker_imports(self, *, older_than: timedelta) -> int:
+        """Recover queued rows whose worker died after ``begin_manual_scan_worker``.
+
+        Rows with missing/invalid ``worker_started_at`` are stamped once, then
+        become eligible only after the normal grace interval.
+        """
+        cutoff = _utc_now() - older_than
+        snapshot_result = await self.db.execute(
+            text(SELECT_STARTED_IMPORT_SNAPSHOT_SQL)
+        )
+
+        stamped = 0
+        reclaimed = 0
+        try:
+            for row in snapshot_result:
+                worker_started_at = row.worker_started_at
+                if not _worker_started_at_valid(worker_started_at):
+                    result = await self.db.execute(
+                        text(STAMP_LEGACY_WORKER_STARTED_AT_SQL),
+                        {
+                            "directory": row.directory,
+                            "worker_started_at": _utc_now().isoformat(),
+                            "expected_worker_started_at": worker_started_at,
+                        },
+                    )
+                    if result.first() is not None:
+                        stamped += 1
+                    continue
+
+                if not _worker_started_before(worker_started_at, cutoff):
+                    continue
+
+                result = await self.db.execute(
+                    text(RECLAIM_STALLED_WORKER_IMPORT_SQL),
+                    {
+                        "directory": row.directory,
+                        "expected_claim_token": row.claim_token,
+                        "expected_worker_started_at": worker_started_at,
+                        "error": _STALLED_WORKER_ERROR,
                     },
                 )
                 if result.first() is not None:

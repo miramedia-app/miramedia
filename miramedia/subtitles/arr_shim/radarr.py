@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query
@@ -60,7 +61,7 @@ async def get_movie(movie_id: int, db: DbSessionDependency) -> dict[str, Any]:
 
 @router.get("/rootfolder")
 async def list_rootfolders() -> list[dict[str, Any]]:
-    return radarr_service.list_rootfolders()
+    return await asyncio.to_thread(radarr_service.list_rootfolders)
 
 
 @router.get("/tag")

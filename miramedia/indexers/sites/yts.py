@@ -71,7 +71,15 @@ class YtsSite(BaseSite):
                 if not info_hash:
                     continue
 
-                magnet = build_magnet(info_hash, title)
+                try:
+                    magnet = build_magnet(info_hash, title)
+                except ValueError:
+                    log.warning(
+                        "%s: dropping row with invalid info hash (len=%d)",
+                        "yts",
+                        len(info_hash.strip()),
+                    )
+                    continue
                 size_bytes = torrent.get("size_bytes", 0)
                 seeders = torrent.get("seeds", 0)
 

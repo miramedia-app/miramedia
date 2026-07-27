@@ -6,6 +6,8 @@ what's documented in the plan, that is noted as an observation, not fixed.
 """
 
 # ruff: noqa: TRY003, EM101
+import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -265,6 +267,202 @@ def test_import_file_replaced_target_is_linked_to_source(tmp_path: Path) -> None
     # On the same filesystem the replacement is done via hardlink,
     # so the resulting target shares the source's inode.
     assert dst.stat().st_ino == src.stat().st_ino
+
+
+def _mmpart_files(directory: Path) -> list[Path]:
+    return list(directory.glob("*.mmpart"))
+
+
+def test_import_file_unique_temp_names_per_call(tmp_path: Path) -> None:
+    """Each import gets its own .mmpart temp path (no shared deterministic name)."""
+    src_a = tmp_path / "source_a.mkv"
+    src_a.write_bytes(b"content from source a")
+    src_b = tmp_path / "source_b.mkv"
+    src_b.write_bytes(b"content from source b longer")
+    dst = tmp_path / "target.mkv"
+
+    recorded: list[Path] = []
+    real_copy = __import__("shutil").copy
+
+    def _recording_copy(*, src: Path, dst: Path) -> None:
+        recorded.append(dst)
+        real_copy(src=src, dst=dst)
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with (
+        patch.object(Path, "hardlink_to", _failing_hardlink),
+        patch("miramedia.imports.files.shutil.copy", side_effect=_recording_copy),
+    ):
+        import_file(dst, src_a, overwrite=True)
+        import_file(dst, src_b, overwrite=True)
+
+    assert len(recorded) == 2
+    assert recorded[0] != recorded[1]
+    assert all(p.name.endswith(".mmpart") for p in recorded)
+    assert dst.read_bytes() == b"content from source b longer"
+
+
+def test_import_file_concurrent_publish_overwrite_false_conflict(
+    tmp_path: Path,
+) -> None:
+    """Target appearing mid-copy with different content raises ImportConflictError."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"the source content")
+    dst = tmp_path / "target.mkv"
+    preexisting = b"different pre-existing"
+
+    real_copy = __import__("shutil").copy
+
+    def _interleaved_copy(*, src: Path, dst: Path) -> None:
+        real_copy(src=src, dst=dst)
+        dst.parent.joinpath("target.mkv").write_bytes(preexisting)
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with (
+        patch.object(Path, "hardlink_to", _failing_hardlink),
+        patch("miramedia.imports.files.shutil.copy", side_effect=_interleaved_copy),
+    ):
+        with pytest.raises(ImportConflictError):
+            import_file(dst, src, overwrite=False)
+
+    assert dst.read_bytes() == preexisting
+
+
+def test_import_file_concurrent_publish_overwrite_false_idempotent(
+    tmp_path: Path,
+) -> None:
+    """Target appearing mid-copy with same content is idempotent success."""
+    src = tmp_path / "source.mkv"
+    content = b"the source content"
+    src.write_bytes(content)
+    dst = tmp_path / "target.mkv"
+
+    real_copy = __import__("shutil").copy
+
+    def _interleaved_copy(*, src: Path, dst: Path) -> None:
+        real_copy(src=src, dst=dst)
+        dst.parent.joinpath("target.mkv").write_bytes(content)
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with (
+        patch.object(Path, "hardlink_to", _failing_hardlink),
+        patch("miramedia.imports.files.shutil.copy", side_effect=_interleaved_copy),
+    ):
+        import_file(dst, src, overwrite=False)
+
+    assert dst.read_bytes() == content
+
+
+def test_import_file_concurrent_publish_overwrite_true_replaces(
+    tmp_path: Path,
+) -> None:
+    """Target appearing mid-copy is replaced when overwrite=True."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"final source content")
+    dst = tmp_path / "target.mkv"
+
+    real_copy = __import__("shutil").copy
+
+    def _interleaved_copy(*, src: Path, dst: Path) -> None:
+        real_copy(src=src, dst=dst)
+        dst.parent.joinpath("target.mkv").write_bytes(b"stale mid-copy")
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with (
+        patch.object(Path, "hardlink_to", _failing_hardlink),
+        patch("miramedia.imports.files.shutil.copy", side_effect=_interleaved_copy),
+    ):
+        import_file(dst, src, overwrite=True)
+
+    assert dst.read_bytes() == b"final source content"
+
+
+def test_import_file_stale_sweep_keeps_stamped_hardlinked_temp(tmp_path: Path) -> None:
+    """Stale orphans are swept; a stamped hardlinked in-flight temp survives old source mtime."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"import content")
+    old = time.time() - 2 * 86400
+    os.utime(src, (old, old))
+
+    dst = tmp_path / "target.mkv"
+
+    stale_orphan = tmp_path / "target.mkv.deadbeef.mmpart"
+    stale_orphan.write_bytes(b"orphan")
+    os.utime(stale_orphan, (old, old))
+
+    inflight = tmp_path / "target.mkv.inflight.mmpart"
+    inflight.hardlink_to(src)
+    os.utime(inflight, None)
+
+    import_file(dst, src)
+
+    assert not stale_orphan.exists()
+    assert inflight.exists()
+    assert dst.read_bytes() == b"import content"
+
+
+def test_import_file_old_source_hardlink_publish_succeeds(tmp_path: Path) -> None:
+    """Hardlink import of an old-source file publishes correctly after temp mtime stamp."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"old source content")
+    old = time.time() - 2 * 86400
+    os.utime(src, (old, old))
+
+    dst = tmp_path / "target.mkv"
+
+    import_file(dst, src)
+
+    assert dst.exists()
+    assert dst.read_bytes() == b"old source content"
+    assert dst.stat().st_ino == src.stat().st_ino
+
+
+def test_import_file_stale_temp_sweep(tmp_path: Path) -> None:
+    """Orphan .mmpart files older than 24h are removed; recent ones survive."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"import content")
+    dst = tmp_path / "target.mkv"
+
+    stale = tmp_path / "target.mkv.deadbeef.mmpart"
+    stale.write_bytes(b"orphan")
+    old_mtime = time.time() - 25 * 3600
+    os.utime(stale, (old_mtime, old_mtime))
+
+    fresh = tmp_path / "target.mkv.cafebabe.mmpart"
+    fresh.write_bytes(b"recent orphan")
+
+    import_file(dst, src)
+
+    assert not stale.exists()
+    assert fresh.exists()
+    assert dst.read_bytes() == b"import content"
+
+
+def test_import_file_no_temp_leak_on_copy_failure(tmp_path: Path) -> None:
+    """Failed copy path removes the unique .mmpart temp."""
+    src = tmp_path / "source.mkv"
+    src.write_bytes(b"data")
+    dst = tmp_path / "target.mkv"
+
+    def _failing_hardlink(self: Path, target: Path) -> None:  # noqa: ARG001
+        raise OSError("simulated cross-device link")
+
+    with (
+        patch.object(Path, "hardlink_to", _failing_hardlink),
+        patch("miramedia.imports.files.shutil.copy", side_effect=OSError("disk full")),
+    ):
+        with pytest.raises(DiskSpaceError):
+            import_file(dst, src)
+
+    assert _mmpart_files(tmp_path) == []
 
 
 # ---------------------------------------------------------------------------
