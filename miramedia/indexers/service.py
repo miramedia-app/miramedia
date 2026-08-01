@@ -29,15 +29,20 @@ _BREAKER_COOLDOWN = max(
 _INDEXER_FANOUT_LIMIT = max(1, int(os.getenv("MIRAMEDIA_INDEXER_FANOUT_LIMIT", "8")))
 
 
-def _query_variants(name: str, suffix: str = "") -> list[str]:
+def _query_variants(name: str, suffix: str = "", year: int | None = None) -> list[str]:
     """Sanitized search queries for a media name.
 
-    Full title plus its pre-colon main title — release groups usually drop
-    metadata subtitles, so a subtitle-only query returns nothing on most
-    trackers.
+    Always search the full title. A pre-colon fallback is safe only when it
+    can be qualified with the media's premiere year; otherwise franchise
+    titles such as ``Star Trek: Starfleet Academy`` become a dangerously broad
+    ``Star Trek`` query.
     """
     queries: list[str] = []
-    for variant in search_name_variants(name):
+    for index, variant in enumerate(search_name_variants(name)):
+        if index > 0:
+            if year is None:
+                continue
+            variant = f"{variant} {year}"
         query = sanitize_search_query(f"{variant}{suffix}")
         if query and query not in queries:
             queries.append(query)
@@ -221,7 +226,7 @@ class IndexerService:
         self, movie: Movie, on_partial: OnPartial | None = None
     ) -> list[IndexerQueryResult]:
         await self._ensure_initialized()
-        queries = _query_variants(movie.name)
+        queries = _query_variants(movie.name, year=movie.year)
 
         extra = {"on_site_result": on_partial} if on_partial is not None else {}
         sem = asyncio.Semaphore(_INDEXER_FANOUT_LIMIT)
@@ -272,7 +277,7 @@ class IndexerService:
         self, show: Show, season_number: int, on_partial: OnPartial | None = None
     ) -> list[IndexerQueryResult]:
         await self._ensure_initialized()
-        queries = _query_variants(show.name, f" S{season_number:02d}")
+        queries = _query_variants(show.name, f" S{season_number:02d}", year=show.year)
 
         extra = {"on_site_result": on_partial} if on_partial is not None else {}
         sem = asyncio.Semaphore(_INDEXER_FANOUT_LIMIT)
@@ -328,7 +333,9 @@ class IndexerService:
     ) -> list[IndexerQueryResult]:
         await self._ensure_initialized()
         queries = _query_variants(
-            show.name, f" S{season_number:02d}E{episode_number:02d}"
+            show.name,
+            f" S{season_number:02d}E{episode_number:02d}",
+            year=show.year,
         )
 
         extra = {"on_site_result": on_partial} if on_partial is not None else {}

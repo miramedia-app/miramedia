@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 import pydantic
 from pydantic import BaseModel, ConfigDict, computed_field
 
+from miramedia.settings.validation import SECRET_MASK
 from miramedia.torrents.models import Quality
 
 IndexerQueryResultId = typing.NewType("IndexerQueryResultId", UUID)
@@ -223,6 +224,18 @@ class IndexerSiteRead(BaseModel):
     last_test_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+def mask_indexer_site_read(site: IndexerSiteRead) -> IndexerSiteRead:
+    if site.api_key:
+        return site.model_copy(update={"api_key": SECRET_MASK})
+    return site
+
+
+def strip_indexer_api_key_sentinel(data: IndexerSiteUpdate) -> IndexerSiteUpdate:
+    if data.api_key == SECRET_MASK:
+        return data.model_copy(update={"api_key": None})
+    return data
 
 
 class IndexerSiteTestResult(BaseModel):

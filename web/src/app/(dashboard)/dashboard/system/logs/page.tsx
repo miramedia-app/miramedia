@@ -59,6 +59,8 @@ import type { components } from "@/lib/api/api";
 
 type ActivityLogRead = components["schemas"]["ActivityLogRead"];
 
+const getLogEntryId = (entry: ActivityLogRead) => entry.id;
+
 const LEVEL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   CRITICAL: AlertOctagon,
   ERROR: AlertOctagon,
@@ -229,7 +231,10 @@ function LogsPageInner() {
       if (moduleFilter) params.set("module", moduleFilter);
       if (search) params.set("search", search);
 
-      const response = await fetch(`/api/v1/system/logs/export?${params.toString()}`, {
+      // Same base-URL rule as the typed client and SSE: a bare relative path
+      // hits the wrong origin in split-origin deploys.
+      const base = process.env.NEXT_PUBLIC_API_URL || "";
+      const response = await fetch(`${base}/api/v1/system/logs/export?${params.toString()}`, {
         credentials: "include",
       });
       if (!response.ok) {
@@ -345,6 +350,10 @@ function LogsPageInner() {
     }
     return Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [logsQuery.data, group]);
+
+  // Every log entry expands (the message pane is always rendered), so the
+  // predicate is a constant — it just lets collapsed rows skip building it.
+  const isLogExpandable = React.useCallback(() => true, []);
 
   function renderExpandedContent(entry: ActivityLogRead) {
     return (
@@ -549,12 +558,13 @@ function LogsPageInner() {
                   {!isCollapsed && (
                     <DataListSection
                       data={groupItems}
-                      getId={(entry) => entry.id}
+                      getId={getLogEntryId}
                       density="compact"
                       columns={columns}
                       showHeader={false}
                       bordered={false}
                       expandedContent={renderExpandedContent}
+                      isExpandable={isLogExpandable}
                     />
                   )}
                 </React.Fragment>
@@ -564,10 +574,11 @@ function LogsPageInner() {
         ) : (
           <DataListSection
             data={items}
-            getId={(entry) => entry.id}
+            getId={getLogEntryId}
             density="compact"
             columns={columns}
             expandedContent={renderExpandedContent}
+            isExpandable={isLogExpandable}
           />
         )}
 

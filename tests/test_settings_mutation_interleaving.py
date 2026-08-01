@@ -470,3 +470,105 @@ def test_failed_mutation_rollback_restores_staged_prior_runtime_not_active_store
         assert get_local_committed_revision() == 4
 
     asyncio.run(_run())
+
+
+def test_postcommit_publish_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from miramedia.auth.runtime import build_auth_runtime_generation
+    from miramedia.settings.mutation import (
+        SETTINGS_MUTATION_POSTCOMMIT_DETAIL,
+        SettingsMutationError,
+        reset_settings_mutation_state_for_tests,
+    )
+
+    reconcile_calls: list[bool] = []
+
+    async def _reconcile(_fetch: object) -> None:
+        reconcile_calls.append(True)
+
+    def _boom_publish(_revision: int) -> None:
+        msg = "publish failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(
+        "miramedia.settings.mutation.reconcile_settings_revision_from_db",
+        _reconcile,
+    )
+    monkeypatch.setattr(
+        "miramedia.settings.mutation.publish_settings_revision_changed",
+        _boom_publish,
+    )
+
+    async def _run() -> None:
+        reset_settings_mutation_state_for_tests()
+        repo = FakeSettingsRepository()
+
+        async def _stage(overrides: dict) -> Any:
+            from miramedia.settings.service import build_isolated_config
+
+            config = build_isolated_config(overrides)
+            return await build_auth_runtime_generation(config.auth, config.misc)
+
+        async def _prepare() -> tuple[dict, dict, int]:
+            prior, revision = await repo.get_overrides_with_revision()
+            return {"misc": {"development": True}}, prior, revision
+
+        async def _fetch() -> tuple[dict, int]:
+            return await repo.get_overrides_with_revision()
+
+        with pytest.raises(
+            SettingsMutationError, match=SETTINGS_MUTATION_POSTCOMMIT_DETAIL
+        ):
+            await execute_settings_mutation(
+                prepare=_prepare,
+                persist_overrides_cas=repo.save_overrides_cas,
+                fetch_current=_fetch,
+                stage_auth_runtime=_stage,
+            )
+
+        assert repo.save_calls
+        assert reconcile_calls == [True]
+
+    asyncio.run(_run())
+
+
+def test_precommit_failure_still_raises_without_reconcile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from miramedia.settings.mutation import SettingsMutationError
+
+    reconcile_calls: list[bool] = []
+
+    async def _reconcile(_fetch: object) -> None:
+        reconcile_calls.append(True)
+
+    monkeypatch.setattr(
+        "miramedia.settings.mutation.reconcile_settings_revision_from_db",
+        _reconcile,
+    )
+
+    async def _run() -> None:
+        repo = FakeSettingsRepository()
+
+        async def _boom_persist(
+            _overrides: dict, _expected_revision: int
+        ) -> tuple[dict, int]:
+            msg = "persist failed"
+            raise RuntimeError(msg)
+
+        async def _prepare() -> tuple[dict, dict, int]:
+            prior, revision = await repo.get_overrides_with_revision()
+            return {"misc": {"development": True}}, prior, revision
+
+        async def _fetch() -> tuple[dict, int]:
+            return await repo.get_overrides_with_revision()
+
+        with pytest.raises(SettingsMutationError):
+            await execute_settings_mutation(
+                prepare=_prepare,
+                persist_overrides_cas=_boom_persist,
+                fetch_current=_fetch,
+            )
+
+        assert reconcile_calls == []
+
+    asyncio.run(_run())

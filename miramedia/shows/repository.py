@@ -574,6 +574,18 @@ class ShowRepository:
             db_show.year = show.year
             db_show.original_language = show.original_language
             db_show.imdb_id = show.imdb_id
+            existing_seasons = {season.number: season for season in db_show.seasons}
+            for season in show.seasons:
+                db_season = existing_seasons.get(season.number)
+                if db_season is None:
+                    continue
+                existing_episodes = {
+                    episode.number: episode for episode in db_season.episodes
+                }
+                for episode in season.episodes:
+                    db_episode = existing_episodes.get(episode.number)
+                    if db_episode is not None and episode.air_date is not None:
+                        db_episode.air_date = episode.air_date
         else:  # Insert new show
             db_show = Show(
                 id=show.id,
@@ -598,6 +610,7 @@ class ShowRepository:
                                 number=episode.number,
                                 title=episode.title,
                                 overview=episode.overview,
+                                air_date=episode.air_date,
                                 skipped=episode.skipped,
                             )
                             for episode in season.episodes
@@ -792,6 +805,28 @@ class ShowRepository:
             )
             raise
 
+    async def add_episode_files(
+        self, episode_files: list[EpisodeFileSchema]
+    ) -> list[EpisodeFileSchema]:
+        """Insert many episode-file rows in one transaction (single commit)."""
+        db_models = [
+            EpisodeFile(**episode_file.model_dump()) for episode_file in episode_files
+        ]
+        try:
+            self.db.add_all(db_models)
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            log.exception(
+                "Integrity error while adding %d episode files", len(db_models)
+            )
+            raise
+        except SQLAlchemyError as e:
+            await self.db.rollback()
+            log.error(f"Database error while adding episode files: {e}")
+            raise
+        return [EpisodeFileSchema.model_validate(model) for model in db_models]
+
     async def add_episode_file(
         self, episode_file: EpisodeFileSchema
     ) -> EpisodeFileSchema:
@@ -803,20 +838,8 @@ class ShowRepository:
         :raises IntegrityError: If the record violates constraints.
         :raises SQLAlchemyError: If a database error occurs.
         """
-        db_model = EpisodeFile(**episode_file.model_dump())
-        try:
-            self.db.add(db_model)
-            await self.db.commit()
-            await self.db.refresh(db_model)
-            return EpisodeFileSchema.model_validate(db_model)
-        except IntegrityError as e:
-            await self.db.rollback()
-            log.error(f"Integrity error while adding episode file: {e}")
-            raise
-        except SQLAlchemyError as e:
-            await self.db.rollback()
-            log.error(f"Database error while adding episode file: {e}")
-            raise
+        results = await self.add_episode_files([episode_file])
+        return results[0]
 
     async def get_episode_file_by_id(self, file_id: UUID) -> EpisodeFileSchema | None:
         """Load a single episode file row by its surrogate id, or ``None``."""
@@ -1400,6 +1423,7 @@ class ShowRepository:
                     id=ep_schema.id,
                     number=ep_schema.number,
                     title=ep_schema.title,
+                    air_date=ep_schema.air_date,
                     skipped=skipped,
                 )
                 for ep_schema in season_data.episodes
@@ -1466,6 +1490,45 @@ class ShowRepository:
         )
         db_episode = (await self.db.execute(stmt)).unique().scalar_one()
         return EpisodeSchema.model_validate(db_episode)
+
+    async def add_episodes_to_season(
+        self,
+        season_id: SeasonId,
+        episodes: list[EpisodeSchema],
+        *,
+        skipped: bool = False,
+    ) -> list[EpisodeSchema]:
+        """Insert many episodes for a season in one transaction (single commit)."""
+        db_season = await self.db.get(Season, season_id)
+        if not db_season:
+            msg = f"Season with id {season_id} not found."
+            raise NotFoundError(msg)
+
+        if not episodes:
+            return []
+
+        numbers = [episode.number for episode in episodes]
+        stmt = select(Episode.number).where(
+            Episode.season_id == season_id,
+            Episode.number.in_(numbers),
+        )
+        existing_numbers = set((await self.db.execute(stmt)).scalars())
+        new_models = [
+            Episode(
+                id=episode.id,
+                season_id=season_id,
+                number=episode.number,
+                title=episode.title,
+                air_date=episode.air_date,
+                skipped=skipped,
+            )
+            for episode in episodes
+            if episode.number not in existing_numbers
+        ]
+        if new_models:
+            self.db.add_all(new_models)
+            await self.db.commit()
+        return [EpisodeSchema.model_validate(model) for model in new_models]
 
     async def update_show_skipped(self, show_id: ShowId, skipped: bool) -> None:
         db_show = await self.db.get(Show, show_id)

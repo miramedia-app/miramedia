@@ -109,7 +109,14 @@ export function UpdatesTab({
                   variant="outline"
                   onClick={async () => {
                     try {
-                      await apiClient.POST("/api/v1/system/updates/check", {} as never);
+                      const { error } = await apiClient.POST(
+                        "/api/v1/system/updates/check",
+                        {} as never,
+                      );
+                      if (error) {
+                        toast.error("Update check failed");
+                        return;
+                      }
                       await qc.invalidateQueries({ queryKey: ["system", "updates"] });
                       toast.success("Update check complete");
                     } catch {

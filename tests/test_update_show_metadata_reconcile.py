@@ -61,12 +61,15 @@ def _fresh_show_from_db(db_show: Show) -> Show:
 def _run_reconcile(
     db_show: Show,
     fresh_show: Show,
-) -> AsyncMock:
+) -> MagicMock:
     show_repo = MagicMock()
     show_repo.db = MagicMock()
+    show_repo.db.commit = AsyncMock()
+    show_repo.db.close = AsyncMock()
     show_repo.update_show_attributes = AsyncMock()
-    update_episode = AsyncMock()
-    show_repo.update_episode_attributes = update_episode
+    show_repo.update_episode_attributes = AsyncMock()
+    show_repo.add_episodes_to_season = AsyncMock()
+    show_repo.add_season_to_show = AsyncMock()
     show_repo.get_show_by_id = AsyncMock(return_value=db_show)
 
     svc, _, _ = build_show_service(show_repo=show_repo)  # type: ignore[arg-type]
@@ -84,7 +87,7 @@ def _run_reconcile(
             )
         )
 
-    return update_episode
+    return show_repo
 
 
 class TestUpdateShowMetadataEpisodeReconcile:
@@ -95,9 +98,9 @@ class TestUpdateShowMetadataEpisodeReconcile:
         db_show = _show_with_episodes(existing)
         fresh_show = _fresh_show_from_db(db_show)
 
-        update_episode = _run_reconcile(db_show, fresh_show)
+        show_repo = _run_reconcile(db_show, fresh_show)
 
-        update_episode.assert_not_called()
+        show_repo.update_episode_attributes.assert_not_called()
 
     def test_updates_when_title_differs(self) -> None:
         existing = _episode(
@@ -109,9 +112,9 @@ class TestUpdateShowMetadataEpisodeReconcile:
             fresh_show.seasons[0].episodes[0].model_copy(update={"title": "New Title"})
         )
 
-        update_episode = _run_reconcile(db_show, fresh_show)
+        show_repo = _run_reconcile(db_show, fresh_show)
 
-        update_episode.assert_awaited_once_with(
+        show_repo.update_episode_attributes.assert_awaited_once_with(
             episode_id=existing.id,
             title="New Title",
             overview="Synopsis",
@@ -128,9 +131,9 @@ class TestUpdateShowMetadataEpisodeReconcile:
             fresh_show.seasons[0].episodes[0].model_copy(update={"air_date": None})
         )
 
-        update_episode = _run_reconcile(db_show, fresh_show)
+        show_repo = _run_reconcile(db_show, fresh_show)
 
-        update_episode.assert_not_called()
+        show_repo.update_episode_attributes.assert_not_called()
 
     def test_updates_when_overview_differs(self) -> None:
         existing = _episode(
@@ -144,9 +147,9 @@ class TestUpdateShowMetadataEpisodeReconcile:
             .model_copy(update={"overview": "New overview"})
         )
 
-        update_episode = _run_reconcile(db_show, fresh_show)
+        show_repo = _run_reconcile(db_show, fresh_show)
 
-        update_episode.assert_awaited_once_with(
+        show_repo.update_episode_attributes.assert_awaited_once_with(
             episode_id=existing.id,
             title="Pilot",
             overview="New overview",
@@ -163,11 +166,44 @@ class TestUpdateShowMetadataEpisodeReconcile:
             fresh_show.seasons[0].episodes[1].model_copy(update={"title": "E2 revised"})
         )
 
-        update_episode = _run_reconcile(db_show, fresh_show)
+        show_repo = _run_reconcile(db_show, fresh_show)
 
-        update_episode.assert_awaited_once_with(
+        show_repo.update_episode_attributes.assert_awaited_once_with(
             episode_id=ep2.id,
             title="E2 revised",
             overview="B",
             air_date=date(2020, 1, 8),
         )
+
+    def test_new_episode_keeps_air_date(self) -> None:
+        existing = _episode(1, air_date=date(2020, 1, 1))
+        db_show = _show_with_episodes(existing)
+        fresh_show = _fresh_show_from_db(db_show)
+        fresh_show.seasons[0].episodes.append(
+            _episode(2, title="Episode 2", air_date=date(2020, 1, 8))
+        )
+
+        show_repo = _run_reconcile(db_show, fresh_show)
+
+        episodes = show_repo.add_episodes_to_season.await_args.kwargs["episodes"]
+        assert len(episodes) == 1
+        assert episodes[0].air_date == date(2020, 1, 8)
+
+    def test_new_season_keeps_episode_air_date(self) -> None:
+        db_show = _show_with_episodes(_episode(1, air_date=date(2020, 1, 1)))
+        fresh_show = _fresh_show_from_db(db_show)
+        fresh_show.seasons.append(
+            Season(
+                id=SeasonId(uuid.uuid4()),
+                show_id=db_show.id,
+                number=SeasonNumber(2),
+                episodes=[
+                    _episode(1, title="Season premiere", air_date=date(2021, 1, 1))
+                ],
+            )
+        )
+
+        show_repo = _run_reconcile(db_show, fresh_show)
+
+        season_data = show_repo.add_season_to_show.await_args.kwargs["season_data"]
+        assert season_data.episodes[0].air_date == date(2021, 1, 1)

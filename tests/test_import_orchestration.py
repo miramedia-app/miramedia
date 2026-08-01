@@ -224,7 +224,46 @@ class TestImportEpisodeFromFile:
         assert err is None
         linked = list((tmp_path / "shows").rglob("*.mkv"))
         assert len(linked) == 1
-        assert linked[0].stat().st_size == source.stat().st_size
+        assert linked[0].stat().st_ino == source.stat().st_ino
+        assert linked[0].stat().st_dev == source.stat().st_dev
+
+    def test_episode_subtitle_linking_allows_empty_language(
+        self, tmp_path: Path
+    ) -> None:
+        show = make_show(name="Test Show", year=2020)
+        season = show.seasons[0]
+        episode = season.episodes[0]
+        repo = FakeShowRepository()
+        repo.add_show(show)
+
+        source = tmp_path / "incoming" / "Test.Show.S01E01.1080p.mkv"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"video-bytes")
+        sub = tmp_path / "incoming" / "Test.Show.S01E01.forced.srt"
+        sub.write_bytes(b"forced")
+
+        svc, _, _ = build_show_service(show_repo=repo)
+
+        with ExitStack() as stack:
+            for p in _patch_config(tmp_path):
+                stack.enter_context(p)
+            _enter_patches(stack)
+            outcome, err = run_async(
+                svc.import_episode_from_file(
+                    show=show,
+                    season=season,
+                    episode=episode,
+                    source_file=source,
+                    subtitle_files=[sub],
+                    torrent_id=None,
+                )
+            )
+
+        assert outcome == ImportOutcome.imported
+        assert err is None
+        linked_subs = list((tmp_path / "shows").rglob("*.srt"))
+        assert len(linked_subs) == 1
+        assert linked_subs[0].name.endswith(".forced.srt")
 
     def test_reimport_same_source_target_is_noop(self, tmp_path: Path) -> None:
         """Second import of the same source/target pair is idempotent (same inode)."""

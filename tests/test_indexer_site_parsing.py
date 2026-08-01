@@ -15,6 +15,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 from selectolax.parser import HTMLParser
 
+from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.sites.base import DEFAULT_TRACKERS, build_magnet
 from miramedia.indexers.sites.eztv import EztvSite
 from miramedia.indexers.sites.limetorrents import LimeTorrentsSite
@@ -28,6 +29,19 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures" / "indexer_sites"
 
 _VALID_HEX_HASH = "aabbccddeeff00112233445566778899aabbccdd"
 _VALID_BASE32_HASH = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
+
+
+def _indexer_result(title: str) -> IndexerQueryResult:
+    return IndexerQueryResult(
+        title=title,
+        download_url=f"magnet:?xt=urn:btih:{title}",
+        seeders=10,
+        flags=[],
+        size=2_000_000_000,
+        usenet=False,
+        age=1,
+        indexer="fixture",
+    )
 
 
 def _magnet_query_params(magnet: str) -> dict[str, list[str]]:
@@ -110,6 +124,43 @@ class TestBuildMagnet:
         assert len(params["tr"]) == len(DEFAULT_TRACKERS)
         assert set(params["tr"]) == set(DEFAULT_TRACKERS)
         assert unquote(params["dn"][0]) == "Show & Partner S01E01"
+
+
+class TestEztvTextSearch:
+    def test_eztv_text_search_filters_latest_feed_by_query(self) -> None:
+        site = EztvSite()
+        results = [
+            _indexer_result("Special Ops Lioness S03E01 1080p WEB-DL x264"),
+            _indexer_result("Special Ops Lioness S01E01 1080p WEB-DL x264"),
+            _indexer_result("Married at First Sight S20E07 1080p WEB-DL x264"),
+        ]
+
+        with patch.object(site, "_fetch_eztv_api", return_value=results):
+            matched = site._search_eztv("Lioness S03")
+
+        assert [result.title for result in matched] == [
+            "Special Ops Lioness S03E01 1080p WEB-DL x264"
+        ]
+
+    def test_eztv_text_search_does_not_require_show_premiere_year(self) -> None:
+        site = EztvSite()
+        result = _indexer_result("Special Ops Lioness S01E01 1080p WEB-DL x264")
+
+        with patch.object(site, "_fetch_eztv_api", return_value=[result]):
+            matched = site._search_eztv("Lioness 2023")
+
+        assert matched == [result]
+
+    @pytest.mark.parametrize("query", ["1923 2022", "1923 S02"])
+    def test_eztv_text_search_preserves_year_in_show_title(self, query: str) -> None:
+        site = EztvSite()
+        expected = _indexer_result("1923 S02E01 1080p WEB-DL x264")
+        unrelated = _indexer_result("Unrelated Show S02E01 1080p WEB-DL x264")
+
+        with patch.object(site, "_fetch_eztv_api", return_value=[expected, unrelated]):
+            matched = site._search_eztv(query)
+
+        assert matched == [expected]
 
 
 # ---------------------------------------------------------------------------

@@ -48,14 +48,18 @@ import asyncio
 import logging
 import shutil
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any, Generic, Literal, Protocol, TypeVar, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from miramedia.config import LibraryItem
+from miramedia.config import LibraryItem, MiraMediaConfig
 from miramedia.exceptions import BadRequestError
 from miramedia.file_status import ImportOutcome
 from miramedia.imports.files import (
@@ -516,7 +520,7 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
 
         torrents = await self.torrent_service.get_all_torrents()
         finished = [t for t in torrents if t.status == TorrentStatus.finished]
-        ready_ids: list[tuple[TorrentId, str]] = []
+        ready_items: list[tuple[TorrentId, str]] = []
         if finished:
             imported_map = await self.torrent_service.bulk_check_torrents_imported(
                 [t.id for t in finished]
@@ -526,7 +530,11 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
                     continue
                 if not await self.torrent_service.is_due_for_retry(t):
                     continue
-                ready_ids.append((t.id, t.title))
+                # Preload filters media-less torrents; loop re-resolves per item.
+                media = await self._get_media_of_torrent(self, t)
+                if media is None:
+                    continue
+                ready_items.append((t.id, t.title))
 
         from miramedia.database import release_session_before_external_io
 
@@ -537,8 +545,8 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
         )
 
         imported_count = 0
-        for torrent_id, torrent_title in ready_ids:
-            media = None
+        for torrent_id, torrent_title in ready_items:
+            media: TMedia | None = None
             try:
                 async with self._bg_service() as fresh_svc:
                     t = await fresh_svc.torrent_service.torrent_repository.get_torrent_by_id(
@@ -546,6 +554,9 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
                     )
                     if t is None:
                         continue
+                    # Re-resolve on the fresh session — only for items that passed
+                    # the preload filter; avoids detached ORM instances and stale
+                    # snapshots when several torrents share one title.
                     media = await self._get_media_of_torrent(fresh_svc, t)
                     if media is None:
                         continue
@@ -624,3 +635,226 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
             **self._torrent_repository_kwargs(),
             **link_kwargs,
         )
+
+
+TMediaId_inv = TypeVar("TMediaId_inv", ShowId, MovieId)
+TMedia_inv = TypeVar("TMedia_inv", Show, Movie)
+
+
+@dataclass(frozen=True)
+class MetadataRefreshHooks(Generic[TMediaId_inv, TMedia_inv]):
+    bg_service: Callable[[], AbstractAsyncContextManager[Any]]
+    media_noun: Literal["show", "movie"]
+    get_media: Callable[[Any, TMediaId_inv], Awaitable[TMedia_inv | None]]
+    update_metadata: Callable[
+        [Any, TMedia_inv, AbstractMetadataProvider, Show | Movie | None],
+        Awaitable[TMedia_inv | None],
+    ]
+    mark_failure: Callable[[TMediaId_inv, str], Awaitable[None]]
+    fetch_native_metadata: Callable[
+        [AbstractMetadataProvider, str, str | None], Show | Movie | None
+    ]
+
+
+def _metadata_failure_backoff_until() -> datetime:
+    hours = max(1, int(MiraMediaConfig().metadata.failure_backoff_hours))
+    return datetime.now(UTC) + timedelta(hours=hours)
+
+
+async def _mark_media_metadata_failure(
+    media_id: ShowId | MovieId,
+    reason: str,
+    *,
+    bg_service: Callable[[], AbstractAsyncContextManager[Any]],
+    repository_attr: Literal["show_repository", "movie_repository"],
+    media_noun: Literal["show", "movie"],
+) -> None:
+    """Stamp a failed metadata attempt so the scheduler backs off."""
+    backoff_until = _metadata_failure_backoff_until()
+    try:
+        async with bg_service() as svc:
+            repo = getattr(svc, repository_attr)
+            await repo.mark_metadata_failure(media_id, backoff_until)
+        log.info(
+            "Metadata refresh for %s id=%s backed off until %s (%s)",
+            media_noun,
+            media_id,
+            backoff_until.isoformat(),
+            reason,
+        )
+    except Exception:
+        log.exception(
+            "Failed to mark %s metadata failure for id=%s", media_noun, media_id
+        )
+
+
+async def _try_update_media_metadata_id_impl(
+    media_id: TMediaId_inv,
+    *,
+    hooks: MetadataRefreshHooks[TMediaId_inv, TMedia_inv],
+) -> None:
+    """Refresh metadata for a single title in a fresh bg session."""
+    from miramedia.database import release_session_before_external_io
+    from miramedia.metadata.dependencies import resolve_metadata_provider
+
+    repo_attr = f"{hooks.media_noun}_repository"
+    try:
+        async with hooks.bg_service() as svc:
+            media = await hooks.get_media(svc, media_id)
+            if media is None:
+                return
+            metadata_provider = resolve_metadata_provider(media.metadata_provider)
+            if not metadata_provider:
+                log.warning(
+                    "No available metadata provider for %s %s, skipping update.",
+                    hooks.media_noun,
+                    media.name,
+                )
+                repo = getattr(svc, repo_attr)
+                await repo.mark_metadata_failure(
+                    media.id, _metadata_failure_backoff_until()
+                )
+                return
+
+            fresh_data = None
+            if (
+                metadata_provider.name != media.metadata_provider
+                and metadata_provider.name == "native"
+                and not media.external_id.startswith("tt")
+            ):
+                if not media.imdb_id:
+                    log.warning(
+                        "Cannot update %s: native provider requires IMDb ID "
+                        "but %s only has %s ID %s",
+                        media.name,
+                        hooks.media_noun,
+                        media.metadata_provider,
+                        media.external_id,
+                    )
+                    repo = getattr(svc, repo_attr)
+                    await repo.mark_metadata_failure(
+                        media.id, _metadata_failure_backoff_until()
+                    )
+                    return
+                log.info(
+                    "Using IMDb ID %s instead of %s ID %s for native provider lookup of %s",
+                    media.imdb_id,
+                    media.metadata_provider,
+                    media.external_id,
+                    media.name,
+                )
+                await release_session_before_external_io(getattr(svc, repo_attr).db)
+                fresh_data = await asyncio.to_thread(
+                    partial(
+                        hooks.fetch_native_metadata,
+                        metadata_provider,
+                        media.imdb_id,
+                        media.original_language,
+                    )
+                )
+
+            updated_media = await hooks.update_metadata(
+                svc, media, metadata_provider, fresh_data
+            )
+            if updated_media:
+                repo = getattr(svc, repo_attr)
+                await repo.stamp_metadata_check(media.id)
+                log.debug(
+                    "Updated %s metadata",
+                    hooks.media_noun,
+                    extra={hooks.media_noun: updated_media.name},
+                )
+            else:
+                log.warning(
+                    "Failed to update metadata for %s id=%s",
+                    hooks.media_noun,
+                    media_id,
+                )
+                repo = getattr(svc, repo_attr)
+                await repo.mark_metadata_failure(
+                    media.id, _metadata_failure_backoff_until()
+                )
+    except Exception as exc:
+        from miramedia.metadata.utils import is_provider_unreachable
+
+        if is_provider_unreachable(exc):
+            log.warning(
+                "Metadata provider unreachable for %s id=%s: %s",
+                hooks.media_noun,
+                media_id,
+                exc,
+            )
+            await hooks.mark_failure(media_id, "provider unreachable")
+        else:
+            log.exception(
+                "Failed to update metadata for %s id=%s", hooks.media_noun, media_id
+            )
+            await hooks.mark_failure(media_id, "unexpected failure")
+
+
+async def _update_all_media_metadata_impl(
+    *,
+    hooks: MetadataRefreshHooks[TMediaId_inv, TMedia_inv],
+    get_ids_due_for_metadata: Callable[
+        [Any, datetime, int], Awaitable[Sequence[TMediaId_inv]]
+    ],
+    try_update_one: Callable[[TMediaId_inv], Awaitable[None]],
+) -> None:
+    """Per-iteration bg-service worker for metadata refresh."""
+    check_interval = timedelta(hours=MiraMediaConfig().metadata.check_interval_hours)
+    now = datetime.now(UTC)
+    cutoff = now - check_interval
+    batch_size = 200
+    total_checked = 0
+    seen_ids: set[TMediaId_inv] = set()
+    log.info(
+        "Updating metadata for %ss due since %s",
+        hooks.media_noun,
+        cutoff.isoformat(),
+    )
+    while True:
+        async with hooks.bg_service() as svc:
+            media_ids = await get_ids_due_for_metadata(svc, cutoff, batch_size)
+        media_ids = [mid for mid in media_ids if mid not in seen_ids]
+        if not media_ids:
+            break
+        total_checked += len(media_ids)
+        for media_id in media_ids:
+            seen_ids.add(media_id)
+            await try_update_one(media_id)
+    if total_checked:
+        log.info("Metadata refresh checked %d %ss", total_checked, hooks.media_noun)
+
+
+async def _auto_download_missing_media_impl(
+    *,
+    bg_service: Callable[[], AbstractAsyncContextManager[Any]],
+    get_candidate_flags: Callable[
+        [Any], Awaitable[Sequence[tuple[Any, bool, bool | None]]]
+    ],
+    try_auto_download_id: Callable[[Any, int], Awaitable[None]],
+    media_noun: Literal["show", "movie"],
+    max_downloads_per_item: int,
+) -> None:
+    """Per-iteration bg-service worker for continuous-download sweeps."""
+    global_default = MiraMediaConfig().misc.continuous_download
+
+    async with bg_service() as svc:
+        rows = await get_candidate_flags(svc)
+    candidate_ids = [
+        media_id
+        for media_id, skipped, continuous_download in rows
+        if not skipped
+        and (
+            continuous_download is True
+            or (continuous_download is None and global_default)
+        )
+    ]
+    log.info(
+        "Auto-download: checking %d %ss with continuous_download enabled",
+        len(candidate_ids),
+        media_noun,
+    )
+
+    for media_id in candidate_ids:
+        await try_auto_download_id(media_id, max_downloads_per_item)

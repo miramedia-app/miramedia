@@ -47,6 +47,7 @@ class AuthConfig(BaseSettings):
     session_lifetime: int = 60 * 60 * 24
     admin_emails: list[str] = []
     email_password_resets: bool = False
+    allow_registration: bool = False
     openid_connect: OpenIdConfig = OpenIdConfig()
     # None = auto: Secure iff misc.frontend_url is https. Set explicitly only
     # for setups where the scheme of frontend_url doesn't match what the

@@ -6,6 +6,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -112,6 +113,10 @@ class DatabaseLogHandler(logging.Handler):
             self._flush()
 
     def _flush(self) -> None:
+        session_maker = _get_sync_session_maker()
+        if session_maker is None:
+            return
+
         batch: list[dict] = []
         while len(batch) < self._DRAIN_PER_TICK:
             try:
@@ -129,10 +134,6 @@ class DatabaseLogHandler(logging.Handler):
             logging.getLogger(__name__).warning(
                 "DatabaseLogHandler dropped %d log record(s): queue full", dropped
             )
-
-        session_maker = _get_sync_session_maker()
-        if session_maker is None:
-            return
         # Best-effort DB write. Swallow any error (DB down, schema mismatch,
         # shutdown race) — logging must never raise into the flush thread, and
         # re-logging here would risk a feedback loop.
@@ -155,5 +156,11 @@ class DatabaseLogHandler(logging.Handler):
         self._shutdown.set()
         if self._thread.is_alive():
             self._thread.join(timeout=5.0)
-        self._flush()
+        deadline = time.monotonic() + 5.0
+        while not self._queue.empty() and time.monotonic() < deadline:
+            size_before = self._queue.qsize()
+            self._flush()
+            if self._queue.qsize() >= size_before:
+                break
+            time.sleep(0.05)
         super().close()

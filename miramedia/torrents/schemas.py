@@ -246,7 +246,7 @@ class ManualMapResult(BaseModel):
 class BulkRetryImportRequest(BaseModel):
     """IDs of torrents whose per-file import status should be reset + re-run."""
 
-    torrent_ids: list[uuid.UUID] = Field(min_length=1)
+    torrent_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
 
 
 class BulkRetryImportFailure(BaseModel):

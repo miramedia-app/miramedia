@@ -135,11 +135,8 @@ def test_download_poster_oversized_stream_no_content_length(
         def close(self) -> None:
             self.closed = True
 
-    monkeypatch.setattr(
-        utils.requests,
-        "get",
-        lambda *_args, **_kwargs: OversizedResponse(),
-    )
+    response = OversizedResponse()
+    monkeypatch.setattr(utils.requests, "get", lambda *_args, **_kwargs: response)
 
     assert (
         download_poster_image(tmp_path, "http://example.com/huge.jpg", POSTER_UUID)
@@ -148,6 +145,7 @@ def test_download_poster_oversized_stream_no_content_length(
 
     assert not tmp_path.joinpath(str(POSTER_UUID)).with_suffix(".jpg").exists()
     assert consumed["count"] <= 51
+    assert response.closed
 
 
 def test_download_poster_content_length_over_cap(
@@ -387,3 +385,38 @@ def test_download_poster_skips_unsafe_url_without_http(
         is False
     )
     assert not any(tmp_path.iterdir())
+
+
+def test_download_poster_closes_response_on_non_200(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = FakeResponse(status_code=404)
+
+    def fake_get(*_args: object, **_kwargs: object) -> FakeResponse:
+        return response
+
+    monkeypatch.setattr(utils.requests, "get", fake_get)
+
+    assert (
+        download_poster_image(tmp_path, "http://example.com/missing.jpg", POSTER_UUID)
+        is False
+    )
+    assert response.closed
+
+
+def test_download_poster_closes_response_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    jpeg_bytes = _make_small_jpeg_bytes()
+    response = FakeResponse(chunks=[jpeg_bytes])
+
+    def fake_get(*_args: object, **_kwargs: object) -> FakeResponse:
+        return response
+
+    monkeypatch.setattr(utils.requests, "get", fake_get)
+
+    assert (
+        download_poster_image(tmp_path, "http://example.com/poster.jpg", POSTER_UUID)
+        is True
+    )
+    assert response.closed

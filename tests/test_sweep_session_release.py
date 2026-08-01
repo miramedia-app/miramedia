@@ -7,11 +7,12 @@ import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from miramedia.movies.schemas import MovieId
 from miramedia.torrents.schemas import Quality, TorrentStatus
 from miramedia.torrents.schemas import Torrent as TorrentSchema
 from miramedia.torrents.service import TorrentService
 from tests.fakes import build_show_service, run_async
-from tests.fakes.repositories import FakeTorrentRepository, make_torrent
+from tests.fakes.repositories import FakeTorrentRepository, make_show, make_torrent
 
 
 def _run(coro):
@@ -55,6 +56,7 @@ def test_get_all_torrents_releases_session_before_rpc(monkeypatch) -> None:
 
 
 def test_import_all_torrents_releases_session_before_import_loop() -> None:
+    show = make_show()
     torrent = make_torrent()
     svc, _, torrent_repo = build_show_service(torrent_repo=FakeTorrentRepository())
     torrent_repo.torrents[torrent.id] = torrent
@@ -108,8 +110,65 @@ def test_import_all_torrents_releases_session_before_import_loop() -> None:
             "get_torrent_by_id",
             AsyncMock(return_value=torrent),
         ),
-        patch.object(svc, "_get_media_of_torrent", AsyncMock(return_value=object())),
+        patch.object(svc, "_get_media_of_torrent", AsyncMock(return_value=show)),
     ):
         run_async(svc.import_all_torrents())
 
     assert order.index("release") < order.index("import")
+
+
+def test_auto_download_movie_releases_session_before_indexer_fan_out(
+    monkeypatch,
+) -> None:
+    movie_id = MovieId(uuid.uuid4())
+    fake_repo = MagicMock()
+    fake_repo.db = MagicMock()
+    fake_repo.get_movie_by_id = AsyncMock(
+        return_value=type(
+            "Movie",
+            (),
+            {
+                "id": movie_id,
+                "name": "Test Movie",
+                "year": 2024,
+                "skipped": False,
+                "continuous_download": None,
+                "release_date": None,
+                "auto_download_backoff_until": None,
+            },
+        )()
+    )
+    fake_repo.get_movie_files_by_movie_id = AsyncMock(return_value=[])
+
+    order: list[str] = []
+
+    async def _release(_db: object) -> None:
+        order.append("release")
+
+    async def _fan_out(*, movie: object) -> list[object]:
+        _ = movie
+        order.append("fan_out")
+        return []
+
+    fake_svc = MagicMock()
+    fake_svc.movie_repository = fake_repo
+    fake_svc.is_movie_downloaded = AsyncMock(return_value=False)
+    fake_svc.get_all_available_torrents_for_movie = _fan_out
+    fake_svc.torrent_service = MagicMock()
+    fake_svc.torrent_service.filter_deny_listed = AsyncMock(return_value=[])
+
+    @asynccontextmanager
+    async def fake_bg():
+        yield fake_svc
+
+    monkeypatch.setattr("miramedia.database.bg_movie_service", fake_bg)
+    monkeypatch.setattr(
+        "miramedia.database.release_session_before_external_io",
+        _release,
+    )
+
+    from miramedia.movies.service import _try_auto_download_movie_id_impl
+
+    _run(_try_auto_download_movie_id_impl(movie_id))
+
+    assert order.index("release") < order.index("fan_out")

@@ -12,6 +12,7 @@ from taskiq_postgresql import PostgresqlBroker
 from taskiq_postgresql.scheduler_source import PostgresqlSchedulerSource
 
 from miramedia.config import MiraMediaConfig
+from miramedia.database import background_session
 
 # Bound concurrent SHA1 hashing so the integrity audit doesn't saturate disk I/O.
 # Each compute_sha1 call streams the file in 1 MiB chunks — a large library can
@@ -47,7 +48,6 @@ async def _compute_sha1_async(path: Path) -> str | None:
 def _build_db_connection_string_for_taskiq() -> str:
     from urllib.parse import quote
 
-    from miramedia.config import MiraMediaConfig
     from miramedia.database import render_db_url
 
     db_config = MiraMediaConfig().database
@@ -313,7 +313,6 @@ async def add_show_task(
     ``idle_in_transaction_session_timeout`` to kill it, surfacing as
     ``InterfaceError: connection is closed`` from the indexer save_result.
     """
-    from miramedia.config import MiraMediaConfig
     from miramedia.database import bg_show_service
     from miramedia.exceptions import MediaAlreadyExistsError
     from miramedia.metadata.dependencies import get_metadata_provider
@@ -368,7 +367,6 @@ async def add_movie_task(
     ``bg_movie_service`` session is closed — see ``add_show_task`` for
     the rationale.
     """
-    from miramedia.config import MiraMediaConfig
     from miramedia.database import bg_movie_service
     from miramedia.exceptions import ConflictError
     from miramedia.metadata.dependencies import get_metadata_provider
@@ -416,9 +414,9 @@ def _notify_add_failure(kind: str, external_id: str, exc: Exception) -> None:
     Stays sync — NotificationManager.send_notification only fans out to
     external HTTP providers; it does not touch the project DB."""
     try:
-        from miramedia.notifications.manager import NotificationManager
+        from miramedia.notifications.manager import notification_manager
 
-        NotificationManager().send_notification(
+        notification_manager.send_notification(
             title=f"Could not add {kind}",
             message=f"{external_id}: {exc}",
         )
@@ -582,6 +580,32 @@ async def cleanup_poster_variants_task() -> None:
 
 
 _STARTUP_SCHEDULES[cleanup_poster_variants_task.task_name] = [{"cron": "30 3 * * *"}]
+
+
+@background_broker.task(labels={"priority": "background"})
+async def cleanup_hls_cache_task() -> None:
+    from miramedia.streams.transcode import sweep_hls_cache
+
+    cfg = MiraMediaConfig().streams
+    max_bytes = int(cfg.hls_cache_max_gb * 1024 * 1024 * 1024)
+    max_age_s = cfg.hls_cache_max_age_days * 86400
+    if max_bytes <= 0 or max_age_s <= 0:
+        return
+    log.info(
+        "Sweeping HLS cache (max %.1f GB, max age %d days)",
+        cfg.hls_cache_max_gb,
+        cfg.hls_cache_max_age_days,
+    )
+    summary = await asyncio.to_thread(sweep_hls_cache, max_bytes, max_age_s)
+    log.info(
+        "HLS cache sweep deleted %d dir(s), freed %d bytes (%d bytes remaining)",
+        summary["deleted_dirs"],
+        summary["freed_bytes"],
+        summary["remaining_bytes"],
+    )
+
+
+_STARTUP_SCHEDULES[cleanup_hls_cache_task.task_name] = [{"cron": "30 3 * * *"}]
 
 
 @background_broker.task(labels={"priority": "background"})
@@ -749,8 +773,6 @@ async def verify_imported_files_task() -> None:
     the entire hash sweep — multi-hour walltime on a large library, pinning
     one connection ``idle in transaction`` the whole time.
     """
-    from miramedia.config import MiraMediaConfig
-
     if not MiraMediaConfig().misc.integrity_check_enabled:
         return
 
@@ -761,7 +783,6 @@ async def verify_imported_files_task() -> None:
     async with lock:
         from sqlalchemy import func, select
 
-        from miramedia.database import background_session
         from miramedia.file_status import ImportOutcome
         from miramedia.movies.models import MovieFile
         from miramedia.movies.repository import MovieRepository
@@ -1109,14 +1130,14 @@ async def check_for_updates_task() -> None:
 
 def _notify_update_available(info) -> None:  # noqa: ANN001
     try:
-        from miramedia.notifications.manager import NotificationManager
+        from miramedia.notifications.manager import notification_manager
 
         title = "MiraMedia update available"
         message = (
             f"New version {info.latest_version} available "
             f"(current {info.current_version}). {info.release_url or ''}"
         ).strip()
-        NotificationManager().send_notification(title=title, message=message)
+        notification_manager.send_notification(title=title, message=message)
     except Exception:
         log.exception("failed to dispatch update-available notification")
 

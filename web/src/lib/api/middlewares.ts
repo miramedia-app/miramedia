@@ -22,7 +22,13 @@ export const loggingMiddleware: Middleware = {
   },
   async onResponse({ request, response }) {
     if (!response.ok) {
-      console.error(`Request to ${request.url} failed with status ${response.status}`);
+      // Request URLs can carry ids and search terms — keep them out of
+      // production consoles; the status alone is enough to notice a problem.
+      if (process.env.NODE_ENV !== "production") {
+        console.error(`Request to ${request.url} failed with status ${response.status}`);
+      } else {
+        console.error("API request failed", response.status);
+      }
     } else if (process.env.NODE_ENV !== "production") {
       console.log(`Request to ${request.url} succeeded with status ${response.status}`);
     }
@@ -49,13 +55,15 @@ export const autoLogoutMiddleware: Middleware = {
     if (response.status === 401 && !request.url.endsWith("/auth/cookie/logout")) {
       // Requests that predate the middleware (none today) are treated as current.
       const token = requestGeneration.get(request) ?? authCoordinator.current();
-      console.log(`Request to ${request.url} returned 401 (auth generation ${token})`);
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`Request to ${request.url} returned 401 (auth generation ${token})`);
+      }
       // The coordinator decides whether this 401 still speaks for the live
       // session: concurrent 401s collapse into one exit, and a 401 answering a
       // request from a previous session is ignored.
       await authCoordinator.reportUnauthorized(token);
     }
-    if (response.status === 403) {
+    if (response.status === 403 && process.env.NODE_ENV !== "production") {
       console.log(`Request to ${request.url} returned 403; consider opening a bug report.`);
     }
     return response;

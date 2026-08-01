@@ -65,7 +65,7 @@ class TestAutoDownloadShowCandidates:
                     fake_try,
                 ),
                 patch(
-                    "miramedia.shows.service.MiraMediaConfig",
+                    "miramedia.media_service.MiraMediaConfig",
                 ) as mock_config,
             ):
                 mock_bg.return_value.__aenter__ = AsyncMock(return_value=fake_svc)
@@ -102,7 +102,7 @@ class TestAutoDownloadShowCandidates:
                     fake_try,
                 ),
                 patch(
-                    "miramedia.shows.service.MiraMediaConfig",
+                    "miramedia.media_service.MiraMediaConfig",
                 ) as mock_config,
             ):
                 mock_bg.return_value.__aenter__ = AsyncMock(return_value=fake_svc)
@@ -140,7 +140,7 @@ class TestAutoDownloadMovieCandidates:
                     fake_try,
                 ),
                 patch(
-                    "miramedia.movies.service.MiraMediaConfig",
+                    "miramedia.media_service.MiraMediaConfig",
                 ) as mock_config,
             ):
                 mock_bg.return_value.__aenter__ = AsyncMock(return_value=fake_svc)

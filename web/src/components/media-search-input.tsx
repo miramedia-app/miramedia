@@ -3,10 +3,8 @@
 import * as React from "react";
 import { Search, LoaderCircle, X } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import apiClient from "@/lib/api/client";
-import type { components } from "@/lib/api/api";
-
-type SearchResult = components["schemas"]["MetaDataProviderSearchResult"];
+import { fetchMediaSuggestions } from "@/lib/media-search";
+import type { MediaSearchResult as SearchResult } from "@/lib/media-search";
 
 // Stable empty-array fallback so dependent effects don't see fresh array
 // identity per render while the query is loading.
@@ -44,33 +42,24 @@ export function MediaSearchInput({
   // setState calls after unmount) is no longer needed.
   const suggestionsQuery = useQuery({
     queryKey: ["media-search", mediaType, debouncedQuery],
-    queryFn: async ({ signal }) => {
-      const { data } =
-        mediaType === "show"
-          ? await apiClient.GET("/api/v1/shows/search", {
-              signal,
-              params: { query: { query: debouncedQuery } },
-            })
-          : await apiClient.GET("/api/v1/movies/search", {
-              signal,
-              params: { query: { query: debouncedQuery } },
-            });
-      return (data ?? []).slice(0, 8);
-    },
+    queryFn: ({ signal }) => fetchMediaSuggestions(mediaType, debouncedQuery, signal),
     enabled: debouncedQuery.length >= 2,
     staleTime: 60 * 1000,
   });
 
   const suggestions = suggestionsQuery.data ?? EMPTY_SUGGESTIONS;
+  // A provider outage must not read as "no results" — the dropdown says so.
+  const searchFailed = suggestionsQuery.isError;
 
   // Open the dropdown once results arrive — only when the user is still in
-  // a "searching" state (focused input with chars).
+  // a "searching" state (focused input with chars). A failed search opens it
+  // too, so the failure is visible.
   React.useEffect(() => {
-    if (debouncedQuery.length >= 2 && suggestions.length > 0) {
+    if (debouncedQuery.length >= 2 && (suggestions.length > 0 || searchFailed)) {
       setShowDropdown(true);
       setSelectedIndex(-1);
     }
-  }, [debouncedQuery, suggestions]);
+  }, [debouncedQuery, suggestions, searchFailed]);
 
   function handleChange(next: string) {
     onValueChange(next);
@@ -141,7 +130,8 @@ export function MediaSearchInput({
             className="min-w-[80px] flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
             onKeyDown={handleKeyDown}
             onFocus={() => {
-              if (suggestions.length > 0 && value.length >= 2) setShowDropdown(true);
+              if ((suggestions.length > 0 || searchFailed) && value.length >= 2)
+                setShowDropdown(true);
             }}
             onBlur={() => {
               // Use a ref so the timer can be cancelled on unmount.
@@ -178,7 +168,15 @@ export function MediaSearchInput({
         )}
       </div>
 
-      {showDropdown && suggestions.length > 0 && (
+      {showDropdown && searchFailed && (
+        <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border bg-popover shadow-lg">
+          <div className="px-3 py-2 text-left text-sm text-muted-foreground">
+            Search unavailable
+          </div>
+        </div>
+      )}
+
+      {showDropdown && !searchFailed && suggestions.length > 0 && (
         <div className="absolute z-50 mt-1 w-full overflow-hidden rounded-lg border bg-popover shadow-lg">
           {suggestions.map((suggestion, i) => (
             <button

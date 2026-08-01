@@ -1,4 +1,4 @@
-"""Tests that NotificationManager rebuilds providers from live config per call."""
+"""Tests that NotificationManager rebuilds providers when settings revision changes."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from miramedia.notifications.service_providers.gotify import (
 from miramedia.notifications.service_providers.ntfy import (
     NtfyNotificationServiceProvider,
 )
+from miramedia.settings.reload import set_local_committed_revision
 
 
 def _patch_notifications_config(
@@ -39,6 +40,12 @@ def _patch_notifications_config(
 
 @pytest.fixture
 def notifications_config(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    revision = {"value": 0}
+
+    def bump_revision() -> None:
+        revision["value"] += 1
+        set_local_committed_revision(revision["value"])
+
     notifications = SimpleNamespace(
         subject_prefix="",
         email_notifications=SimpleNamespace(enabled=False, emails=[]),
@@ -54,6 +61,8 @@ def notifications_config(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         pushover=SimpleNamespace(enabled=False, api_key=None, user=None),
     )
     _patch_notifications_config(monkeypatch, notifications)
+    notifications.bump_revision = bump_revision  # type: ignore[attr-defined]
+    set_local_committed_revision(0)
     return notifications
 
 
@@ -64,6 +73,7 @@ def test_provider_appears_after_config_enabled(
     assert manager.is_configured() is False
 
     notifications_config.gotify.enabled = True
+    notifications_config.bump_revision()
 
     assert manager.is_configured() is True
     assert manager.get_configured_providers() == ["GotifyNotificationServiceProvider"]
@@ -77,6 +87,7 @@ def test_provider_disappears_after_config_disabled(
     assert manager.is_configured() is True
 
     notifications_config.gotify.enabled = False
+    notifications_config.bump_revision()
 
     assert manager.is_configured() is False
     assert manager.get_configured_providers() == []
@@ -105,6 +116,7 @@ def test_send_notification_uses_freshly_built_provider(
     assert manager.is_configured() is False
 
     notifications_config.gotify.enabled = True
+    notifications_config.bump_revision()
     manager.send_notification("Title", "Body")
 
     assert len(calls) == 1

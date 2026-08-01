@@ -122,6 +122,7 @@ class TestMovieAutoDownloadOverlapGuard:
             fake_repo = types.SimpleNamespace(
                 get_movie_by_id=AsyncMock(return_value=_fake_movie(movie_id)),
                 get_movie_files_by_movie_id=AsyncMock(return_value=[]),
+                db=AsyncMock(),
             )
             fake_svc = types.SimpleNamespace(
                 movie_repository=fake_repo,
@@ -161,6 +162,7 @@ class TestMovieAutoDownloadOverlapGuard:
                 fake_repo = types.SimpleNamespace(
                     get_movie_by_id=AsyncMock(return_value=_fake_movie(mid)),
                     get_movie_files_by_movie_id=AsyncMock(return_value=[]),
+                    db=AsyncMock(),
                 )
                 return types.SimpleNamespace(
                     movie_repository=fake_repo,

@@ -64,11 +64,26 @@ export function VirtualMediaGrid<T>({
     return out;
   }, [items, columnCount]);
 
+  // `listRef.current` is null on the first render, so reading offsetTop inline
+  // pins the virtual window to 0 and never re-measures when the toolbar above
+  // the grid changes height. Measure after layout and on every resize instead.
+  const [scrollMargin, setScrollMargin] = React.useState(0);
+  React.useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const measure = () => setScrollMargin(el.offsetTop);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(document.body);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [rows.length]);
+
   const virtualizer = useWindowVirtualizer({
     count: rows.length,
     estimateSize: () => estimateRowHeight,
     overscan: 2,
-    scrollMargin: listRef.current?.offsetTop ?? 0,
+    scrollMargin,
   });
 
   if (rows.length === 0) {
@@ -88,6 +103,10 @@ export function VirtualMediaGrid<T>({
               className="absolute top-0 left-0 grid w-full auto-rows-min gap-4 [content-visibility:auto] sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
               style={{
                 transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+                // Pair with content-visibility:auto so skipped rows keep a
+                // realistic height; otherwise they collapse and feed near-zero
+                // measurements back to the virtualizer, jumping the scroll.
+                containIntrinsicSize: `auto ${estimateRowHeight}px`,
               }}
             >
               {rowItems.map((item, colIdx) => {

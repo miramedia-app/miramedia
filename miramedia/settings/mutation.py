@@ -13,6 +13,7 @@ staged from the exact DB-prior overrides read under the coordinator.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 from collections.abc import Awaitable, Callable
@@ -41,6 +42,9 @@ log = logging.getLogger(__name__)
 _mutation_epoch = 0
 
 SETTINGS_MUTATION_FAILED_DETAIL = "Settings mutation failed"
+SETTINGS_MUTATION_POSTCOMMIT_DETAIL = (
+    "Settings were saved but propagating the change failed; verify current values."
+)
 SETTINGS_MUTATION_ROLLBACK_INCOMPLETE_DETAIL = (
     "Settings mutation failed and rollback was incomplete"
 )
@@ -218,6 +222,19 @@ async def execute_settings_mutation(
             if committed_revision is None:
                 raise SettingsMutationError(SETTINGS_MUTATION_FAILED_DETAIL) from exc
             mutation_error = exc
+
+    if mutation_error is not None and not needs_reconcile:
+        # Commit landed but post-commit bookkeeping/publish failed: other
+        # workers won't hear the revision change until periodic reconcile.
+        log.exception(
+            "Settings mutation committed revision but post-commit publish failed",
+            exc_info=mutation_error,
+        )
+        with contextlib.suppress(Exception):
+            await reconcile_settings_revision_from_db(fetch_current)
+        raise SettingsMutationError(
+            SETTINGS_MUTATION_POSTCOMMIT_DETAIL
+        ) from mutation_error
 
     if needs_reconcile:
         try:

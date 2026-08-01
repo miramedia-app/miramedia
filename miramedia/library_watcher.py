@@ -34,14 +34,12 @@ async def run_library_watcher() -> None:
         await asyncio.sleep(interval)
         try:
             from miramedia.database import SessionLocalBackground
+            from miramedia.disk_scan import invalidate_disk_scan_cache
             from miramedia.media_state import refresh_media_state
-            from miramedia.movies.service import invalidate_disk_scan_cache as inv_m
-            from miramedia.shows.service import invalidate_disk_scan_cache as inv_s
 
             async with SessionLocalBackground() as db:
                 await refresh_media_state(db)
                 await db.commit()
-            inv_m()
-            inv_s()
+            invalidate_disk_scan_cache()
         except Exception:
             log.exception("Library watcher refresh failed")

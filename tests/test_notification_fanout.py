@@ -49,6 +49,7 @@ def _manager_with_providers(
     providers: list[AbstractNotificationServiceProvider],
 ) -> NotificationManager:
     manager = NotificationManager.__new__(NotificationManager)
+    manager.__init__()
     manager.providers = providers
     return manager
 

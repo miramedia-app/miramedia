@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import mimetypes
 import threading
@@ -10,8 +11,9 @@ from uuid import UUID
 
 from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import Path as PathParam
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, StringConstraints
 from starlette.responses import Response
 
 from miramedia.auth.users import current_active_user
@@ -29,7 +31,9 @@ from miramedia.shows.schemas import EpisodeId
 from miramedia.shows.service import ShowService
 from miramedia.streams.transcode import (
     HlsTranscodeError,
+    _touch_last_read,
     can_direct_play,
+    current_hls_dir,
     ensure_hls_playlist,
     hls_playlist_ready,
     hls_transcode_available,
@@ -45,6 +49,34 @@ if TYPE_CHECKING:
     from miramedia.shows.schemas import EpisodeFile
 
 log = logging.getLogger(__name__)
+
+
+def _hls_playlist_cache_control(playlist: Path) -> str:
+    parent = playlist.parent
+    if (parent / ".complete").is_file() and any(parent.glob("seg_*.ts")):
+        return "private, max-age=3600"
+    return "no-store"
+
+
+def _resolve_hls_segment(video_file: Path, segment_name: str) -> Path | None:
+    hls_dir = current_hls_dir(video_file)
+    if hls_dir is not None:
+        seg = resolve_within(hls_dir, segment_name)
+        if seg is not None and seg.is_file():
+            return seg
+    seg = resolve_within(segment_dir(video_file), segment_name)
+    if seg is not None and seg.is_file():
+        return seg
+    return None
+
+
+def _resolve_hls_playlist_file(video_file: Path, playlist: Path) -> Path | None:
+    if playlist.is_file():
+        return playlist
+    published = segment_dir(video_file) / "index.m3u8"
+    if published.is_file():
+        return published
+    return None
 
 
 class StreamProbeResponse(BaseModel):
@@ -69,6 +101,14 @@ _MAX_SRT_BYTES = 5 * 1024 * 1024
 
 FileIdQuery = Annotated[UUID, Query()]
 DownloadQuery = Annotated[bool, Query()]
+
+# BCP-47-ish: 2-3 letter primary tag, optional -REGION. Matches subtitle filename
+# language codes (e.g. en, en-US, por) - not full BCP-47 script/private-use tags.
+LanguageSegment = Annotated[
+    str,
+    StringConstraints(pattern=r"^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$"),
+    PathParam(...),
+]
 
 
 def _find_video_file(directory: Path, file_stem: str) -> Path | None:
@@ -395,10 +435,13 @@ async def episode_hls_playlist(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    playlist = _resolve_hls_playlist_file(video_file, playlist)
+    if playlist is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "HLS playlist not found")
     return FileResponse(
         playlist,
         media_type="application/vnd.apple.mpegurl",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers={"Cache-Control": _hls_playlist_cache_control(playlist)},
     )
 
 
@@ -423,9 +466,11 @@ async def episode_hls_segment(
     # whole segment transfer (segments are the highest-frequency endpoint
     # during playback).
     await release_session_before_external_io(db)
-    seg = resolve_within(segment_dir(video_file), segment_name)
-    if seg is None or not seg.is_file():
+    seg = _resolve_hls_segment(video_file, segment_name)
+    if seg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found")
+    with contextlib.suppress(OSError):
+        _touch_last_read(seg.parent)
     return FileResponse(seg, media_type="video/mp2t")
 
 
@@ -453,10 +498,13 @@ async def movie_hls_playlist(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc),
         ) from exc
+    playlist = _resolve_hls_playlist_file(video_file, playlist)
+    if playlist is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "HLS playlist not found")
     return FileResponse(
         playlist,
         media_type="application/vnd.apple.mpegurl",
-        headers={"Cache-Control": "private, max-age=3600"},
+        headers={"Cache-Control": _hls_playlist_cache_control(playlist)},
     )
 
 
@@ -482,9 +530,11 @@ async def movie_hls_segment(
     # whole segment transfer (segments are the highest-frequency endpoint
     # during playback).
     await release_session_before_external_io(db)
-    seg = resolve_within(segment_dir(video_file), segment_name)
-    if seg is None or not seg.is_file():
+    seg = _resolve_hls_segment(video_file, segment_name)
+    if seg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Segment not found")
+    with contextlib.suppress(OSError):
+        _touch_last_read(seg.parent)
     return FileResponse(seg, media_type="video/mp2t")
 
 
@@ -565,6 +615,19 @@ def _find_first_subtitle_file(
     return None
 
 
+def _reject_unsafe_subtitle_language(language: str) -> None:
+    """Belt-and-braces guard when language is not route-validated."""
+    if (
+        "/" in language
+        or "\\" in language
+        or ".." in language
+        or any(ch.isspace() for ch in language)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Subtitle file not found"
+        )
+
+
 async def _resolve_subtitle_file(
     db: DbSessionDependency,
     *,
@@ -581,6 +644,7 @@ async def _resolve_subtitle_file(
     returned without a DB write, while a miss scans disk, validates, and
     upserts the row exactly once.
     """
+    _reject_unsafe_subtitle_language(language)
     cached = await _find_indexed_file(
         db,
         file_id=file_id,
@@ -635,7 +699,7 @@ async def stream_movie_subtitle(
     movie: movie_dep,
     movie_service: movie_service_dep,
     db: DbSessionDependency,
-    language: str,
+    language: LanguageSegment,
     file_id: FileIdQuery,
 ) -> Response:
     """Stream a subtitle file for a movie."""
@@ -657,6 +721,7 @@ async def stream_movie_subtitle(
         stems=movie_file_names,
         allowed_roots=allowed_roots,
     )
+    await release_session_before_external_io(db)
 
     if sub_file.suffix.lower() == ".srt":
         vtt_content = await asyncio.to_thread(_convert_srt_to_vtt, sub_file)
@@ -670,7 +735,7 @@ async def stream_episode_subtitle(
     episode_id: EpisodeId,
     show_service: show_service_dep,
     db: DbSessionDependency,
-    language: str,
+    language: LanguageSegment,
     file_id: FileIdQuery,
 ) -> Response:
     """Stream a subtitle file for an episode."""
@@ -714,6 +779,7 @@ async def stream_episode_subtitle(
         stems=episode_file_names,
         allowed_roots=allowed_roots,
     )
+    await release_session_before_external_io(db)
 
     if sub_file.suffix.lower() == ".srt":
         vtt_content = await asyncio.to_thread(_convert_srt_to_vtt, sub_file)

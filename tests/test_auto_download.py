@@ -7,7 +7,14 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from miramedia.file_status import ImportOutcome
-from miramedia.shows.schemas import EpisodeFile
+from miramedia.shows.schemas import (
+    Episode,
+    EpisodeFile,
+    EpisodeNumber,
+    Season,
+    SeasonId,
+    SeasonNumber,
+)
 from miramedia.torrents.schemas import TorrentStatus
 from tests.fakes import build_show_service, run_async
 from tests.fakes.repositories import (
@@ -126,6 +133,204 @@ class TestAutoDownloadGates:
             patch("miramedia.database.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
+            patch.object(
+                svc.torrent_service,
+                "bulk_check_torrents_imported",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            from miramedia.shows.service import _auto_download_for_show_impl
+
+            run_async(_auto_download_for_show_impl(show, max_downloads=5))
+
+        assert searched == []
+
+    def test_wholly_undated_later_season_not_searched(self) -> None:
+        yesterday = datetime.now().astimezone().date() - timedelta(days=1)
+        show = make_show(air_date=yesterday)
+        show.seasons.append(
+            Season(
+                id=SeasonId(uuid.uuid4()),
+                show_id=show.id,
+                number=SeasonNumber(2),
+                episodes=[
+                    Episode(
+                        number=EpisodeNumber(1),
+                        title="TBA",
+                        air_date=None,
+                    )
+                ],
+            )
+        )
+        show_repo = FakeShowRepository()
+        show_repo.add_show(show)
+        svc, _, _ = build_show_service(show_repo=show_repo)
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_bg():
+            yield svc
+
+        searched: list[tuple[int | None, int | None]] = []
+
+        async def fake_search(*_args, **kwargs):
+            searched.append((kwargs.get("season_number"), kwargs.get("episode_number")))
+            return []
+
+        async def is_downloaded(*, episode, **_kwargs):
+            return episode.air_date is not None
+
+        with (
+            patch("miramedia.database.bg_show_service", fake_bg),
+            patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
+            patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
+            patch.object(svc, "is_episode_downloaded", is_downloaded),
+            patch.object(
+                svc.torrent_service,
+                "bulk_check_torrents_imported",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            from miramedia.shows.service import _auto_download_for_show_impl
+
+            run_async(_auto_download_for_show_impl(show, max_downloads=5))
+
+        assert searched == []
+
+    def test_undated_first_season_remains_searchable(self) -> None:
+        show = make_show(air_date=None)
+        show_repo = FakeShowRepository()
+        show_repo.add_show(show)
+        svc, _, _ = build_show_service(show_repo=show_repo)
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_bg():
+            yield svc
+
+        searched: list[tuple[int | None, int | None]] = []
+
+        async def fake_search(*_args, **kwargs):
+            searched.append((kwargs.get("season_number"), kwargs.get("episode_number")))
+            return []
+
+        with (
+            patch("miramedia.database.bg_show_service", fake_bg),
+            patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
+            patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
+            patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
+            patch.object(
+                svc.torrent_service,
+                "bulk_check_torrents_imported",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            from miramedia.shows.service import _auto_download_for_show_impl
+
+            run_async(_auto_download_for_show_impl(show, max_downloads=5))
+
+        assert searched == [(1, None), (1, 1)]
+
+    def test_legacy_all_undated_show_only_searches_first_season(self) -> None:
+        show = make_show(air_date=None)
+        show.seasons.append(
+            Season(
+                id=SeasonId(uuid.uuid4()),
+                show_id=show.id,
+                number=SeasonNumber(2),
+                episodes=[
+                    Episode(
+                        number=EpisodeNumber(1),
+                        title="TBA",
+                        air_date=None,
+                    )
+                ],
+            )
+        )
+        show_repo = FakeShowRepository()
+        show_repo.add_show(show)
+        svc, _, _ = build_show_service(show_repo=show_repo)
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_bg():
+            yield svc
+
+        searched: list[tuple[int | None, int | None]] = []
+
+        async def fake_search(*_args, **kwargs):
+            searched.append((kwargs.get("season_number"), kwargs.get("episode_number")))
+            return []
+
+        with (
+            patch("miramedia.database.bg_show_service", fake_bg),
+            patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
+            patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
+            patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
+            patch.object(
+                svc.torrent_service,
+                "bulk_check_torrents_imported",
+                AsyncMock(return_value={}),
+            ),
+        ):
+            from miramedia.shows.service import _auto_download_for_show_impl
+
+            run_async(_auto_download_for_show_impl(show, max_downloads=5))
+
+        assert searched == [(1, None), (1, 1)]
+
+    def test_later_season_with_only_future_and_unknown_dates_not_searched(
+        self,
+    ) -> None:
+        yesterday = datetime.now().astimezone().date() - timedelta(days=1)
+        tomorrow = datetime.now().astimezone().date() + timedelta(days=1)
+        show = make_show(air_date=yesterday)
+        show.seasons.append(
+            Season(
+                id=SeasonId(uuid.uuid4()),
+                show_id=show.id,
+                number=SeasonNumber(2),
+                episodes=[
+                    Episode(
+                        number=EpisodeNumber(1),
+                        title="Announced",
+                        air_date=tomorrow,
+                    ),
+                    Episode(
+                        number=EpisodeNumber(2),
+                        title="TBA",
+                        air_date=None,
+                    ),
+                ],
+            )
+        )
+        show_repo = FakeShowRepository()
+        show_repo.add_show(show)
+        svc, _, _ = build_show_service(show_repo=show_repo)
+
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_bg():
+            yield svc
+
+        searched: list[tuple[int | None, int | None]] = []
+
+        async def fake_search(*_args, **kwargs):
+            searched.append((kwargs.get("season_number"), kwargs.get("episode_number")))
+            return []
+
+        async def is_downloaded(*, episode, **_kwargs):
+            return episode.air_date == yesterday
+
+        with (
+            patch("miramedia.database.bg_show_service", fake_bg),
+            patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
+            patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
+            patch.object(svc, "is_episode_downloaded", is_downloaded),
             patch.object(
                 svc.torrent_service,
                 "bulk_check_torrents_imported",

@@ -16,9 +16,10 @@ import { beginAuthTransition, handleOauth, hardNavigate } from "@/lib/auth";
 
 type Props = {
   oauthProviderNames: string[];
+  allowRegistration?: boolean;
 };
 
-export function LoginCard({ oauthProviderNames }: Props) {
+export function LoginCard({ oauthProviderNames, allowRegistration = false }: Props) {
   const qc = useQueryClient();
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -140,11 +141,13 @@ export function LoginCard({ oauthProviderNames }: Props) {
               </Button>
             </React.Fragment>
           ))}
-          <div className="mt-4 text-center text-sm">
-            <Button render={<Link href="/login/signup" />} variant="link">
-              Don&apos;t have an account? Sign up
-            </Button>
-          </div>
+          {allowRegistration && (
+            <div className="mt-4 text-center text-sm">
+              <Button render={<Link href="/login/signup" />} variant="link">
+                Don&apos;t have an account? Sign up
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 

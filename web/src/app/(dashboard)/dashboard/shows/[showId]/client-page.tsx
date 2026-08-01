@@ -7,6 +7,7 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Trash2, EllipsisVertical, ChevronDown, ChevronRight, Check, Ban } from "lucide-react";
 import { DataListSection } from "@/components/data-list";
+import type { ColumnDef } from "@/components/data-list/types";
 import { Badge } from "@/components/ui/badge";
 import { StatusPill } from "@/components/ui/status-pill";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
@@ -36,6 +37,7 @@ import { MediaActionsMenu } from "@/components/media-actions-menu";
 import { SearchTorrentButton } from "@/components/download-dialogs/download-media-dialog";
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
+import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import apiClient from "@/lib/api/client";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import { formatFileSuffix, getTorrentQualityString, getTorrentStatusString } from "@/lib/utils";
@@ -78,7 +80,7 @@ type EpisodeFile = components["schemas"]["PublicEpisodeFile"];
 type RichTorrent = components["schemas"]["RichTorrent"];
 
 type TreeRow =
-  | { kind: "season"; id: string; depth: 0; data: Season }
+  | { kind: "season"; id: string; depth: 0; data: Season; expanded: boolean }
   | {
       kind: "episode";
       id: string;
@@ -86,6 +88,7 @@ type TreeRow =
       data: Episode;
       seasonId: string;
       seasonNumber: number;
+      expanded: boolean;
     }
   | {
       kind: "file";
@@ -250,53 +253,37 @@ export default function ShowDetailClientPage() {
     [queryClient],
   );
 
-  function toggleSeason(seasonId: string) {
+  const toggleSeason = React.useCallback((seasonId: string) => {
     setExpandedSeasons((prev) => {
       const next = new Set(prev);
       if (next.has(seasonId)) next.delete(seasonId);
       else next.add(seasonId);
       return next;
     });
-  }
+  }, []);
 
-  function toggleEpisode(episodeId: string) {
+  const toggleEpisode = React.useCallback((episodeId: string) => {
     setExpandedEpisodes((prev) => {
       const next = new Set(prev);
       if (next.has(episodeId)) next.delete(episodeId);
       else next.add(episodeId);
       return next;
     });
-  }
+  }, []);
 
-  async function invalidateAll() {
+  const invalidateAll = React.useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["show", showId] });
-  }
+  }, [queryClient, showId]);
 
-  // ── Torrent actions ─────────────────────────────────────────────────────
-  async function pauseTorrent(torrentId: string) {
-    const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-      params: { path: { torrent_id: torrentId } },
-    });
-    if (error) toast.error("Failed to pause torrent");
-    else toast.success("Torrent paused");
-    await invalidateAll();
-  }
-  async function resumeTorrent(torrentId: string) {
-    const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-      params: { path: { torrent_id: torrentId } },
-    });
-    if (error) toast.error("Failed to resume torrent");
-    else toast.success("Torrent resumed");
-    await invalidateAll();
-  }
-  async function retryTorrent(torrentId: string) {
-    const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/retry", {
-      params: { path: { torrent_id: torrentId } },
-    });
-    if (error) toast.error("Failed to retry torrent");
-    else toast.success("Retrying download…");
-    await invalidateAll();
-  }
+  const {
+    bulkWorking: torrentBulkWorking,
+    pause: bulkPauseTorrents,
+    resume: bulkResumeTorrents,
+    remove: removeTorrents,
+    pauseOne: pauseTorrent,
+    resumeOne: resumeTorrent,
+    retryOne: retryTorrent,
+  } = useBulkTorrentActions(invalidateAll);
 
   // ── Selection state ─────────────────────────────────────────────────────
   const [selectedSeasons, setSelectedSeasons] = React.useState<Set<string>>(new Set());
@@ -323,7 +310,13 @@ export default function ShowDetailClientPage() {
   const treeRows = React.useMemo<TreeRow[]>(() => {
     const rows: TreeRow[] = [];
     for (const s of sortedSeasons) {
-      rows.push({ kind: "season", id: s.id, depth: 0, data: s });
+      rows.push({
+        kind: "season",
+        id: s.id,
+        depth: 0,
+        data: s,
+        expanded: expandedSeasons.has(s.id),
+      });
       if (!expandedSeasons.has(s.id)) continue;
       const eps = s.episodes;
       for (const ep of eps) {
@@ -334,6 +327,7 @@ export default function ShowDetailClientPage() {
           data: ep,
           seasonId: s.id,
           seasonNumber: s.number,
+          expanded: expandedEpisodes.has(ep.id),
         });
         if (!expandedEpisodes.has(ep.id)) continue;
         for (const f of getEpisodeFiles(s.id, ep.id)) {
@@ -367,10 +361,6 @@ export default function ShowDetailClientPage() {
   const allSelectedTreeIds = React.useMemo(
     () => new Set<string>([...selectedSeasons, ...selectedEpisodes, ...selectedFiles]),
     [selectedSeasons, selectedEpisodes, selectedFiles],
-  );
-  const allExpandedTreeIds = React.useMemo(
-    () => new Set<string>([...expandedSeasons, ...expandedEpisodes]),
-    [expandedSeasons, expandedEpisodes],
   );
 
   function deselectAll() {
@@ -421,27 +411,9 @@ export default function ShowDetailClientPage() {
   async function bulkDeleteTorrents() {
     const ids = torrentIds.filter((id) => selectedTorrents.has(id));
     if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed, failedItems } = await bulkMutate(ids, (id) =>
-        apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-          params: { path: { torrent_id: id } },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} deleted`);
-      } else if (ok === 0) {
-        toast.error("Failed to delete some torrents");
-      } else {
-        toast.warning(`${ok} deleted, ${failed} failed`);
-      }
-      setSelectedTorrents(new Set(failedItems));
-      await invalidateAll();
-    } catch {
-      toast.error("Failed to delete some torrents");
-    } finally {
-      setBulkWorking(false);
-    }
+    await removeTorrents(ids, {
+      onResult: ({ failedItems }) => setSelectedTorrents(new Set(failedItems)),
+    });
   }
 
   const pausableTorrents = React.useMemo(
@@ -459,60 +431,13 @@ export default function ShowDetailClientPage() {
     .filter((t) => selectedTorrents.has(t.id!))
     .map((t) => t.id!);
 
-  async function bulkPauseTorrents(ids: string[]) {
-    if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed } = await bulkMutate(ids, (id) =>
-        apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-          params: { path: { torrent_id: id } },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} paused`);
-      } else if (ok === 0) {
-        toast.error("Failed to pause some torrents");
-      } else {
-        toast.warning(`${ok} paused, ${failed} failed`);
-      }
-      await invalidateAll();
-    } catch {
-      toast.error("Failed to pause some torrents");
-    } finally {
-      setBulkWorking(false);
-    }
-  }
-
-  async function bulkResumeTorrents(ids: string[]) {
-    if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed } = await bulkMutate(ids, (id) =>
-        apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-          params: { path: { torrent_id: id } },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} resumed`);
-      } else if (ok === 0) {
-        toast.error("Failed to resume some torrents");
-      } else {
-        toast.warning(`${ok} resumed, ${failed} failed`);
-      }
-      await invalidateAll();
-    } catch {
-      toast.error("Failed to resume some torrents");
-    } finally {
-      setBulkWorking(false);
-    }
-  }
-
   // ── Bulk actions ────────────────────────────────────────────────────────
-  const [bulkWorking, setBulkWorking] = React.useState(false);
+  const [otherBulkWorking, setOtherBulkWorking] = React.useState(false);
+  const bulkWorking = torrentBulkWorking || otherBulkWorking;
 
   async function bulkSkip(skipped: boolean) {
     if (!allSelectedEpisodes.length) return;
-    setBulkWorking(true);
+    setOtherBulkWorking(true);
     try {
       const { ok, failed } = await bulkMutate(allSelectedEpisodes, (id) =>
         apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
@@ -532,13 +457,13 @@ export default function ShowDetailClientPage() {
       await invalidateAll();
       if (failed === 0) deselectAll();
     } finally {
-      setBulkWorking(false);
+      setOtherBulkWorking(false);
     }
   }
 
   async function bulkDeleteFiles() {
     if (!selectedFiles.size) return;
-    setBulkWorking(true);
+    setOtherBulkWorking(true);
     try {
       const { ok, failed, failedItems } = await bulkMutate([...selectedFiles], (key) => {
         if (key.startsWith("file:")) {
@@ -571,7 +496,7 @@ export default function ShowDetailClientPage() {
       setSelectedFiles(new Set(failedItems));
       await Promise.all([invalidateSeasonFiles(), invalidateAll()]);
     } finally {
-      setBulkWorking(false);
+      setOtherBulkWorking(false);
     }
   }
 
@@ -635,9 +560,16 @@ export default function ShowDetailClientPage() {
           return next;
         });
       } else if (t.type === "episode") {
-        await apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
+        // Bail before deleting files if the skip did not land — otherwise the
+        // files are gone while the episode is still wanted, so it is simply
+        // re-downloaded.
+        const { error: skipError } = await apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
           params: { path: { episode_id: t.episodeId }, query: { skipped: true } },
         });
+        if (skipError) {
+          toast.error("Failed to skip episode");
+          return;
+        }
         const files = getEpisodeFiles(t.seasonId, t.episodeId);
         const { failed } = await bulkMutate(files, (f) =>
           apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
@@ -684,27 +616,194 @@ export default function ShowDetailClientPage() {
     }
   }
 
-  async function toggleEpisodeSkipped(episodeId: string, currentlySkipped: boolean) {
-    const { response } = await apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
-      params: { path: { episode_id: episodeId }, query: { skipped: !currentlySkipped } },
-    });
-    if (!response.ok) toast.error("Failed to toggle episode skip status.");
-    else {
-      toast.success(currentlySkipped ? "Episode marked as wanted." : "Episode marked as skipped.");
-      await invalidateAll();
-    }
-  }
+  const toggleEpisodeSkipped = React.useCallback(
+    async (episodeId: string, currentlySkipped: boolean) => {
+      const { response } = await apiClient.POST("/api/v1/episodes/{episode_id}/skip", {
+        params: { path: { episode_id: episodeId }, query: { skipped: !currentlySkipped } },
+      });
+      if (!response.ok) toast.error("Failed to toggle episode skip status.");
+      else {
+        toast.success(
+          currentlySkipped ? "Episode marked as wanted." : "Episode marked as skipped.",
+        );
+        await invalidateAll();
+      }
+    },
+    [invalidateAll],
+  );
 
-  async function toggleSeasonSkipped(seasonId: string, currentlySkipped: boolean) {
-    const { response } = await apiClient.POST("/api/v1/seasons/{season_id}/skip", {
-      params: { path: { season_id: seasonId }, query: { skipped: !currentlySkipped } },
-    });
-    if (!response.ok) toast.error("Failed to toggle season skip status.");
-    else {
-      toast.success(currentlySkipped ? "Season marked as wanted." : "Season marked as skipped.");
-      await invalidateAll();
-    }
-  }
+  const toggleSeasonSkipped = React.useCallback(
+    async (seasonId: string, currentlySkipped: boolean) => {
+      const { response } = await apiClient.POST("/api/v1/seasons/{season_id}/skip", {
+        params: { path: { season_id: seasonId }, query: { skipped: !currentlySkipped } },
+      });
+      if (!response.ok) toast.error("Failed to toggle season skip status.");
+      else {
+        toast.success(currentlySkipped ? "Season marked as wanted." : "Season marked as skipped.");
+        await invalidateAll();
+      }
+    },
+    [invalidateAll],
+  );
+
+  const treeColumns = React.useMemo<ColumnDef<TreeRow>[]>(
+    () => [
+      {
+        id: "title",
+        header: "Title",
+        width: "minmax(0,1fr)",
+        render: (r) => {
+          const expandable = r.kind === "season" || r.kind === "episode";
+          const isExpanded = (r.kind === "season" || r.kind === "episode") && r.expanded;
+          const onChev = (e: React.MouseEvent) => {
+            e.stopPropagation();
+            if (r.kind === "season") toggleSeason(r.id);
+            else if (r.kind === "episode") toggleEpisode(r.id);
+          };
+          const indentPx = r.depth * 20;
+          return (
+            <div className="flex min-w-0 items-center gap-2" style={{ paddingLeft: indentPx }}>
+              {expandable ? (
+                <button
+                  type="button"
+                  onClick={onChev}
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                >
+                  {isExpanded ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                </button>
+              ) : (
+                <span className="h-5 w-5 shrink-0" aria-hidden />
+              )}
+
+              {r.kind === "season" && (
+                <span className="truncate text-sm font-semibold">
+                  {r.data.number === 0 ? "Specials" : `Season ${r.data.number}`}
+                </span>
+              )}
+              {r.kind === "episode" && <span className="truncate text-sm">{r.data.title}</span>}
+              {r.kind === "file" && (
+                <span className="truncate text-sm text-muted-foreground">
+                  {r.data.file_name ?? formatFileSuffix(r.data)}
+                </span>
+              )}
+              {r.kind === "subtitle" && (
+                <span className="truncate text-sm text-muted-foreground">{r.data.file_name}</span>
+              )}
+            </div>
+          );
+        },
+      },
+      {
+        id: "type",
+        header: "Type",
+        width: "96px",
+        render: (r) => {
+          if (r.kind === "file") return <TypePill>Video</TypePill>;
+          if (r.kind === "subtitle") return <TypePill>Subtitle</TypePill>;
+          return null;
+        },
+      },
+      {
+        id: "se",
+        header: "S/E",
+        width: "130px",
+        render: (r) => {
+          if (r.kind === "season") {
+            const done = r.data.episodes.filter((e) => e.downloaded).length;
+            return (
+              <div className="flex items-center gap-2">
+                <MetaPill className="font-mono">S{String(r.data.number).padStart(2, "0")}</MetaPill>
+                <MetaPill className="tabular-nums">
+                  {done}/{r.data.episodes.length}
+                </MetaPill>
+              </div>
+            );
+          }
+          if (r.kind === "episode")
+            return (
+              <MetaPill className="font-mono">
+                S{String(r.seasonNumber).padStart(2, "0")}E{String(r.data.number).padStart(2, "0")}
+              </MetaPill>
+            );
+          return null;
+        },
+      },
+      {
+        id: "language",
+        header: "Language",
+        width: "120px",
+        render: (r) => {
+          const lang =
+            r.kind === "subtitle"
+              ? r.data.language
+              : r.kind === "file"
+                ? (show?.original_language ?? null)
+                : null;
+          return lang ? <MetaPill>{languageName(lang)}</MetaPill> : null;
+        },
+      },
+      {
+        id: "quality",
+        header: "Quality",
+        width: "84px",
+        render: (r) =>
+          r.kind === "file" ? (
+            <MetaPill className="font-mono">{getTorrentQualityString(r.data.quality)}</MetaPill>
+          ) : null,
+      },
+      {
+        id: "status",
+        header: "Status",
+        width: "112px",
+        render: (r) => {
+          if (r.kind === "season")
+            return isSuperuser ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void toggleSeasonSkipped(r.data.id, !!r.data.skipped);
+                }}
+              >
+                <MediaStatusBadge status={r.data.status} />
+              </button>
+            ) : (
+              <MediaStatusBadge status={r.data.status} />
+            );
+          if (r.kind === "episode")
+            return isSuperuser ? (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void toggleEpisodeSkipped(r.data.id, !!r.data.skipped);
+                }}
+              >
+                <MediaStatusBadge status={r.data.status} />
+              </button>
+            ) : (
+              <MediaStatusBadge status={r.data.status} />
+            );
+          if (r.kind === "file")
+            return <StatusPill status={r.data.file_status} className="capitalize" />;
+          return <StatusPill status="imported" className="capitalize" />;
+        },
+      },
+    ],
+    [
+      toggleSeason,
+      toggleEpisode,
+      isSuperuser,
+      show?.original_language,
+      toggleSeasonSkipped,
+      toggleEpisodeSkipped,
+    ],
+  );
 
   // ── Render ──────────────────────────────────────────────────────────────
   if (!showId) {
@@ -915,166 +1014,7 @@ export default function ShowDetailClientPage() {
                   deselectAll();
                 }
               }}
-              columns={[
-                {
-                  id: "title",
-                  header: "Title",
-                  width: "minmax(0,1fr)",
-                  render: (r) => {
-                    const expandable = r.kind === "season" || r.kind === "episode";
-                    const isExpanded = expandable && allExpandedTreeIds.has(r.id);
-                    const onChev = (e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      if (r.kind === "season") toggleSeason(r.id);
-                      else if (r.kind === "episode") toggleEpisode(r.id);
-                    };
-                    const indentPx = r.depth * 20;
-                    return (
-                      <div
-                        className="flex min-w-0 items-center gap-2"
-                        style={{ paddingLeft: indentPx }}
-                      >
-                        {expandable ? (
-                          <button
-                            type="button"
-                            onClick={onChev}
-                            className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                            aria-label={isExpanded ? "Collapse" : "Expand"}
-                          >
-                            {isExpanded ? (
-                              <ChevronDown className="h-3.5 w-3.5" />
-                            ) : (
-                              <ChevronRight className="h-3.5 w-3.5" />
-                            )}
-                          </button>
-                        ) : (
-                          <span className="h-5 w-5 shrink-0" aria-hidden />
-                        )}
-
-                        {r.kind === "season" && (
-                          <span className="truncate text-sm font-semibold">
-                            {r.data.number === 0 ? "Specials" : `Season ${r.data.number}`}
-                          </span>
-                        )}
-                        {r.kind === "episode" && (
-                          <span className="truncate text-sm">{r.data.title}</span>
-                        )}
-                        {r.kind === "file" && (
-                          <span className="truncate text-sm text-muted-foreground">
-                            {r.data.file_name ?? formatFileSuffix(r.data)}
-                          </span>
-                        )}
-                        {r.kind === "subtitle" && (
-                          <span className="truncate text-sm text-muted-foreground">
-                            {r.data.file_name}
-                          </span>
-                        )}
-                      </div>
-                    );
-                  },
-                },
-                {
-                  id: "type",
-                  header: "Type",
-                  width: "96px",
-                  render: (r) => {
-                    if (r.kind === "file") return <TypePill>Video</TypePill>;
-                    if (r.kind === "subtitle") return <TypePill>Subtitle</TypePill>;
-                    return null;
-                  },
-                },
-                {
-                  id: "se",
-                  header: "S/E",
-                  width: "130px",
-                  render: (r) => {
-                    if (r.kind === "season") {
-                      const done = r.data.episodes.filter((e) => e.downloaded).length;
-                      return (
-                        <div className="flex items-center gap-2">
-                          <MetaPill className="font-mono">
-                            S{String(r.data.number).padStart(2, "0")}
-                          </MetaPill>
-                          <MetaPill className="tabular-nums">
-                            {done}/{r.data.episodes.length}
-                          </MetaPill>
-                        </div>
-                      );
-                    }
-                    if (r.kind === "episode")
-                      return (
-                        <MetaPill className="font-mono">
-                          S{String(r.seasonNumber).padStart(2, "0")}E
-                          {String(r.data.number).padStart(2, "0")}
-                        </MetaPill>
-                      );
-                    return null;
-                  },
-                },
-                {
-                  id: "language",
-                  header: "Language",
-                  width: "120px",
-                  render: (r) => {
-                    const lang =
-                      r.kind === "subtitle"
-                        ? r.data.language
-                        : r.kind === "file"
-                          ? (show?.original_language ?? null)
-                          : null;
-                    return lang ? <MetaPill>{languageName(lang)}</MetaPill> : null;
-                  },
-                },
-                {
-                  id: "quality",
-                  header: "Quality",
-                  width: "84px",
-                  render: (r) =>
-                    r.kind === "file" ? (
-                      <MetaPill className="font-mono">
-                        {getTorrentQualityString(r.data.quality)}
-                      </MetaPill>
-                    ) : null,
-                },
-                {
-                  id: "status",
-                  header: "Status",
-                  width: "112px",
-                  render: (r) => {
-                    if (r.kind === "season")
-                      return isSuperuser ? (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void toggleSeasonSkipped(r.data.id, !!r.data.skipped);
-                          }}
-                        >
-                          <MediaStatusBadge status={r.data.status} />
-                        </button>
-                      ) : (
-                        <MediaStatusBadge status={r.data.status} />
-                      );
-                    if (r.kind === "episode")
-                      return isSuperuser ? (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void toggleEpisodeSkipped(r.data.id, !!r.data.skipped);
-                          }}
-                        >
-                          <MediaStatusBadge status={r.data.status} />
-                        </button>
-                      ) : (
-                        <MediaStatusBadge status={r.data.status} />
-                      );
-                    if (r.kind === "file")
-                      return <StatusPill status={r.data.file_status} className="capitalize" />;
-                    return <StatusPill status="imported" className="capitalize" />;
-                  },
-                },
-              ]}
+              columns={treeColumns}
               rowActions={(r) => {
                 if (r.kind === "season") {
                   return (

@@ -139,7 +139,7 @@ async def get_popular_movies(
 async def get_all_movies(
     movie_service: movie_service_dep,
     response: Response,
-    limit: Annotated[int | None, Query(gt=0, le=500)] = None,
+    limit: Annotated[int, Query(gt=0, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
     q: Annotated[str | None, Query()] = None,
     sort: Annotated[str | None, Query()] = None,
@@ -152,15 +152,12 @@ async def get_all_movies(
     status_filter: Annotated[list[str] | None, Query(alias="status")] = None,
     exclude_status: Annotated[list[str] | None, Query()] = None,
 ) -> list[PublicMovie]:
-    """
-    Get all movies in the library with computed download/status fields.
+    """List movies with bounded SQL pagination and computed download/status fields.
 
-    When ``limit`` is supplied, pagination is pushed into SQL. The whole-
-    library form remains for backwards-compatible callers.
+    Pagination is always pushed into SQL so only the requested page is
+    eager-loaded. ``limit`` defaults to 100 (max 500); ``X-Total-Count``
+    reports the filtered total.
     """
-    if limit is None:
-        movies = await movie_service.get_all_public_movies()
-        return movies[offset:] if offset else movies
     page, total = await movie_service.get_paginated_public_movies(
         offset=offset,
         limit=limit,

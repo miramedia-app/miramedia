@@ -1,6 +1,8 @@
 "use client";
 
+import * as React from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -33,6 +35,9 @@ export function TorrentsTab({
   const m = misc;
   const tor = torrents;
   const native = (tor.native as AnyObj | undefined) ?? {};
+  const [allowSelfSigned, setAllowSelfSigned] = React.useState<Partial<Record<Client, boolean>>>(
+    {},
+  );
 
   const base = String(m.torrent_directory ?? "");
   const baseTrimmed = base.replace(TRAILING_SLASHES, "");
@@ -294,13 +299,22 @@ export function TorrentsTab({
         const isQbit = client === "qbittorrent";
         const isTrans = client === "transmission";
         const isSab = client === "sabnzbd";
+        const httpsOn = isTrans
+          ? Boolean(cfg.https_enabled)
+          : isQbit || isSab
+            ? Boolean(cfg.https)
+            : false;
+        const testConfig = {
+          ...cfg,
+          ...(allowSelfSigned[client] ? { allow_self_signed: true } : {}),
+        };
         return (
           <Card key={client}>
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle>{clientLabel(client)}</CardTitle>
                 <div className="flex items-center gap-2">
-                  <TestButton integration={client} getConfig={() => cfg} />
+                  <TestButton integration={client} getConfig={() => testConfig} />
                   <Switch
                     checked={Boolean(cfg.enabled)}
                     onCheckedChange={(v) => setTorrentsPath([client, "enabled"], v)}
@@ -398,6 +412,23 @@ export function TorrentsTab({
                     onCheckedChange={(v) => setTorrentsPath([client, "https_enabled"], v)}
                   />
                   <Label>HTTPS</Label>
+                </div>
+              )}
+              {httpsOn && (
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id={`${client}-allow-self-signed`}
+                    checked={Boolean(allowSelfSigned[client])}
+                    onCheckedChange={(v) =>
+                      setAllowSelfSigned((prev) => ({
+                        ...prev,
+                        [client]: v === true,
+                      }))
+                    }
+                  />
+                  <Label htmlFor={`${client}-allow-self-signed`}>
+                    Allow self-signed certificate
+                  </Label>
                 </div>
               )}
             </CardContent>

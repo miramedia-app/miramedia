@@ -7,6 +7,9 @@ import secrets
 from fastapi import HTTPException, Request, status
 
 from miramedia.config import MiraMediaConfig
+from miramedia.rate_limit import SlidingWindowLimiter
+
+_failed_auth_limiter = SlidingWindowLimiter(max_requests=30, window_seconds=60.0)
 
 
 def _configured_shim_api_key() -> str:
@@ -33,6 +36,8 @@ async def require_shim_api_key(request: Request) -> None:
     if provided is None or not secrets.compare_digest(
         provided.encode("utf-8"), configured.encode("utf-8")
     ):
+        client_host = request.client.host if request.client else "unknown"
+        _failed_auth_limiter.check(client_host)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Unauthorized",

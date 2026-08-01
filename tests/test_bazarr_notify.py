@@ -97,6 +97,7 @@ async def test_notify_episode_releases_session_before_http() -> None:
         return True
 
     mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
     mock_client.notify_episode_files_imported.side_effect = _notify
 
     with (
@@ -146,7 +147,11 @@ async def test_notify_episode_http_failure_does_not_raise() -> None:
         patch(
             "miramedia.subtitles.service.BazarrClient",
             return_value=MagicMock(
-                notify_episode_files_imported=MagicMock(return_value=False)
+                __enter__=MagicMock(
+                    return_value=MagicMock(
+                        notify_episode_files_imported=MagicMock(return_value=False)
+                    )
+                ),
             ),
         ),
         patch(
@@ -167,6 +172,7 @@ async def test_notify_movie_resolves_arr_ids() -> None:
     movie_file_id = uuid.uuid4()
     movie_id = MovieId(uuid.uuid4())
     mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
     mock_client.notify_movie_file_imported.return_value = True
 
     with (
@@ -298,6 +304,7 @@ async def test_notify_episodes_batch_sends_one_webhook() -> None:
         return {u: source[u] for u in uuids}
 
     mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
     mock_client.notify_episode_files_imported.return_value = True
 
     with (
@@ -341,3 +348,41 @@ async def test_notify_episodes_empty_batch_makes_no_http() -> None:
         )
 
     client_cls.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_notify_episode_closes_bazarr_session() -> None:
+    """BazarrClient must close its requests.Session after notify."""
+    service = _subtitle_service()
+    episode_file_id = uuid.uuid4()
+    episode_id = EpisodeId(uuid.uuid4())
+    session = MagicMock()
+    session.close = MagicMock()
+
+    with (
+        patch(
+            "miramedia.subtitles.service.MiraMediaConfig",
+            return_value=_bazarr_enabled_config(),
+        ),
+        patch(_RELEASE_PATCH, new_callable=AsyncMock),
+        patch(
+            "miramedia.subtitles.arr_ids.get_or_create_arr_ids",
+            new_callable=AsyncMock,
+            side_effect=[
+                {episode_file_id: 10},
+                {episode_id: 20},
+            ],
+        ),
+        patch(
+            "miramedia.subtitles.bazarr_client.requests.Session", return_value=session
+        ),
+        patch(
+            "miramedia.subtitles.service.asyncio.to_thread", new_callable=AsyncMock
+        ) as to_thread,
+    ):
+        to_thread.side_effect = lambda fn, *args: fn(*args)
+        await service.notify_bazarr_episode_imported(
+            service.subtitle_repository.db, episode_file_id, episode_id
+        )
+
+    session.close.assert_called_once()

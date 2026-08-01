@@ -144,7 +144,7 @@ async def get_recommended_shows(
 async def get_all_shows(
     show_service: show_service_dep,
     response: Response,
-    limit: Annotated[int | None, Query(gt=0, le=500)] = None,
+    limit: Annotated[int, Query(gt=0, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
     q: Annotated[str | None, Query()] = None,
     sort: Annotated[str | None, Query()] = None,
@@ -159,17 +159,12 @@ async def get_all_shows(
     status_filter: Annotated[list[str] | None, Query(alias="status")] = None,
     exclude_status: Annotated[list[str] | None, Query()] = None,
 ) -> list[PublicShow]:
-    """
-    Get all shows in the library with computed download/status fields.
+    """List shows with bounded SQL pagination and computed download/status fields.
 
-    When ``limit`` is supplied, pagination is pushed into SQL (only the
-    page's rows are eager-loaded and disk-scanned). When omitted, returns
-    the full library — kept for compatibility with the current frontend
-    contract.
+    Pagination is always pushed into SQL so only the requested page is
+    eager-loaded. ``limit`` defaults to 100 (max 500); ``X-Total-Count``
+    reports the filtered total.
     """
-    if limit is None:
-        shows = await show_service.get_all_public_shows()
-        return shows[offset:] if offset else shows
     page, total = await show_service.get_paginated_public_shows(
         offset=offset,
         limit=limit,

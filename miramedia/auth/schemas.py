@@ -19,3 +19,4 @@ class UserUpdate(schemas.BaseUserUpdate):
 
 class AuthMetadata(BaseModel):
     oauth_providers: list[str]
+    allow_registration: bool = False

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
@@ -13,6 +15,7 @@ import pytest
 
 import miramedia.streams.transcode as transcode
 from miramedia.streams.transcode import (
+    _COMPLETE_MARKER,
     HlsTranscodeError,
     _encode_hls,
     _ffmpeg_cmd,
@@ -21,6 +24,7 @@ from miramedia.streams.transcode import (
     ensure_hls_playlist,
     hls_cache_root,
     hls_playlist_ready,
+    hls_playlist_started,
     playlist_path,
     schedule_hls_warm,
     segment_dir,
@@ -51,13 +55,35 @@ def _make_source(tmp_path: Path, name: str = "movie.mkv") -> Path:
     return source
 
 
-def _write_ready_playlist(source: Path) -> Path:
-    out_dir = segment_dir(source)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    playlist = out_dir / "index.m3u8"
+def _write_playlist_segment(playlist: Path, out_dir: Path) -> None:
+    playlist.parent.mkdir(parents=True, exist_ok=True)
     playlist.write_text("#EXTM3U\n", encoding="utf-8")
     (out_dir / "seg_000.ts").write_bytes(b"segment")
+
+
+def _write_started_playlist(source: Path) -> Path:
+    out_dir = segment_dir(source)
+    playlist = out_dir / "index.m3u8"
+    _write_playlist_segment(playlist, out_dir)
     return playlist
+
+
+def _write_ready_playlist(source: Path) -> Path:
+    playlist = _write_started_playlist(source)
+    (segment_dir(source) / _COMPLETE_MARKER).touch()
+    return playlist
+
+
+async def _await_inflight_encode(source: Path) -> None:
+    entry = transcode._inflight.get(cache_key_for(source))
+    if entry is not None:
+        await entry.task
+
+
+def _encode_args(source: Path, suffix: str = "test") -> tuple[str, Path]:
+    key = cache_key_for(source)
+    tmp_dir = hls_cache_root() / f".tmp-{key}-{suffix}"
+    return key, tmp_dir
 
 
 class FakePopen:
@@ -109,7 +135,8 @@ def test_ffmpeg_cmd_is_trusted_argv_list(tmp_path: Path) -> None:
     assert "-hls_time" in cmd
     assert str(transcode._HLS_SEGMENT_SECONDS) in cmd
     assert "-hls_playlist_type" in cmd
-    assert "vod" in cmd
+    assert "event" in cmd
+    assert "vod" not in cmd
     assert "-hls_flags" in cmd
     assert "independent_segments" in cmd
     assert "-hls_segment_filename" in cmd
@@ -146,21 +173,28 @@ def test_playlist_and_segment_paths_stay_under_cache(
 
 
 @pytest.mark.usefixtures("hls_cache")
-def test_hls_playlist_ready_requires_playlist_and_segment(tmp_path: Path) -> None:
+def test_hls_playlist_started_requires_playlist_and_segment(tmp_path: Path) -> None:
     source = _make_source(tmp_path)
     out_dir = segment_dir(source)
     out_dir.mkdir(parents=True)
     (out_dir / "index.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    assert hls_playlist_started(source) is False
     assert hls_playlist_ready(source) is False
 
     (out_dir / "seg_000.ts").write_bytes(b"segment")
+    assert hls_playlist_started(source) is True
+    assert hls_playlist_ready(source) is False
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_hls_playlist_ready_requires_completion_marker(tmp_path: Path) -> None:
+    source = _make_source(tmp_path)
+    _write_started_playlist(source)
+    assert hls_playlist_started(source) is True
+    assert hls_playlist_ready(source) is False
+
+    (segment_dir(source) / _COMPLETE_MARKER).touch()
     assert hls_playlist_ready(source) is True
-
-
-def _write_playlist_segment(playlist: Path, out_dir: Path) -> None:
-    playlist.parent.mkdir(parents=True, exist_ok=True)
-    playlist.write_text("#EXTM3U\n", encoding="utf-8")
-    (out_dir / "seg_000.ts").write_bytes(b"segment")
 
 
 async def _create_segment_after_delay(
@@ -180,7 +214,7 @@ def test_wait_for_playlist_start_succeeds_when_segment_appears(
 
     async def _run_wait() -> None:
         task = asyncio.create_task(_create_segment_after_delay(playlist, out_dir, 0.1))
-        await _wait_for_playlist_start(proc, playlist=playlist, out_dir=out_dir)
+        await _wait_for_playlist_start(proc, out_dir=out_dir)
         await task
 
     _run(_run_wait())
@@ -191,11 +225,10 @@ def test_wait_for_playlist_start_times_out_when_segment_never_appears(
 ) -> None:
     _fast_wait_constants(monkeypatch)
     out_dir = tmp_path / "out"
-    playlist = out_dir / "index.m3u8"
     proc = FakePopen([])
 
     with pytest.raises(HlsTranscodeError, match="timed out waiting for first segment"):
-        _run(_wait_for_playlist_start(proc, playlist=playlist, out_dir=out_dir))
+        _run(_wait_for_playlist_start(proc, out_dir=out_dir))
 
     assert proc.poll() is not None
 
@@ -205,13 +238,12 @@ def test_wait_for_playlist_start_fails_fast_when_process_exits(
 ) -> None:
     _fast_wait_constants(monkeypatch)
     out_dir = tmp_path / "out"
-    playlist = out_dir / "index.m3u8"
     proc = FakePopen([])
     proc._returncode = 1
     proc.stderr = io.BytesIO(b"encode failed")
 
     with pytest.raises(HlsTranscodeError, match="timed out waiting for first segment"):
-        _run(_wait_for_playlist_start(proc, playlist=playlist, out_dir=out_dir))
+        _run(_wait_for_playlist_start(proc, out_dir=out_dir))
 
 
 @pytest.mark.usefixtures("hls_cache")
@@ -224,20 +256,21 @@ def test_encode_hls_happy_path_records_ffmpeg_argv(
     monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
 
     async def _run_encode() -> None:
-        out_dir = segment_dir(source)
-        playlist = out_dir / "index.m3u8"
-        task = asyncio.create_task(_create_segment_after_delay(playlist, out_dir, 0.1))
-        await _encode_hls(source)
+        key, tmp_dir = _encode_args(source, "happy")
+        playlist = tmp_dir / "index.m3u8"
+        task = asyncio.create_task(_create_segment_after_delay(playlist, tmp_dir, 0.1))
+        await _encode_hls(source, key, tmp_dir)
         await task
 
     _run(_run_encode())
 
     assert len(FakePopen.recorded_cmds) == 1
+    _, tmp_dir = _encode_args(source, "happy")
     expected = _ffmpeg_cmd(
         "/usr/bin/ffmpeg",
         source,
-        segment_dir(source),
-        segment_dir(source) / "index.m3u8",
+        tmp_dir,
+        tmp_dir / "index.m3u8",
     )
     assert FakePopen.recorded_cmds[0] == expected
     assert hls_playlist_ready(source)
@@ -277,8 +310,9 @@ def test_encode_hls_surfaces_failure_when_process_exits_early(
 
     monkeypatch.setattr(FakePopen, "__init__", _failing_init)
 
+    key, tmp_dir = _encode_args(source, "early-fail")
     with pytest.raises(HlsTranscodeError, match="timed out waiting for first segment"):
-        _run(_encode_hls(source))
+        _run(_encode_hls(source, key, tmp_dir))
 
 
 @pytest.mark.usefixtures("hls_cache")
@@ -291,15 +325,30 @@ def test_ensure_hls_playlist_returns_playlist_after_encode(
     monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
 
     async def _run_ensure() -> Path:
-        out_dir = segment_dir(source)
-        playlist = out_dir / "index.m3u8"
-        task = asyncio.create_task(_create_segment_after_delay(playlist, out_dir, 0.1))
-        result = await ensure_hls_playlist(source)
-        await task
+        inflight_ready = asyncio.Event()
+
+        async def _delayed_segment() -> None:
+            await inflight_ready.wait()
+            entry = transcode._inflight[cache_key_for(source)]
+            tmp_dir = entry.tmp_dir
+            playlist = tmp_dir / "index.m3u8"
+            await _create_segment_after_delay(playlist, tmp_dir, 0.1)
+
+        delay_task = asyncio.create_task(_delayed_segment())
+        ensure_task = asyncio.create_task(ensure_hls_playlist(source))
+        for _ in range(1000):
+            if cache_key_for(source) in transcode._inflight:
+                break
+            await asyncio.sleep(0)
+        inflight_ready.set()
+        result = await ensure_task
+        await delay_task
+        await _await_inflight_encode(source)
         return result
 
     playlist = _run(_run_ensure())
-    assert playlist == segment_dir(source) / "index.m3u8"
+    # Waiter returns at first segment — may still point at the temp encode dir.
+    assert playlist.name == "index.m3u8"
     assert hls_playlist_ready(source)
 
 
@@ -314,16 +363,17 @@ def test_cancelled_waiter_does_not_kill_shared_encode(
     encode_count = 0
     encode_ran_to_completion = False
 
-    async def _slow_fake_encode(src: Path) -> None:
+    async def _slow_fake_encode(src: Path, _key: str, tmp_dir: Path) -> None:
         nonlocal encode_count, encode_ran_to_completion
         encode_count += 1
         encode_started.set()
         await asyncio.sleep(0.5)
-        out_dir = segment_dir(src)
-        playlist = out_dir / "index.m3u8"
-        _write_playlist_segment(playlist, out_dir)
+        playlist = tmp_dir / "index.m3u8"
+        _write_playlist_segment(playlist, tmp_dir)
         encode_ran_to_completion = True
         encode_complete.set()
+        (tmp_dir / ".complete").touch()
+        transcode._publish_tmp_dir(tmp_dir, segment_dir(src))
 
     monkeypatch.setattr(transcode, "_encode_hls", _slow_fake_encode)
 
@@ -422,3 +472,155 @@ def test_schedule_hls_warm_logs_hls_transcode_error(
     ]
     assert len(failed) == 1
     assert not failed[0].exc_info
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_successful_encode_writes_completion_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source(tmp_path)
+    _install_fake_popen(monkeypatch)
+    monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    async def _run_encode() -> None:
+        key, tmp_dir = _encode_args(source, "marker")
+        playlist = tmp_dir / "index.m3u8"
+        task = asyncio.create_task(_create_segment_after_delay(playlist, tmp_dir, 0.1))
+        await _encode_hls(source, key, tmp_dir)
+        await task
+
+    _run(_run_encode())
+    assert (segment_dir(source) / _COMPLETE_MARKER).is_file()
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_failed_encode_does_not_write_completion_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source(tmp_path)
+    _fast_wait_constants(monkeypatch)
+    _install_fake_popen(monkeypatch)
+    monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    original_init = FakePopen.__init__
+
+    def _failing_init(self: FakePopen, cmd: list[str], **kwargs: Any) -> None:
+        original_init(self, cmd, **kwargs)
+        self._returncode = 1
+        self.stderr = io.BytesIO(b"ffmpeg: invalid data found\n")
+
+    monkeypatch.setattr(FakePopen, "__init__", _failing_init)
+
+    key, tmp_dir = _encode_args(source, "early-fail")
+    with pytest.raises(HlsTranscodeError, match="timed out waiting for first segment"):
+        _run(_encode_hls(source, key, tmp_dir))
+
+    assert not (segment_dir(source) / _COMPLETE_MARKER).exists()
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_stale_partial_cache_is_replaced_on_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source(tmp_path)
+    out_dir = segment_dir(source)
+    out_dir.mkdir(parents=True)
+    (out_dir / "index.m3u8").write_text("stale\n", encoding="utf-8")
+    (out_dir / "seg_000.ts").write_bytes(b"stale-segment")
+
+    _install_fake_popen(monkeypatch)
+    monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    async def _run_encode() -> None:
+        key, tmp_dir = _encode_args(source, "stale")
+        playlist = tmp_dir / "index.m3u8"
+        task = asyncio.create_task(_create_segment_after_delay(playlist, tmp_dir, 0.1))
+        await _encode_hls(source, key, tmp_dir)
+        await task
+
+    _run(_run_encode())
+
+    assert (out_dir / "index.m3u8").read_text(encoding="utf-8") == "#EXTM3U\n"
+    assert hls_playlist_ready(source)
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_encode_hls_nonzero_exit_empty_stderr_removes_tmp_and_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    source = _make_source(tmp_path)
+    _fast_wait_constants(monkeypatch)
+    _install_fake_popen(monkeypatch)
+    monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(FakePopen, "wait", lambda _self: 1)
+
+    key, tmp_dir = _encode_args(source, "empty-stderr")
+
+    async def _run_encode() -> None:
+        playlist = tmp_dir / "index.m3u8"
+        task = asyncio.create_task(_create_segment_after_delay(playlist, tmp_dir, 0.1))
+        await _encode_hls(source, key, tmp_dir)
+        await task
+
+    with caplog.at_level(logging.ERROR, logger="miramedia.streams.transcode"):
+        _run(_run_encode())
+
+    assert not tmp_dir.exists()
+    failed = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "exit code" in r.message
+        and source.name in r.message
+    ]
+    assert len(failed) == 1
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_publish_tmp_dir_oserror_leaves_temp_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _make_source(tmp_path)
+    key, tmp_dir = _encode_args(source, "publish-fail")
+    out_dir = segment_dir(source)
+
+    def _raise_oserror(_tmp: Path, _out: Path) -> None:
+        msg = "publish failed"
+        raise OSError(msg)
+
+    monkeypatch.setattr(transcode, "_publish_tmp_dir", _raise_oserror)
+    _install_fake_popen(monkeypatch)
+    monkeypatch.setattr(transcode.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    async def _run_encode() -> None:
+        playlist = tmp_dir / "index.m3u8"
+        task = asyncio.create_task(_create_segment_after_delay(playlist, tmp_dir, 0.05))
+        await _encode_hls(source, key, tmp_dir)
+        await task
+
+    _run(_run_encode())
+
+    assert tmp_dir.is_dir()
+    assert not out_dir.exists()
+
+
+@pytest.mark.usefixtures("hls_cache")
+def test_reap_stale_tmp_dirs_removes_empty_tmp_dir(
+    tmp_path: Path,
+) -> None:
+    source = _make_source(tmp_path)
+    key = cache_key_for(source)
+    stale_tmp = hls_cache_root() / f".tmp-{key}-empty"
+    stale_tmp.mkdir(parents=True)
+
+    old_mtime = time.time() - transcode._TMP_REAP_AGE_S - 10
+    os.utime(stale_tmp, (old_mtime, old_mtime))
+
+    transcode._reap_stale_tmp_dirs()
+    assert not stale_tmp.exists()

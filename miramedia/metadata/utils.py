@@ -148,47 +148,55 @@ def download_poster_image(storage_path: Path, poster_url: str, uuid: UUID) -> bo
         log.warning("Too many poster redirects for %s", uuid)
         return False
 
-    if res.status_code == 200:
-        content_length = res.headers.get("Content-Length")
-        if content_length is not None:
-            try:
-                if int(content_length) > _MAX_POSTER_DOWNLOAD_BYTES:
-                    log.warning(
-                        "Skipping poster download for %s: Content-Length %s exceeds 50 MiB",
-                        uuid,
-                        content_length,
-                    )
-                    return False
-            except ValueError:
-                pass
-
-        image_file_path = storage_path.joinpath(str(uuid)).with_suffix(".jpg")
-        bytes_written = 0
-        with image_file_path.open("wb") as f:
-            for chunk in res.iter_content(chunk_size=1 << 20):
-                if chunk:
-                    if bytes_written + len(chunk) > _MAX_POSTER_DOWNLOAD_BYTES:
+    try:
+        if res.status_code == 200:
+            content_length = res.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    if int(content_length) > _MAX_POSTER_DOWNLOAD_BYTES:
                         log.warning(
-                            "Skipping poster download for %s: streamed body exceeds 50 MiB",
+                            "Skipping poster download for %s: Content-Length %s exceeds 50 MiB",
                             uuid,
+                            content_length,
                         )
-                        res.close()
-                        image_file_path.unlink(missing_ok=True)
                         return False
-                    f.write(chunk)
-                    bytes_written += len(chunk)
+                except ValueError:
+                    pass
 
-        try:
-            original_image = Image.open(image_file_path)
-            original_image.save(image_file_path.with_suffix(".avif"), quality=50)
-            original_image.save(image_file_path.with_suffix(".webp"), quality=50)
-        except (
-            Image.DecompressionBombError,
-            OSError,
-            Image.UnidentifiedImageError,
-        ) as exc:
-            log.warning("Skipping poster decode for %s: %s", uuid, exc)
-            image_file_path.unlink(missing_ok=True)
-            return False
-        return True
-    return False
+            image_file_path = storage_path.joinpath(str(uuid)).with_suffix(".jpg")
+            bytes_written = 0
+            with image_file_path.open("wb") as f:
+                for chunk in res.iter_content(chunk_size=1 << 20):
+                    if chunk:
+                        if bytes_written + len(chunk) > _MAX_POSTER_DOWNLOAD_BYTES:
+                            log.warning(
+                                "Skipping poster download for %s: streamed body exceeds 50 MiB",
+                                uuid,
+                            )
+                            image_file_path.unlink(missing_ok=True)
+                            return False
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+
+            try:
+                with Image.open(image_file_path) as original_image:
+                    original_image.save(
+                        image_file_path.with_suffix(".avif"), quality=50
+                    )
+                    original_image.save(
+                        image_file_path.with_suffix(".webp"), quality=50
+                    )
+            except (
+                Image.DecompressionBombError,
+                OSError,
+                Image.UnidentifiedImageError,
+            ) as exc:
+                log.warning("Skipping poster decode for %s: %s", uuid, exc)
+                image_file_path.unlink(missing_ok=True)
+                image_file_path.with_suffix(".avif").unlink(missing_ok=True)
+                image_file_path.with_suffix(".webp").unlink(missing_ok=True)
+                return False
+            return True
+        return False
+    finally:
+        res.close()

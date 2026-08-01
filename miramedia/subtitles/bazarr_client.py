@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Self
 
 import requests
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -22,6 +23,15 @@ class BazarrClient:
         self.session = requests.Session()
         self.session.trust_env = False  # ignore HTTP_PROXY/HTTPS_PROXY env
         self.session.headers["X-API-KEY"] = api_key
+
+    def close(self) -> None:
+        self.session.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
 
     def _get(self, path: str) -> dict | None:
         try:

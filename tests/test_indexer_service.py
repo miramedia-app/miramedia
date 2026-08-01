@@ -7,7 +7,6 @@ import pytest
 from miramedia.indexers import service as indexer_service
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.service import IndexerService, _dedupe_results, _query_variants
-from miramedia.indexers.utils import sanitize_search_query, search_name_variants
 
 
 @pytest.fixture(autouse=True)
@@ -119,29 +118,114 @@ def test_dedupe_results_empty_list() -> None:
 
 def test_query_variants_colon_subtitle() -> None:
     name = "The Agency: Central Intelligence"
-    expected = []
-    for variant in search_name_variants(name):
-        query = sanitize_search_query(variant)
-        if query and query not in expected:
-            expected.append(query)
-    assert _query_variants(name) == expected
-    assert expected == ["The Agency Central Intelligence", "The Agency"]
+    assert _query_variants(name, year=2024) == [
+        "The Agency Central Intelligence",
+        "The Agency 2024",
+    ]
 
 
 def test_query_variants_suffix_appended_before_sanitization() -> None:
     name = "The Agency: Central Intelligence"
     suffix = " S01E01"
-    expected = []
-    for variant in search_name_variants(name):
-        query = sanitize_search_query(f"{variant}{suffix}")
-        if query and query not in expected:
-            expected.append(query)
-    assert _query_variants(name, suffix=suffix) == expected
-    assert expected == [
+    assert _query_variants(name, suffix=suffix, year=2024) == [
         "The Agency Central Intelligence S01E01",
-        "The Agency S01E01",
+        "The Agency 2024 S01E01",
+    ]
+
+
+def test_query_variants_suppresses_known_franchise_fallback() -> None:
+    assert _query_variants(
+        "Star Trek: Starfleet Academy", suffix=" S02E01", year=2026
+    ) == [
+        "Star Trek Starfleet Academy S02E01",
+    ]
+
+
+def test_query_variants_suppresses_fallback_without_year() -> None:
+    assert _query_variants("The Agency: Central Intelligence") == [
+        "The Agency Central Intelligence"
     ]
 
 
 def test_query_variants_excludes_empty_sanitized_queries() -> None:
     assert _query_variants("!!!") == []
+
+
+def test_indexer_site_read_masks_nonempty_api_key() -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from miramedia.indexers.schemas import IndexerSiteRead, mask_indexer_site_read
+    from miramedia.settings.validation import SECRET_MASK
+
+    now = datetime.now(UTC)
+    site = IndexerSiteRead(
+        id=uuid4(),
+        name="custom",
+        site_type="torznab",
+        url="http://example.com/api",
+        api_key="stored-key",
+        supports_tv=True,
+        supports_movies=True,
+        categories_tv="5000",
+        categories_movies="2000",
+        cloudflare_protected=False,
+        enabled=True,
+        is_preloaded=False,
+        created_at=now,
+        updated_at=now,
+    )
+    masked = mask_indexer_site_read(site)
+    assert masked.api_key == SECRET_MASK
+
+
+def test_indexer_site_read_leaves_empty_api_key_unmasked() -> None:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from miramedia.indexers.schemas import IndexerSiteRead, mask_indexer_site_read
+
+    now = datetime.now(UTC)
+    site = IndexerSiteRead(
+        id=uuid4(),
+        name="custom",
+        site_type="torznab",
+        url="http://example.com/api",
+        api_key="",
+        supports_tv=True,
+        supports_movies=True,
+        categories_tv="5000",
+        categories_movies="2000",
+        cloudflare_protected=False,
+        enabled=True,
+        is_preloaded=False,
+        created_at=now,
+        updated_at=now,
+    )
+    masked = mask_indexer_site_read(site)
+    assert masked.api_key == ""
+
+
+def test_strip_indexer_api_key_sentinel_drops_mask_from_update() -> None:
+    from miramedia.indexers.schemas import (
+        IndexerSiteUpdate,
+        strip_indexer_api_key_sentinel,
+    )
+    from miramedia.settings.validation import SECRET_MASK
+
+    update = IndexerSiteUpdate(api_key=SECRET_MASK, url="http://updated.example.com")
+    stripped = strip_indexer_api_key_sentinel(update)
+    dumped = stripped.model_dump(exclude_none=True)
+    assert "api_key" not in dumped
+    assert dumped["url"] == "http://updated.example.com"
+
+
+def test_strip_indexer_api_key_sentinel_keeps_real_value() -> None:
+    from miramedia.indexers.schemas import (
+        IndexerSiteUpdate,
+        strip_indexer_api_key_sentinel,
+    )
+
+    update = IndexerSiteUpdate(api_key="new-real-key")
+    stripped = strip_indexer_api_key_sentinel(update)
+    assert stripped.api_key == "new-real-key"

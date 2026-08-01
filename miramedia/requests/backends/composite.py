@@ -168,17 +168,24 @@ class CompositeRequestProvider(AbstractRequestProvider):
             )
             if created is None:
                 return
-            if request.status in (
-                RequestStatus.approved,
-                RequestStatus.downloading,
-                RequestStatus.downloaded,
-            ):
-                await self.client.approve(created.request_id)
+            # Persist the Seerr link immediately after a successful create so a
+            # failed approve cannot cause a duplicate create on the next cycle.
             await self.repository.update_request(
                 request.id,
                 seerr_request_id=created.request_id,
                 seerr_media_id=created.media_id,
             )
+            # update_request re-checked out the session; release again before
+            # the optional approve HTTP call.
+            await release_session_before_external_io(self.repository.db)
+            if request.status in (
+                RequestStatus.approved,
+                RequestStatus.downloading,
+                RequestStatus.downloaded,
+            ):
+                await self._safe_seerr(
+                    "approve", self.client.approve(created.request_id)
+                )
         except httpx.HTTPError:
             log.warning(
                 "Seerr push failed for new request %s",

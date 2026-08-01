@@ -367,19 +367,25 @@ _RELEASE_MARKERS = re.compile(
     r")$"
 )
 
+# These prefixes are both franchise namespaces and standalone series titles.
+# Treating them as aliases for every colon-suffixed spinoff can select episodes
+# from the base series even when the requested spinoff is unreleased.
+_UNSAFE_MAIN_TITLE_FALLBACKS = {"star trek"}
+
 
 def search_name_variants(media_name: str) -> list[str]:
     """The full media name plus its pre-colon main title, when they differ.
 
     Metadata providers often title media with a subtitle after a colon
     (``The Agency: Central Intelligence``) while release groups use only the
-    main title (``The.Agency.S01E01``). Searching and matching must accept
-    both forms.
+    main title (``The.Agency.2024.S01E01``). Callers must qualify that shortened
+    fallback with the media year so franchise prefixes cannot match a
+    different series.
     """
     variants = [media_name]
     main, sep, _ = media_name.partition(":")
     main = main.strip()
-    if sep and main:
+    if sep and main and main.casefold() not in _UNSAFE_MAIN_TITLE_FALLBACKS:
         variants.append(main)
     return variants
 
@@ -394,7 +400,9 @@ def _normalized_name_variants(media_name: str) -> list[str]:
     return out
 
 
-def _is_title_relevant(title: str, norm_variants: list[str]) -> bool:
+def _is_title_relevant(
+    title: str, norm_variants: list[str], media_year: int | None = None
+) -> bool:
     """Reject torrent titles whose leading segment doesn't equal the media name.
 
     A loose substring check accepted things like ``Masha and the Bear`` when
@@ -404,26 +412,86 @@ def _is_title_relevant(title: str, norm_variants: list[str]) -> bool:
     media name, immediately followed by a release marker (year, SxxEyy,
     resolution, codec, source, …) or the end of the string.
 
-    The media name's pre-colon main title is accepted too, because release
-    groups usually drop metadata subtitles (``The Agency: Central
-    Intelligence`` → ``The.Agency.S01E01``).
+    The media name's pre-colon main title is accepted too, but only when the
+    release also states the media's premiere year. Without that
+    disambiguation, franchise titles such as ``Star Trek: Starfleet Academy``
+    would accept releases from the original ``Star Trek`` series.
 
     Uses the same normalisation as the query sanitizer so a torrent fetched
     with ``Greys Anatomy`` is not rejected against the raw name ``Grey's
     Anatomy``.
     """
     norm_title = sanitize_search_query(title).lower()
+    title_with_parenthesized_years = re.sub(r"\((\d{4})\)", r" \1 ", title)
+    norm_title_with_years = sanitize_search_query(
+        title_with_parenthesized_years
+    ).lower()
+    title_years = _extract_years(title)
 
-    for norm_name in norm_variants:
-        if norm_title == norm_name:
-            return True
-        if not norm_title.startswith(norm_name + " "):
-            continue
-        next_token = norm_title[len(norm_name) + 1 :].split(" ", 1)[0]
-        if _RELEASE_MARKERS.match(next_token):
+    for index, norm_name in enumerate(norm_variants):
+        if index == 0:
+            candidate_title = norm_title
+            candidate_name = norm_name
+        else:
+            if media_year is None or title_years != {media_year}:
+                continue
+            candidate_title = norm_title_with_years
+            candidate_name = f"{norm_name} {media_year}"
+
+        exact_match = candidate_title == candidate_name
+        marker_match = False
+        if candidate_title.startswith(candidate_name + " "):
+            next_token = candidate_title[len(candidate_name) + 1 :].split(" ", 1)[0]
+            marker_match = bool(_RELEASE_MARKERS.match(next_token))
+        if exact_match or marker_match:
             return True
 
     return False
+
+
+def is_search_query_relevant(result: IndexerQueryResult, query: str) -> bool:
+    """Return whether a result contains every term and TV marker in a query.
+
+    Custom queries may intentionally use an alternate title (for example,
+    ``Lioness`` releases are often named ``Special Ops Lioness``), so they
+    cannot use the stricter media-name prefix check above. Match ordinary
+    words anywhere as whole normalized tokens and compare Sxx/Eyy markers
+    against the result's parsed season/episode fields.
+    """
+    query_tokens = sanitize_search_query(query).lower().split()
+    if not query_tokens:
+        return False
+
+    title_tokens = set(sanitize_search_query(result.title).lower().split())
+    for token in query_tokens:
+        season_episode = re.fullmatch(r"s0*(\d+)(?:e0*(\d+))?", token)
+        if season_episode:
+            season = int(season_episode.group(1))
+            episode = season_episode.group(2)
+            if season not in result.season:
+                return False
+            if episode is not None and int(episode) not in result.episode:
+                return False
+            continue
+
+        alternate_episode = re.fullmatch(r"0*(\d+)x0*(\d+)", token)
+        if alternate_episode:
+            if int(alternate_episode.group(1)) not in result.season:
+                return False
+            if int(alternate_episode.group(2)) not in result.episode:
+                return False
+            continue
+
+        episode_only = re.fullmatch(r"e0*(\d+)", token)
+        if episode_only:
+            if int(episode_only.group(1)) not in result.episode:
+                return False
+            continue
+
+        if token not in title_tokens:
+            return False
+
+    return True
 
 
 _YEAR_TOKEN = re.compile(r"\b(19\d{2}|20\d{2})\b")
@@ -476,6 +544,7 @@ def evaluate_indexer_query_results(
     is_tv: bool,
     quality_allowed: list[str] | None = None,
     codec_allowed: list[str] | None = None,
+    query_override: str | None = None,
 ) -> list[IndexerQueryResult]:
     indexer_config = MiraMediaConfig().indexers
     scoring_rulesets: list[ScoringRuleSet] = indexer_config.scoring_rule_sets
@@ -486,7 +555,7 @@ def evaluate_indexer_query_results(
         query_results = [
             r
             for r in query_results
-            if r.usenet or r.seeders >= indexer_config.minimum_seeders
+            if r.usenet or (r.seeders or 0) >= indexer_config.minimum_seeders
         ]
         seed_filtered = before_seed - len(query_results)
         if seed_filtered:
@@ -500,7 +569,7 @@ def evaluate_indexer_query_results(
         query_results = [
             r
             for r in query_results
-            if r.usenet or r.seeders <= indexer_config.maximum_seeders
+            if r.usenet or (r.seeders or 0) <= indexer_config.maximum_seeders
         ]
         max_filtered = before_max - len(query_results)
         if max_filtered:
@@ -529,17 +598,47 @@ def evaluate_indexer_query_results(
             )
         query_results = kept
 
-    # Filter out results that don't contain the media name at all
+    # Filter out results that don't match the requested title/query.
     before_count = len(query_results)
-    norm_name_variants = _normalized_name_variants(media.name)
-    query_results = [
-        r for r in query_results if _is_title_relevant(r.title, norm_name_variants)
-    ]
+    if query_override:
+        query_results = [
+            r for r in query_results if is_search_query_relevant(r, query_override)
+        ]
+        relevance_label = query_override
+    else:
+        norm_name_variants = _normalized_name_variants(media.name)
+        query_results = [
+            r
+            for r in query_results
+            if _is_title_relevant(r.title, norm_name_variants, media.year)
+        ]
+        relevance_label = media.name
     filtered = before_count - len(query_results)
     if filtered:
         log.info(
-            f"Filtered {filtered}/{before_count} results not matching '{media.name}'"
+            f"Filtered {filtered}/{before_count} results not matching '{relevance_label}'"
         )
+
+    # Generic TV searches can return same-title movies/games. Custom queries
+    # do not have the typed show/season lookup as a backstop, so require a TV
+    # season/episode/series marker before scoring them. A query that explicitly
+    # asks for a named special may legitimately have no numeric marker.
+    if query_override and is_tv:
+        before_tv = len(query_results)
+        query_requests_special = (
+            "special" in sanitize_search_query(query_override).lower().split()
+        )
+        query_results = [
+            r
+            for r in query_results
+            if _looks_like_episode(r.title) or query_requests_special
+        ]
+        tv_filtered = before_tv - len(query_results)
+        if tv_filtered:
+            log.info(
+                f"Filtered {tv_filtered}/{before_tv} non-TV results for custom "
+                f"query '{query_override}'"
+            )
 
     # TV-marker gate (movies only): a release tagged with SxxEyy / season packs
     # (e.g. "Supergirl S05E12 ...") is a TV episode and must never be grabbed for

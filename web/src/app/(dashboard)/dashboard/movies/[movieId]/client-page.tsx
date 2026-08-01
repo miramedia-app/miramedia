@@ -38,6 +38,7 @@ import { MediaActionsMenu } from "@/components/media-actions-menu";
 import { MovieSettingsSheet } from "@/components/movies/movie-settings-sheet";
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
+import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import apiClient from "@/lib/api/client";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import {
@@ -216,89 +217,34 @@ export default function MovieDetailClientPage() {
     .map((t) => t.id!);
 
   // ── Bulk torrent actions ────────────────────────────────────────────────
-  const [bulkWorking, setBulkWorking] = React.useState(false);
+  const [otherBulkWorking, setOtherBulkWorking] = React.useState(false);
 
   async function invalidateAll() {
     await queryClient.invalidateQueries({ queryKey: ["movie", movieId] });
   }
 
+  const {
+    bulkWorking: torrentBulkWorking,
+    pause: bulkPauseTorrents,
+    resume: bulkResumeTorrents,
+    remove: removeTorrents,
+    pauseOne: pauseTorrent,
+    resumeOne: resumeTorrent,
+    retryOne: retryTorrent,
+  } = useBulkTorrentActions(invalidateAll);
+  const bulkWorking = torrentBulkWorking || otherBulkWorking;
+
   async function bulkDeleteTorrents() {
     const ids = torrentIds.filter((id) => selectedTorrents.has(id));
     if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed, failedItems } = await bulkMutate(ids, (id) =>
-        apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-          params: { path: { torrent_id: id } },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} deleted`);
-      } else if (ok === 0) {
-        toast.error("Failed to delete some torrents");
-      } else {
-        toast.warning(`${ok} deleted, ${failed} failed`);
-      }
-      setSelectedTorrents(new Set(failedItems));
-      await invalidateAll();
-    } catch {
-      toast.error("Failed to delete some torrents");
-    } finally {
-      setBulkWorking(false);
-    }
-  }
-
-  async function bulkPauseTorrents(ids: string[]) {
-    if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed } = await bulkMutate(ids, (id) =>
-        apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-          params: { path: { torrent_id: id } },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} paused`);
-      } else if (ok === 0) {
-        toast.error("Failed to pause some torrents");
-      } else {
-        toast.warning(`${ok} paused, ${failed} failed`);
-      }
-      await invalidateAll();
-    } catch {
-      toast.error("Failed to pause some torrents");
-    } finally {
-      setBulkWorking(false);
-    }
-  }
-
-  async function bulkResumeTorrents(ids: string[]) {
-    if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed } = await bulkMutate(ids, (id) =>
-        apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-          params: { path: { torrent_id: id } },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} resumed`);
-      } else if (ok === 0) {
-        toast.error("Failed to resume some torrents");
-      } else {
-        toast.warning(`${ok} resumed, ${failed} failed`);
-      }
-      await invalidateAll();
-    } catch {
-      toast.error("Failed to resume some torrents");
-    } finally {
-      setBulkWorking(false);
-    }
+    await removeTorrents(ids, {
+      onResult: ({ failedItems }) => setSelectedTorrents(new Set(failedItems)),
+    });
   }
 
   async function bulkDeleteFiles() {
     if (!selectedFiles.size || !movie) return;
-    setBulkWorking(true);
+    setOtherBulkWorking(true);
     try {
       const { ok, failed, failedItems } = await bulkMutate([...selectedFiles], (key) => {
         if (key.startsWith("sub:")) {
@@ -329,7 +275,7 @@ export default function MovieDetailClientPage() {
       setSelectedFiles(new Set(failedItems));
       await invalidateAll();
     } finally {
-      setBulkWorking(false);
+      setOtherBulkWorking(false);
     }
   }
 
@@ -406,32 +352,6 @@ export default function MovieDetailClientPage() {
     } finally {
       setDeleting(false);
     }
-  }
-
-  // ── Torrent actions ─────────────────────────────────────────────────────
-  async function pauseTorrent(torrentId: string) {
-    const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-      params: { path: { torrent_id: torrentId } },
-    });
-    if (error) toast.error("Failed to pause torrent");
-    else toast.success("Torrent paused");
-    await invalidateAll();
-  }
-  async function resumeTorrent(torrentId: string) {
-    const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-      params: { path: { torrent_id: torrentId } },
-    });
-    if (error) toast.error("Failed to resume torrent");
-    else toast.success("Torrent resumed");
-    await invalidateAll();
-  }
-  async function retryTorrent(torrentId: string) {
-    const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/retry", {
-      params: { path: { torrent_id: torrentId } },
-    });
-    if (error) toast.error("Failed to retry torrent");
-    else toast.success("Retrying download…");
-    await invalidateAll();
   }
 
   const fileColumns = React.useMemo<ColumnDef<FileRow>[]>(

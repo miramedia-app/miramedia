@@ -20,8 +20,11 @@ from miramedia.indexers.schemas import (
     IndexerSiteRead,
     IndexerSiteTestResult,
     IndexerSiteUpdate,
+    mask_indexer_site_read,
+    strip_indexer_api_key_sentinel,
 )
 from miramedia.indexers.utils import preview_score
+from miramedia.settings.validation import SECRET_MASK
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +49,8 @@ async def list_indexer_sites(
     repo: indexer_repository_dep,
 ) -> list[IndexerSiteRead]:
     """List all configured indexer sites."""
-    return await repo.get_all_sites()
+    sites = await repo.get_all_sites()
+    return [mask_indexer_site_read(site) for site in sites]
 
 
 @router.post("/sites", status_code=status.HTTP_201_CREATED)
@@ -55,7 +59,10 @@ async def create_indexer_site(
     repo: indexer_repository_dep,
 ) -> IndexerSiteRead:
     """Add a new custom indexer site."""
-    return await repo.create_site(data)
+    create_data = data
+    if data.api_key == SECRET_MASK:
+        create_data = data.model_copy(update={"api_key": ""})
+    return mask_indexer_site_read(await repo.create_site(create_data))
 
 
 @router.get("/sites/{site_id}")
@@ -65,7 +72,7 @@ async def get_indexer_site(
 ) -> IndexerSiteRead:
     """Get details of a specific indexer site."""
     try:
-        return await repo.get_site(site_id)
+        return mask_indexer_site_read(await repo.get_site(site_id))
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Site not found"
@@ -80,7 +87,9 @@ async def update_indexer_site(
 ) -> IndexerSiteRead:
     """Update an indexer site configuration."""
     try:
-        return await repo.update_site(site_id, data)
+        return mask_indexer_site_read(
+            await repo.update_site(site_id, strip_indexer_api_key_sentinel(data))
+        )
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Site not found"

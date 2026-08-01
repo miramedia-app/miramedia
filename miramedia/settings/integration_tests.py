@@ -1,6 +1,6 @@
 """Connection/auth test handlers for the settings page integrations.
 
-Each handler receives a dict pulled from the live form state and returns an
+Each handler receives a typed config pulled from the live form state and returns an
 ``IntegrationTestResult``. Tests must be best-effort and fail closed — the goal is to give
 operators a quick "yes/no" without persisting anything. Avoid long timeouts so a single
 broken integration can't block the UI.
@@ -12,15 +12,25 @@ import logging
 import smtplib
 import ssl
 import time
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urljoin
 
 import requests
-from pydantic import BaseModel
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+)
 
 log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 8.0
+
+HostStr = Annotated[str, Field(pattern=r"^[A-Za-z0-9._-]+$")]
+PathStr = Annotated[str, Field(pattern=r"^$|^/[^\s]*$")]
 
 
 class IntegrationTestResult(BaseModel):
@@ -47,98 +57,255 @@ def _err(message: str, started: float | None = None) -> IntegrationTestResult:
     )
 
 
-def _g(cfg: dict, *path: str, default: Any = None) -> Any:  # noqa: ANN401
-    node: Any = cfg
-    for key in path:
-        if not isinstance(node, dict) or key not in node:
-            return default
-        node = node[key]
-    return node
+def _format_config_errors(exc: ValidationError) -> str:
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(part) for part in err.get("loc", ()))
+        msg = err.get("msg", "invalid value")
+        if loc:
+            parts.append(f"{loc}: {msg}")
+        else:
+            parts.append(str(msg))
+    return "; ".join(parts)
+
+
+class SmtpTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    smtp_host: str = ""
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_user: str = ""
+    smtp_password: str = ""
+    use_tls: bool = False
+
+
+class _HostPortConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    host: HostStr = "localhost"
+    port: int = Field(ge=1, le=65535)
+    https: bool = False
+
+
+class QbittorrentTestConfig(_HostPortConfig):
+    port: int = Field(default=8080, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    allow_self_signed: bool = False
+
+
+class TransmissionTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    host: HostStr = "localhost"
+    port: int = Field(default=9091, ge=1, le=65535)
+    https_enabled: bool = False
+    username: str = ""
+    password: str = ""
+    path: PathStr = "/transmission/rpc"
+    allow_self_signed: bool = False
+
+
+class SabnzbdTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    host: HostStr = "localhost"
+    port: int = Field(default=8080, ge=1, le=65535)
+    https: bool = False
+    api_key: str = ""
+    base_path: PathStr = ""
+    allow_self_signed: bool = False
+
+
+class ApiKeyTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: str = ""
+
+
+class UrlTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: AnyHttpUrl = Field(default=AnyHttpUrl("http://localhost/"))
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _default_empty_url(cls, value: object) -> object:
+        if value in ("", None):
+            return "http://localhost/"
+        return value
+
+
+class BazarrTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: AnyHttpUrl = Field(default=AnyHttpUrl("http://localhost/"))
+    api_key: str = ""
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _default_empty_url(cls, value: object) -> object:
+        if value in ("", None):
+            return "http://localhost/"
+        return value
+
+
+class PushoverTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    api_key: str = ""
+    user: str = ""
+
+
+class SeerrTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: AnyHttpUrl = Field(default=AnyHttpUrl("http://localhost/"))
+    api_key: str = ""
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _default_empty_url(cls, value: object) -> object:
+        if value in ("", None):
+            return "http://localhost/"
+        return value
+
+
+class OidcTestConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    configuration_endpoint: AnyHttpUrl = Field(default=AnyHttpUrl("http://localhost/"))
+
+    @field_validator("configuration_endpoint", mode="before")
+    @classmethod
+    def _default_empty_endpoint(cls, value: object) -> object:
+        if value in ("", None):
+            return "http://localhost/"
+        return value
+
+
+def _tls_verify(
+    cfg: QbittorrentTestConfig | TransmissionTestConfig | SabnzbdTestConfig,
+) -> bool:
+    return not cfg.allow_self_signed
+
+
+def _request_tls_error(started: float) -> IntegrationTestResult:
+    return _err(
+        "TLS certificate verification failed — enable 'Allow self-signed certificate' "
+        "if this server uses one",
+        started,
+    )
+
+
+def _scrub_secret(text: str, secret: str) -> str:
+    if secret and secret in text:
+        return text.replace(secret, "***")
+    return text
+
+
+def _request_failure_message(service: str, exc: BaseException) -> str:
+    if isinstance(exc, requests.exceptions.Timeout):
+        return f"{service}: connection failed (timeout or unreachable host)"
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return f"{service}: connection failed (timeout or unreachable host)"
+    if isinstance(exc, requests.exceptions.RequestException):
+        return f"{service}: connection failed"
+    return f"{service}: connection failed"
+
+
+def _log_request_exception(
+    service: str,
+    exc: BaseException,
+    *,
+    secret: str = "",
+) -> None:
+    log.debug(
+        "%s request failed: %s",
+        service,
+        _scrub_secret(str(exc), secret),
+        exc_info=(type(exc), exc, exc.__traceback__),
+    )
 
 
 # --- SMTP -----------------------------------------------------------------------------
-def test_smtp(cfg: dict) -> IntegrationTestResult:
-    host = _g(cfg, "smtp_host") or ""
-    port = int(_g(cfg, "smtp_port") or 587)
-    user = _g(cfg, "smtp_user") or ""
-    password = _g(cfg, "smtp_password") or ""
-    use_tls = bool(_g(cfg, "use_tls"))
-    if not host:
+def test_smtp(cfg: SmtpTestConfig) -> IntegrationTestResult:
+    if not cfg.smtp_host:
         return _err("smtp_host is required")
     started = time.monotonic()
     try:
-        if use_tls and port == 465:
-            client = smtplib.SMTP_SSL(host, port, timeout=DEFAULT_TIMEOUT)
+        if cfg.use_tls and cfg.smtp_port == 465:
+            client = smtplib.SMTP_SSL(
+                cfg.smtp_host, cfg.smtp_port, timeout=DEFAULT_TIMEOUT
+            )
         else:
-            client = smtplib.SMTP(host, port, timeout=DEFAULT_TIMEOUT)
-            if use_tls:
+            client = smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=DEFAULT_TIMEOUT)
+            if cfg.use_tls:
                 client.starttls(context=ssl.create_default_context())
         try:
-            if user and password:
-                client.login(user, password)
-                return _ok(f"Authenticated as {user}", started)
+            if cfg.smtp_user and cfg.smtp_password:
+                client.login(cfg.smtp_user, cfg.smtp_password)
+                return _ok(f"Authenticated as {cfg.smtp_user}", started)
             client.noop()
             return _ok("Connected (no auth provided)", started)
         finally:
             try:
                 client.quit()
             except Exception:  # noqa: S110
-                # Quit is best-effort; the test result has already been computed.
                 pass
-    except (TimeoutError, smtplib.SMTPException, OSError) as exc:
-        return _err(f"SMTP error: {exc}", started)
+    except TimeoutError:
+        log.debug("SMTP connection failed", exc_info=True)
+        return _err("SMTP: connection failed (timeout)", started)
+    except (smtplib.SMTPException, OSError):
+        log.debug("SMTP connection failed", exc_info=True)
+        return _err("SMTP: connection failed", started)
 
 
 # --- Torrent clients ------------------------------------------------------------------
-def test_qbittorrent(cfg: dict) -> IntegrationTestResult:
-    host = _g(cfg, "host") or "localhost"
-    port = int(_g(cfg, "port") or 8080)
-    https = bool(_g(cfg, "https"))
-    user = _g(cfg, "username") or ""
-    password = _g(cfg, "password") or ""
-    base = f"{'https' if https else 'http'}://{host}:{port}"
+def test_qbittorrent(cfg: QbittorrentTestConfig) -> IntegrationTestResult:
+    base = f"{'https' if cfg.https else 'http'}://{cfg.host}:{cfg.port}"
+    verify = _tls_verify(cfg)
     started = time.monotonic()
     try:
         s = requests.Session()
         login = s.post(
             urljoin(base + "/", "api/v2/auth/login"),
-            data={"username": user, "password": password},
+            data={"username": cfg.username, "password": cfg.password},
             timeout=DEFAULT_TIMEOUT,
-            verify=False,
+            verify=verify,
         )
         if login.status_code == 200 and login.text.strip() == "Ok.":
             ver = s.get(
                 urljoin(base + "/", "api/v2/app/version"),
                 timeout=DEFAULT_TIMEOUT,
-                verify=False,
+                verify=verify,
             )
             return _ok(f"qBittorrent {ver.text.strip()}", started)
         return _err(
             f"Login failed (HTTP {login.status_code}: {login.text.strip() or 'no body'})",
             started,
         )
+    except requests.exceptions.SSLError:
+        return _request_tls_error(started)
     except requests.RequestException as exc:
-        return _err(f"qBittorrent error: {exc}", started)
+        _log_request_exception("qBittorrent", exc, secret=cfg.password)
+        return _err(_request_failure_message("qBittorrent", exc), started)
 
 
-def test_transmission(cfg: dict) -> IntegrationTestResult:
-    host = _g(cfg, "host") or "localhost"
-    port = int(_g(cfg, "port") or 9091)
-    https = bool(_g(cfg, "https"))
-    user = _g(cfg, "username") or ""
-    password = _g(cfg, "password") or ""
-    rpc_path = _g(cfg, "path") or "/transmission/rpc"
-    base = f"{'https' if https else 'http'}://{host}:{port}{rpc_path}"
+def test_transmission(cfg: TransmissionTestConfig) -> IntegrationTestResult:
+    base = (
+        f"{'https' if cfg.https_enabled else 'http'}://{cfg.host}:{cfg.port}{cfg.path}"
+    )
+    verify = _tls_verify(cfg)
     started = time.monotonic()
-    auth = (user, password) if user else None
+    auth = (cfg.username, cfg.password) if cfg.username else None
     try:
-        # First call: get session id from 409 response, retry with header
         r1 = requests.post(
             base,
             json={"method": "session-get"},
             timeout=DEFAULT_TIMEOUT,
             auth=auth,
-            verify=False,  # noqa: S501
+            verify=verify,
         )
         session_id = r1.headers.get("X-Transmission-Session-Id")
         if r1.status_code == 401:
@@ -151,30 +318,29 @@ def test_transmission(cfg: dict) -> IntegrationTestResult:
             headers={"X-Transmission-Session-Id": session_id} if session_id else {},
             timeout=DEFAULT_TIMEOUT,
             auth=auth,
-            verify=False,  # noqa: S501
+            verify=verify,
         )
         if r2.status_code != 200:
             return _err(f"Unexpected response (HTTP {r2.status_code})", started)
         version = r2.json().get("arguments", {}).get("version", "?")
         return _ok(f"Transmission {version}", started)
+    except requests.exceptions.SSLError:
+        return _request_tls_error(started)
     except requests.RequestException as exc:
-        return _err(f"Transmission error: {exc}", started)
+        _log_request_exception("Transmission", exc)
+        return _err(_request_failure_message("Transmission", exc), started)
 
 
-def test_sabnzbd(cfg: dict) -> IntegrationTestResult:
-    host = _g(cfg, "host") or "localhost"
-    port = int(_g(cfg, "port") or 8080)
-    https = bool(_g(cfg, "https"))
-    api_key = _g(cfg, "api_key") or ""
-    base_path = _g(cfg, "base_path") or ""
-    base = f"{'https' if https else 'http'}://{host}:{port}{base_path}"
+def test_sabnzbd(cfg: SabnzbdTestConfig) -> IntegrationTestResult:
+    base = f"{'https' if cfg.https else 'http'}://{cfg.host}:{cfg.port}{cfg.base_path}"
+    verify = _tls_verify(cfg)
     started = time.monotonic()
     try:
         r = requests.get(
             urljoin(base + "/", "api"),
-            params={"mode": "version", "output": "json", "apikey": api_key},
+            params={"mode": "version", "output": "json", "apikey": cfg.api_key},
             timeout=DEFAULT_TIMEOUT,
-            verify=False,  # noqa: S501
+            verify=verify,
         )
         if r.status_code != 200:
             return _err(f"HTTP {r.status_code}", started)
@@ -184,20 +350,22 @@ def test_sabnzbd(cfg: dict) -> IntegrationTestResult:
         if isinstance(data, dict) and data.get("status") is False:
             return _err(f"SABnzbd: {data.get('error', 'unknown error')}", started)
         return _err("Unexpected SABnzbd response", started)
+    except requests.exceptions.SSLError:
+        return _request_tls_error(started)
     except requests.RequestException as exc:
-        return _err(f"SABnzbd error: {exc}", started)
+        _log_request_exception("SABnzbd", exc, secret=cfg.api_key)
+        return _err(_request_failure_message("SABnzbd", exc), started)
 
 
 # --- Metadata providers ---------------------------------------------------------------
-def test_tmdb(cfg: dict) -> IntegrationTestResult:
-    api_key = _g(cfg, "api_key") or ""
-    if not api_key:
+def test_tmdb(cfg: ApiKeyTestConfig) -> IntegrationTestResult:
+    if not cfg.api_key:
         return _err("api_key is required")
     started = time.monotonic()
     try:
         r = requests.get(
             "https://api.themoviedb.org/3/configuration",
-            params={"api_key": api_key},
+            params={"api_key": cfg.api_key},
             timeout=DEFAULT_TIMEOUT,
         )
         if r.status_code == 200:
@@ -206,31 +374,32 @@ def test_tmdb(cfg: dict) -> IntegrationTestResult:
             return _err("Invalid TMDB API key (401)", started)
         return _err(f"TMDB returned HTTP {r.status_code}", started)
     except requests.RequestException as exc:
-        return _err(f"TMDB error: {exc}", started)
+        _log_request_exception("TMDB", exc, secret=cfg.api_key)
+        return _err(_request_failure_message("TMDB", exc), started)
 
 
-def test_tvdb(cfg: dict) -> IntegrationTestResult:
-    api_key = _g(cfg, "api_key") or ""
-    if not api_key:
+def test_tvdb(cfg: ApiKeyTestConfig) -> IntegrationTestResult:
+    if not cfg.api_key:
         return _err("api_key is required")
     started = time.monotonic()
     try:
         r = requests.post(
             "https://api4.thetvdb.com/v4/login",
-            json={"apikey": api_key},
+            json={"apikey": cfg.api_key},
             timeout=DEFAULT_TIMEOUT,
         )
         if r.status_code == 200 and r.json().get("status") == "success":
             return _ok("TVDB API key valid", started)
         return _err(f"TVDB returned HTTP {r.status_code}: {r.text[:120]}", started)
     except requests.RequestException as exc:
-        return _err(f"TVDB error: {exc}", started)
+        _log_request_exception("TVDB", exc, secret=cfg.api_key)
+        return _err(_request_failure_message("TVDB", exc), started)
 
 
 # --- Notification providers -----------------------------------------------------------
-def test_gotify(cfg: dict) -> IntegrationTestResult:
-    url = (_g(cfg, "url") or "").rstrip("/")
-    if not url:
+def test_gotify(cfg: UrlTestConfig) -> IntegrationTestResult:
+    url = str(cfg.url).rstrip("/")
+    if not url or url == "http://localhost":
         return _err("url is required")
     started = time.monotonic()
     try:
@@ -243,37 +412,33 @@ def test_gotify(cfg: dict) -> IntegrationTestResult:
             return _ok(f"Gotify {version}", started)
         return _err(f"Gotify returned HTTP {r.status_code}", started)
     except requests.RequestException as exc:
-        return _err(f"Gotify error: {exc}", started)
+        _log_request_exception("Gotify", exc)
+        return _err(_request_failure_message("Gotify", exc), started)
 
 
-def test_ntfy(cfg: dict) -> IntegrationTestResult:
-    url = (_g(cfg, "url") or "").rstrip("/")
-    if not url:
+def test_ntfy(cfg: UrlTestConfig) -> IntegrationTestResult:
+    url = str(cfg.url).rstrip("/")
+    if not url or url == "http://localhost":
         return _err("url is required")
     started = time.monotonic()
     try:
-        # Use a HEAD request against the topic URL; ntfy returns 200 for valid topics.
         r = requests.head(url, timeout=DEFAULT_TIMEOUT, allow_redirects=True)
-        if r.status_code in (
-            200,
-            405,
-        ):  # some servers reject HEAD with 405 but topic exists
+        if r.status_code in (200, 405):
             return _ok("Reachable", started)
         return _err(f"ntfy returned HTTP {r.status_code}", started)
     except requests.RequestException as exc:
-        return _err(f"ntfy error: {exc}", started)
+        _log_request_exception("ntfy", exc)
+        return _err(_request_failure_message("ntfy", exc), started)
 
 
-def test_pushover(cfg: dict) -> IntegrationTestResult:
-    api_key = _g(cfg, "api_key") or ""
-    user = _g(cfg, "user") or ""
-    if not api_key or not user:
+def test_pushover(cfg: PushoverTestConfig) -> IntegrationTestResult:
+    if not cfg.api_key or not cfg.user:
         return _err("api_key and user are required")
     started = time.monotonic()
     try:
         r = requests.post(
             "https://api.pushover.net/1/users/validate.json",
-            data={"token": api_key, "user": user},
+            data={"token": cfg.api_key, "user": cfg.user},
             timeout=DEFAULT_TIMEOUT,
         )
         data = (
@@ -286,20 +451,20 @@ def test_pushover(cfg: dict) -> IntegrationTestResult:
         errors = data.get("errors") or [f"HTTP {r.status_code}"]
         return _err(f"Pushover: {'; '.join(errors)}", started)
     except requests.RequestException as exc:
-        return _err(f"Pushover error: {exc}", started)
+        _log_request_exception("Pushover", exc, secret=cfg.api_key)
+        return _err(_request_failure_message("Pushover", exc), started)
 
 
 # --- Subtitles / Requests / OIDC ------------------------------------------------------
-def test_bazarr(cfg: dict) -> IntegrationTestResult:
-    url = (_g(cfg, "url") or "").rstrip("/")
-    api_key = _g(cfg, "api_key") or ""
-    if not url:
+def test_bazarr(cfg: BazarrTestConfig) -> IntegrationTestResult:
+    url = str(cfg.url).rstrip("/")
+    if not url or url == "http://localhost":
         return _err("url is required")
     started = time.monotonic()
     try:
         r = requests.get(
             f"{url}/api/system/status",
-            headers={"X-API-KEY": api_key} if api_key else {},
+            headers={"X-API-KEY": cfg.api_key} if cfg.api_key else {},
             timeout=DEFAULT_TIMEOUT,
         )
         if r.status_code == 200:
@@ -308,19 +473,19 @@ def test_bazarr(cfg: dict) -> IntegrationTestResult:
             return _err("Invalid Bazarr API key (401)", started)
         return _err(f"Bazarr returned HTTP {r.status_code}", started)
     except requests.RequestException as exc:
-        return _err(f"Bazarr error: {exc}", started)
+        _log_request_exception("Bazarr", exc, secret=cfg.api_key)
+        return _err(_request_failure_message("Bazarr", exc), started)
 
 
-def test_seerr(cfg: dict) -> IntegrationTestResult:
-    url = (_g(cfg, "url") or "").rstrip("/")
-    api_key = _g(cfg, "api_key") or ""
-    if not url:
+def test_seerr(cfg: SeerrTestConfig) -> IntegrationTestResult:
+    url = str(cfg.url).rstrip("/")
+    if not url or url == "http://localhost":
         return _err("url is required")
     started = time.monotonic()
     try:
         r = requests.get(
             f"{url}/api/v1/status",
-            headers={"X-Api-Key": api_key} if api_key else {},
+            headers={"X-Api-Key": cfg.api_key} if cfg.api_key else {},
             timeout=DEFAULT_TIMEOUT,
         )
         if r.status_code == 200:
@@ -333,12 +498,13 @@ def test_seerr(cfg: dict) -> IntegrationTestResult:
             return _err("Invalid API key", started)
         return _err(f"Returned HTTP {r.status_code}", started)
     except requests.RequestException as exc:
-        return _err(f"Seerr error: {exc}", started)
+        _log_request_exception("Seerr", exc, secret=cfg.api_key)
+        return _err(_request_failure_message("Seerr", exc), started)
 
 
-def test_oidc(cfg: dict) -> IntegrationTestResult:
-    endpoint = _g(cfg, "configuration_endpoint") or ""
-    if not endpoint:
+def test_oidc(cfg: OidcTestConfig) -> IntegrationTestResult:
+    endpoint = str(cfg.configuration_endpoint)
+    if not endpoint or endpoint == "http://localhost/":
         return _err("configuration_endpoint is required")
     started = time.monotonic()
     try:
@@ -350,22 +516,42 @@ def test_oidc(cfg: dict) -> IntegrationTestResult:
             return _ok(f"OIDC issuer: {data.get('issuer', endpoint)}", started)
         return _err("Discovery document missing required endpoints", started)
     except requests.RequestException as exc:
-        return _err(f"OIDC error: {exc}", started)
-    except ValueError as exc:
-        return _err(f"OIDC discovery JSON invalid: {exc}", started)
+        _log_request_exception("OIDC", exc)
+        return _err(_request_failure_message("OIDC", exc), started)
+    except ValueError:
+        log.debug("OIDC discovery JSON invalid", exc_info=True)
+        return _err("OIDC discovery JSON invalid", started)
 
 
-HANDLERS = {
-    "smtp": test_smtp,
-    "qbittorrent": test_qbittorrent,
-    "transmission": test_transmission,
-    "sabnzbd": test_sabnzbd,
-    "tmdb": test_tmdb,
-    "tvdb": test_tvdb,
-    "bazarr": test_bazarr,
-    "gotify": test_gotify,
-    "ntfy": test_ntfy,
-    "pushover": test_pushover,
-    "seerr": test_seerr,
-    "oidc": test_oidc,
+INTEGRATION_EFFECTIVE_PATHS: dict[str, tuple[str, ...]] = {
+    "smtp": ("notifications", "smtp_config"),
+    "qbittorrent": ("torrents", "qbittorrent"),
+    "transmission": ("torrents", "transmission"),
+    "sabnzbd": ("torrents", "sabnzbd"),
+    "tmdb": ("metadata", "tmdb"),
+    "tvdb": ("metadata", "tvdb"),
+    "bazarr": ("subtitles", "bazarr"),
+    "gotify": ("notifications", "gotify"),
+    "ntfy": ("notifications", "ntfy"),
+    "pushover": ("notifications", "pushover"),
+    "seerr": ("requests", "seerr"),
+    "oidc": ("auth", "openid_connect"),
 }
+
+HANDLERS: dict[str, tuple[type[BaseModel], Any]] = {
+    "smtp": (SmtpTestConfig, test_smtp),
+    "qbittorrent": (QbittorrentTestConfig, test_qbittorrent),
+    "transmission": (TransmissionTestConfig, test_transmission),
+    "sabnzbd": (SabnzbdTestConfig, test_sabnzbd),
+    "tmdb": (ApiKeyTestConfig, test_tmdb),
+    "tvdb": (ApiKeyTestConfig, test_tvdb),
+    "bazarr": (BazarrTestConfig, test_bazarr),
+    "gotify": (UrlTestConfig, test_gotify),
+    "ntfy": (UrlTestConfig, test_ntfy),
+    "pushover": (PushoverTestConfig, test_pushover),
+    "seerr": (SeerrTestConfig, test_seerr),
+    "oidc": (OidcTestConfig, test_oidc),
+}
+
+for _handler in (entry[1] for entry in HANDLERS.values()):
+    _handler.__test__ = False  # not pytest tests; API handlers only

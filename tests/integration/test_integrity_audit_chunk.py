@@ -41,10 +41,10 @@ def test_verify_imported_files_hashes_after_background_session_closed(
                 session_depth["n"] -= 1
 
         cfg = fake_scheduler_config(integrity_check_enabled=True)
-        monkeypatch.setattr("miramedia.config.MiraMediaConfig", lambda: cfg)
+        monkeypatch.setattr("miramedia.scheduler.MiraMediaConfig", lambda: cfg)
         monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
         monkeypatch.setattr(
-            "miramedia.database.background_session",
+            "miramedia.scheduler.background_session",
             integration_background_session,
         )
         monkeypatch.setattr(

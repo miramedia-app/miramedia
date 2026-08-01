@@ -554,12 +554,11 @@ export interface paths {
         };
         /**
          * Get All Shows
-         * @description Get all shows in the library with computed download/status fields.
+         * @description List shows with bounded SQL pagination and computed download/status fields.
          *
-         *     When ``limit`` is supplied, pagination is pushed into SQL (only the
-         *     page's rows are eager-loaded and disk-scanned). When omitted, returns
-         *     the full library — kept for compatibility with the current frontend
-         *     contract.
+         *     Pagination is always pushed into SQL so only the requested page is
+         *     eager-loaded. ``limit`` defaults to 100 (max 500); ``X-Total-Count``
+         *     reports the filtered total.
          */
         get: operations["get_all_shows_api_v1_shows_get"];
         put?: never;
@@ -1454,10 +1453,11 @@ export interface paths {
         };
         /**
          * Get All Movies
-         * @description Get all movies in the library with computed download/status fields.
+         * @description List movies with bounded SQL pagination and computed download/status fields.
          *
-         *     When ``limit`` is supplied, pagination is pushed into SQL. The whole-
-         *     library form remains for backwards-compatible callers.
+         *     Pagination is always pushed into SQL so only the requested page is
+         *     eager-loaded. ``limit`` defaults to 100 (max 500); ``X-Total-Count``
+         *     reports the filtered total.
          */
         get: operations["get_all_movies_api_v1_movies_get"];
         put?: never;
@@ -3030,6 +3030,11 @@ export interface components {
         AuthMetadata: {
             /** Oauth Providers */
             oauth_providers: string[];
+            /**
+             * Allow Registration
+             * @default false
+             */
+            allow_registration: boolean;
         };
         /** AuthSettingsSchema */
         AuthSettingsSchema: {
@@ -3037,6 +3042,8 @@ export interface components {
             session_lifetime?: number | null;
             /** Email Password Resets */
             email_password_resets?: boolean | null;
+            /** Allow Registration */
+            allow_registration?: boolean | null;
             /** Cookie Secure */
             cookie_secure?: boolean | null;
             openid_connect?: components["schemas"]["OpenIdSettingsSchema"] | null;
@@ -7089,7 +7096,7 @@ export interface operations {
     get_all_shows_api_v1_shows_get: {
         parameters: {
             query?: {
-                limit?: number | null;
+                limit?: number;
                 offset?: number;
                 q?: string | null;
                 sort?: string | null;
@@ -8554,7 +8561,7 @@ export interface operations {
     get_all_movies_api_v1_movies_get: {
         parameters: {
             query?: {
-                limit?: number | null;
+                limit?: number;
                 offset?: number;
                 q?: string | null;
                 sort?: string | null;

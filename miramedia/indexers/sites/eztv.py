@@ -1,9 +1,11 @@
 """EZTV — Public TV torrent site with a free JSON API."""
 
 import logging
+import re
 
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.sites.base import BaseSite, build_magnet
+from miramedia.indexers.utils import is_search_query_relevant
 from miramedia.movies.schemas import Movie
 from miramedia.shows.schemas import Show
 
@@ -48,11 +50,21 @@ class EztvSite(BaseSite):
     ) -> list[IndexerQueryResult]:
         return []  # EZTV is TV only
 
-    def _search_eztv(self, _query: str) -> list[IndexerQueryResult]:
+    def _search_eztv(self, query: str) -> list[IndexerQueryResult]:
         """Fallback text-based search — EZTV API doesn't support query text,
         so we search by page and filter client-side."""
         params: dict[str, str | int] = {"limit": 100, "page": 1}
-        return self._fetch_eztv_api(params)
+        results = self._fetch_eztv_api(params)
+        # Show-wide searches append the metadata premiere year, but episode
+        # releases normally omit it (or contain an episode air year instead).
+        # Remove only that final appended token: a year may itself be the show
+        # title (``1923 2022``), and season queries do not append a year.
+        title_query = re.sub(r"\s+(?:19|20)\d{2}\s*$", "", query).strip()
+        return [
+            result
+            for result in results
+            if is_search_query_relevant(result, title_query)
+        ]
 
     def _fetch_eztv_api(self, params: dict[str, str | int]) -> list[IndexerQueryResult]:
         try:

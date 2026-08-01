@@ -1,7 +1,5 @@
 import asyncio
-import os
 import shutil
-import threading
 from contextlib import AbstractAsyncContextManager
 from datetime import UTC, datetime
 from functools import partial
@@ -9,48 +7,17 @@ from pathlib import Path
 from typing import cast, overload
 from uuid import UUID
 
-from cachetools import TTLCache
-
-
-def _disk_scan_concurrency() -> int:
-    try:
-        return max(1, int(os.getenv("MIRAMEDIA_DISK_SCAN_CONCURRENCY", "8")))
-    except (TypeError, ValueError):
-        return 8
-
-
-# Cap concurrent movie-root scans on the list endpoint — see the shows-service
-# equivalent. Unbounded fan-out saturates the threadpool + NAS disk.
-_DISK_SCAN_CONCURRENCY = _disk_scan_concurrency()
-
-
-def _disk_scan_cache_ttl() -> float:
-    try:
-        return max(0.0, float(os.getenv("MIRAMEDIA_DISK_SCAN_CACHE_TTL", "30")))
-    except (TypeError, ValueError):
-        return 30.0
-
-
-# Short-TTL cache for movie-root "is downloaded" scans — the movies list
-# re-scans every load/poll otherwise. Keyed by (movie_root, frozenset of stems);
-# value is the bool. Thread-safe (runs in to_thread). TTL=0 disables. Cleared on
-# import via invalidate_disk_scan_cache().
-_DISK_SCAN_CACHE_TTL = _disk_scan_cache_ttl()
-_scan_cache: TTLCache = TTLCache(maxsize=8192, ttl=_DISK_SCAN_CACHE_TTL or 1)
-_scan_cache_lock = threading.Lock()
-
-
-def invalidate_disk_scan_cache() -> None:
-    """Drop all cached movie scans (call after an import mutates disk)."""
-    with _scan_cache_lock:
-        _scan_cache.clear()
+from miramedia.disk_scan import (
+    invalidate_disk_scan_cache,
+    scan_rows_for_files,
+)
 
 
 def _as_utc(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
-# These imports intentionally follow the module-level scan-cache setup above.
+# These imports intentionally follow the shared disk-scan module import above.
 from miramedia.config import LibraryItem, MiraMediaConfig  # noqa: E402
 from miramedia.exceptions import (  # noqa: E402
     NotFoundError,
@@ -64,7 +31,7 @@ from miramedia.imports.files import (  # noqa: E402
     files_matching_stem,
     find_renamed_duplicate,
     get_files_for_import,
-    import_file,
+    link_subtitles,
     link_video_into_slot,
     rename_media_slot,
 )
@@ -108,6 +75,7 @@ from miramedia.torrents.integrity import (  # noqa: E402
 )
 from miramedia.torrents.mediainfo import analyze_async  # noqa: E402
 from miramedia.torrents.parsing import (  # noqa: E402
+    SubtitleInfo,
     is_video_file,
     normalize_codec,
     normalize_source,
@@ -454,7 +422,6 @@ class MovieService(MediaService[Movie, MovieId]):
         )
         public_movie_files = [PublicMovieFile.model_validate(x) for x in movie_files]
         movie_root = self.get_movie_root_path(movie=movie)
-        video_extensions = {".mkv", ".mp4", ".avi", ".mov"}
 
         # Batch resolve torrent imported-state. Read-only: no client RPC, no
         # per-file DB writes — the torrents poll on the page already covers
@@ -468,34 +435,18 @@ class MovieService(MediaService[Movie, MovieId]):
             else {}
         )
 
-        def _scan_disk() -> dict[str, str]:
-            out: dict[str, str] = {}
-            if not movie_root.exists() or not movie_root.is_dir():
-                return out
-            try:
-                entries = list(movie_root.iterdir())
-            except OSError:
-                return out
-            for mf in public_movie_files:
-                stems = movie_file_stem_candidates(
-                    movie, mf.quality, NameParts.from_row(mf)
-                )
-                key = str(mf.id)
-                for stem in stems:
-                    prefix = stem + "."
-                    for p in entries:
-                        if (
-                            p.is_file()
-                            and p.name.startswith(prefix)
-                            and p.suffix.lower() in video_extensions
-                        ):
-                            out[key] = p.name
-                            break
-                    if key in out:
-                        break
-            return out
+        video_extensions = frozenset({".mkv", ".mp4", ".avi", ".mov"})
 
-        disk_names = await asyncio.to_thread(_scan_disk)
+        disk_names = await asyncio.to_thread(
+            scan_rows_for_files,
+            movie_root,
+            public_movie_files,
+            key=lambda mf: str(mf.id),
+            stems=lambda mf: movie_file_stem_candidates(
+                movie, mf.quality, NameParts.from_row(mf)
+            ),
+            video_exts=video_extensions,
+        )
 
         result = []
         for movie_file in public_movie_files:
@@ -599,8 +550,17 @@ class MovieService(MediaService[Movie, MovieId]):
         await release_session_before_external_io(self.movie_repository.db)
 
         if search_query_override:
-            return await self.indexer_service.search(
+            torrents = await self.indexer_service.search(
                 query=search_query_override, is_tv=False
+            )
+            quality_allowed, codec_allowed = self._get_effective_preferences(movie)
+            return evaluate_indexer_query_results(
+                is_tv=False,
+                query_results=torrents,
+                media=movie,
+                quality_allowed=quality_allowed,
+                codec_allowed=codec_allowed,
+                query_override=search_query_override,
             )
 
         torrents = await self.indexer_service.search_movie(movie=movie)
@@ -626,11 +586,6 @@ class MovieService(MediaService[Movie, MovieId]):
         """Return all movie primary keys without loading full rows."""
         return await self.movie_repository.get_movie_ids()
 
-    async def get_all_public_movies(self) -> list[PublicMovie]:
-        """Return list-view PublicMovie objects with computed download/status."""
-        movies = await self.movie_repository.get_movies()
-        return await self._movies_to_public_with_disk_scan(movies)
-
     async def get_paginated_public_movies(
         self,
         *,
@@ -647,7 +602,7 @@ class MovieService(MediaService[Movie, MovieId]):
         statuses: list[str] | None = None,
         excluded_statuses: list[str] | None = None,
     ) -> tuple[list[PublicMovie], int]:
-        """SQL-paginated counterpart of :meth:`get_all_public_movies`."""
+        """Paginated list view using SQL LIMIT/OFFSET and denormalized counters."""
         movies, total = await self.movie_repository.get_movies_paginated(
             offset=offset,
             limit=limit,
@@ -700,110 +655,6 @@ class MovieService(MediaService[Movie, MovieId]):
             )
             for m in movies
         ]
-
-    async def _movies_to_public_with_disk_scan(
-        self, movies: list[Movie]
-    ) -> list[PublicMovie]:
-        if not movies:
-            return []
-
-        movie_ids = [m.id for m in movies]
-        files_by_movie = await self.movie_repository.get_movie_files_for_movies(
-            movie_ids
-        )
-        # The list grid only needs the "downloaded" badge (from the disk scan
-        # below), never per-movie torrents — so skip the get_torrents_for_movies
-        # + import-aggregate queries and ship an empty torrents list. The detail
-        # endpoint (get_public_movie_by_id) loads torrents with live status.
-
-        # Disk presence: one fan-out covering every movie root, capped so a
-        # large library doesn't flood the threadpool + NAS disk at once.
-        movie_roots = {m.id: self.get_movie_root_path(movie=m) for m in movies}
-        sem = asyncio.Semaphore(_DISK_SCAN_CONCURRENCY)
-
-        async def _scan(m: Movie) -> bool:
-            async with sem:
-                return await asyncio.to_thread(
-                    self._scan_movie_downloaded,
-                    movie_roots[m.id],
-                    m,
-                    files_by_movie.get(m.id, []),
-                )
-
-        downloaded_flags = await asyncio.gather(*(_scan(m) for m in movies))
-        downloaded_by_id: dict[MovieId, bool] = dict(
-            zip((m.id for m in movies), downloaded_flags, strict=True)
-        )
-
-        return [
-            self._movie_to_public(
-                movie=m,
-                downloaded=downloaded_by_id.get(m.id, False),
-                torrent_entries=[],
-                progress_rows={},
-            )
-            for m in movies
-        ]
-
-    @staticmethod
-    def _scan_movie_downloaded(
-        movie_root: Path, movie: Movie, movie_files: list[MovieFile]
-    ) -> bool:
-        """Sync helper: does any expected variant file exist on disk?
-
-        Mirrors the inner ``_check`` in ``is_movie_downloaded`` but accepts
-        pre-fetched ``movie_files`` so the bulk list path doesn't re-query.
-        """
-        if not movie_files:
-            return False
-        # Expected stems determine the answer along with disk contents, so key
-        # the cache on both — a new variant request changes the stems and must
-        # not read a stale bool.
-        stems: list[str] = []
-        for movie_file in movie_files:
-            stems.extend(
-                movie_file_stem_candidates(
-                    movie, movie_file.quality, NameParts.from_row(movie_file)
-                )
-            )
-        cache_key = (str(movie_root), frozenset(stems))
-        if _DISK_SCAN_CACHE_TTL > 0:
-            with _scan_cache_lock:
-                hit = _scan_cache.get(cache_key)
-            if hit is not None:
-                return hit
-
-        video_extensions = {".mkv", ".mp4", ".avi", ".mov"}
-        # Scan the movie root ONCE (os.scandir = one syscall batch, cached
-        # dirent type) and match stems against the in-memory name list. The old
-        # code called files_matching_stem per stem, doing a fresh iterdir+stat
-        # pass over the same dir for every variant — N disk scans per movie.
-        video_names: list[str] = []
-        try:
-            with os.scandir(movie_root) as it:
-                for entry in it:
-                    name = entry.name
-                    dot = name.rfind(".")
-                    if dot == -1 or name[dot:].lower() not in video_extensions:
-                        continue
-                    try:
-                        if entry.is_file():
-                            video_names.append(name)
-                    except OSError:
-                        continue
-        except (FileNotFoundError, OSError):
-            return False
-
-        result = False
-        for stem in stems:
-            prefix = stem + "."
-            if any(n.startswith(prefix) for n in video_names):
-                result = True
-                break
-        if _DISK_SCAN_CACHE_TTL > 0:
-            with _scan_cache_lock:
-                _scan_cache[cache_key] = result
-        return result
 
     def _movie_to_public(
         self,
@@ -1251,43 +1102,33 @@ class MovieService(MediaService[Movie, MovieId]):
         except (DiskSpaceError, ImportConflictError) as exc:
             return ImportOutcome.failed_io, str(exc)
 
-        def _link_subs() -> None:
-            used: set[Path] = set()
-            for sub in subtitle_files:
+        if subtitle_files and not source_in_place:
+
+            def _movie_subtitle_match(sub: Path) -> SubtitleInfo | None:
                 sub_info = parse_subtitle_filename(sub.name)
                 if sub_info is None or sub_info.language is None:
-                    continue
+                    return None
+                return sub_info
+
+            def _movie_subtitle_target(sub_info: SubtitleInfo, n: int) -> Path:
                 flag_part = (
                     ".forced" if sub_info.forced else (".sdh" if sub_info.sdh else "")
                 )
-                target_sub = (
-                    root / f"{stem}.{sub_info.language}{flag_part}.{sub_info.container}"
+                ordinal = "" if n == 1 else f".{n}"
+                return (
+                    root
+                    / f"{stem}.{sub_info.language}{flag_part}{ordinal}.{sub_info.container}"
                 )
-                # Disambiguate same-lang+flag collisions (in-batch only, to keep
-                # re-imports idempotent) — otherwise the second sub silently
-                # clobbers the first.
-                if target_sub in used:
-                    n = 2
-                    while True:
-                        candidate = (
-                            root
-                            / f"{stem}.{sub_info.language}{flag_part}.{n}.{sub_info.container}"
-                        )
-                        if candidate not in used:
-                            target_sub = candidate
-                            break
-                        n += 1
-                used.add(target_sub)
-                try:
-                    import_file(target_file=target_sub, source_file=sub)
-                except DiskSpaceError:
-                    log.exception("Disk space error importing subtitle %s", sub)
 
-        # In-place rename already moved the source's sibling subtitles; the
-        # pooled paths are stale, so skip the link pass.
-        if subtitle_files and not source_in_place:
             await release_session_before_external_io(self.movie_repository.db)
-            await asyncio.to_thread(_link_subs)
+            await asyncio.to_thread(
+                partial(
+                    link_subtitles,
+                    subtitle_files,
+                    match=_movie_subtitle_match,
+                    target_for=_movie_subtitle_target,
+                )
+            )
 
         now = datetime.now(UTC)
         if existing_file_id is not None:
@@ -1866,6 +1707,12 @@ async def _try_auto_download_movie_id_impl(movie_id: MovieId) -> None:
                     )
                     return
 
+                from miramedia.database import release_session_before_external_io
+
+                # Indexer fan-out below does slow external I/O; the entry session
+                # must not sit idle-in-transaction across it.
+                await release_session_before_external_io(svc.movie_repository.db)
+
                 raw_results = await svc.get_all_available_torrents_for_movie(
                     movie=fresh
                 )
@@ -1920,178 +1767,84 @@ async def _try_auto_download_movie_id_impl(movie_id: MovieId) -> None:
 
 
 async def _auto_download_missing_movies_impl() -> None:
-    """Per-iteration ``bg_movie_service`` worker for continuous-download movies.
-
-    Session lifetime: the outer snapshot session is closed BEFORE the loop.
-    Every per-movie iteration opens its own short-lived ``bg_movie_service``
-    so a slow indexer fan-out (cloudflare bypass spinup, 60s timeout, etc.)
-    can never pin the shared session past
-    ``idle_in_transaction_session_timeout`` and poison subsequent iterations
-    with ``InterfaceError: connection is closed``.
-
-    Mirrors the round-3 ``import_all_torrents`` fix in this module.
-    """
     from miramedia.database import bg_movie_service
+    from miramedia.media_service import _auto_download_missing_media_impl
 
-    global_default = MiraMediaConfig().misc.continuous_download
-
-    # Phase 1: cheap snapshot of candidate IDs (single short bg session).
-    async with bg_movie_service() as svc:
-        rows = await svc.movie_repository.get_movie_auto_download_candidate_flags()
-    candidate_ids = [
-        movie_id
-        for movie_id, skipped, continuous_download in rows
-        # Skipped movies are excluded regardless of continuous_download.
-        if not skipped
-        and (
-            continuous_download is True
-            or (continuous_download is None and global_default)
-        )
-    ]
-    log.info(
-        f"Auto-download: checking {len(candidate_ids)} movies with continuous_download enabled"
+    await _auto_download_missing_media_impl(
+        bg_service=bg_movie_service,
+        get_candidate_flags=lambda svc: (
+            svc.movie_repository.get_movie_auto_download_candidate_flags()
+        ),
+        try_auto_download_id=lambda mid, _n: _try_auto_download_movie_id_impl(mid),
+        media_noun="movie",
+        max_downloads_per_item=5,
     )
-
-    # Phase 2: per-item processing with a FRESH bg session per iteration.
-    for movie_id in candidate_ids:
-        await _try_auto_download_movie_id_impl(movie_id)
-
-
-def _metadata_failure_backoff_until() -> datetime:
-    from datetime import timedelta
-
-    hours = max(1, int(MiraMediaConfig().metadata.failure_backoff_hours))
-    return datetime.now(UTC) + timedelta(hours=hours)
 
 
 async def _mark_movie_metadata_failure(movie_id: MovieId, reason: str) -> None:
-    """Stamp a failed metadata attempt so the scheduler backs off."""
     from miramedia.database import bg_movie_service
+    from miramedia.media_service import _mark_media_metadata_failure
 
-    backoff_until = _metadata_failure_backoff_until()
-    try:
-        async with bg_movie_service() as svc:
-            await svc.movie_repository.mark_metadata_failure(movie_id, backoff_until)
-        log.info(
-            "Metadata refresh for movie id=%s backed off until %s (%s)",
-            movie_id,
-            backoff_until.isoformat(),
-            reason,
-        )
-    except Exception:
-        log.exception("Failed to mark movie metadata failure for id=%s", movie_id)
+    await _mark_media_metadata_failure(
+        movie_id,
+        reason,
+        bg_service=bg_movie_service,
+        repository_attr="movie_repository",
+        media_noun="movie",
+    )
 
 
 async def _try_update_movie_metadata_id_impl(movie_id: MovieId) -> None:
-    """Refresh metadata for a single movie in a fresh bg session.
+    from miramedia.database import bg_movie_service
+    from miramedia.media_service import (
+        MetadataRefreshHooks,
+        _try_update_media_metadata_id_impl,
+    )
 
-    Opens its own ``bg_movie_service``, so a slow provider HTTP call cannot
-    pin a shared session past ``idle_in_transaction_session_timeout``.
-    Swallows errors so a single bad movie doesn't abort the bulk loop.
-    """
-    from miramedia.database import bg_movie_service, release_session_before_external_io
-    from miramedia.metadata.dependencies import resolve_metadata_provider
-
-    try:
-        async with bg_movie_service() as svc:
-            movie = await svc.movie_repository.get_movie_by_id(movie_id=movie_id)
-            if movie is None:
-                return
-            metadata_provider = resolve_metadata_provider(movie.metadata_provider)
-            if not metadata_provider:
-                log.warning(
-                    f"No available metadata provider for movie {movie.name}, skipping update."
-                )
-                await svc.movie_repository.mark_metadata_failure(
-                    movie.id, _metadata_failure_backoff_until()
-                )
-                return
-
-            # Native-provider fallback for non-IMDb IDs — pre-fetch using imdb_id.
-            fresh_data = None
-            if (
-                metadata_provider.name != movie.metadata_provider
-                and metadata_provider.name == "native"
-                and not movie.external_id.startswith("tt")
-            ):
-                if not movie.imdb_id:
-                    log.warning(
-                        f"Cannot update {movie.name}: native provider requires IMDb ID "
-                        f"but movie only has {movie.metadata_provider} ID {movie.external_id}"
-                    )
-                    await svc.movie_repository.mark_metadata_failure(
-                        movie.id, _metadata_failure_backoff_until()
-                    )
-                    return
-                log.info(
-                    f"Using IMDb ID {movie.imdb_id} instead of {movie.metadata_provider} ID "
-                    f"{movie.external_id} for native provider lookup of {movie.name}"
-                )
-                await release_session_before_external_io(svc.movie_repository.db)
-                fresh_data = await asyncio.to_thread(
-                    partial(
-                        metadata_provider.get_movie_metadata,
-                        movie_id=movie.imdb_id,
-                        language=movie.original_language,
-                    )
-                )
-
-            updated_movie = await svc.update_movie_metadata(
-                db_movie=movie,
-                metadata_provider=metadata_provider,
-                fresh_movie_data=fresh_data,
-            )
-            if updated_movie:
-                await svc.movie_repository.stamp_metadata_check(movie.id)
-            else:
-                await svc.movie_repository.mark_metadata_failure(
-                    movie.id, _metadata_failure_backoff_until()
-                )
-    except Exception as exc:
-        from miramedia.metadata.utils import is_provider_unreachable
-
-        if is_provider_unreachable(exc):
-            log.warning(
-                "Metadata provider unreachable for movie id=%s: %s", movie_id, exc
-            )
-            await _mark_movie_metadata_failure(movie_id, "provider unreachable")
-        else:
-            log.exception("Failed to update metadata for movie id=%s", movie_id)
-            await _mark_movie_metadata_failure(movie_id, "unexpected failure")
+    hooks = MetadataRefreshHooks(
+        bg_service=bg_movie_service,
+        media_noun="movie",
+        get_media=lambda svc, mid: svc.movie_repository.get_movie_by_id(movie_id=mid),
+        update_metadata=lambda svc, movie, provider, fresh: svc.update_movie_metadata(
+            db_movie=movie,
+            metadata_provider=provider,
+            fresh_movie_data=fresh,
+        ),
+        mark_failure=_mark_movie_metadata_failure,
+        fetch_native_metadata=lambda provider, imdb_id, language: (
+            provider.get_movie_metadata(movie_id=imdb_id, language=language)
+        ),
+    )
+    await _try_update_media_metadata_id_impl(movie_id, hooks=hooks)
 
 
 async def _update_all_movies_metadata_impl() -> None:
-    """Per-iteration ``bg_movie_service`` worker for metadata refresh.
-
-    Phase 1: snapshot candidate movie IDs in one short session, then close.
-    Phase 2: each movie iteration opens its own fresh session via
-    :func:`_try_update_movie_metadata_id_impl`, so a slow provider HTTP
-    timeout cannot pin a shared session past
-    ``idle_in_transaction_session_timeout``.
-    """
-    from datetime import UTC, datetime, timedelta
-
     from miramedia.database import bg_movie_service
+    from miramedia.media_service import (
+        MetadataRefreshHooks,
+        _update_all_media_metadata_impl,
+    )
 
-    check_interval = timedelta(hours=MiraMediaConfig().metadata.check_interval_hours)
-    now = datetime.now(UTC)
-
-    cutoff = now - check_interval
-    batch_size = 200
-    total_checked = 0
-    seen_ids: set[MovieId] = set()
-    log.info("Updating metadata for movies due since %s", cutoff.isoformat())
-    while True:
-        async with bg_movie_service() as svc:
-            movie_ids = await svc.movie_repository.get_movie_ids_due_for_metadata(
-                older_than=cutoff, limit=batch_size
+    hooks = MetadataRefreshHooks(
+        bg_service=bg_movie_service,
+        media_noun="movie",
+        get_media=lambda svc, mid: svc.movie_repository.get_movie_by_id(movie_id=mid),
+        update_metadata=lambda svc, movie, provider, fresh: svc.update_movie_metadata(
+            db_movie=movie,
+            metadata_provider=provider,
+            fresh_movie_data=fresh,
+        ),
+        mark_failure=_mark_movie_metadata_failure,
+        fetch_native_metadata=lambda provider, imdb_id, language: (
+            provider.get_movie_metadata(movie_id=imdb_id, language=language)
+        ),
+    )
+    await _update_all_media_metadata_impl(
+        hooks=hooks,
+        get_ids_due_for_metadata=lambda svc, cutoff, limit: (
+            svc.movie_repository.get_movie_ids_due_for_metadata(
+                older_than=cutoff, limit=limit
             )
-        movie_ids = [movie_id for movie_id in movie_ids if movie_id not in seen_ids]
-        if not movie_ids:
-            break
-        total_checked += len(movie_ids)
-        for movie_id in movie_ids:
-            seen_ids.add(movie_id)
-            await _try_update_movie_metadata_id_impl(movie_id)
-    if total_checked:
-        log.info("Metadata refresh checked %d movies", total_checked)
+        ),
+        try_update_one=_try_update_movie_metadata_id_impl,
+    )

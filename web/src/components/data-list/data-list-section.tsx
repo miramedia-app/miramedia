@@ -4,6 +4,7 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 import { DataListEmpty } from "./data-list-empty";
 import { DataListHeaderRow, DataListRow } from "./data-list-row";
+import { isRowExpanded, nextExpandedRows } from "./expand-utils";
 import type { ColumnDef, DataListDensity } from "./types";
 
 export interface DataListSectionProps<T> {
@@ -22,6 +23,13 @@ export interface DataListSectionProps<T> {
   rowActions?: (item: T) => React.ReactNode;
   rowActionsWidth?: string;
   expandedContent?: (item: T) => React.ReactNode | null;
+  /**
+   * Cheap predicate for whether a row can expand. Defaults to true when
+   * `expandedContent` is provided. Pass this whenever `expandedContent` can
+   * return null for some rows, or whenever the expanded tree is nontrivial —
+   * it lets collapsed rows skip building that tree entirely.
+   */
+  isExpandable?: (item: T) => boolean;
   defaultExpanded?: boolean;
   /** External expand control. If provided, replaces internal state. */
   expandedIds?: Set<string>;
@@ -57,6 +65,7 @@ export function DataListSection<T>({
   rowActions,
   rowActionsWidth = "88px",
   expandedContent,
+  isExpandable,
   defaultExpanded = false,
   expandedIds,
   onToggleExpanded,
@@ -81,20 +90,18 @@ export function DataListSection<T>({
 
   const [internalExpanded, setInternalExpanded] = React.useState<Set<string>>(new Set());
   const expandedRows = expandedIds ?? internalExpanded;
+  // State encoding (see expand-utils.ts): bare id = explicitly expanded,
+  // `__c:` id = explicitly collapsed, absent = follow `defaultExpanded`.
+  // Identical semantics to DataList — keep the two in sync.
   const toggleExpanded = React.useCallback(
     (id: string) => {
       if (onToggleExpanded) {
         onToggleExpanded(id);
         return;
       }
-      setInternalExpanded((prev) => {
-        const next = new Set(prev);
-        if (next.has(id)) next.delete(id);
-        else next.add(id);
-        return next;
-      });
+      setInternalExpanded((prev) => nextExpandedRows(prev, id, defaultExpanded));
     },
-    [onToggleExpanded],
+    [onToggleExpanded, defaultExpanded],
   );
 
   // Stable id-keyed callbacks → React.memo on DataListRow short-circuits when
@@ -166,12 +173,20 @@ export function DataListSection<T>({
       <div className="flex flex-col">
         {data.map((item) => {
           const id = getId(item);
-          // Compute once — was called twice (probe + render) before.
-          const content = expandedContent ? expandedContent(item) : null;
-          const expandable = content != null;
-          const isExpanded =
-            expandable &&
-            (expandedRows.has(id) || (defaultExpanded && !expandedRows.has(`__c:${id}`)));
+          // With `isExpandable` the expanded subtree is built only for rows
+          // that are actually open. Without a predicate we can't know whether
+          // a row expands without calling `expandedContent` (it may return
+          // null per item), so that path keeps the compute-first behaviour.
+          let expandable: boolean;
+          let content: React.ReactNode | null = null;
+          if (isExpandable) {
+            expandable = expandedContent != null && isExpandable(item);
+          } else {
+            content = expandedContent ? expandedContent(item) : null;
+            expandable = content != null;
+          }
+          const isExpanded = expandable && isRowExpanded(expandedRows, id, defaultExpanded);
+          if (isExpanded && isExpandable && expandedContent) content = expandedContent(item);
           const isSelectable = !!selectable && !(unselectableIds?.has(id) ?? false);
           return (
             <DataListRow<T>

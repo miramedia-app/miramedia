@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -19,7 +20,10 @@ from miramedia.auth.users import (
     invalidate_auth_cache,
     openid_cookie_auth_backend,
 )
+from miramedia.config import MiraMediaConfig
 from miramedia.database import DbSessionDependency
+
+log = logging.getLogger(__name__)
 
 users_router = APIRouter(tags=["users"])
 auth_metadata_router = APIRouter(tags=["openid"])
@@ -49,10 +53,17 @@ async def get_all_users(db: DbSessionDependency) -> list[UserRead]:
 
 @auth_metadata_router.get("/auth/metadata", status_code=status.HTTP_200_OK)
 def get_auth_metadata() -> AuthMetadata:
+    allow_registration = MiraMediaConfig().auth.allow_registration
     generation = auth_runtime_store.get_active()
     if generation.oidc_enabled:
-        return AuthMetadata(oauth_providers=[generation.provider_name])
-    return AuthMetadata(oauth_providers=[])
+        return AuthMetadata(
+            oauth_providers=[generation.provider_name],
+            allow_registration=allow_registration,
+        )
+    return AuthMetadata(
+        oauth_providers=[],
+        allow_registration=allow_registration,
+    )
 
 
 # --- Personal API tokens -----------------------------------------------------
@@ -285,8 +296,10 @@ async def admin_invite_user(body: InviteUserRequest) -> InviteUserResponse:
                         status_code=409, detail="A user with that email already exists"
                     ) from exc
                 except Exception as exc:
+                    log.exception("Admin invite failed for %s", body.email)
                     raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Could not create user",
                     ) from exc
 
                 email_sent = True
@@ -353,6 +366,8 @@ async def admin_create_user(body: CreateUserRequest) -> User:
                         status_code=409, detail="A user with that email already exists"
                     ) from exc
                 except Exception as exc:
+                    log.exception("Admin create failed for %s", body.email)
                     raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Could not create user",
                     ) from exc

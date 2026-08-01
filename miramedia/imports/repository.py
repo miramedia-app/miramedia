@@ -139,6 +139,75 @@ WHERE directory = :directory
 RETURNING directory
 """
 
+STAMP_LEGACY_QUEUED_AT_BATCH_SQL = """
+UPDATE scan_result_cache AS q
+SET payload = q.payload || jsonb_build_object('queued_at', CAST(:queued_at AS text))
+FROM {values_from}
+WHERE q.directory = v.directory
+  AND q.payload->>'status' = 'queued'
+  AND q.payload->>'worker_started_at' IS NULL
+  AND (
+    (v.expected_queued_at IS NULL AND q.payload->>'queued_at' IS NULL)
+    OR q.payload->>'queued_at' = v.expected_queued_at
+  )
+RETURNING q.directory
+"""
+
+RECLAIM_STALE_QUEUED_IMPORT_BATCH_SQL = """
+UPDATE scan_result_cache AS q
+SET payload = (q.payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
+FROM {values_from}
+WHERE q.directory = v.directory
+  AND q.payload->>'status' = 'queued'
+  AND q.payload->>'worker_started_at' IS NULL
+  AND q.payload->>'queued_at' = v.expected_queued_at
+  AND (
+    (v.expected_claim_token IS NULL AND q.payload->>'claim_token' IS NULL)
+    OR q.payload->>'claim_token' = v.expected_claim_token
+  )
+RETURNING q.directory
+"""
+
+STAMP_LEGACY_WORKER_STARTED_AT_BATCH_SQL = """
+UPDATE scan_result_cache AS q
+SET payload = q.payload || jsonb_build_object(
+    'worker_started_at', CAST(:worker_started_at AS text)
+)
+FROM {values_from}
+WHERE q.directory = v.directory
+  AND q.payload->>'status' = 'queued'
+  AND q.payload->>'worker_started_at' IS NOT NULL
+  AND (
+    (v.expected_worker_started_at IS NULL AND q.payload->>'worker_started_at' IS NULL)
+    OR q.payload->>'worker_started_at' = v.expected_worker_started_at
+  )
+RETURNING q.directory
+"""
+
+RECLAIM_STALLED_WORKER_IMPORT_BATCH_SQL = """
+UPDATE scan_result_cache AS q
+SET payload = (q.payload - 'queued_at' - 'claim_token' - 'worker_started_at')
+    || jsonb_build_object(
+        'status', 'failed',
+        'import_error', CAST(:error AS text)
+    )
+FROM {values_from}
+WHERE q.directory = v.directory
+  AND q.payload->>'status' = 'queued'
+  AND q.payload->>'worker_started_at' = v.expected_worker_started_at
+  AND (
+    (v.expected_claim_token IS NULL AND q.payload->>'claim_token' IS NULL)
+    OR q.payload->>'claim_token' = v.expected_claim_token
+  )
+RETURNING q.directory
+"""
+
+_RECLAIM_BATCH_CHUNK_SIZE = 500
+
 _STALE_RECLAIM_ERROR = (
     "Import was interrupted before completing (worker restarted). "
     "Press Import to retry."
@@ -258,6 +327,32 @@ def _worker_started_before(worker_started_at: str | None, cutoff: datetime) -> b
     return _queued_before(worker_started_at, cutoff)
 
 
+def _build_values_from_clause(
+    *,
+    rows: list[tuple[object, ...]],
+    fields: tuple[str, ...],
+    prefix: str,
+) -> tuple[str, dict[str, object]]:
+    if not rows:
+        msg = "values clause requires at least one row"
+        raise ValueError(msg)
+    parts: list[str] = []
+    params: dict[str, object] = {}
+    for i, row in enumerate(rows):
+        placeholders: list[str] = []
+        for j, field in enumerate(fields):
+            key = f"{prefix}_{field}_{i}"
+            placeholders.append(f":{key}")
+            params[key] = row[j]
+        parts.append(f"({', '.join(placeholders)})")
+    values_from = f"(VALUES {', '.join(parts)}) AS v({', '.join(fields)})"
+    return values_from, params
+
+
+def _chunked[T](items: list[T], size: int) -> list[list[T]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
 class ImportsRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -369,6 +464,92 @@ class ImportsRepository:
     async def get_import_batch_total(self) -> int:
         return int((await self.db.scalar(select(ImportBatch.total))) or 0)
 
+    async def _execute_returning_count(
+        self, sql: str, params: dict[str, object]
+    ) -> int:
+        result = await self.db.execute(text(sql), params)
+        return len(result.all())
+
+    async def _stamp_legacy_queued_at_batch(
+        self,
+        rows: list[tuple[str, str | None]],
+        *,
+        queued_at: str,
+    ) -> int:
+        stamped = 0
+        for chunk in _chunked(rows, _RECLAIM_BATCH_CHUNK_SIZE):
+            values_from, params = _build_values_from_clause(
+                rows=chunk,
+                fields=("directory", "expected_queued_at"),
+                prefix="stamp_queued",
+            )
+            sql = STAMP_LEGACY_QUEUED_AT_BATCH_SQL.format(values_from=values_from)
+            params["queued_at"] = queued_at
+            stamped += await self._execute_returning_count(sql, params)
+        return stamped
+
+    async def _reclaim_stale_queued_batch(
+        self,
+        rows: list[tuple[str, str | None, str]],
+        *,
+        error: str,
+    ) -> int:
+        reclaimed = 0
+        for chunk in _chunked(rows, _RECLAIM_BATCH_CHUNK_SIZE):
+            values_from, params = _build_values_from_clause(
+                rows=chunk,
+                fields=("directory", "expected_claim_token", "expected_queued_at"),
+                prefix="reclaim_queued",
+            )
+            sql = RECLAIM_STALE_QUEUED_IMPORT_BATCH_SQL.format(values_from=values_from)
+            params["error"] = error
+            reclaimed += await self._execute_returning_count(sql, params)
+        return reclaimed
+
+    async def _stamp_legacy_worker_started_at_batch(
+        self,
+        rows: list[tuple[str, str | None]],
+        *,
+        worker_started_at: str,
+    ) -> int:
+        stamped = 0
+        for chunk in _chunked(rows, _RECLAIM_BATCH_CHUNK_SIZE):
+            values_from, params = _build_values_from_clause(
+                rows=chunk,
+                fields=("directory", "expected_worker_started_at"),
+                prefix="stamp_worker",
+            )
+            sql = STAMP_LEGACY_WORKER_STARTED_AT_BATCH_SQL.format(
+                values_from=values_from
+            )
+            params["worker_started_at"] = worker_started_at
+            stamped += await self._execute_returning_count(sql, params)
+        return stamped
+
+    async def _reclaim_stalled_worker_batch(
+        self,
+        rows: list[tuple[str, str | None, str]],
+        *,
+        error: str,
+    ) -> int:
+        reclaimed = 0
+        for chunk in _chunked(rows, _RECLAIM_BATCH_CHUNK_SIZE):
+            values_from, params = _build_values_from_clause(
+                rows=chunk,
+                fields=(
+                    "directory",
+                    "expected_claim_token",
+                    "expected_worker_started_at",
+                ),
+                prefix="reclaim_worker",
+            )
+            sql = RECLAIM_STALLED_WORKER_IMPORT_BATCH_SQL.format(
+                values_from=values_from
+            )
+            params["error"] = error
+            reclaimed += await self._execute_returning_count(sql, params)
+        return reclaimed
+
     async def reclaim_stale_queued_imports(self, *, older_than: timedelta) -> int:
         """Recover dispatched-but-not-started queued rows only.
 
@@ -381,41 +562,32 @@ class ImportsRepository:
         cutoff = _utc_now() - older_than
         snapshot_result = await self.db.execute(text(SELECT_QUEUED_IMPORT_SNAPSHOT_SQL))
 
-        stamped = 0
+        stamp_rows: list[tuple[str, str | None]] = []
+        reclaim_rows: list[tuple[str, str | None, str]] = []
+        for row in snapshot_result:
+            queued_at = row.queued_at
+            if not _queued_at_valid(queued_at):
+                stamp_rows.append((row.directory, queued_at))
+                continue
+
+            if not _queued_before(queued_at, cutoff):
+                continue
+
+            reclaim_rows.append((row.directory, row.claim_token, queued_at))
+
+        if not stamp_rows and not reclaim_rows:
+            return 0
+
         reclaimed = 0
         try:
-            for row in snapshot_result:
-                queued_at = row.queued_at
-                if not _queued_at_valid(queued_at):
-                    result = await self.db.execute(
-                        text(STAMP_LEGACY_QUEUED_AT_SQL),
-                        {
-                            "directory": row.directory,
-                            "queued_at": _utc_now().isoformat(),
-                            "expected_queued_at": queued_at,
-                        },
-                    )
-                    if result.first() is not None:
-                        stamped += 1
-                    continue
-
-                if not _queued_before(queued_at, cutoff):
-                    continue
-
-                result = await self.db.execute(
-                    text(RECLAIM_STALE_QUEUED_IMPORT_SQL),
-                    {
-                        "directory": row.directory,
-                        "expected_claim_token": row.claim_token,
-                        "expected_queued_at": queued_at,
-                        "error": _STALE_RECLAIM_ERROR,
-                    },
+            if stamp_rows:
+                await self._stamp_legacy_queued_at_batch(
+                    stamp_rows, queued_at=_utc_now().isoformat()
                 )
-                if result.first() is not None:
-                    reclaimed += 1
-
-            if reclaimed == 0 and stamped == 0:
-                return 0
+            if reclaim_rows:
+                reclaimed = await self._reclaim_stale_queued_batch(
+                    reclaim_rows, error=_STALE_RECLAIM_ERROR
+                )
             if reclaimed > 0:
                 await self._reset_import_batch_if_idle_in_tx()
             await self.db.commit()
@@ -439,41 +611,33 @@ class ImportsRepository:
             text(SELECT_STARTED_IMPORT_SNAPSHOT_SQL)
         )
 
-        stamped = 0
+        stamp_rows: list[tuple[str, str | None]] = []
+        reclaim_rows: list[tuple[str, str | None, str]] = []
+        for row in snapshot_result:
+            worker_started_at = row.worker_started_at
+            if not _worker_started_at_valid(worker_started_at):
+                stamp_rows.append((row.directory, worker_started_at))
+                continue
+
+            if not _worker_started_before(worker_started_at, cutoff):
+                continue
+
+            reclaim_rows.append((row.directory, row.claim_token, worker_started_at))
+
+        if not stamp_rows and not reclaim_rows:
+            return 0
+
         reclaimed = 0
         try:
-            for row in snapshot_result:
-                worker_started_at = row.worker_started_at
-                if not _worker_started_at_valid(worker_started_at):
-                    result = await self.db.execute(
-                        text(STAMP_LEGACY_WORKER_STARTED_AT_SQL),
-                        {
-                            "directory": row.directory,
-                            "worker_started_at": _utc_now().isoformat(),
-                            "expected_worker_started_at": worker_started_at,
-                        },
-                    )
-                    if result.first() is not None:
-                        stamped += 1
-                    continue
-
-                if not _worker_started_before(worker_started_at, cutoff):
-                    continue
-
-                result = await self.db.execute(
-                    text(RECLAIM_STALLED_WORKER_IMPORT_SQL),
-                    {
-                        "directory": row.directory,
-                        "expected_claim_token": row.claim_token,
-                        "expected_worker_started_at": worker_started_at,
-                        "error": _STALLED_WORKER_ERROR,
-                    },
+            if stamp_rows:
+                await self._stamp_legacy_worker_started_at_batch(
+                    stamp_rows, worker_started_at=_utc_now().isoformat()
                 )
-                if result.first() is not None:
-                    reclaimed += 1
+            if reclaim_rows:
+                reclaimed = await self._reclaim_stalled_worker_batch(
+                    reclaim_rows, error=_STALLED_WORKER_ERROR
+                )
 
-            if reclaimed == 0 and stamped == 0:
-                return 0
             if reclaimed > 0:
                 await self._reset_import_batch_if_idle_in_tx()
             await self.db.commit()

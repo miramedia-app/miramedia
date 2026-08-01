@@ -83,6 +83,12 @@ season_folder_format = "Season {season_number}"
 movie_file_format = "{title} ({year}){suffix}"
 episode_file_format = "{show_title} S{season_number:02d}E{episode_number:02d}{suffix}"
 
+[streams]
+# On-disk HLS transcode cache (see MIRAMEDIA_HLS_CACHE). Nightly sweep deletes
+# complete entries past max_age_days and oldest dirs when total size exceeds max_gb.
+hls_cache_max_gb = 20.0
+hls_cache_max_age_days = 30
+
 [database]
 host = "db"
 port = 5432
@@ -92,6 +98,7 @@ dbname = "miramedia"
 
 [auth]
 email_password_resets = false # if true, you also need to set up SMTP (notifications.smtp_config)
+# allow_registration = false  # allow open self-signup at /login/signup (default: off; admins invite users from System → Users)
 
 token_secret = "CHANGE_ME_GENERATE_RANDOM_STRING" # generate a random string with "openssl rand -hex 32", e.g. here https://www.cryptool.org/en/cto/openssl/ — leave unset for an ephemeral per-boot secret (sessions won't survive restarts)
 session_lifetime = 86400  # this is how long you will be logged in after logging in, in seconds

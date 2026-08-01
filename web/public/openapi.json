@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.13"
+    "version": "1.0.14"
   },
   "paths": {
     "/api/v1/health": {
@@ -1579,7 +1579,7 @@
           "shows"
         ],
         "summary": "Get All Shows",
-        "description": "Get all shows in the library with computed download/status fields.\n\nWhen ``limit`` is supplied, pagination is pushed into SQL (only the\npage's rows are eager-loaded and disk-scanned). When omitted, returns\nthe full library \u2014 kept for compatibility with the current frontend\ncontract.",
+        "description": "List shows with bounded SQL pagination and computed download/status fields.\n\nPagination is always pushed into SQL so only the requested page is\neager-loaded. ``limit`` defaults to 100 (max 500); ``X-Total-Count``\nreports the filtered total.",
         "operationId": "get_all_shows_api_v1_shows_get",
         "security": [
           {
@@ -1595,16 +1595,10 @@
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "maximum": 500,
-                  "exclusiveMinimum": 0
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "maximum": 500,
+              "exclusiveMinimum": 0,
+              "default": 100,
               "title": "Limit"
             }
           },
@@ -4605,7 +4599,7 @@
           "movies"
         ],
         "summary": "Get All Movies",
-        "description": "Get all movies in the library with computed download/status fields.\n\nWhen ``limit`` is supplied, pagination is pushed into SQL. The whole-\nlibrary form remains for backwards-compatible callers.",
+        "description": "List movies with bounded SQL pagination and computed download/status fields.\n\nPagination is always pushed into SQL so only the requested page is\neager-loaded. ``limit`` defaults to 100 (max 500); ``X-Total-Count``\nreports the filtered total.",
         "operationId": "get_all_movies_api_v1_movies_get",
         "security": [
           {
@@ -4621,16 +4615,10 @@
             "in": "query",
             "required": false,
             "schema": {
-              "anyOf": [
-                {
-                  "type": "integer",
-                  "maximum": 500,
-                  "exclusiveMinimum": 0
-                },
-                {
-                  "type": "null"
-                }
-              ],
+              "type": "integer",
+              "maximum": 500,
+              "exclusiveMinimum": 0,
+              "default": 100,
               "title": "Limit"
             }
           },
@@ -8137,6 +8125,7 @@
             "required": true,
             "schema": {
               "type": "string",
+              "pattern": "^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$",
               "title": "Language"
             }
           },
@@ -8218,6 +8207,7 @@
             "required": true,
             "schema": {
               "type": "string",
+              "pattern": "^[A-Za-z]{2,3}(-[A-Za-z]{2,4})?$",
               "title": "Language"
             }
           },
@@ -9635,6 +9625,11 @@
             },
             "type": "array",
             "title": "Oauth Providers"
+          },
+          "allow_registration": {
+            "type": "boolean",
+            "title": "Allow Registration",
+            "default": false
           }
         },
         "type": "object",
@@ -9666,6 +9661,17 @@
               }
             ],
             "title": "Email Password Resets"
+          },
+          "allow_registration": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Registration"
           },
           "cookie_secure": {
             "anyOf": [
@@ -9994,6 +10000,7 @@
               "format": "uuid"
             },
             "type": "array",
+            "maxItems": 500,
             "minItems": 1,
             "title": "Torrent Ids"
           }

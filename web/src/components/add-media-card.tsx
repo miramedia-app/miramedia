@@ -36,12 +36,24 @@ export function AddMediaCard({
 
   React.useEffect(() => {
     if (!isShow && result.imdb_id && result.vote_average == null && !result.overview) {
-      fetch(`/api/v1/movies/lookup/${result.imdb_id}`)
-        .then((r) => r.json())
-        .then((data) => setEnriched(data))
+      // Best-effort enrichment: failures leave the card on its search-result
+      // data. Uses the typed client so the request honours NEXT_PUBLIC_API_URL
+      // and sends credentials (a raw same-origin fetch breaks split-origin
+      // deploys). Abort on unmount/refetch so a re-polled grid doesn't leak a
+      // metadata lookup per card.
+      const controller = new AbortController();
+      apiClient
+        .GET("/api/v1/movies/lookup/{imdb_id}", {
+          params: { path: { imdb_id: result.imdb_id } },
+          signal: controller.signal,
+        })
+        .then(({ data }) => {
+          if (data && !controller.signal.aborted) setEnriched(data);
+        })
         .catch(() => {});
+      return () => controller.abort();
     }
-  }, [isShow, result]);
+  }, [isShow, result.imdb_id, result.vote_average, result.overview]);
 
   const voteAverage = enriched?.vote_average ?? result.vote_average;
   const year = enriched?.year ?? result.year;
@@ -56,8 +68,9 @@ export function AddMediaCard({
     // when it kicks off a background add. Branch on the shape.
     startLoading(async () => {
       let data: unknown;
+      let error: unknown;
       if (isShow) {
-        ({ data } = await apiClient.POST("/api/v1/shows", {
+        ({ data, error } = await apiClient.POST("/api/v1/shows", {
           params: {
             query: {
               show_id: result.external_id,
@@ -67,7 +80,7 @@ export function AddMediaCard({
           },
         }));
       } else {
-        ({ data } = await apiClient.POST("/api/v1/movies", {
+        ({ data, error } = await apiClient.POST("/api/v1/movies", {
           params: {
             query: {
               movie_id: result.external_id,
@@ -76,6 +89,15 @@ export function AddMediaCard({
             },
           },
         }));
+      }
+      // openapi-fetch never throws on 4xx/5xx — without this branch a failed
+      // add silently looks like a no-op.
+      if (error) {
+        const detail = (error as { detail?: unknown }).detail;
+        toast.error(`Failed to add ${isShow ? "show" : "movie"}`, {
+          description: typeof detail === "string" ? detail : undefined,
+        });
+        return;
       }
       // Scope to lists this add affects — avoid nuking unrelated caches
       // (settings, users, etc.) on every card click. The add-page grid is

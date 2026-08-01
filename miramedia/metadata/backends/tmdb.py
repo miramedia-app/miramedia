@@ -70,11 +70,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return tv.info(language=language)
         except Exception as e:
             log.exception(f"TMDB API error getting show metadata for ID {show_id}")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch show metadata for ID {show_id} from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch show metadata for ID {show_id} from TMDB. Error: {e}",
+            )
             raise
 
     def __get_show_content_ratings(self, show_id: int) -> dict:
@@ -91,11 +90,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return tv.external_ids()
         except Exception as e:
             log.exception(f"TMDB API error getting show external IDs for ID {show_id}")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch show external IDs for ID {show_id} from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch show external IDs for ID {show_id} from TMDB. Error: {e}",
+            )
             raise
 
     def __get_show_credits(self, show_id: int) -> list[str]:
@@ -120,11 +118,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             log.exception(
                 f"TMDB API error getting season {season_number} metadata for show ID {show_id}"
             )
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch season {season_number} metadata for show ID {show_id} from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch season {season_number} metadata for show ID {show_id} from TMDB. Error: {e}",
+            )
             raise
 
     def __search_tv(self, query: str, page: int) -> dict:
@@ -133,11 +130,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return search.tv(query=query, page=page, language=self.default_language)
         except Exception as e:
             log.exception(f"TMDB API error searching TV shows with query '{query}'")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to search TV shows with query '{query}' on TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to search TV shows with query '{query}' on TMDB. Error: {e}",
+            )
             raise
 
     def __get_trending_tv(self) -> dict:
@@ -146,11 +142,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return trending.info(language=self.default_language)
         except Exception as e:
             log.exception("TMDB API error getting trending TV")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch trending TV shows from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch trending TV shows from TMDB. Error: {e}",
+            )
             raise
 
     def __get_movie_metadata(self, movie_id: int, language: str | None = None) -> dict:
@@ -161,11 +156,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return movie.info(language=language)
         except Exception as e:
             log.exception(f"TMDB API error getting movie metadata for ID {movie_id}")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch movie metadata for ID {movie_id} from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch movie metadata for ID {movie_id} from TMDB. Error: {e}",
+            )
             raise
 
     def __get_movie_external_ids(self, movie_id: int) -> dict:
@@ -176,11 +170,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             log.exception(
                 f"TMDB API error getting movie external IDs for ID {movie_id}"
             )
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch movie external IDs for ID {movie_id} from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch movie external IDs for ID {movie_id} from TMDB. Error: {e}",
+            )
             raise
 
     def __get_movie_release_dates(self, movie_id: int) -> dict:
@@ -207,11 +200,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return search.movie(query=query, page=page, language=self.default_language)
         except Exception as e:
             log.exception(f"TMDB API error searching movies with query '{query}'")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to search movies with query '{query}' on TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to search movies with query '{query}' on TMDB. Error: {e}",
+            )
             raise
 
     def __get_trending_movies(self) -> dict:
@@ -220,11 +212,10 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return trending.info(language=self.default_language)
         except Exception as e:
             log.exception("TMDB API error getting trending movies")
-            if notification_manager.is_configured():
-                notification_manager.send_notification(
-                    title="TMDB API Error",
-                    message=f"Failed to fetch trending movies from TMDB. Error: {e}",
-                )
+            notification_manager.send_notification(
+                title="TMDB API Error",
+                message=f"Failed to fetch trending movies from TMDB. Error: {e}",
+            )
             raise
 
     @override

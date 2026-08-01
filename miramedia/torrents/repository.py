@@ -341,6 +341,16 @@ class TorrentRepository:
             raise NotFoundError(msg)
         return TorrentSchema.model_validate(result)
 
+    async def get_torrents_by_ids(
+        self, torrent_ids: list[TorrentId]
+    ) -> dict[TorrentId, TorrentSchema]:
+        """Batch-load torrents by primary key for bulk retry/import paths."""
+        if not torrent_ids:
+            return {}
+        stmt = select(Torrent).where(Torrent.id.in_(torrent_ids))
+        rows = (await self.db.execute(stmt)).scalars().all()
+        return {TorrentId(row.id): TorrentSchema.model_validate(row) for row in rows}
+
     async def delete_torrent(
         self, torrent_id: TorrentId, delete_associated_media_files: bool = False
     ) -> None:

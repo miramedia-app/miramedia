@@ -15,7 +15,7 @@ import re
 import shutil
 import time
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path, UnsupportedOperation
 
 from miramedia.imports.archive_extraction import (
@@ -25,6 +25,7 @@ from miramedia.imports.archive_extraction import (
 )
 from miramedia.imports.archive_publication import list_importable_files
 from miramedia.torrents.parsing import (
+    SubtitleInfo,
     is_sample_or_extra,
     is_subtitle_file,
     is_video_file,
@@ -357,6 +358,37 @@ def delete_files_matching_stems(directory: Path, stems: Iterable[str]) -> None:
                 log.info(f"Deleted file: {f}")
             except OSError:
                 log.warning(f"Failed to delete file: {f}", exc_info=True)
+
+
+def link_subtitles(
+    subtitle_files: Sequence[Path],
+    *,
+    match: Callable[[Path], SubtitleInfo | None],
+    target_for: Callable[[SubtitleInfo, int], Path],
+) -> None:
+    """Link parsed subtitle files next to a target video, disambiguating collisions."""
+    used: set[Path] = set()
+    for sub in subtitle_files:
+        sub_info = match(sub)
+        if sub_info is None:
+            continue
+        target_sub = target_for(sub_info, 1)
+        # Disambiguate same-lang+flag collisions (in-batch only, to keep
+        # re-imports idempotent) — otherwise the second sub silently clobbers
+        # the first.
+        if target_sub in used:
+            n = 2
+            while True:
+                candidate = target_for(sub_info, n)
+                if candidate not in used:
+                    target_sub = candidate
+                    break
+                n += 1
+        used.add(target_sub)
+        try:
+            import_file(target_file=target_sub, source_file=sub)
+        except DiskSpaceError:
+            log.exception("Disk space error importing subtitle %s", sub)
 
 
 def link_video_into_slot(

@@ -69,6 +69,7 @@ class OpenIdSettingsSchema(SettingsSectionSchema):
 class AuthSettingsSchema(SettingsSectionSchema):
     session_lifetime: int | None = None
     email_password_resets: bool | None = None
+    allow_registration: bool | None = None
     cookie_secure: bool | None = None
     openid_connect: OpenIdSettingsSchema | None = None
     # admin_emails intentionally omitted — deprecated, manage superusers via the Users page.

@@ -28,7 +28,7 @@ const nextConfig: NextConfig = {
   compress: false,
   images: { unoptimized: true },
   experimental: {
-    optimizePackageImports: ["lucide-react", "fumadocs-ui", "fumadocs-core", "date-fns"],
+    optimizePackageImports: ["lucide-react", "fumadocs-ui", "fumadocs-core"],
     // Idle timeout (ms) on the dev rewrite proxy's socket to the backend —
     // reset on every byte, NOT a total-request cap. The Next default is 30s;
     // we use 60s, the de-facto gateway standard (nginx proxy_read_timeout, AWS

@@ -172,6 +172,20 @@ def test_year_gate_not_applied_to_tv() -> None:
     assert [x.title for x in kept] == [r.title]
 
 
+def test_custom_tv_query_keeps_markerless_named_special() -> None:
+    show = _show_named("Doctor Who", 2005)
+    result = _result("Doctor Who Christmas Special 2025 1080p WEB-DL x264-GRP")
+
+    kept = evaluate_indexer_query_results(
+        [result],
+        show,
+        is_tv=True,
+        query_override="Doctor Who Christmas Special",
+    )
+
+    assert [item.title for item in kept] == [result.title]
+
+
 def _show_named(name: str, year: int):
     from miramedia.shows.schemas import Show
 
@@ -187,7 +201,7 @@ def _show_named(name: str, year: int):
 
 def test_subtitled_name_matches_main_title_release() -> None:
     # The bug: metadata name "The Agency: Central Intelligence" filtered out
-    # every release because groups name them "The.Agency.S01E01...".
+    # every release because groups name them "The.Agency.2024.S01E01...".
     show = _show_named("The Agency: Central Intelligence", 2024)
     r = _result("The.Agency.2024.S01E01.1080p.WEB-DL.x265-GRP")
     kept = evaluate_indexer_query_results([r], show, is_tv=True)
@@ -207,6 +221,61 @@ def test_subtitled_name_rejects_different_show_sharing_main_title() -> None:
     show = _show_named("Star Trek: Discovery", 2017)
     r = _result("Star.Trek.Strange.New.Worlds.S01E01.1080p.WEB-DL.x265-GRP")
     kept = evaluate_indexer_query_results([r], show, is_tv=True)
+    assert kept == []
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Star.Trek.S02E01.1080p.WEB-DL.x265-GRP",
+        "Star.Trek.1966.S02E01.1080p.BluRay.x265-GRP",
+        "Star.Trek.2026.S02E01.1080p.BluRay.x265-GRP",
+        "Star.Trek.S02E01.REPACK.2026.1080p.BluRay.x265-GRP",
+        "Star.Trek.1966.S02E01.REPACK.2026.1080p.BluRay.x265-GRP",
+        "Star.Trek.S01-S03.Complete.Series.1080p.BluRay.x265-GRP",
+    ],
+)
+def test_subtitled_franchise_rejects_bare_main_title_release(title: str) -> None:
+    show = _show_named("Star Trek: Starfleet Academy", 2026)
+
+    kept = evaluate_indexer_query_results([_result(title)], show, is_tv=True)
+
+    assert kept == []
+
+
+def test_subtitled_franchise_keeps_full_title_release_without_year() -> None:
+    show = _show_named("Star Trek: Starfleet Academy", 2026)
+    result = _result("Star.Trek.Starfleet.Academy.S02E01.1080p.WEB-DL.x265-GRP")
+
+    kept = evaluate_indexer_query_results([result], show, is_tv=True)
+
+    assert [item.title for item in kept] == [result.title]
+
+
+def test_subtitled_name_fallback_accepts_parenthesized_year() -> None:
+    show = _show_named("The Agency: Central Intelligence", 2024)
+    result = _result("The.Agency.(2024).S01E01.1080p.WEB-DL.x265-GRP")
+
+    kept = evaluate_indexer_query_results([result], show, is_tv=True)
+
+    assert [item.title for item in kept] == [result.title]
+
+
+def test_subtitled_name_fallback_rejects_release_without_year() -> None:
+    show = _show_named("The Agency: Central Intelligence", 2024)
+    result = _result("The.Agency.S01E01.1080p.WEB-DL.x265-GRP")
+
+    kept = evaluate_indexer_query_results([result], show, is_tv=True)
+
+    assert kept == []
+
+
+def test_subtitled_name_fallback_rejects_year_after_release_marker() -> None:
+    show = _show_named("The Agency: Central Intelligence", 2024)
+    result = _result("The.Agency.S01E01.REPACK.2024.1080p.WEB-DL.x265-GRP")
+
+    kept = evaluate_indexer_query_results([result], show, is_tv=True)
+
     assert kept == []
 
 
@@ -232,6 +301,38 @@ def test_negative_score_dropped() -> None:
     assert kept == []
 
 
+def test_unknown_seeders_are_dropped_when_minimum_is_configured(monkeypatch) -> None:
+    from miramedia.config import MiraMediaConfig
+
+    config = MiraMediaConfig()
+    config.indexers.minimum_seeders = 1
+    config.indexers.maximum_seeders = 0
+    monkeypatch.setattr("miramedia.indexers.utils.MiraMediaConfig", lambda: config)
+    result = _result("Some Movie 2024 1080p WEB-DL x264-GRP")
+    result.seeders = None
+
+    kept = evaluate_indexer_query_results([result], _movie(), is_tv=False)
+
+    assert kept == []
+
+
+def test_unknown_seeders_are_kept_when_only_maximum_is_configured(
+    monkeypatch,
+) -> None:
+    from miramedia.config import MiraMediaConfig
+
+    config = MiraMediaConfig()
+    config.indexers.minimum_seeders = 0
+    config.indexers.maximum_seeders = 100
+    monkeypatch.setattr("miramedia.indexers.utils.MiraMediaConfig", lambda: config)
+    result = _result("Some Movie 2024 1080p WEB-DL x264-GRP")
+    result.seeders = None
+
+    kept = evaluate_indexer_query_results([result], _movie(), is_tv=False)
+
+    assert [item.title for item in kept] == [result.title]
+
+
 def test_search_name_variants() -> None:
     from miramedia.indexers.utils import search_name_variants
 
@@ -239,30 +340,35 @@ def test_search_name_variants() -> None:
         "The Agency: Central Intelligence",
         "The Agency",
     ]
+    assert search_name_variants("Star Trek: Starfleet Academy") == [
+        "Star Trek: Starfleet Academy"
+    ]
     assert search_name_variants("Supergirl") == ["Supergirl"]
 
 
 @pytest.mark.parametrize(
-    ("title", "media_name", "expected"),
+    ("title", "media_name", "media_year", "expected"),
     [
-        ("The Bear 2022 1080p WEB-DL x264-GRP", "The Bear", True),
-        ("[GRP] The Bear 2022 1080p WEB-DL x264-GRP", "The Bear", True),
+        ("The Bear 2022 1080p WEB-DL x264-GRP", "The Bear", 2022, True),
+        ("[GRP] The Bear 2022 1080p WEB-DL x264-GRP", "The Bear", 2022, True),
         (
             "The.Agency.2024.S01E01.1080p.WEB-DL.x265-GRP",
             "The Agency: Central Intelligence",
+            2024,
             True,
         ),
-        ("Masha and the Bear S01E01 1080p WEB-DL", "The Bear", False),
+        ("Masha and the Bear S01E01 1080p WEB-DL", "The Bear", 2022, False),
         (
             "Star.Trek.Strange.New.Worlds.S01E01.1080p.WEB-DL",
             "Star Trek: Discovery",
+            2017,
             False,
         ),
     ],
 )
-def test_title_relevance_hoisted_path(title, media_name, expected) -> None:
+def test_title_relevance_hoisted_path(title, media_name, media_year, expected) -> None:
     norm_variants = _normalized_name_variants(media_name)
-    assert _is_title_relevant(title, norm_variants) is expected
+    assert _is_title_relevant(title, norm_variants, media_year) is expected
 
 
 def test_title_relevance_empty_variants_rejects() -> None:

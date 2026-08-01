@@ -536,6 +536,89 @@ def test_push_new_approved_request_calls_create_approve_and_updates_repository(
     ]
 
 
+def test_push_new_persists_link_when_approve_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(status=RequestStatus.approved, media_type=MediaType.movie)
+    repository = StubRepository(rows={request.id: request})
+    client = StubSeerrClient(
+        raise_on="approve",
+        create_result=SeerrRequest(
+            request_id=111,
+            media_id=222,
+            media_type="movie",
+            request_status=1,
+            media_status=1,
+            tmdb_id=555,
+            imdb_id=None,
+            seasons=[],
+        ),
+    )
+
+    async def _resolve_ok(*_args: object, **_kwargs: object) -> int:
+        return 555
+
+    monkeypatch.setattr(
+        "miramedia.requests.sync.resolve_tmdb",
+        _resolve_ok,
+    )
+
+    run_async(_provider(StubNative(), repository, client)._push_new(request))
+
+    assert len(client.created) == 1
+    assert repository.update_calls == [
+        (request.id, {"seerr_request_id": 111, "seerr_media_id": 222}),
+    ]
+
+
+def test_push_new_approves_after_persist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    request = _request(status=RequestStatus.approved, media_type=MediaType.movie)
+    repository = StubRepository(rows={request.id: request})
+    client = StubSeerrClient(
+        create_result=SeerrRequest(
+            request_id=111,
+            media_id=222,
+            media_type="movie",
+            request_status=1,
+            media_status=1,
+            tmdb_id=555,
+            imdb_id=None,
+            seasons=[],
+        )
+    )
+
+    async def _resolve_ok(*_args: object, **_kwargs: object) -> int:
+        return 555
+
+    original_update = repository.update_request
+    original_approve = client.approve
+
+    async def _tracked_update(
+        request_id: MediaRequestId, **kwargs: Any
+    ) -> MediaRequest:
+        calls.append("update_request")
+        return await original_update(request_id, **kwargs)
+
+    async def _tracked_approve(request_id: int) -> None:
+        calls.append("approve")
+        return await original_approve(request_id)
+
+    repository.update_request = _tracked_update  # type: ignore[method-assign]
+    client.approve = _tracked_approve  # type: ignore[method-assign]
+
+    monkeypatch.setattr(
+        "miramedia.requests.sync.resolve_tmdb",
+        _resolve_ok,
+    )
+
+    run_async(_provider(StubNative(), repository, client)._push_new(request))
+
+    assert calls.index("update_request") < calls.index("approve")
+
+
 def test_push_new_client_http_error_mid_push_is_swallowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

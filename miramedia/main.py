@@ -16,8 +16,10 @@ from fastapi import (
     APIRouter,
     Depends,
     FastAPI,
+    HTTPException,
     Request,
     Response,
+    status,
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -55,6 +57,11 @@ from miramedia.exceptions import register_exception_handlers
 from miramedia.filesystem_checks import run_filesystem_checks
 from miramedia.logging import LOGGING_CONFIG, setup_logging
 from miramedia.notifications.router import router as notification_router
+from miramedia.rate_limit import (
+    SlidingWindowLimiter,
+    configured_workers,
+    effective_budget,
+)
 
 setup_logging()
 
@@ -264,26 +271,150 @@ from miramedia.core.router import router as core_router  # noqa: E402
 
 api_app.include_router(core_router)
 
+_LOGIN_BUDGET = effective_budget(10)
+_RESET_PASSWORD_BUDGET = effective_budget(5)
+_REGISTER_BUDGET = effective_budget(5)
+_VERIFY_BUDGET = effective_budget(5)
+
+_login_limiter = SlidingWindowLimiter(max_requests=_LOGIN_BUDGET, window_seconds=60.0)
+_reset_password_limiter = SlidingWindowLimiter(
+    max_requests=_RESET_PASSWORD_BUDGET, window_seconds=300.0
+)
+_register_limiter = SlidingWindowLimiter(
+    max_requests=_REGISTER_BUDGET, window_seconds=3600.0
+)
+_verify_limiter = SlidingWindowLimiter(
+    max_requests=_VERIFY_BUDGET, window_seconds=900.0
+)
+
+_workers_for_limits = configured_workers()
+if _workers_for_limits > 1:
+    log.info(
+        "Auth rate limits divided across %d workers: "
+        "login %d/60s, reset %d/300s, register %d/3600s, verify %d/900s",
+        _workers_for_limits,
+        _LOGIN_BUDGET,
+        _RESET_PASSWORD_BUDGET,
+        _REGISTER_BUDGET,
+        _VERIFY_BUDGET,
+    )
+
+
+def _normalize_identifier(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    return normalized or None
+
+
+def _registration_enabled() -> None:
+    if not MiraMediaConfig().auth.allow_registration:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Registration is disabled",
+        )
+
+
+async def _limit_login(request: Request) -> None:
+    # fastapi-users auth routers also expose /logout; only throttle login attempts.
+    if not request.url.path.endswith("/login"):
+        return
+    client_host = request.client.host if request.client else "unknown"
+    _login_limiter.check(f"{client_host}:login")
+
+    try:
+        form = await request.form()
+        identifier = _normalize_identifier(form.get("username"))
+    except Exception:
+        identifier = None
+    if identifier is not None:
+        _login_limiter.check(f"acct:{identifier}:login")
+
+
+async def _limit_password_reset(request: Request) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    path = request.url.path
+    _reset_password_limiter.check(f"{client_host}:{path}")
+
+    try:
+        body = await request.json()
+        email = (
+            _normalize_identifier(body.get("email")) if isinstance(body, dict) else None
+        )
+    except Exception:
+        email = None
+    if email is not None:
+        _reset_password_limiter.check(f"acct:{email}:{path}")
+
+
+async def _limit_register(request: Request) -> None:
+    if not request.url.path.endswith("/register"):
+        return
+    client_host = request.client.host if request.client else "unknown"
+    path = request.url.path
+    _register_limiter.check(f"{client_host}:{path}")
+
+    try:
+        body = await request.json()
+        email = (
+            _normalize_identifier(body.get("email")) if isinstance(body, dict) else None
+        )
+    except Exception:
+        email = None
+    if email is not None:
+        _register_limiter.check(f"acct:{email}:{path}")
+
+
+async def _limit_verify(request: Request) -> None:
+    path = request.url.path
+    if not path.endswith(("/request-verify-token", "/verify")):
+        return
+    client_host = request.client.host if request.client else "unknown"
+    _verify_limiter.check(f"{client_host}:{path}")
+
+    if path.endswith("/request-verify-token"):
+        try:
+            body = await request.json()
+            email = (
+                _normalize_identifier(body.get("email"))
+                if isinstance(body, dict)
+                else None
+            )
+        except Exception:
+            email = None
+        if email is not None:
+            _verify_limiter.check(f"acct:{email}:{path}")
+
+
 api_app.include_router(
     fastapi_users.get_auth_router(bearer_auth_backend),
     prefix="/auth/jwt",
     tags=["auth"],
+    dependencies=[Depends(_limit_login)],
 )
 api_app.include_router(
     fastapi_users.get_auth_router(cookie_auth_backend),
     prefix="/auth/cookie",
     tags=["auth"],
+    dependencies=[Depends(_limit_login)],
 )
 api_app.include_router(
     fastapi_users.get_register_router(UserRead, UserCreate),
     prefix="/auth",
     tags=["auth"],
+    dependencies=[Depends(_registration_enabled), Depends(_limit_register)],
 )
 api_app.include_router(
-    fastapi_users.get_reset_password_router(), prefix="/auth", tags=["auth"]
+    fastapi_users.get_reset_password_router(),
+    prefix="/auth",
+    tags=["auth"],
+    dependencies=[Depends(_limit_password_reset)],
 )
 api_app.include_router(
-    fastapi_users.get_verify_router(UserRead), prefix="/auth", tags=["auth"]
+    fastapi_users.get_verify_router(UserRead),
+    prefix="/auth",
+    tags=["auth"],
+    dependencies=[Depends(_limit_verify)],
 )
 api_app.include_router(custom_users_router)
 api_app.include_router(

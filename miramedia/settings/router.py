@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
-from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from miramedia.auth.runtime import (
     OIDC_CONFIG_INVALID_DETAIL,
@@ -20,11 +17,19 @@ from miramedia.auth.runtime import (
 from miramedia.auth.users import SuperuserDep, current_superuser
 from miramedia.config import MiraMediaConfig
 from miramedia.movies.cleanup import cleanup_stale_movie_preferences
+from miramedia.rate_limit import SlidingWindowLimiter
 from miramedia.settings.dependencies import settings_repository_dep
-from miramedia.settings.integration_tests import HANDLERS as TEST_HANDLERS
-from miramedia.settings.integration_tests import IntegrationTestResult
+from miramedia.settings.integration_tests import (
+    HANDLERS,
+    INTEGRATION_EFFECTIVE_PATHS,
+    IntegrationTestResult,
+    _format_config_errors,
+)
 from miramedia.settings.mutation import (
     SETTINGS_MUTATION_FAILED_DETAIL,
+    SETTINGS_MUTATION_POSTCOMMIT_DETAIL,
+    SETTINGS_MUTATION_ROLLBACK_INCOMPLETE_DETAIL,
+    SETTINGS_MUTATION_SUPERSEDED_DETAIL,
     SettingsMutationError,
     SettingsMutationSupersededError,
     execute_settings_mutation,
@@ -39,9 +44,14 @@ from miramedia.settings.service import (
 )
 from miramedia.settings.validation import (
     SettingsValidationError,
+    carry_forward_secrets,
+    mask_secret_values,
+    masked_credential_with_changed_target,
     reject_restart_only_clear_path,
     reject_restart_only_incoming,
+    resolve_masked_config,
     sanitize_export_overrides,
+    strip_masked_values,
     validate_incoming_settings_update,
 )
 from miramedia.shows.cleanup import cleanup_stale_show_preferences
@@ -50,6 +60,22 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
+
+_OPERATOR_SAFE_MUTATION_DETAILS = frozenset(
+    {
+        SETTINGS_MUTATION_FAILED_DETAIL,
+        SETTINGS_MUTATION_POSTCOMMIT_DETAIL,
+        SETTINGS_MUTATION_ROLLBACK_INCOMPLETE_DETAIL,
+        SETTINGS_MUTATION_SUPERSEDED_DETAIL,
+    }
+)
+
+
+def _operator_safe_mutation_detail(exc: SettingsMutationError) -> str:
+    message = str(exc)
+    if message in _OPERATOR_SAFE_MUTATION_DETAILS:
+        return message
+    return SETTINGS_MUTATION_FAILED_DETAIL
 
 
 async def _stage_auth_runtime(
@@ -93,7 +119,7 @@ async def _commit_settings_mutation(
     except SettingsMutationError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=SETTINGS_MUTATION_FAILED_DETAIL,
+            detail=_operator_safe_mutation_detail(exc),
         ) from exc
 
 
@@ -106,8 +132,11 @@ router = APIRouter(
 
 _TEST_RATE_LIMIT_WINDOW_SECONDS = 60
 _TEST_RATE_LIMIT_MAX_REQUESTS = 5
-_test_call_log: dict[str, deque[float]] = defaultdict(deque)
-_test_call_log_lock = threading.Lock()
+_test_rate_limiter = SlidingWindowLimiter(
+    max_requests=_TEST_RATE_LIMIT_MAX_REQUESTS,
+    window_seconds=_TEST_RATE_LIMIT_WINDOW_SECONDS,
+    detail_template="Too many test requests. Try again in {retry_in}s.",
+)
 
 
 async def _cleanup_stale_media_preferences(db: AsyncSession) -> None:
@@ -131,20 +160,7 @@ def _rate_limit_test(user_key: str) -> None:
     Caps each superuser at ``_TEST_RATE_LIMIT_MAX_REQUESTS`` calls per
     ``_TEST_RATE_LIMIT_WINDOW_SECONDS`` seconds. Raises HTTP 429 when exceeded.
     """
-    now = time.monotonic()
-    with _test_call_log_lock:
-        bucket = _test_call_log[user_key]
-        cutoff = now - _TEST_RATE_LIMIT_WINDOW_SECONDS
-        while bucket and bucket[0] < cutoff:
-            bucket.popleft()
-        if len(bucket) >= _TEST_RATE_LIMIT_MAX_REQUESTS:
-            retry_in = int(_TEST_RATE_LIMIT_WINDOW_SECONDS - (now - bucket[0]))
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=f"Too many test requests. Try again in {max(1, retry_in)}s.",
-                headers={"Retry-After": str(max(1, retry_in))},
-            )
-        bucket.append(now)
+    _test_rate_limiter.check(user_key)
 
 
 _ALLOWED_SECTIONS = {
@@ -179,16 +195,28 @@ def get_settings_schema_endpoint() -> list[SettingsSchemaEntry]:
     return [SettingsSchemaEntry(**entry) for entry in get_settings_schema()]
 
 
+def _build_settings_read(
+    *,
+    overrides: dict,
+    defaults: dict | None = None,
+) -> SystemSettingsRead:
+    effective = mask_secret_values(get_effective_config(overrides))
+    masked_overrides = mask_secret_values(overrides)
+    masked_defaults = mask_secret_values(defaults) if defaults is not None else None
+    return SystemSettingsRead(
+        **effective,
+        overrides=masked_overrides,
+        defaults=masked_defaults,
+    )
+
+
 @router.get("/settings")
 async def get_system_settings(
     repo: settings_repository_dep,
 ) -> SystemSettingsRead:
     """Get the effective system configuration (TOML defaults + DB overrides)."""
     overrides = await repo.get_overrides()
-    effective = get_effective_config(overrides)
-    return SystemSettingsRead(
-        **effective, overrides=overrides, defaults=get_toml_defaults()
-    )
+    return _build_settings_read(overrides=overrides, defaults=get_toml_defaults())
 
 
 @router.put("/settings")
@@ -203,12 +231,21 @@ async def update_system_settings(
     Interval-driven scheduler tasks are also re-synced on save.
     """
     try:
+        raw_patch = data.model_dump(mode="json", exclude_unset=True)
         incoming_patch = validate_incoming_settings_update(
-            data.model_dump(mode="json", exclude_unset=True)
+            strip_masked_values(raw_patch)
         )
-    except Exception as exc:
+    except ValidationError as exc:
+        log.exception("Settings update validation failed")
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid settings payload",
+        ) from exc
+    except Exception as exc:
+        log.exception("Settings update validation failed")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid settings payload",
         ) from exc
 
     async def _prepare() -> tuple[dict, dict, int]:
@@ -235,8 +272,7 @@ async def update_system_settings(
     except Exception:
         log.exception("Failed to refresh dynamic schedules after settings update")
 
-    effective = get_effective_config(merged_overrides)
-    return SystemSettingsRead(**effective, overrides=merged_overrides)
+    return _build_settings_read(overrides=merged_overrides)
 
 
 @router.delete("/settings", status_code=204)
@@ -300,7 +336,7 @@ async def import_settings(
     the existing overrides (incoming values win on conflicts). Section names are validated
     against the known set so a malformed file can't poison the singleton.
     """
-    incoming = body.overrides or {}
+    incoming = strip_masked_values(body.overrides or {})
     try:
         reject_restart_only_incoming(incoming)
     except SettingsValidationError as exc:
@@ -321,7 +357,10 @@ async def import_settings(
     async def _prepare() -> tuple[dict, dict, int]:
         existing, revision = await repo.get_overrides_with_revision()
         if incoming_merged is not None:
-            merged = compute_mutation_overrides({}, incoming_merged)
+            merged = carry_forward_secrets(
+                existing,
+                compute_mutation_overrides({}, incoming_merged),
+            )
         else:
             merged = compute_mutation_overrides(existing, incoming)
         return merged, existing, revision
@@ -340,8 +379,7 @@ async def import_settings(
     except Exception:
         log.exception("Failed to refresh dynamic schedules after settings import")
 
-    effective = get_effective_config(merged)
-    return SystemSettingsRead(**effective, overrides=merged)
+    return _build_settings_read(overrides=merged)
 
 
 class ClearOverridePathRequest(BaseModel):
@@ -384,8 +422,7 @@ async def clear_override_path(
     except Exception:
         log.exception("Failed to refresh dynamic schedules after override clear")
 
-    effective = get_effective_config(updated_overrides)
-    return SystemSettingsRead(**effective, overrides=updated_overrides)
+    return _build_settings_read(overrides=updated_overrides)
 
 
 class IntegrationTestRequest(BaseModel):
@@ -399,6 +436,19 @@ class IntegrationTestRequest(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
+def _integration_effective_section(integration: str) -> dict:
+    """Return the live effective config subsection for an integration test."""
+    path = INTEGRATION_EFFECTIVE_PATHS.get(integration)
+    if not path:
+        return {}
+    node: object = MiraMediaConfig()
+    for key in path:
+        node = getattr(node, key)
+    if isinstance(node, BaseModel):
+        return node.model_dump(mode="json")
+    return {}
+
+
 @router.post("/settings/integrations/{integration}/test")
 def test_integration(
     integration: str,
@@ -409,16 +459,33 @@ def test_integration(
 
     Rate-limited per superuser to avoid abuse against third-party APIs.
     """
-    handler = TEST_HANDLERS.get(integration)
-    if handler is None:
+    entry = HANDLERS.get(integration)
+    if entry is None:
         raise HTTPException(
             status_code=404,
             detail=f"Unknown integration: {integration}. "
-            f"Known: {', '.join(sorted(TEST_HANDLERS))}",
+            f"Known: {', '.join(sorted(HANDLERS))}",
         )
     _rate_limit_test(str(user.id))
+    model_cls, handler = entry
+    section_path = INTEGRATION_EFFECTIVE_PATHS.get(integration, ())
+    effective_section = _integration_effective_section(integration)
+    if masked_credential_with_changed_target(
+        body.config, effective_section, section_path
+    ):
+        return IntegrationTestResult(
+            ok=False,
+            message=("Connection target changed — re-enter the credential to test it."),
+        )
+    resolved_config = resolve_masked_config(
+        body.config, effective_section, section_path
+    )
     try:
-        return handler(body.config)
+        cfg = model_cls.model_validate(resolved_config)
+    except ValidationError as exc:
+        return IntegrationTestResult(ok=False, message=_format_config_errors(exc))
+    try:
+        return handler(cfg)
     except Exception:
         log.exception("Integration test handler crashed for %s", integration)
         return IntegrationTestResult(

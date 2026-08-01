@@ -29,21 +29,25 @@ def test_integrity_sweep_skips_when_lock_held() -> None:
             config = MagicMock()
             config.misc.integrity_check_enabled = True
 
-            def _background_session_should_not_run() -> None:
-                msg = "integrity sweep should skip while lock is held"
-                raise AssertionError(msg)
+            mock_background_session = MagicMock(
+                side_effect=lambda: (_ for _ in ()).throw(
+                    AssertionError("integrity sweep should skip while lock is held")
+                )
+            )
 
             with (
                 patch(
-                    "miramedia.config.MiraMediaConfig",
+                    "miramedia.scheduler.MiraMediaConfig",
                     return_value=config,
                 ),
                 patch(
-                    "miramedia.database.background_session",
-                    side_effect=_background_session_should_not_run,
+                    "miramedia.scheduler.background_session",
+                    mock_background_session,
                 ),
             ):
                 await scheduler.verify_imported_files_task()
+
+            mock_background_session.assert_not_called()
 
     asyncio.run(run())
 
@@ -65,3 +69,35 @@ def test_get_dynamic_schedule_targets_includes_import_sweeps() -> None:
     assert "miramedia.scheduler:import_all_show_torrents_task" in targets
     assert "miramedia.scheduler:import_all_movie_torrents_task" in targets
     assert "miramedia.scheduler:auto_download_missing_episodes_task" in targets
+
+
+def test_notify_add_failure_uses_notification_singleton() -> None:
+    calls: list[tuple[str, str]] = []
+
+    with patch(
+        "miramedia.notifications.manager.notification_manager.send_notification",
+        side_effect=lambda title, message: calls.append((title, message)),
+    ):
+        scheduler._notify_add_failure("movie", "tt123", ValueError("boom"))
+
+    assert calls == [("Could not add movie", "tt123: boom")]
+
+
+def test_notify_update_available_uses_notification_singleton() -> None:
+    calls: list[tuple[str, str]] = []
+    info = MagicMock(
+        latest_version="2.0.0",
+        current_version="1.0.0",
+        release_url="https://example.com/release",
+    )
+
+    with patch(
+        "miramedia.notifications.manager.notification_manager.send_notification",
+        side_effect=lambda title, message: calls.append((title, message)),
+    ):
+        scheduler._notify_update_available(info)
+
+    assert len(calls) == 1
+    assert calls[0][0] == "MiraMedia update available"
+    assert "2.0.0" in calls[0][1]
+    assert "1.0.0" in calls[0][1]

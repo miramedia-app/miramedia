@@ -27,6 +27,7 @@ from miramedia.naming_defaults import (
 )
 from miramedia.notifications.config import NotificationConfig
 from miramedia.requests.config import RequestsConfig
+from miramedia.streams.config import StreamsConfig
 from miramedia.subtitles.config import SubtitleConfig
 from miramedia.torrents.config import TorrentConfig
 from miramedia.updates.config import UpdateConfig
@@ -185,6 +186,7 @@ class MiraMediaConfig(BaseSettings):
     updates: UpdateConfig = UpdateConfig()
     cloudflare: CloudflareConfig = CloudflareConfig()
     imports: ImportsConfig = ImportsConfig()
+    streams: StreamsConfig = StreamsConfig()
 
     _instance: ClassVar[MiraMediaConfig | None] = None
     _initialized: ClassVar[bool] = False

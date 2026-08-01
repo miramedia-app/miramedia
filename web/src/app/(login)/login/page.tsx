@@ -9,13 +9,16 @@ export default function LoginPage() {
     queryKey: ["auth", "metadata"],
     queryFn: async ({ signal }) => {
       const { data } = await apiClient.GET("/api/v1/auth/metadata", { signal });
-      return data ?? { oauth_providers: [] };
+      return data ?? { oauth_providers: [], allow_registration: false };
     },
   });
 
   return (
     <main>
-      <LoginCard oauthProviderNames={data?.oauth_providers ?? []} />
+      <LoginCard
+        oauthProviderNames={data?.oauth_providers ?? []}
+        allowRegistration={data?.allow_registration ?? false}
+      />
     </main>
   );
 }

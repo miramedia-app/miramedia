@@ -76,6 +76,31 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_OPERATOR_SAFE_BULK_VALUE_ERROR_DETAILS = frozenset(
+    {
+        "torrent not linked to any media",
+        "episode_id required for target_type=episode",
+        "movie_id required for target_type=movie",
+    }
+)
+
+
+def _safe_bulk_item_error_message(exc: Exception, *, fallback: str) -> str:
+    """Map per-item bulk failures to fixed categories; logs keep the real cause."""
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        if message in _OPERATOR_SAFE_BULK_VALUE_ERROR_DETAILS:
+            return message
+        return fallback
+    if isinstance(exc, NotFoundError):
+        return "not found"
+    from miramedia.imports.files import DiskSpaceError
+
+    if isinstance(exc, DiskSpaceError):
+        return "insufficient disk space"
+    return fallback
+
+
 router = APIRouter(
     prefix="/torrents",
     tags=["torrents"],
@@ -178,19 +203,20 @@ async def search_torrents_stream(
                 seen_urls.update(r.download_url for r in fresh)
             if not fresh:
                 return
-            if query_override:
-                # Manual query: the user asked for exactly this search — don't
-                # second-guess the results against the media name (mirrors the
-                # non-streaming /search override behavior).
-                scored = fresh
-            else:
-                scored = evaluate_indexer_query_results(
-                    query_results=fresh,
-                    media=media_obj,
-                    is_tv=is_tv,
-                    quality_allowed=quality,
-                    codec_allowed=codec,
-                )
+            # REST searches score against the title's saved preferences, then
+            # apply any request filters. Keep custom SSE searches in parity;
+            # regular typed SSE searches retain their existing request-filter
+            # semantics.
+            score_quality = media_obj.preferred_quality if query_override else quality
+            score_codec = media_obj.preferred_codec if query_override else codec
+            scored = evaluate_indexer_query_results(
+                query_results=fresh,
+                media=media_obj,
+                is_tv=is_tv,
+                quality_allowed=score_quality,
+                codec_allowed=score_codec,
+                query_override=query_override,
+            )
             scored = _filter_results_by_options(scored, quality, codec)
             if not query_override and media_type == MediaType.show:
                 if season_number is not None and episode_number is not None:
@@ -239,10 +265,13 @@ async def search_torrents_stream(
                         on_partial=_on_partial,
                     )
                 else:
-                    queries = [
-                        f"{name} {media.year}"
-                        for name in search_name_variants(media.name)
-                    ]
+                    if media.year is not None:
+                        queries = [
+                            f"{name} {media.year}"
+                            for name in search_name_variants(media.name)
+                        ]
+                    else:
+                        queries = [media.name]
                     await asyncio.gather(
                         *(
                             indexer_service.search(
@@ -821,13 +850,33 @@ async def bulk_retry_import(
     Each torrent is reset + re-imported sequentially; failures don't abort
     the batch.
     """
+    from miramedia.movies.schemas import MovieId
+    from miramedia.shows.schemas import ShowId
+
     succeeded = 0
     failed: list[BulkRetryImportFailure] = []
-    for tid in body.torrent_ids:
+    distinct_torrent_ids = list(dict.fromkeys(body.torrent_ids))
+    torrents_by_id = await repo.get_torrents_by_ids(distinct_torrent_ids)
+    show_ctx = await repo.get_show_contexts_for_torrents(distinct_torrent_ids)
+    movie_ctx = await repo.get_movie_contexts_for_torrents(distinct_torrent_ids)
+    # Batch torrent/context lookups stay for validation; media rows are
+    # re-fetched per item so later iterations see prior import mutations.
+    for tid in distinct_torrent_ids:
         try:
-            torrent = await repo.get_torrent_by_id(torrent_id=tid)
-            show = await service.get_show_of_torrent(torrent=torrent)
-            movie = await service.get_movie_of_torrent(torrent=torrent)
+            torrent = torrents_by_id.get(tid)
+            if torrent is None:
+                msg = f"Torrent with ID {tid} not found."
+                raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
+            show = None
+            movie = None
+            if tid in show_ctx:
+                show = await show_service.show_repository.get_show_by_id(
+                    show_id=ShowId(show_ctx[tid]["show_id"])
+                )
+            if tid in movie_ctx:
+                movie = await movie_service.movie_repository.get_movie_by_id(
+                    movie_id=MovieId(movie_ctx[tid]["movie_id"])
+                )
             if show is None and movie is None:
                 msg = "torrent not linked to any media"
                 raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
@@ -840,7 +889,13 @@ async def bulk_retry_import(
                 )
             succeeded += 1
         except Exception as exc:
-            failed.append(BulkRetryImportFailure(torrent_id=str(tid), error=str(exc)))
+            log.exception("Bulk retry import failed for torrent %s", tid)
+            failed.append(
+                BulkRetryImportFailure(
+                    torrent_id=str(tid),
+                    error=_safe_bulk_item_error_message(exc, fallback="import failed"),
+                )
+            )
     return BulkRetryImportResult(succeeded=succeeded, failed=failed)
 
 
@@ -999,6 +1054,41 @@ async def map_torrent_files(
     root = get_torrent_filepath(torrent)
     result = ManualMapResult(mapped=0, skipped=0, failed=0, errors=[])
 
+    episode_ids = list(
+        dict.fromkeys(
+            item.episode_id
+            for item in body.items
+            if item.target_type == ManualMapTargetType.episode
+            and item.episode_id is not None
+        )
+    )
+    movie_ids = list(
+        dict.fromkeys(
+            item.movie_id
+            for item in body.items
+            if item.target_type == ManualMapTargetType.movie
+            and item.movie_id is not None
+        )
+    )
+    episode_lookup = (
+        await show_service.show_repository.get_episodes_with_seasons(episode_ids)
+        if episode_ids
+        else {}
+    )
+    show_ids = list(
+        dict.fromkeys(season.show_id for season, _ in episode_lookup.values())
+    )
+    shows_by_id = (
+        await show_service.show_repository.get_shows_by_ids(show_ids)
+        if show_ids
+        else {}
+    )
+    movies_by_id = (
+        await movie_service.movie_repository.get_movies_by_ids(movie_ids)
+        if movie_ids
+        else {}
+    )
+
     for item in body.items:
         if item.target_type == ManualMapTargetType.skip:
             result.skipped += 1
@@ -1022,11 +1112,15 @@ async def map_torrent_files(
                 if item.episode_id is None:
                     msg = "episode_id required for target_type=episode"
                     raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                episode = await show_service.get_episode(episode_id=item.episode_id)
-                season = await show_service.get_season_by_episode(
-                    episode_id=item.episode_id
-                )
-                show = await show_service.get_show_by_id(show_id=season.show_id)
+                pair = episode_lookup.get(item.episode_id)
+                if pair is None:
+                    msg = f"Episode with id {item.episode_id} not found."
+                    raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
+                season, episode = pair
+                show = shows_by_id.get(season.show_id)
+                if show is None:
+                    msg = f"Show with id {season.show_id} not found."
+                    raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
                 outcome, error = await show_service.import_episode_from_file(
                     show=show,
                     season=season,
@@ -1039,7 +1133,10 @@ async def map_torrent_files(
                 if item.movie_id is None:
                     msg = "movie_id required for target_type=movie"
                     raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                movie = await movie_service.get_movie_by_id(movie_id=item.movie_id)
+                movie = movies_by_id.get(item.movie_id)
+                if movie is None:
+                    msg = f"Movie with id {item.movie_id} not found."
+                    raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
                 outcome, error = await movie_service.import_movie_from_file(
                     movie=movie,
                     source_file=source,
@@ -1051,7 +1148,11 @@ async def map_torrent_files(
                 raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
         except Exception as exc:
             result.failed += 1
-            result.errors.append(f"{item.relative_path}: {exc}")
+            result.errors.append(
+                f"{item.relative_path}: "
+                f"{_safe_bulk_item_error_message(exc, fallback='import failed')}"
+            )
+            log.exception("Manual-map import failed for %s", item.relative_path)
             continue
 
         if outcome == ImportOutcome.imported:
@@ -1121,28 +1222,39 @@ async def import_torrent_dry_run(
     plan = []
     show = await service.get_show_of_torrent(torrent=torrent)
     movie = await service.get_movie_of_torrent(torrent=torrent)
+    episode_ids = list(
+        dict.fromkeys(
+            src.suggested_episode_id
+            for src in sources
+            if src.suggested_episode_id is not None
+        )
+    )
+    episode_lookup = (
+        await show_service.show_repository.get_episodes_with_seasons(episode_ids)
+        if episode_ids
+        else {}
+    )
     for src in sources:
         target_path = None
         if src.suggested_episode_id is not None and show is not None:
             try:
-                episode = await show_service.get_episode(
-                    episode_id=src.suggested_episode_id
-                )
-                season = await show_service.get_season_by_episode(
-                    episode_id=src.suggested_episode_id
-                )
-                target_path = str(
-                    show_service.get_root_season_directory(
-                        show=show, season_number=season.number
+                pair = episode_lookup.get(src.suggested_episode_id)
+                if pair is None:
+                    target_path = None
+                else:
+                    season, episode = pair
+                    target_path = str(
+                        show_service.get_root_season_directory(
+                            show=show, season_number=season.number
+                        )
+                        / episode_file_stem(
+                            show,
+                            season_number=season.number,
+                            episode_number=episode.number,
+                            quality=src.quality or Quality.unknown,
+                            parts=NameParts(),
+                        )
                     )
-                    / episode_file_stem(
-                        show,
-                        season_number=season.number,
-                        episode_number=episode.number,
-                        quality=src.quality or Quality.unknown,
-                        parts=NameParts(),
-                    )
-                )
             except Exception:
                 target_path = None
         elif src.suggested_movie_id is not None and movie is not None:

@@ -120,7 +120,7 @@ audit:
 
 # CI parity minus OpenAPI/api.d.ts drift checks (PR-only in ci.yml) and the
 # frontend production build (slow; typecheck covers most build breaks).
-check: lint format-check ty test tsc frontend-test frontend-lint
+check: lint format-check ty test tsc frontend-test frontend-lint migration-head-audit
 
 # Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
 # collections + Next type declarations, and nothing here runs `next build`, so

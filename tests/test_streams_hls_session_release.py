@@ -13,6 +13,8 @@ from miramedia.streams.router import (
     episode_hls_segment,
     movie_hls_playlist,
     movie_hls_segment,
+    stream_episode_subtitle,
+    stream_movie_subtitle,
 )
 from miramedia.streams.transcode import segment_dir
 
@@ -84,6 +86,7 @@ def test_episode_hls_segment_releases_session_before_file_response(
     segment_name = "seg_000.ts"
     seg_dir = segment_dir(video_file)
     seg_dir.mkdir(parents=True)
+    (seg_dir / "index.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
     (seg_dir / segment_name).write_bytes(b"\x00" * 10)
 
     release_mock = AsyncMock()
@@ -132,6 +135,7 @@ def test_movie_hls_segment_releases_session_before_file_response(
     segment_name = "seg_000.ts"
     seg_dir = segment_dir(video_file)
     seg_dir.mkdir(parents=True)
+    (seg_dir / "index.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
     (seg_dir / segment_name).write_bytes(b"\x00" * 10)
 
     release_mock = AsyncMock()
@@ -219,3 +223,128 @@ def test_movie_hls_playlist_releases_session_before_transcode(
     )
 
     assert calls.index("release") < calls.index("transcode")
+
+
+def test_movie_subtitle_releases_session_before_serving(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    vtt_file = tmp_path / "sub.vtt"
+    vtt_file.write_text("WEBVTT\n", encoding="utf-8")
+
+    async def _release(_db: object) -> None:
+        calls.append("release")
+
+    def _serve_file(_path: Path) -> object:
+        calls.append("serve")
+        from starlette.responses import Response
+
+        return Response(content=b"", media_type="text/vtt")
+
+    async def _load_movie_file(**_kwargs: object) -> MagicMock:
+        mock = MagicMock()
+        mock.id = uuid.uuid4()
+        mock.quality = None
+        return mock
+
+    async def _resolve_subtitle_file(_db: object, **_kwargs: object) -> Path:
+        return vtt_file
+
+    monkeypatch.setattr(
+        "miramedia.streams.router.release_session_before_external_io",
+        _release,
+    )
+    monkeypatch.setattr("miramedia.streams.router._serve_file", _serve_file)
+    monkeypatch.setattr(
+        "miramedia.streams.router._load_movie_file",
+        _load_movie_file,
+    )
+    monkeypatch.setattr(
+        "miramedia.streams.router._resolve_subtitle_file",
+        _resolve_subtitle_file,
+    )
+    monkeypatch.setattr(
+        "miramedia.streams.router.movie_file_stem_candidates",
+        lambda *_args, **_kwargs: ["show"],
+    )
+
+    movie_service = MagicMock()
+    movie_service.get_movie_root_path.return_value = tmp_path
+
+    _run(
+        stream_movie_subtitle(
+            movie=MagicMock(),
+            movie_service=movie_service,
+            db=MagicMock(),
+            language="en",
+            file_id=uuid.uuid4(),
+        )
+    )
+
+    assert calls.index("release") < calls.index("serve")
+
+
+def test_episode_subtitle_releases_session_before_convert(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    srt_file = tmp_path / "sub.srt"
+    srt_file.write_text("1\n00:00:01,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
+
+    async def _release(_db: object) -> None:
+        calls.append("release")
+
+    def _convert_srt_to_vtt(_path: Path) -> str:
+        calls.append("convert")
+        return "WEBVTT\n"
+
+    async def _load_episode_file(**_kwargs: object) -> MagicMock:
+        mock = MagicMock()
+        mock.episode_id = EpisodeId(uuid.uuid4())
+        return mock
+
+    async def _resolve_subtitle_file(_db: object, **_kwargs: object) -> Path:
+        return srt_file
+
+    show_service = MagicMock()
+    show_service.get_episode = AsyncMock(return_value=MagicMock(number=1))
+    show_service.get_season_by_episode = AsyncMock(return_value=MagicMock(number=1))
+    show_service.show_repository.get_show_by_season_id = AsyncMock(
+        return_value=MagicMock()
+    )
+    show_service.get_root_season_directory.return_value = tmp_path
+
+    monkeypatch.setattr(
+        "miramedia.streams.router.release_session_before_external_io",
+        _release,
+    )
+    monkeypatch.setattr(
+        "miramedia.streams.router._convert_srt_to_vtt",
+        _convert_srt_to_vtt,
+    )
+    monkeypatch.setattr(
+        "miramedia.streams.router._load_episode_file",
+        _load_episode_file,
+    )
+    monkeypatch.setattr(
+        "miramedia.streams.router._resolve_subtitle_file",
+        _resolve_subtitle_file,
+    )
+    monkeypatch.setattr(
+        "miramedia.streams.router.episode_file_stem_candidates",
+        lambda *_args, **_kwargs: ["show"],
+    )
+
+    _run(
+        stream_episode_subtitle(
+            episode_id=EpisodeId(uuid.uuid4()),
+            show_service=show_service,
+            db=MagicMock(),
+            language="en",
+            file_id=uuid.uuid4(),
+        )
+    )
+
+    assert calls.index("release") < calls.index("convert")

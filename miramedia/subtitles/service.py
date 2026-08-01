@@ -162,8 +162,8 @@ class SubtitleService:
             parts=NameParts(),
         )
 
-        existing = self.get_existing_subtitle_languages_for_stems(
-            season_dir, file_stems
+        existing = await asyncio.to_thread(
+            self.get_existing_subtitle_languages_for_stems, season_dir, file_stems
         )
         available = sorted({s.language for s in existing})
         desired = self._get_desired_languages()
@@ -322,8 +322,8 @@ class SubtitleService:
         movie_root = self.movie_service.get_movie_root_path(movie=movie)
         file_stems = movie_file_stem_candidates(movie, Quality.unknown, NameParts())
 
-        existing = self.get_existing_subtitle_languages_for_stems(
-            movie_root, file_stems
+        existing = await asyncio.to_thread(
+            self.get_existing_subtitle_languages_for_stems, movie_root, file_stems
         )
         available = sorted({s.language for s in existing})
         desired = self._get_desired_languages()
@@ -362,7 +362,9 @@ class SubtitleService:
             quality=Quality.unknown,
             parts=NameParts(),
         )
-        return self.get_existing_subtitle_languages_for_stems(season_dir, file_stems)
+        return await asyncio.to_thread(
+            self.get_existing_subtitle_languages_for_stems, season_dir, file_stems
+        )
 
     async def get_show_subtitle_files(
         self, show_id: ShowId
@@ -456,7 +458,9 @@ class SubtitleService:
 
         movie_root = self.movie_service.get_movie_root_path(movie=movie)
         file_stems = movie_file_stem_candidates(movie, Quality.unknown, NameParts())
-        return self.get_existing_subtitle_languages_for_stems(movie_root, file_stems)
+        return await asyncio.to_thread(
+            self.get_existing_subtitle_languages_for_stems, movie_root, file_stems
+        )
 
     async def delete_movie_subtitle_file(
         self, movie_id: MovieId, file_name: str
@@ -535,7 +539,9 @@ class SubtitleService:
         )
 
         # Find the video file to scan
-        video_path = self._find_first_video_file(season_dir, file_stems)
+        video_path = await asyncio.to_thread(
+            self._find_first_video_file, season_dir, file_stems
+        )
         if not video_path:
             log.warning(f"No video file found for episode {episode_id}")
             return []
@@ -589,7 +595,9 @@ class SubtitleService:
         movie_root = self.movie_service.get_movie_root_path(movie=movie)
         file_stems = movie_file_stem_candidates(movie, Quality.unknown, NameParts())
 
-        video_path = self._find_first_video_file(movie_root, file_stems)
+        video_path = await asyncio.to_thread(
+            self._find_first_video_file, movie_root, file_stems
+        )
         if not video_path:
             log.warning(f"No video file found for movie {movie_id}")
             return []
@@ -906,15 +914,15 @@ class SubtitleService:
 
             await release_session_before_external_io(db)
 
-            client = BazarrClient(
+            with BazarrClient(
                 url=config.subtitles.bazarr.url,
                 api_key=config.subtitles.bazarr.api_key,
-            )
-            ok = await asyncio.to_thread(
-                client.notify_episode_files_imported,
-                file_arr_ids,
-                episode_arr_ids,
-            )
+            ) as client:
+                ok = await asyncio.to_thread(
+                    client.notify_episode_files_imported,
+                    file_arr_ids,
+                    episode_arr_ids,
+                )
             if not ok:
                 log.warning(
                     "Bazarr episode import notify failed for files %s",
@@ -959,15 +967,15 @@ class SubtitleService:
 
             await release_session_before_external_io(db)
 
-            client = BazarrClient(
+            with BazarrClient(
                 url=config.subtitles.bazarr.url,
                 api_key=config.subtitles.bazarr.api_key,
-            )
-            ok = await asyncio.to_thread(
-                client.notify_movie_file_imported,
-                movie_file_arr_id,
-                movie_arr_id,
-            )
+            ) as client:
+                ok = await asyncio.to_thread(
+                    client.notify_movie_file_imported,
+                    movie_file_arr_id,
+                    movie_arr_id,
+                )
             if not ok:
                 log.warning(
                     "Bazarr movie import notify failed for file %s",

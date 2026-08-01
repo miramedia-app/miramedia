@@ -12,6 +12,9 @@ import { DataListHeaderRow, DataListRow } from "./data-list-row";
 import { DataListSearchFilter } from "./data-list-search-filter";
 import { DataListSkeleton } from "./data-list-skeleton";
 import { DataListToolbar } from "./data-list-toolbar";
+import { isRowExpanded, nextExpandedRows } from "./expand-utils";
+import { nextFocusId } from "./focus-utils";
+import { countGroups } from "./grouping-utils";
 import { useListFilters } from "./use-list-filters";
 import { useListHotkeys } from "./use-list-hotkeys";
 import { selectionHeaderState, useListSelection } from "./use-list-selection";
@@ -234,6 +237,14 @@ export function DataList<T>({
     return Array.from(map.values()).sort((a, b) => a.sortOrder - b.sortOrder);
   }, [paged, activeGrouping]);
 
+  // Group sizes over the FULL filtered set. `grouped` above only sees the
+  // current page (pagination runs first), so headers would otherwise report a
+  // per-page count that disagrees with the toolbar's "Select all N".
+  const groupTotals = React.useMemo(() => {
+    if (!activeGrouping) return null;
+    return countGroups(sorted, activeGrouping.getGroup);
+  }, [sorted, activeGrouping]);
+
   // Memoize so identity is stable across renders — keeps useListSelection
   // refs intact and avoids forcing the idIndex Map to rebuild every render.
   const visibleIds = React.useMemo(() => paged.map(getId), [paged, getId]);
@@ -248,33 +259,35 @@ export function DataList<T>({
 
   const { collapsed, toggle: toggleGroup } = useCollapsedGroups(collapseStorageKey);
 
-  const [focusedIndex, setFocusedIndex] = React.useState<number | null>(null);
-  const focusedId = focusedIndex != null ? visibleIds[focusedIndex] : null;
+  // Focus is tracked by id, not by index: search/sort/page/SSE churn rewrites
+  // `visibleIds`, and a bare index would then point at whatever row happens to
+  // land there. The index is re-derived per move (see `nextFocusId`), so a move
+  // after such a change restarts from the top and `Enter`/`x` on an id that has
+  // scrolled out of the visible window no-op.
+  const [focusedId, setFocusedId] = React.useState<string | null>(null);
+  const focusVisible = focusedId != null && visibleIds.includes(focusedId);
 
   useListHotkeys({
-    onMoveDown: () =>
-      setFocusedIndex((i) => Math.min((i ?? -1) + 1, Math.max(0, visibleIds.length - 1))),
-    onMoveUp: () => setFocusedIndex((i) => Math.max((i ?? 0) - 1, 0)),
+    onMoveDown: () => setFocusedId(nextFocusId(visibleIds, focusedId, 1)),
+    onMoveUp: () => setFocusedId(nextFocusId(visibleIds, focusedId, -1)),
     onToggleSelect: () => {
-      if (focusedId) selection.toggle(focusedId);
+      if (focusVisible && focusedId) selection.toggle(focusedId);
     },
     onRangeExtendDown: () => {
-      const next = Math.min((focusedIndex ?? -1) + 1, visibleIds.length - 1);
-      const cur = focusedId;
-      const tgt = visibleIds[next];
+      const tgt = nextFocusId(visibleIds, focusedId, 1);
+      const cur = focusVisible ? focusedId : null;
       if (cur && tgt) selection.selectRange(cur, tgt);
-      setFocusedIndex(next);
+      setFocusedId(tgt);
     },
     onRangeExtendUp: () => {
-      const next = Math.max((focusedIndex ?? 0) - 1, 0);
-      const cur = focusedId;
-      const tgt = visibleIds[next];
+      const tgt = nextFocusId(visibleIds, focusedId, -1);
+      const cur = focusVisible ? focusedId : null;
       if (cur && tgt) selection.selectRange(cur, tgt);
-      setFocusedIndex(next);
+      setFocusedId(tgt);
     },
     onSelectAll: () => selection.selectAll(),
     onOpen: () => {
-      if (focusedId && onRowOpen) {
+      if (focusVisible && focusedId && onRowOpen) {
         const item = sorted.find((it) => getId(it) === focusedId);
         if (item) onRowOpen(item);
       }
@@ -282,7 +295,7 @@ export function DataList<T>({
     onFocusSearch: () => searchRef.current?.focus(),
     onClear: () => {
       if (selection.count > 0) selection.clear();
-      else setFocusedIndex(null);
+      else setFocusedId(null);
     },
   });
 
@@ -299,14 +312,14 @@ export function DataList<T>({
   }, [columns, selectable, rowActions, rowActionsWidth, hasExpandColumn]);
 
   const [expandedRows, setExpandedRows] = React.useState<Set<string>>(new Set());
-  const toggleExpanded = React.useCallback((id: string) => {
-    setExpandedRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
+  // State encoding (see expand-utils.ts): bare id = explicitly expanded,
+  // `__c:` id = explicitly collapsed, absent = follow `defaultExpanded`.
+  const toggleExpanded = React.useCallback(
+    (id: string) => {
+      setExpandedRows((prev) => nextExpandedRows(prev, id, defaultExpanded));
+    },
+    [defaultExpanded],
+  );
 
   // Header state describes the whole filtered set, matching what the header
   // checkbox now selects.
@@ -346,15 +359,13 @@ export function DataList<T>({
     selectionRef.current.toggle(id, { shift });
   }, []);
   const handleClickId = React.useCallback((id: string) => {
-    const idx = idIndexRef.current.get(id);
-    if (idx != null) setFocusedIndex(idx);
+    if (idIndexRef.current.has(id)) setFocusedId(id);
     // Find item by id in current sorted list, then open.
     const item = sortedRef.current.find((it) => getIdRef.current(it) === id);
     if (item) onRowOpenRef.current?.(item);
   }, []);
   const handleFocusId = React.useCallback((id: string) => {
-    const idx = idIndexRef.current.get(id);
-    if (idx != null) setFocusedIndex(idx);
+    if (idIndexRef.current.has(id)) setFocusedId(id);
   }, []);
   const handleToggleExpandId = React.useCallback(
     (id: string) => toggleExpanded(id),
@@ -371,8 +382,7 @@ export function DataList<T>({
     // Expandability is probed with the cheap `isExpandable` predicate so the
     // expanded subtree is only built for rows that are actually open.
     const expandable = expandedContent != null && (isExpandable ? isExpandable(item) : true);
-    const isExpanded =
-      expandable && (expandedRows.has(id) || (defaultExpanded && !expandedRows.has(`__c:${id}`)));
+    const isExpanded = expandable && isRowExpanded(expandedRows, id, defaultExpanded);
     const content = isExpanded && expandedContent ? expandedContent(item) : null;
     void indexHint;
     return (
@@ -504,6 +514,7 @@ export function DataList<T>({
                     <DataListGroupHeader
                       label={g.label}
                       count={g.items.length}
+                      totalCount={groupTotals?.get(g.key)}
                       collapsed={isCollapsed}
                       onToggle={() => toggleGroup(g.key)}
                     />

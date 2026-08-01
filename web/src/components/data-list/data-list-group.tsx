@@ -6,7 +6,13 @@ import { cn } from "@/lib/utils";
 
 export interface DataListGroupHeaderProps {
   label: React.ReactNode;
+  /** Number of rows of this group rendered right now (current page). */
   count: number;
+  /**
+   * Size of the group across the whole filtered set. When it exceeds `count`
+   * (the page shows only part of the group) the header renders "N of M".
+   */
+  totalCount?: number;
   collapsed: boolean;
   onToggle: () => void;
   className?: string;
@@ -15,10 +21,12 @@ export interface DataListGroupHeaderProps {
 export function DataListGroupHeader({
   label,
   count,
+  totalCount,
   collapsed,
   onToggle,
   className,
 }: DataListGroupHeaderProps) {
+  const truncated = totalCount != null && totalCount > count;
   return (
     <button
       type="button"
@@ -35,7 +43,7 @@ export function DataListGroupHeader({
         <ChevronDownIcon className="h-3.5 w-3.5" />
       )}
       <span className="text-foreground">{label}</span>
-      <span className="tabular-nums">{count}</span>
+      <span className="tabular-nums">{truncated ? `${count} of ${totalCount}` : count}</span>
     </button>
   );
 }

@@ -12,6 +12,8 @@ export { DataListToolbar, DataListDisplayMenu } from "./data-list-toolbar";
 export { useListFilters } from "./use-list-filters";
 export { useListHotkeys } from "./use-list-hotkeys";
 export { selectionHeaderState, useListSelection } from "./use-list-selection";
+export { collapseKey, isRowExpanded, nextExpandedRows } from "./expand-utils";
+export { countGroups } from "./grouping-utils";
 export type {
   ActiveFilter,
   BulkAction,

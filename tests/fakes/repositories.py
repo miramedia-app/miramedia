@@ -35,6 +35,7 @@ from tests.fakes.db import FakeDb
 class FakeShowRepository:
     def __init__(self) -> None:
         self.db = FakeDb()
+        self.get_show_by_id_calls = 0
         self.shows: dict[ShowId, Show] = {}
         self.episodes: dict[EpisodeId, Episode] = {}
         self.seasons: dict[SeasonId, Season] = {}
@@ -50,7 +51,53 @@ class FakeShowRepository:
         return show
 
     async def get_show_by_id(self, *, show_id: ShowId) -> Show | None:
+        self.get_show_by_id_calls += 1
         return self.shows.get(show_id)
+
+    async def get_shows_by_ids(self, show_ids: list[ShowId]) -> dict[ShowId, Show]:
+        self.get_shows_by_ids_calls = getattr(self, "get_shows_by_ids_calls", 0) + 1
+        self.last_show_ids_batch = list(show_ids)
+        return {
+            show_id: self.shows[show_id]
+            for show_id in show_ids
+            if show_id in self.shows
+        }
+
+    async def get_season(self, *, season_id: SeasonId) -> Season:
+        return self.seasons[season_id]
+
+    async def update_season_skipped(
+        self, *, season_id: SeasonId, skipped: bool
+    ) -> None:
+        season = self.seasons[season_id]
+        self.seasons[season_id] = season.model_copy(update={"skipped": skipped})
+        show = self.shows[season.show_id]
+        updated_seasons = [
+            self.seasons[season_id] if s.id == season_id else s for s in show.seasons
+        ]
+        self.shows[season.show_id] = show.model_copy(
+            update={"seasons": updated_seasons}
+        )
+
+    async def update_episode_skipped(
+        self, *, episode_id: EpisodeId, skipped: bool
+    ) -> None:
+        episode = self.episodes[episode_id]
+        self.episodes[episode_id] = episode.model_copy(update={"skipped": skipped})
+        season = _season_for_episode(self, episode_id)
+        updated_episodes = [
+            self.episodes[episode_id] if ep.id == episode_id else ep
+            for ep in season.episodes
+        ]
+        updated_season = season.model_copy(update={"episodes": updated_episodes})
+        self.seasons[season.id] = updated_season
+        show = self.shows[season.show_id]
+        updated_seasons = [
+            updated_season if s.id == season.id else s for s in show.seasons
+        ]
+        self.shows[season.show_id] = show.model_copy(
+            update={"seasons": updated_seasons}
+        )
 
     async def get_episode(self, *, episode_id: EpisodeId) -> Episode:
         return self.episodes[episode_id]
@@ -68,6 +115,7 @@ class FakeShowRepository:
         self.get_episodes_with_seasons_calls = (
             getattr(self, "get_episodes_with_seasons_calls", 0) + 1
         )
+        self.last_episode_ids_batch = list(episode_ids)
         out: dict[EpisodeId, tuple[Season, Episode]] = {}
         for episode_id in episode_ids:
             episode = self.episodes.get(episode_id)
@@ -200,11 +248,51 @@ class FakeShowRepository:
             }
         )
 
+    async def add_episode_files(
+        self, episode_files: list[EpisodeFile]
+    ) -> list[EpisodeFile]:
+        added: list[EpisodeFile] = []
+        for episode_file in episode_files:
+            self.episode_files[episode_file.id] = episode_file
+            episode = self.episodes[episode_file.episode_id]
+            episode.episode_files = [*episode.episode_files, episode_file]
+            self.episodes[episode_file.episode_id] = episode
+            added.append(episode_file)
+        return added
+
     async def add_episode_file(self, *, episode_file: EpisodeFile) -> EpisodeFile:
-        self.episode_files[episode_file.id] = episode_file
-        episode = self.episodes[episode_file.episode_id]
-        episode.episode_files = [*episode.episode_files, episode_file]
-        return episode_file
+        return (await self.add_episode_files([episode_file]))[0]
+
+    async def add_episodes_to_season(
+        self,
+        season_id: SeasonId,
+        episodes: list[Episode],
+        *,
+        skipped: bool = False,
+    ) -> list[Episode]:
+        season = self.seasons[season_id]
+        existing_numbers = {episode.number for episode in season.episodes}
+        inserted: list[Episode] = []
+        updated_episodes = list(season.episodes)
+        for episode in episodes:
+            if episode.number in existing_numbers:
+                continue
+            new_episode = episode.model_copy(update={"skipped": skipped})
+            self.episodes[new_episode.id] = new_episode
+            updated_episodes.append(new_episode)
+            existing_numbers.add(episode.number)
+            inserted.append(new_episode)
+        self.seasons[season_id] = season.model_copy(
+            update={"episodes": updated_episodes}
+        )
+        show = self.shows[season.show_id]
+        updated_seasons = [
+            self.seasons[season_id] if s.id == season_id else s for s in show.seasons
+        ]
+        self.shows[season.show_id] = show.model_copy(
+            update={"seasons": updated_seasons}
+        )
+        return inserted
 
     async def get_episode_file_by_id(self, file_id: UUID) -> EpisodeFile | None:
         return self.episode_files.get(file_id)
@@ -213,6 +301,7 @@ class FakeShowRepository:
 class FakeMovieRepository:
     def __init__(self) -> None:
         self.db = FakeDb()
+        self.get_movie_by_id_calls = 0
         self.movies: dict[MovieId, Movie] = {}
         self.movie_files: dict[UUID, MovieFile] = {}
         self.torrents_by_movie: dict[MovieId, list[Torrent]] = {}
@@ -222,7 +311,17 @@ class FakeMovieRepository:
         return movie
 
     async def get_movie_by_id(self, *, movie_id: MovieId) -> Movie | None:
+        self.get_movie_by_id_calls += 1
         return self.movies.get(movie_id)
+
+    async def get_movies_by_ids(self, movie_ids: list[MovieId]) -> dict[MovieId, Movie]:
+        self.get_movies_by_ids_calls = getattr(self, "get_movies_by_ids_calls", 0) + 1
+        self.last_movie_ids_batch = list(movie_ids)
+        return {
+            movie_id: self.movies[movie_id]
+            for movie_id in movie_ids
+            if movie_id in self.movies
+        }
 
     async def get_movie_names_by_ids(
         self, movie_ids: list[MovieId]
@@ -302,7 +401,7 @@ class FakeMovieRepository:
             }
         )
 
-    async def add_movie_file(self, *, movie_file: MovieFile) -> MovieFile:
+    async def add_movie_file(self, movie_file: MovieFile) -> MovieFile:
         self.movie_files[movie_file.id] = movie_file
         return movie_file
 
@@ -348,6 +447,19 @@ class FakeTorrentRepository:
 
     async def get_torrent_by_id(self, *, torrent_id: TorrentId) -> Torrent | None:
         return self.torrents.get(torrent_id)
+
+    async def get_torrents_by_ids(
+        self, torrent_ids: list[TorrentId]
+    ) -> dict[TorrentId, Torrent]:
+        self.get_torrents_by_ids_calls = (
+            getattr(self, "get_torrents_by_ids_calls", 0) + 1
+        )
+        self.last_torrent_ids_batch = list(torrent_ids)
+        return {
+            torrent_id: self.torrents[torrent_id]
+            for torrent_id in torrent_ids
+            if torrent_id in self.torrents
+        }
 
     async def get_episode_files_of_torrent(
         self, *, torrent_id: TorrentId

@@ -46,9 +46,9 @@ import type {
   SortOption,
 } from "@/components/data-list";
 import { useUser } from "@/components/providers/user-provider";
+import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import { useEventStream } from "@/hooks/use-event-stream";
 import apiClient from "@/lib/api/client";
-import { bulkMutate } from "@/lib/bulk-mutate";
 import { qk } from "@/lib/query-keys";
 import {
   getTorrentQualityString,
@@ -59,6 +59,8 @@ import {
 import type { components } from "@/lib/api/api";
 
 type RichTorrent = components["schemas"]["RichTorrent"];
+
+const getTorrentId = (t: RichTorrent) => t.id!;
 
 function getMediaName(t: RichTorrent): string {
   if (!t.media) return "";
@@ -166,8 +168,23 @@ export default function TorrentsPage() {
   const [blockHash, setBlockHash] = React.useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
   const [bulkBlockHash, setBulkBlockHash] = React.useState(false);
-  const [bulkWorking, setBulkWorking] = React.useState(false);
   const [pendingBulkDelete, setPendingBulkDelete] = React.useState<RichTorrent[]>([]);
+  const invalidateAll = React.useCallback(
+    () => qc.invalidateQueries({ queryKey: qk.torrents.all }),
+    [qc],
+  );
+  const {
+    bulkWorking,
+    pause: pauseTorrents,
+    resume: resumeTorrents,
+    remove: removeTorrents,
+    pauseOne: pauseOneTorrent,
+    resumeOne: resumeOneTorrent,
+    retryOne: retryOneTorrent,
+  } = useBulkTorrentActions(invalidateAll, {
+    deleteSuccessPeriod: true,
+    failurePeriod: true,
+  });
 
   const bulkPauseTorrents = React.useCallback(
     async (items: RichTorrent[]) => {
@@ -176,28 +193,9 @@ export default function TorrentsPage() {
         toast.info("No active downloads in selection");
         return;
       }
-      setBulkWorking(true);
-      try {
-        const { ok, failed } = await bulkMutate(ids, (id) =>
-          apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-            params: { path: { torrent_id: id } },
-          }),
-        );
-        if (failed === 0) {
-          toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} paused`);
-        } else if (ok === 0) {
-          toast.error("Failed to pause some torrents.");
-        } else {
-          toast.warning(`${ok} paused, ${failed} failed`);
-        }
-        await qc.invalidateQueries({ queryKey: qk.torrents.all });
-      } catch {
-        toast.error("Failed to pause some torrents.");
-      } finally {
-        setBulkWorking(false);
-      }
+      await pauseTorrents(ids);
     },
-    [qc],
+    [pauseTorrents],
   );
 
   const bulkResumeTorrents = React.useCallback(
@@ -207,118 +205,54 @@ export default function TorrentsPage() {
         toast.info("No paused torrents in selection");
         return;
       }
-      setBulkWorking(true);
-      try {
-        const { ok, failed } = await bulkMutate(ids, (id) =>
-          apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-            params: { path: { torrent_id: id } },
-          }),
-        );
-        if (failed === 0) {
-          toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} resumed`);
-        } else if (ok === 0) {
-          toast.error("Failed to resume some torrents.");
-        } else {
-          toast.warning(`${ok} resumed, ${failed} failed`);
-        }
-        await qc.invalidateQueries({ queryKey: qk.torrents.all });
-      } catch {
-        toast.error("Failed to resume some torrents.");
-      } finally {
-        setBulkWorking(false);
-      }
+      await resumeTorrents(ids);
     },
-    [qc],
+    [resumeTorrents],
   );
 
   async function bulkDelete() {
     const ids = pendingBulkDelete.map((t) => t.id!).filter(Boolean);
     if (!ids.length) return;
-    setBulkWorking(true);
-    try {
-      const { ok, failed, failedItems } = await bulkMutate(ids, (id) =>
-        apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-          params: {
-            path: { torrent_id: id },
-            query: { block_hash: bulkBlockHash },
-          },
-        }),
-      );
-      if (failed === 0) {
-        toast.success(`${ok} torrent${ok !== 1 ? "s" : ""} deleted.`);
-      } else if (ok === 0) {
-        toast.error("Failed to delete some torrents.");
-      } else {
-        toast.warning(`${ok} deleted, ${failed} failed`);
-      }
-      if (failed === 0) {
-        setBulkDeleteOpen(false);
-        setBulkBlockHash(false);
-        setPendingBulkDelete([]);
-      } else {
-        const failedSet = new Set(failedItems);
-        setPendingBulkDelete((prev) => prev.filter((t) => t.id && failedSet.has(t.id)));
-      }
-      await qc.invalidateQueries({ queryKey: qk.torrents.all });
-    } catch {
-      toast.error("Failed to delete some torrents.");
-    } finally {
-      setBulkWorking(false);
-    }
+    await removeTorrents(ids, {
+      blockHash: bulkBlockHash,
+      onResult: ({ failed, failedItems }) => {
+        if (failed === 0) {
+          setBulkDeleteOpen(false);
+          setBulkBlockHash(false);
+          setPendingBulkDelete([]);
+        } else {
+          const failedSet = new Set(failedItems);
+          setPendingBulkDelete((prev) => prev.filter((t) => t.id && failedSet.has(t.id)));
+        }
+      },
+    });
   }
 
+  // Single-torrent actions live on the hook so their toasts and invalidation
+  // can't drift from the bulk paths.
   const retryTorrentDownload = React.useCallback(
-    async (t: RichTorrent) => {
-      const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/retry", {
-        params: { path: { torrent_id: t.id! } },
-      });
-      if (error) toast.error("Failed to retry download");
-      else toast.success("Retrying torrent download...");
-      await qc.invalidateQueries({ queryKey: qk.torrents.all });
-    },
-    [qc],
+    (t: RichTorrent) => retryOneTorrent(t.id!),
+    [retryOneTorrent],
   );
 
   const pauseTorrent = React.useCallback(
-    async (t: RichTorrent) => {
-      const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/pause", {
-        params: { path: { torrent_id: t.id! } },
-      });
-      if (error) toast.error("Failed to pause download");
-      else toast.success("Torrent paused.");
-      await qc.invalidateQueries({ queryKey: qk.torrents.all });
-    },
-    [qc],
+    (t: RichTorrent) => pauseOneTorrent(t.id!),
+    [pauseOneTorrent],
   );
 
   const resumeTorrent = React.useCallback(
-    async (t: RichTorrent) => {
-      const { error } = await apiClient.POST("/api/v1/torrents/{torrent_id}/resume", {
-        params: { path: { torrent_id: t.id! } },
-      });
-      if (error) toast.error("Failed to resume download");
-      else toast.success("Torrent resumed.");
-      await qc.invalidateQueries({ queryKey: qk.torrents.all });
-    },
-    [qc],
+    (t: RichTorrent) => resumeOneTorrent(t.id!),
+    [resumeOneTorrent],
   );
 
   async function confirmDelete() {
     if (!deleteDialogTorrent) return;
-    const { error } = await apiClient.DELETE("/api/v1/torrents/{torrent_id}", {
-      params: {
-        path: { torrent_id: deleteDialogTorrent.id! },
-        query: { block_hash: blockHash },
-      },
-    });
-    if (error) {
-      toast.error("Failed to delete torrent.");
-    } else {
-      toast.success(blockHash ? "Torrent deleted and blocked." : "Torrent deleted.");
-      setDeleteDialogTorrent(null);
-      setBlockHash(false);
-    }
-    await qc.invalidateQueries({ queryKey: ["torrents"] });
+    // Route through the shared hook so the toast + invalidation match the bulk
+    // path. Close the dialog either way (matching bulk delete, which dismisses
+    // its confirm UI once the request settles); the hook owns error reporting.
+    await removeTorrents([deleteDialogTorrent.id!], { blockHash });
+    setDeleteDialogTorrent(null);
+    setBlockHash(false);
   }
 
   // DataList configuration
@@ -612,7 +546,7 @@ export default function TorrentsPage() {
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
         <DataList<RichTorrent>
           data={torrents}
-          getId={(t) => t.id!}
+          getId={getTorrentId}
           columns={columns}
           pageSize={50}
           searchPlaceholder="Search or filter torrents…"
@@ -687,7 +621,7 @@ export default function TorrentsPage() {
             >
               Cancel
             </Button>
-            <Button variant="destructive" onClick={confirmDelete}>
+            <Button variant="destructive" onClick={confirmDelete} disabled={bulkWorking}>
               Delete
             </Button>
           </DialogFooter>

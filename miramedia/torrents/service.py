@@ -1575,6 +1575,7 @@ class TorrentService:
         quality = (
             quality_override if quality_override is not None else indexer_result.quality
         )
+        pending: list[EpisodeFile] = []
 
         # Explicit-target link (Season 0 specials and any other release whose
         # title can't be parsed into S/E). Link exactly the targeted episode,
@@ -1708,14 +1709,18 @@ class TorrentService:
                         episode_id,
                     )
                     continue
-                episode_file = EpisodeFile(
-                    episode_id=episode_id,
-                    quality=quality,
-                    torrent_id=torrent.id,
-                    variant=variant,
+                pending.append(
+                    EpisodeFile(
+                        episode_id=episode_id,
+                        quality=quality,
+                        torrent_id=torrent.id,
+                        variant=variant,
+                    )
                 )
-                await show_repository.add_episode_file(episode_file=episode_file)
-                rows_created += 1
+
+        if pending:
+            await show_repository.add_episode_files(pending)
+            rows_created += len(pending)
 
         return rows_created
 

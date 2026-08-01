@@ -19,18 +19,23 @@ from miramedia.imports.repository import (
     CLAIM_SCAN_CACHE_ROW_SQL,
     COMPENSATE_SCAN_CACHE_CLAIM_SQL,
     COMPLETE_MANUAL_SCAN_IMPORT_SQL,
+    RECLAIM_STALE_QUEUED_IMPORT_BATCH_SQL,
     RECLAIM_STALE_QUEUED_IMPORT_SQL,
+    RECLAIM_STALLED_WORKER_IMPORT_BATCH_SQL,
     RECLAIM_STALLED_WORKER_IMPORT_SQL,
     RESET_IMPORT_BATCH_IF_IDLE_SQL,
     SELECT_QUEUED_IMPORT_SNAPSHOT_SQL,
     SELECT_STARTED_IMPORT_SNAPSHOT_SQL,
     STALE_QUEUED_IMPORT_GRACE,
     STALLED_WORKER_GRACE,
+    STAMP_LEGACY_QUEUED_AT_BATCH_SQL,
     STAMP_LEGACY_QUEUED_AT_SQL,
+    STAMP_LEGACY_WORKER_STARTED_AT_BATCH_SQL,
     STAMP_LEGACY_WORKER_STARTED_AT_SQL,
     ImportsRepository,
     ScanClaimResult,
     ScanWorkerBeginResult,
+    _build_values_from_clause,
 )
 from miramedia.imports.scan_resolve import validate_scan_resolve_target
 from miramedia.imports.schemas import ResolveRequest
@@ -50,6 +55,9 @@ class _FakeResult:
 
     def first(self) -> object | None:
         return self._rows[0] if self._rows else None
+
+    def all(self) -> list[object]:
+        return list(self._rows)
 
     def __iter__(self):
         return iter(self._rows)
@@ -83,6 +91,24 @@ def _sql_text(stmt: object) -> str:
     if isinstance(stmt, TextClause):
         return stmt.text
     return str(stmt)
+
+
+def _batch_param_rows(
+    params: dict[str, Any], prefix: str, fields: tuple[str, ...]
+) -> list[dict[str, Any]]:
+    indices = {
+        int(key.rsplit("_", 1)[-1])
+        for key in params
+        if key.startswith(f"{prefix}_{fields[0]}_")
+    }
+    return [
+        {field: params[f"{prefix}_{field}_{i}"] for field in fields}
+        for i in sorted(indices)
+    ]
+
+
+def _batch_sql_head(template: str) -> str:
+    return template.split("{values_from}")[0].strip()
 
 
 class _StatefulScanCache:
@@ -146,6 +172,115 @@ class _StatefulScanCache:
             n = (params or {}).get("n", 1)
             self.batch_total = max(self.batch_total - n, 0)
             return _FakeResult([])
+
+        if sql.startswith(_batch_sql_head(STAMP_LEGACY_QUEUED_AT_BATCH_SQL)):
+            stamped: list[tuple[str]] = []
+            for row in _batch_param_rows(
+                params, "stamp_queued", ("directory", "expected_queued_at")
+            ):
+                directory = row["directory"]
+                row_payload = self.rows.get(directory)
+                if row_payload is None:
+                    continue
+                queued_at = row_payload.get("queued_at")
+                expected = row["expected_queued_at"]
+                queued_match = (expected is None and queued_at is None) or (
+                    queued_at == expected
+                )
+                if (
+                    row_payload.get("status") == "queued"
+                    and row_payload.get("worker_started_at") is None
+                    and queued_match
+                ):
+                    row_payload["queued_at"] = params["queued_at"]
+                    stamped.append((directory,))
+            return _FakeResult(stamped)
+
+        if "v.expected_queued_at" in sql and "worker_started_at' IS NULL" in sql:
+            reclaimed_rows: list[tuple[str]] = []
+            for row in _batch_param_rows(
+                params,
+                "reclaim_queued",
+                ("directory", "expected_claim_token", "expected_queued_at"),
+            ):
+                directory = row["directory"]
+                row_payload = self.rows.get(directory)
+                if row_payload is None:
+                    continue
+                queued_at = row_payload.get("queued_at")
+                claim_token = row_payload.get("claim_token")
+                expected_queued = row["expected_queued_at"]
+                expected_token = row["expected_claim_token"]
+                token_match = (expected_token is None and claim_token is None) or (
+                    claim_token == expected_token
+                )
+                if (
+                    row_payload.get("status") == "queued"
+                    and row_payload.get("worker_started_at") is None
+                    and queued_at == expected_queued
+                    and token_match
+                ):
+                    row_payload.pop("queued_at", None)
+                    row_payload.pop("claim_token", None)
+                    row_payload.pop("worker_started_at", None)
+                    row_payload["status"] = "failed"
+                    row_payload["import_error"] = params["error"]
+                    reclaimed_rows.append((directory,))
+            return _FakeResult(reclaimed_rows)
+
+        if sql.startswith(_batch_sql_head(STAMP_LEGACY_WORKER_STARTED_AT_BATCH_SQL)):
+            stamped_worker: list[tuple[str]] = []
+            for row in _batch_param_rows(
+                params, "stamp_worker", ("directory", "expected_worker_started_at")
+            ):
+                directory = row["directory"]
+                row_payload = self.rows.get(directory)
+                if row_payload is None:
+                    continue
+                worker_started_at = row_payload.get("worker_started_at")
+                expected = row["expected_worker_started_at"]
+                started_match = (expected is None and worker_started_at is None) or (
+                    worker_started_at == expected
+                )
+                if (
+                    row_payload.get("status") == "queued"
+                    and worker_started_at is not None
+                    and started_match
+                ):
+                    row_payload["worker_started_at"] = params["worker_started_at"]
+                    stamped_worker.append((directory,))
+            return _FakeResult(stamped_worker)
+
+        if "v.expected_worker_started_at" in sql:
+            reclaimed_worker_rows: list[tuple[str]] = []
+            for row in _batch_param_rows(
+                params,
+                "reclaim_worker",
+                ("directory", "expected_claim_token", "expected_worker_started_at"),
+            ):
+                directory = row["directory"]
+                row_payload = self.rows.get(directory)
+                if row_payload is None:
+                    continue
+                worker_started_at = row_payload.get("worker_started_at")
+                claim_token = row_payload.get("claim_token")
+                expected_started = row["expected_worker_started_at"]
+                expected_token = row["expected_claim_token"]
+                token_match = (expected_token is None and claim_token is None) or (
+                    claim_token == expected_token
+                )
+                if (
+                    row_payload.get("status") == "queued"
+                    and worker_started_at == expected_started
+                    and token_match
+                ):
+                    row_payload.pop("queued_at", None)
+                    row_payload.pop("claim_token", None)
+                    row_payload.pop("worker_started_at", None)
+                    row_payload["status"] = "failed"
+                    row_payload["import_error"] = params["error"]
+                    reclaimed_worker_rows.append((directory,))
+            return _FakeResult(reclaimed_worker_rows)
 
         directory = params["directory"]
         payload = self.rows.get(directory)
@@ -771,5 +906,260 @@ def test_stalled_worker_reclaim_resets_batch_and_schedules_rebuild() -> None:
         repo.db.commit.assert_awaited_once()
         rebuild_mock.assert_called_once()
         assert state.batch_total == 0
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stale_queued_uses_one_batch_update_for_many_rows() -> None:
+    state = _StatefulScanCache(
+        {
+            f"/safe/show-{i}": {
+                "status": "queued",
+                "claim_token": f"token-{i}",
+                "queued_at": _OLD,
+            }
+            for i in range(3)
+        }
+    )
+    repo = _repo_with_state(state)
+    update_calls: list[str] = []
+
+    async def _tracked_execute(stmt: object, params: dict[str, Any] | None = None):
+        sql = _sql_text(stmt).strip()
+        if sql.startswith("UPDATE scan_result_cache AS q"):
+            update_calls.append(sql)
+        return state.execute(stmt, params)
+
+    repo.db.execute = AsyncMock(side_effect=_tracked_execute)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(datetime.fromisoformat(_FRESH)),
+        ):
+            reclaimed = await repo.reclaim_stale_queued_imports(
+                older_than=STALE_QUEUED_IMPORT_GRACE
+            )
+        assert reclaimed == 3
+        assert len(update_calls) == 1
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stale_queued_batch_cas_blocks_token_change() -> None:
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-b",
+                "queued_at": _OLD,
+            }
+        }
+    )
+    repo = _repo_with_state(state)
+    rows = [(directory, "token-a", _OLD)]
+    values_from, params = _build_values_from_clause(
+        rows=rows,
+        fields=("directory", "expected_claim_token", "expected_queued_at"),
+        prefix="reclaim_queued",
+    )
+    sql = RECLAIM_STALE_QUEUED_IMPORT_BATCH_SQL.format(values_from=values_from)
+    params["error"] = "stale snapshot"
+
+    async def _run() -> None:
+        result = await repo.db.execute(text(sql), params)
+        assert result.first() is None
+        assert state.rows[directory]["status"] == "queued"
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stale_queued_empty_snapshot_executes_no_updates() -> None:
+    state = _StatefulScanCache({})
+    repo = _repo_with_state(state)
+
+    async def _run() -> None:
+        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+            reclaimed = await repo.reclaim_stale_queued_imports(
+                older_than=STALE_QUEUED_IMPORT_GRACE
+            )
+        assert reclaimed == 0
+        repo.db.commit.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stalled_worker_batch_cas_blocks_snapshot_drift() -> None:
+    """Batch stalled-worker reclaim must not win when live row drifted after snapshot."""
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-b",
+                "worker_started_at": _FRESH,
+            }
+        }
+    )
+    repo = _repo_with_state(state)
+    now = datetime.fromisoformat(_OLD) + STALLED_WORKER_GRACE + timedelta(minutes=1)
+
+    async def _execute_with_stale_snapshot(
+        stmt: object, params: dict[str, Any] | None = None
+    ) -> _FakeResult:
+        sql = _sql_text(stmt).strip()
+        if sql == SELECT_STARTED_IMPORT_SNAPSHOT_SQL.strip():
+            return _FakeResult(
+                [
+                    _StartedSnapshotRow(
+                        directory=directory,
+                        claim_token="token-a",
+                        worker_started_at=_OLD,
+                    )
+                ]
+            )
+        return state.execute(stmt, params)
+
+    repo.db.execute = AsyncMock(side_effect=_execute_with_stale_snapshot)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(now),
+        ):
+            reclaimed = await repo.reclaim_stalled_worker_imports(
+                older_than=STALLED_WORKER_GRACE
+            )
+        assert reclaimed == 0
+        row = state.rows[directory]
+        assert row["status"] == "queued"
+        assert row["claim_token"] == "token-b"
+        assert row["worker_started_at"] == _FRESH
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stalled_worker_batch_sql_cas_blocks_token_change() -> None:
+    directory = "/safe/show"
+    state = _StatefulScanCache(
+        {
+            directory: {
+                "status": "queued",
+                "claim_token": "token-b",
+                "worker_started_at": _OLD,
+            }
+        }
+    )
+    repo = _repo_with_state(state)
+    rows = [(directory, "token-a", _OLD)]
+    values_from, params = _build_values_from_clause(
+        rows=rows,
+        fields=("directory", "expected_claim_token", "expected_worker_started_at"),
+        prefix="reclaim_worker",
+    )
+    sql = RECLAIM_STALLED_WORKER_IMPORT_BATCH_SQL.format(values_from=values_from)
+    params["error"] = "stale snapshot"
+
+    async def _run() -> None:
+        result = await repo.db.execute(text(sql), params)
+        assert result.first() is None
+        assert state.rows[directory]["status"] == "queued"
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stale_queued_mixed_stamp_and_reclaim_single_commit() -> None:
+    stamp_dir = "/safe/stamp-me"
+    reclaim_dir = "/safe/reclaim-me"
+    state = _StatefulScanCache(
+        {
+            stamp_dir: {
+                "status": "queued",
+                "claim_token": "token-stamp",
+            },
+            reclaim_dir: {
+                "status": "queued",
+                "claim_token": "token-reclaim",
+                "queued_at": _OLD,
+            },
+        }
+    )
+    state.batch_total = 2
+    repo = _repo_with_state(state)
+    stamp_updates: list[str] = []
+    reclaim_updates: list[str] = []
+    reset_calls = 0
+    original_execute = state.execute
+
+    async def _tracked_execute(stmt: object, params: dict[str, Any] | None = None):
+        sql = _sql_text(stmt).strip()
+        if sql.startswith(_batch_sql_head(STAMP_LEGACY_QUEUED_AT_BATCH_SQL)):
+            stamp_updates.append(sql)
+        elif "v.expected_queued_at" in sql and "worker_started_at' IS NULL" in sql:
+            reclaim_updates.append(sql)
+        elif sql == RESET_IMPORT_BATCH_IF_IDLE_SQL.strip():
+            nonlocal reset_calls
+            reset_calls += 1
+        return original_execute(stmt, params)
+
+    repo.db.execute = AsyncMock(side_effect=_tracked_execute)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(datetime.fromisoformat(_FRESH)),
+        ):
+            reclaimed = await repo.reclaim_stale_queued_imports(
+                older_than=STALE_QUEUED_IMPORT_GRACE
+            )
+        assert reclaimed == 1
+        assert state.rows[stamp_dir]["queued_at"] == _FRESH
+        assert state.rows[stamp_dir]["status"] == "queued"
+        assert state.rows[reclaim_dir]["status"] == "failed"
+        assert len(stamp_updates) == 1
+        assert len(reclaim_updates) == 1
+        assert reset_calls == 1
+        repo.db.commit.assert_awaited_once()
+        # Reset runs only when reclaimed > 0, but stays a no-op while a queued row remains.
+        assert state.batch_total == 2
+
+    asyncio.run(_run())
+
+
+def test_reclaim_stale_queued_chunks_at_five_hundred_rows() -> None:
+    row_count = 501
+    state = _StatefulScanCache(
+        {
+            f"/safe/show-{i}": {
+                "status": "queued",
+                "claim_token": f"token-{i}",
+                "queued_at": _OLD,
+            }
+            for i in range(row_count)
+        }
+    )
+    repo = _repo_with_state(state)
+    reclaim_updates: list[str] = []
+
+    async def _tracked_execute(stmt: object, params: dict[str, Any] | None = None):
+        sql = _sql_text(stmt).strip()
+        if "v.expected_queued_at" in sql and "worker_started_at' IS NULL" in sql:
+            reclaim_updates.append(sql)
+        return state.execute(stmt, params)
+
+    repo.db.execute = AsyncMock(side_effect=_tracked_execute)
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            _patch_repo_now(datetime.fromisoformat(_FRESH)),
+        ):
+            reclaimed = await repo.reclaim_stale_queued_imports(
+                older_than=STALE_QUEUED_IMPORT_GRACE
+            )
+        assert reclaimed == row_count
+        assert len(reclaim_updates) == 2
+        assert all(row["status"] == "failed" for row in state.rows.values())
 
     asyncio.run(_run())
