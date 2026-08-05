@@ -1342,7 +1342,7 @@ requires-dist = [
     { name = "pathvalidate", specifier = ">=3.3.1" },
     { name = "pillow", specifier = ">=11.3.0" },
     { name = "prometheus-fastapi-instrumentator", specifier = ">=8.0.1" },
-    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.2.9" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.4" },
     { name = "pydantic", specifier = ">=2.11.5" },
     { name = "pydantic-settings", extras = ["toml"], specifier = ">=2.9.1" },
     { name = "pymediainfo", specifier = ">=7.0.1" },
