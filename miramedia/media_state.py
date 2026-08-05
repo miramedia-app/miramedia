@@ -6,8 +6,9 @@ import logging
 from enum import StrEnum
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import and_, case, func, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.models import Movie, MovieFile
@@ -28,6 +29,21 @@ def _progress_status(wanted: int, downloaded: int) -> ProgressStatus:
     if downloaded > 0:
         return ProgressStatus.partial
     return ProgressStatus.none
+
+
+def _list_progress_status_sql(
+    wanted_col: ColumnElement[int],
+    downloaded_col: ColumnElement[int],
+) -> ColumnElement[str]:
+    """SQL expression mirroring :func:`_progress_status`."""
+    return case(
+        (
+            and_(wanted_col > 0, downloaded_col == wanted_col),
+            literal(ProgressStatus.complete),
+        ),
+        (downloaded_col > 0, literal(ProgressStatus.partial)),
+        else_=literal(ProgressStatus.none),
+    )
 
 
 async def refresh_movie_downloaded(
@@ -111,6 +127,59 @@ async def refresh_episode_downloaded(
     )
 
 
+async def _update_show_progress_counters(
+    db: AsyncSession, *, show_id: UUID | None = None
+) -> None:
+    """Set wanted/downloaded counters and list progress on ``show`` rows."""
+    # Wanted = non-skipped episodes. Specials (Season 0) are persisted as
+    # skipped at add time when download_specials is off, so the skipped flag
+    # alone keeps the denormalized list counters consistent with the detail
+    # page in ShowService._show_to_public.
+    wanted_filter = Episode.skipped.is_(False)
+
+    stats_stmt = (
+        select(
+            Season.show_id.label("show_id"),
+            func.count().filter(wanted_filter).label("wanted"),
+            func.count()
+            .filter(wanted_filter, Episode.downloaded.is_(True))
+            .label("downloaded"),
+        )
+        .select_from(Episode)
+        .join(Season, Season.id == Episode.season_id)
+        .group_by(Season.show_id)
+    )
+    if show_id is not None:
+        stats_stmt = stats_stmt.where(Season.show_id == show_id)
+    stats_subq = stats_stmt.subquery("episode_stats")
+
+    computed_stmt = (
+        select(
+            Show.id.label("show_id"),
+            func.coalesce(stats_subq.c.wanted, 0).label("wanted"),
+            func.coalesce(stats_subq.c.downloaded, 0).label("downloaded"),
+        )
+        .select_from(Show)
+        .outerjoin(stats_subq, Show.id == stats_subq.c.show_id)
+    )
+    if show_id is not None:
+        computed_stmt = computed_stmt.where(Show.id == show_id)
+    computed_subq = computed_stmt.subquery("show_progress")
+
+    wanted_col = computed_subq.c.wanted
+    downloaded_col = computed_subq.c.downloaded
+
+    await db.execute(
+        update(Show)
+        .where(Show.id == computed_subq.c.show_id)
+        .values(
+            wanted_episode_count=wanted_col,
+            downloaded_episode_count=downloaded_col,
+            list_progress_status=_list_progress_status_sql(wanted_col, downloaded_col),
+        )
+    )
+
+
 async def refresh_show_progress(
     db: AsyncSession, *, show_id: UUID | None = None
 ) -> None:
@@ -120,75 +189,7 @@ async def refresh_show_progress(
     else:
         await refresh_episode_downloaded(db)
 
-    # Wanted = non-skipped episodes. Specials (Season 0) are persisted as
-    # skipped at add time when download_specials is off, so the skipped flag
-    # alone keeps the denormalized list counters consistent with the detail
-    # page in ShowService._show_to_public.
-    wanted_filter: list[ColumnElement[bool]] = [Episode.skipped.is_(False)]
-
-    stats = (
-        select(
-            Season.show_id.label("show_id"),
-            func.count().filter(*wanted_filter).label("wanted"),
-            func.count()
-            .filter(*wanted_filter, Episode.downloaded.is_(True))
-            .label("downloaded"),
-        )
-        .select_from(Episode)
-        .join(Season, Season.id == Episode.season_id)
-        .group_by(Season.show_id)
-    )
-    if show_id is not None:
-        stats = stats.where(Season.show_id == show_id)
-
-    rows = (await db.execute(stats)).all()
-    seen: set[UUID] = set()
-    for row in rows:
-        seen.add(row.show_id)
-        wanted = int(row.wanted or 0)
-        downloaded = int(row.downloaded or 0)
-        await db.execute(
-            update(Show)
-            .where(Show.id == row.show_id)
-            .values(
-                wanted_episode_count=wanted,
-                downloaded_episode_count=downloaded,
-                list_progress_status=_progress_status(wanted, downloaded),
-            )
-        )
-
-    if show_id is not None:
-        if show_id not in seen:
-            await db.execute(
-                update(Show)
-                .where(Show.id == show_id)
-                .values(
-                    wanted_episode_count=0,
-                    downloaded_episode_count=0,
-                    list_progress_status=ProgressStatus.none,
-                )
-            )
-        return
-
-    # Zero out shows with no episodes in stats subquery.
-    if seen:
-        await db.execute(
-            update(Show)
-            .where(Show.id.not_in(seen))
-            .values(
-                wanted_episode_count=0,
-                downloaded_episode_count=0,
-                list_progress_status=ProgressStatus.none,
-            )
-        )
-    else:
-        await db.execute(
-            update(Show).values(
-                wanted_episode_count=0,
-                downloaded_episode_count=0,
-                list_progress_status=ProgressStatus.none,
-            )
-        )
+    await _update_show_progress_counters(db, show_id=show_id)
 
 
 async def refresh_media_state(

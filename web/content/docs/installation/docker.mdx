@@ -107,9 +107,9 @@ The compose file bind-mounts:
   them under one mount.
 - `./images/` → `/app/images/` — poster / metadata image cache, kept out of
   the media tree.
-- `/var/run/docker.sock` → `/var/run/docker.sock` — read-write, **required for
-  in-app updates** (`updates.allow_in_app_apply`). Comment it out to disable
-  one-click updates.
+
+Apply updates on the host with `docker compose pull && docker compose up -d`
+(see [Updates](../configuration/updates)).
 
 Hard-linking only works within a single filesystem. Keep your downloads and
 your media library on the **same volume/mount** or imports fall back to slow
@@ -121,11 +121,6 @@ copies (and may fail on space). See
 - The container **starts as root**, fixes ownership on `/app/config` and
   `/data`, then drops to the unprivileged `miramedia` user via `gosu` for
   migrations and the server itself. Nothing long-running stays root.
-- While still root it also matches the mounted Docker socket's GID and adds
-  the app user to that group, so in-app updates work without extra compose
-  wiring. This only applies when the service runs as root — pin a non-root
-  `user:` and you must supply
-  [`group_add`](../configuration/updates#in-app-apply-opt-in) yourself.
 - Both services set `security_opt: [no-new-privileges:true]`, which blocks
   setuid escalation inside the container. Keep it. The Synology compose adds
   `seccomp:unconfined` on top for the Chromium `clone3()` issue — see the

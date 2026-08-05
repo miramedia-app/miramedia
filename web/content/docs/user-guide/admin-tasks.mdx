@@ -44,12 +44,10 @@ all tabs.
   **Libraries** (named Show/Movie roots, reorderable), **Naming** (folder /
   file format templates with full placeholder reference).
 - **Updates** — Status card (current vs latest version, last-checked, repo,
-  release-notes link, **Check now**, **Apply update** with confirm "Pull the
-  latest image and restart the container? The app will be briefly
-  unavailable."), an Update-settings card (enabled, GitHub repo, check
-  interval, cache TTL, include pre-releases, notify on new version), and an
-  **In-App Apply (Docker)** card (allow in-app apply, image repository, image
-  tag, container name).
+  release-notes link, **Check now**, and host-side apply guidance:
+  `docker compose pull && docker compose up -d`), plus an Update-settings card
+  (enabled, GitHub repo, check interval, cache TTL, include pre-releases,
+  notify on new version).
 - **Metadata** — Desired Languages combobox, Check Interval, **Native** card
   with TVmaze + Cinemeta toggles, TMDB (Default Language + Primary
   Languages), TVDB. Each external provider has a **Test** button.

@@ -52,11 +52,6 @@ services:
       # Poster / metadata image cache — lives alongside config, not in the
       # media tree.
       - ./images/:/app/images/
-      # Required for in-app updates (updates.allow_in_app_apply, on by
-      # default). Read-write because the apply flow uses the Docker HTTP API
-      # to pull a new image and stop this container so the restart policy
-      # recreates it. Comment out if you want to disable in-app updates.
-      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/health || exit 1"]
       interval: 10s

@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/sidebar";
 import { UserDetails } from "./user-details";
 import { useQueryClient } from "@tanstack/react-query";
-import { handleLogout } from "@/lib/auth";
+import { handleLogout, withBasePath } from "@/lib/auth";
 
 export function NavUser() {
   const router = useRouter();
@@ -87,7 +87,7 @@ export function NavUser() {
               My Account
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onClick={() => window.open("/docs", "_blank")}>
+            <DropdownMenuItem onClick={() => window.open(withBasePath("/docs"), "_blank")}>
               <BookOpen />
               Documentation
             </DropdownMenuItem>

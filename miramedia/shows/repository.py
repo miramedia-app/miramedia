@@ -229,14 +229,14 @@ class ShowRepository:
             raise
 
     async def show_exists_by_imdb_id(self, imdb_id: str) -> ShowSchema | None:
-        """Check if a show exists by imdb_id."""
+        """Return an existing show summary matched by imdb_id, or None."""
         try:
             stmt = (
                 select(Show)
                 .where(Show.imdb_id == imdb_id)
-                .options(*_full_show_eager_loads())
+                .options(*_show_summary_eager_loads())
             )
-            result = (await self.db.execute(stmt)).unique().scalars().first()
+            result = (await self.db.execute(stmt)).scalars().first()
         except SQLAlchemyError:
             log.exception(f"Error checking show existence for imdb_id {imdb_id}")
             return None

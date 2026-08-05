@@ -809,7 +809,7 @@ export default function SystemSettingsPage() {
                     <TabsTrigger
                       key={value}
                       value={value}
-                      className="relative justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[state=active]:bg-muted data-[state=active]:shadow-none"
+                      className="relative justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[active]:border-border data-[active]:bg-muted data-[active]:shadow-none!"
                     >
                       {label}
                       {dirtyTabs.has(value) && (

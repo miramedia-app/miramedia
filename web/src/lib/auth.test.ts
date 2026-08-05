@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { beginAuthTransition, hardNavigate, resetAuthCache } from "@/lib/auth";
+import { beginAuthTransition, hardNavigate, resetAuthCache, withBasePath } from "@/lib/auth";
 import { authCoordinator, authTransition } from "@/lib/auth-generation";
 
 type LocationStub = {
@@ -65,6 +65,104 @@ describe("hardNavigate", () => {
     // All three full-document mechanisms failed: stay blank rather than keep the
     // dead session's observers alive behind a client-side route change.
     expect(hardNavigate("/login")).toBe(false);
+  });
+});
+
+describe("withBasePath", () => {
+  const original = process.env.NEXT_PUBLIC_BASE_PATH;
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.NEXT_PUBLIC_BASE_PATH;
+    } else {
+      process.env.NEXT_PUBLIC_BASE_PATH = original;
+    }
+  });
+
+  function setBase(value: string | undefined) {
+    if (value === undefined) {
+      delete process.env.NEXT_PUBLIC_BASE_PATH;
+    } else {
+      process.env.NEXT_PUBLIC_BASE_PATH = value;
+    }
+  }
+
+  it("returns root-relative paths unchanged when the base path is empty", () => {
+    setBase("");
+    expect(withBasePath("/login")).toBe("/login");
+    expect(withBasePath("/")).toBe("/");
+  });
+
+  it("returns root-relative paths unchanged when the base path is unset", () => {
+    setBase(undefined);
+    expect(withBasePath("/dashboard")).toBe("/dashboard");
+  });
+
+  it("prefixes root-relative paths with a non-empty base path", () => {
+    setBase("/miramedia");
+    expect(withBasePath("/login")).toBe("/miramedia/login");
+    expect(withBasePath("/")).toBe("/miramedia/");
+    expect(withBasePath("/docs")).toBe("/miramedia/docs");
+  });
+
+  it("normalizes trailing slashes on the configured base path", () => {
+    setBase("/miramedia/");
+    expect(withBasePath("/login")).toBe("/miramedia/login");
+  });
+
+  it("does not double-prefix an already-prefixed path", () => {
+    setBase("/miramedia");
+    expect(withBasePath("/miramedia")).toBe("/miramedia");
+    expect(withBasePath("/miramedia/login")).toBe("/miramedia/login");
+  });
+
+  it("leaves absolute, protocol-relative, and fragment destinations unchanged", () => {
+    setBase("/miramedia");
+    expect(withBasePath("https://idp.example/authorize?x=1")).toBe(
+      "https://idp.example/authorize?x=1",
+    );
+    expect(withBasePath("http://idp.example/authorize")).toBe("http://idp.example/authorize");
+    expect(withBasePath("//idp.example/authorize")).toBe("//idp.example/authorize");
+    expect(withBasePath("#section")).toBe("#section");
+  });
+});
+
+describe("hardNavigate with a base path", () => {
+  const original = process.env.NEXT_PUBLIC_BASE_PATH;
+
+  afterEach(() => {
+    if (original === undefined) {
+      delete process.env.NEXT_PUBLIC_BASE_PATH;
+    } else {
+      process.env.NEXT_PUBLIC_BASE_PATH = original;
+    }
+  });
+
+  it("passes the prefixed destination to every fallback attempt", () => {
+    process.env.NEXT_PUBLIC_BASE_PATH = "/miramedia";
+
+    const replace = vi.fn();
+    stubWindow({ replace, assign: vi.fn(), href: "" });
+    expect(hardNavigate("/login")).toBe(true);
+    expect(replace).toHaveBeenCalledWith("/miramedia/login");
+
+    const assign = vi.fn();
+    stubWindow({ replace: THROWS, assign, href: "" });
+    expect(hardNavigate("/login")).toBe(true);
+    expect(assign).toHaveBeenCalledWith("/miramedia/login");
+
+    const hrefOnly: LocationStub = { replace: THROWS, assign: THROWS, href: "" };
+    stubWindow(hrefOnly);
+    expect(hardNavigate("/login")).toBe(true);
+    expect(hrefOnly.href).toBe("/miramedia/login");
+  });
+
+  it("leaves absolute OAuth destinations unprefixed under a base path", () => {
+    process.env.NEXT_PUBLIC_BASE_PATH = "/miramedia";
+    const replace = vi.fn();
+    stubWindow({ replace, assign: vi.fn(), href: "" });
+    expect(hardNavigate("https://idp.example/authorize")).toBe(true);
+    expect(replace).toHaveBeenCalledWith("https://idp.example/authorize");
   });
 });
 

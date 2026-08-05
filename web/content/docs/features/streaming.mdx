@@ -6,16 +6,33 @@ description: "Play movies and episodes in the browser, with subtitles."
 import { Callout } from "fumadocs-ui/components/callout";
 
 Any imported movie or episode can be played directly in the browser from its
-detail page. No transcoding step or pre-conversion is involved — the original
-file is streamed.
+detail page. Playback tries the **original file** over HTTP range requests
+first so seeking works immediately — no server-side transcode pipeline is
+required for that path.
 
-- **Seeking works** via HTTP range requests against the original file, so you
-  can jump anywhere instantly without waiting for a conversion.
+If the browser cannot decode the container or codecs natively, the player falls
+back to in-browser remuxing or re-encoding via **WebCodecs** and
+[Mediabunny](https://mediabunny.dev) when the browser exposes
+`VideoDecoder` and `AudioDecoder`. When WebCodecs is unavailable or playback
+still fails, use **Download** to fetch the raw file and play it locally.
+
+<Callout type="info">
+
+**Server-side transcoding (optional).** For containers other than MP4, M4V,
+WebM, and MOV, the API may transcode once to a cached HLS bundle when `ffmpeg`
+is present. That warm-cache path is separate from the browser-side fallback
+above — see [Performance](../advanced-features/performance#streaming) for
+details.
+
+</Callout>
+
+- **Seeking** works via HTTP range requests against the original file (and
+  during browser-side remux/re-encode).
 - **Subtitles** are served alongside the video. `.srt` is converted to WebVTT
   on the fly (the format browsers need); other formats are served as-is.
   Available languages depend on what's been fetched — see
   [Subtitles](/docs/configuration/subtitles).
-- A `download` option serves the raw file.
+- A **Download** option serves the raw file.
 
 <Callout type="info">
 
@@ -25,5 +42,6 @@ streamed.
 
 </Callout>
 
-Playback ultimately depends on your browser supporting the container/codec.
-For incompatible files, download and play locally.
+Playback depends on your browser, container, and codecs — MiraMedia does not
+guarantee every file will play in-browser. For files that still won't play,
+download and use a desktop player.

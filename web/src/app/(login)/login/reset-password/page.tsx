@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import apiClient from "@/lib/api/client";
+import { submitPasswordReset } from "./submit";
 
 function ResetPasswordInner() {
   const router = useRouter();
@@ -37,17 +38,23 @@ function ResetPasswordInner() {
       toast.error("Invalid or missing reset token.");
       return;
     }
-    setIsLoading(true);
-    const { response } = await apiClient.POST("/api/v1/auth/reset-password", {
-      body: { password: newPassword, token: resetToken },
+    await submitPasswordReset({
+      request: () =>
+        apiClient.POST("/api/v1/auth/reset-password", {
+          body: { password: newPassword, token: resetToken },
+        }),
+      setLoading: setIsLoading,
+      onSuccess: () => {
+        toast.success("Password reset successfully! You can now log in with your new password.");
+        router.push("/login");
+      },
+      onHttpFailure: () => {
+        toast.error("Failed to reset password");
+      },
+      onTransportError: () => {
+        toast.error("Unable to reach server. Please try again.");
+      },
     });
-    if (response.ok) {
-      toast.success("Password reset successfully! You can now log in with your new password.");
-      router.push("/login");
-    } else {
-      toast.error("Failed to reset password");
-    }
-    setIsLoading(false);
   }
 
   return (

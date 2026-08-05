@@ -27,13 +27,6 @@ matter on a NAS.
   `MIRAMEDIA_SHA1_CONCURRENCY=1` / `MIRAMEDIA_CHROMIUM_CONCURRENCY=1`, sized for
   ~2 GB RAM. See [Environment Variables](/docs/advanced-features/environment-variables)
   and `.env.example` for what each knob does.
-- **`group_add: ["0"]`** so the pinned non-root user can still reach
-  `/var/run/docker.sock` for [in-app updates](/docs/configuration/updates).
-  Because `user:` fixes the primary GID, a supplementary group is the only way
-  to grant socket access. DSM ships the socket as `root:root` mode `660`, so
-  group `0` works — **verify on your NAS** with
-  `stat -c '%g' /var/run/docker.sock` and change it if it differs. Without
-  this, applying an update fails with `[Errno 13] Permission denied`.
 - **Absolute `/volume1` bind mounts** so files live on the NAS volume, not in
   the Docker layer.
 

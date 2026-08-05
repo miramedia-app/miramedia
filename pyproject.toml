@@ -1,6 +1,6 @@
 [project]
 name = "miramedia"
-version = "1.0.14"
+version = "1.0.15"
 description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [
@@ -112,6 +112,20 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Path", "taskiq.TaskiqDepen
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --ignore=tests/integration -m 'not postgresql'"
+filterwarnings = [
+    # Ratchet: new project-owned deprecations fail the suite.
+    "error::DeprecationWarning:miramedia",
+    "error::pydantic.warnings.PydanticDeprecatedSince211:miramedia",
+    # Upstream (FastAPI/Starlette): TestClient still imports starlette.testclient + httpx.
+    # Remove when tests migrate to httpx2 per StarletteDeprecationWarning guidance.
+    "ignore:Using `httpx` with `starlette.testclient` is deprecated:starlette.exceptions.StarletteDeprecationWarning:fastapi.testclient",
+    # Upstream (PyJWT): auth cache tests use intentionally short HMAC secrets.
+    # Remove when test fixtures use >=32-byte keys (RFC 7518 Section 3.2).
+    "ignore:The HMAC key is .* bytes long, which is below the minimum recommended length:jwt.warnings.InsecureKeyLengthWarning:jwt.api_jwt",
+    # Upstream (Starlette): OAuth callback tests pass per-request cookies to TestClient.
+    # Remove when tests set cookies on the client instance instead.
+    "ignore:Setting per-request cookies=.* is being deprecated:DeprecationWarning:starlette.testclient",
+]
 markers = [
     "integration: PostgreSQL integration tests (require MIRAMEDIA_TEST_DATABASE_URL)",
     "postgresql: tests that require MIRAMEDIA_TEST_DATABASE_URL disposable PostgreSQL",

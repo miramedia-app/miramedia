@@ -367,13 +367,11 @@ cache_ttl_seconds = 3600
 request_timeout_seconds = 10            # GitHub releases API HTTP timeout
 notify_on_new_version = false           # send via configured notification providers
 
-# In-app apply: pulls new image and restarts the container via the Docker
-# socket. Requires `/var/run/docker.sock` mounted into this container (rw) and
-# a restart policy on the compose service. Container name must match the
-# ``container_name`` field in your compose file.
-allow_in_app_apply = true
-docker_socket_path = "/var/run/docker.sock"
-container_name = "miramedia"
+# In-app update checks only — apply on the host with `docker compose pull && docker compose up -d`.
+# Legacy keys below are accepted but ignored.
+# allow_in_app_apply = false
+# docker_socket_path = "/var/run/docker.sock"
+# container_name = "miramedia"
 image_repository = "ghcr.io/miramedia-app/miramedia"
 image_tag = "latest"
 

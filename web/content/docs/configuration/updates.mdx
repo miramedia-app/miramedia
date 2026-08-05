@@ -1,13 +1,13 @@
 ---
 title: Updates
-description: "The [updates] section: check GitHub for new releases and optionally apply them in place."
+description: "The [updates] section: check GitHub for new releases and apply them on the host."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-MiraMedia can check GitHub for new releases and, if you opt in, apply them
-in place by pulling the new image and recreating its own container via the
-Docker socket.
+MiraMedia can check GitHub for new releases and notify you when a newer version
+is available. **Applying** an update is done on the host with Docker Compose —
+in-app apply is not supported.
 
 ## Settings (`[updates]`)
 
@@ -22,49 +22,24 @@ Docker socket.
 - `notify_on_new_version` — send a notification when a newer version is
   found. Default `false`. Uses your configured
   [notification providers](notifications).
+- `image_repository` / `image_tag` — used for the version endpoint display.
+  Default `ghcr.io/miramedia-app/miramedia` and `latest`.
 
-### In-app apply (opt-in)
+### Applying updates on the host
 
-- `allow_in_app_apply` — default `false`. When enabled, the **System →
-  Updates** page can pull and restart into the new image.
-- `docker_socket_path` — default `/var/run/docker.sock`.
-- `container_name` — default `miramedia`.
-- `image_repository` — default `ghcr.io/miramedia-app/miramedia`.
-- `image_tag` — default `latest`.
+When a new release is available, pull and recreate the stack on the host:
 
-<Callout type="warn">
-
-In-app apply requires the Docker socket mounted into the container and a
-restart policy on the compose service. Mounting the Docker socket grants
-broad host control — only enable this if you understand the risk.
-
-```yaml title="docker-compose.yaml (excerpt)"
-services:
-  api:
-    container_name: miramedia
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+```sh
+docker compose pull && docker compose up -d
 ```
+
+<Callout type="info">
+
+Legacy keys such as `allow_in_app_apply`, `docker_socket_path`, and
+`container_name` are still accepted in `config.toml` for compatibility but are
+ignored. Do not mount `/var/run/docker.sock` for updates.
 
 </Callout>
-
-`container_name` must match the compose service's actual container name, or
-the apply step can't find itself to recreate.
-
-If the service also pins a non-root `user:` (as the Synology compose does),
-that user needs the socket's group as a **supplementary** GID — `user:` fixes
-the primary GID, so `group_add` is the only way to grant it:
-
-```yaml title="docker-compose.yaml (excerpt)"
-services:
-  api:
-    user: "1000:65536"
-    group_add:
-      - "0" # GID of /var/run/docker.sock — verify with: stat -c '%g' /var/run/docker.sock
-```
-
-Without it, apply fails with `[Errno 13] Permission denied`.
 
 ## Example
 
@@ -75,13 +50,9 @@ repo = "miramedia-app/miramedia"
 check_interval_hours = 24
 include_prereleases = false
 notify_on_new_version = true
-
-allow_in_app_apply = false
-docker_socket_path = "/var/run/docker.sock"
-container_name = "miramedia"
 image_repository = "ghcr.io/miramedia-app/miramedia"
 image_tag = "latest"
 ```
 
 The current version is always visible via `GET /api/v1/system/version`.
-Update checks and apply are superuser-only.
+Update checks are superuser-only.

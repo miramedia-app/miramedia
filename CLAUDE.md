@@ -4,7 +4,8 @@
 
 | Task | Command |
 |---|---|
-| Check (CI parity) | `make check` |
+| Check (fast local gate) | `make check` |
+| Check (CI parity, needs Postgres + Chromium) | `make check-ci` |
 | Test | `make test` |
 | Lint | `make lint` |
 | Format | `make format` |
@@ -12,6 +13,7 @@
 | Typecheck (backend) | `make ty` |
 | Typecheck (frontend) | `make tsc` |
 | Frontend tests | `make frontend-test` (= `cd web && pnpm test`; vitest, Node-only, no backend) |
+| Frontend browser smoke | `make frontend-e2e` (= `cd web && pnpm run test:e2e`; install Chromium first) |
 | Frontend lint + format check | `make frontend-lint` |
 | Frontend bootstrap | `make frontend-bootstrap` |
 | Frontend generate (non-build paths only) | `make frontend-generate` (= `cd web && pnpm run generate`) |

@@ -102,7 +102,6 @@ I use IntellijIdea with the Pycharm and Webstorm plugins to develop this, but th
 ### Recommended VSCode Plugins﻿
 
 - Python
-- ESLint
 - Tailwind CSS IntelliSense
 
 ### Recommended Intellij/Pycharm Plugins﻿
@@ -125,7 +124,7 @@ The development environment includes:
 #### What supports hot reloading and what does not﻿
 
 - Python code changes (.py files), Frontend code changes (.tsx, .ts, .css) and configuration changes (config.toml) reload automatically.
-- Changing the backend dependencies (pyproject.toml) requires rebuilding: `docker compose -f docker-compose.dev.yaml build miramedia`
+- Changing the backend dependencies (pyproject.toml) requires rebuilding: `docker compose -f docker-compose.dev.yaml build api`
 - Changing the frontend dependencies (package.json) requires restarting the web container: `docker compose -f docker-compose.dev.yaml restart web`
 - Database migrations: Automatically run on backend container startup
 
@@ -239,25 +238,39 @@ breaks the install. CI pins `UV_PYTHON=3.13` for the same reason.
 
 ### The quality gate
 
-`make check` is the CI-parity target — run it before opening a PR. It chains:
+`make check` is the **fast local gate** — run it often while developing. It chains:
 
-| Step             | Command                | Covers                                     |
-| ---------------- | ---------------------- | ------------------------------------------ |
-| `lint`           | `ruff check .`         | Backend lint                               |
-| `format-check`   | `ruff format --check`  | Backend formatting                         |
-| `ty`             | `ty`                   | Backend type check (config in `pyproject.toml` under `[tool.ty]`) |
-| `test`           | `pytest`               | Backend suite — **no live Postgres needed**; keep it that way |
-| `tsc`            | `pnpm typecheck`       | Frontend types                             |
-| `frontend-test`  | `vitest`               | Frontend unit tests (Node-only, no backend) |
-| `frontend-lint`  | ESLint + format check  | Frontend lint                              |
+| Step                    | Command                | Covers                                     |
+| ----------------------- | ---------------------- | ------------------------------------------ |
+| `lint`                  | `ruff check .`         | Backend lint                               |
+| `format-check`          | `ruff format --check`  | Backend formatting                         |
+| `ty`                    | `ty`                   | Backend type check (config in `pyproject.toml` under `[tool.ty]`) |
+| `test`                  | `pytest`               | Backend suite — **no live Postgres needed**; keep it that way |
+| `tsc`                   | `pnpm typecheck`       | Frontend types                             |
+| `frontend-test`         | `vitest`               | Frontend unit tests (Node-only, no backend) |
+| `frontend-lint`         | oxlint + oxfmt format check | Frontend lint                          |
+| `migration-head-audit`  | Alembic head audit     | Divergent migration heads                  |
+
+`make check-ci` is the **slower pre-PR CI-parity gate**. Run it before opening a PR when you have a disposable PostgreSQL database and Playwright Chromium installed. It runs `make check`, then the CI jobs that `check` deliberately skips:
+
+| Step             | Command / target       | Covers                                              |
+| ---------------- | ---------------------- | --------------------------------------------------- |
+| `frontend-build` | `pnpm build`           | Production static export                            |
+| OpenAPI drift    | `make openapi` + diff  | Regenerates `web/public/openapi.json` and `web/src/lib/api/api.d.ts`; fails if either file drifts from the committed copy |
+| `integration-test` | `pytest -m integration` / `postgresql` | PostgreSQL-backed suites (requires `MIRAMEDIA_TEST_DATABASE_URL`) |
+| `frontend-e2e`   | `pnpm run test:e2e`    | Playwright browser smoke suite (install Chromium once: `cd web && pnpm exec playwright install --with-deps chromium`) |
 
 Related targets:
 
 - `make format` — apply backend formatting.
-- `make openapi` — regenerate `web/src/lib/api/api.d.ts` from the backend
-  schema. Run it after **any** change to request/response shapes.
+- `make openapi` — regenerate `web/public/openapi.json` and
+  `web/src/lib/api/api.d.ts` from the backend schema. Run it after **any**
+  change to request/response shapes (and commit both files when they change).
 - `make integration-test` — the PostgreSQL-backed suites, which `make test`
-  deliberately does not collect. Needs a live database.
+  deliberately does not collect. Needs `MIRAMEDIA_TEST_DATABASE_URL` pointing at
+  a disposable database.
+- `make frontend-e2e` — the Playwright browser smoke suite. Install Chromium
+  once with `cd web && pnpm exec playwright install --with-deps chromium`.
 - `make migration-head-audit` — checks for divergent Alembic heads.
 - `make audit` — `pip-audit` over locked prod deps plus `pnpm audit`.
 
@@ -387,7 +400,7 @@ docker compose -f docker-compose.dev.yaml logs -f miramedia
 - If dependencies changed, rebuild:
 
 ```bash
-docker compose -f docker-compose.dev.yaml build miramedia
+docker compose -f docker-compose.dev.yaml build api
 ```
 
 </details>

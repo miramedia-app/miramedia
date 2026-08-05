@@ -4,6 +4,8 @@ from typing import Any, Self
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
+from miramedia.settings.normalize import migrate_indexer_scoring_rules
+
 log = logging.getLogger(__name__)
 
 # Name shared by the default junk-rejecting Title Rule and the Rule Set that
@@ -173,31 +175,7 @@ class IndexerConfig(BaseSettings):
         """
         if not isinstance(data, dict):
             return data
-        legacy_quality = data.pop("quality_scoring_rules", None)
-        if legacy_quality and "quality_options" not in data:
-            data["quality_options"] = [
-                {
-                    "name": r.get("name", ""),
-                    "keywords": r.get("keywords", []),
-                    "score_modifier": int(r.get("score_modifier", 0) or 0),
-                    "enabled": r.get("enabled", True),
-                }
-                for r in legacy_quality
-                if r.get("name")
-            ]
-        legacy_codec = data.pop("codec_scoring_rules", None)
-        if legacy_codec and "codec_options" not in data:
-            data["codec_options"] = [
-                {
-                    "name": r.get("name", ""),
-                    "keywords": r.get("keywords", []),
-                    "score_modifier": int(r.get("score_modifier", 0) or 0),
-                    "enabled": r.get("enabled", True),
-                }
-                for r in legacy_codec
-                if r.get("name")
-            ]
-        return data
+        return migrate_indexer_scoring_rules(data)
 
     @model_validator(mode="after")
     def require_at_least_one_enabled(self) -> Self:

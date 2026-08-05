@@ -27,7 +27,9 @@ export default function ForgotPasswordPage() {
       toast.error("Failed to send reset email");
     } else {
       setIsSuccess(true);
-      toast.success("Password reset email sent! Check your inbox for instructions.");
+      toast.success(
+        "If password reset emails are enabled on this server, check your inbox for instructions.",
+      );
     }
     setIsLoading(false);
   }
@@ -38,7 +40,7 @@ export default function ForgotPasswordPage() {
         <CardTitle className="text-2xl">Forgot Password</CardTitle>
         <CardDescription>
           {isSuccess
-            ? "We've sent a password reset link to your email address if a SMTP server is configured. Check your inbox and follow the instructions to reset your password. If you didn't receive an email, please contact an administrator; the reset link will be in the logs of MiraMedia."
+            ? "If password reset emails are enabled and SMTP is configured, check your inbox for instructions. Otherwise, contact an administrator."
             : "Enter your email address and we'll send you a link to reset your password."}
         </CardDescription>
       </CardHeader>
@@ -47,7 +49,7 @@ export default function ForgotPasswordPage() {
           <div className="space-y-4">
             <div className="rounded-lg bg-green-50 p-4 text-center dark:bg-green-950">
               <p className="text-sm text-green-700 dark:text-green-300">
-                Password reset email sent successfully!
+                Password reset request received.
               </p>
             </div>
             <div className="text-center text-sm text-muted-foreground">

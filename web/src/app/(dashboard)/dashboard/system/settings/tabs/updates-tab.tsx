@@ -29,29 +29,15 @@ export function UpdatesTab({
     },
     retry: false,
   });
-  const applyStatusQuery = useQuery({
-    queryKey: ["system", "updates", "status"],
-    queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/system/updates/status", { signal });
-      return data ?? null;
-    },
-    retry: false,
-    refetchInterval: (q) => {
-      const s = (q.state.data as AnyObj | null | undefined)?.state;
-      return s === "pulling" || s === "checking" || s === "restarting" ? 2000 : false;
-    },
-    refetchIntervalInBackground: false,
-  });
 
   const info = updateInfoQuery.data as AnyObj | null | undefined;
-  const status = applyStatusQuery.data as AnyObj | null | undefined;
 
   return (
     <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>Update Status</CardTitle>
-          <CardDescription>Current build, latest release, and apply controls.</CardDescription>
+          <CardDescription>Current build, latest release, and manual check.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {updateInfoQuery.isLoading ? (
@@ -88,18 +74,27 @@ export function UpdatesTab({
                 </div>
               </div>
               {info.update_available ? (
-                <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
-                  Update available.{" "}
-                  {info.release_url ? (
-                    <a
-                      className="underline"
-                      href={info.release_url as string}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Release notes
-                    </a>
-                  ) : null}
+                <div className="space-y-2 rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
+                  <p>
+                    Update available.{" "}
+                    {info.release_url ? (
+                      <a
+                        className="underline"
+                        href={info.release_url as string}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Release notes
+                      </a>
+                    ) : null}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Apply updates on the host with{" "}
+                    <code className="rounded bg-muted px-1 py-0.5 text-[0.7rem]">
+                      docker compose pull &amp;&amp; docker compose up -d
+                    </code>
+                    .
+                  </p>
                 </div>
               ) : (
                 <p className="text-xs text-muted-foreground">You are on the latest version.</p>
@@ -126,47 +121,7 @@ export function UpdatesTab({
                 >
                   Check now
                 </Button>
-                {info.apply_supported && info.update_available ? (
-                  <Button
-                    onClick={async () => {
-                      if (
-                        !confirm(
-                          "Pull the latest image and restart the container? The app will be briefly unavailable.",
-                        )
-                      )
-                        return;
-                      try {
-                        const { error } = await apiClient.POST("/api/v1/system/updates/apply", {
-                          body: { confirm: true } as never,
-                        });
-                        if (error) {
-                          toast.error("Apply rejected");
-                          return;
-                        }
-                        toast.success("Apply triggered");
-                        await qc.invalidateQueries({
-                          queryKey: ["system", "updates", "status"],
-                        });
-                      } catch {
-                        toast.error("Apply failed");
-                      }
-                    }}
-                  >
-                    Apply update
-                  </Button>
-                ) : null}
               </div>
-              {status && status.state && status.state !== "idle" ? (
-                <div className="space-y-1 rounded-md border px-3 py-2 text-sm">
-                  <p>
-                    <span className="text-muted-foreground">Apply state: </span>
-                    <span className="font-mono">{status.state as string}</span>
-                  </p>
-                  {status.error ? (
-                    <p className="text-destructive">{status.error as string}</p>
-                  ) : null}
-                </div>
-              ) : null}
             </>
           )}
         </CardContent>
@@ -176,7 +131,8 @@ export function UpdatesTab({
         <CardHeader>
           <CardTitle>Update Settings</CardTitle>
           <CardDescription>
-            How often we poll the upstream repo and whether updates can be applied from the UI.
+            How often we poll the upstream repo for new releases. Updates are applied on the host
+            with Docker Compose.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -270,76 +226,6 @@ export function UpdatesTab({
               checked={Boolean(upd.notify_on_new_version)}
               onCheckedChange={(v) => setUpdatesPath(["notify_on_new_version"], v)}
             />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>In-App Apply (Docker)</CardTitle>
-          <CardDescription>
-            Pull a new image and restart the container without leaving the UI. Requires the Docker
-            socket to be mounted into this container.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="flex items-center justify-between rounded-md border px-4 py-3">
-            <div className="space-y-0.5 pr-4">
-              <Label className="text-sm font-medium">
-                Allow in-app apply
-                <OverrideMarker path={["updates", "allow_in_app_apply"]} />
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                Off by default. Only enable on hosts that mount{" "}
-                <code className="rounded bg-muted px-1 py-0.5 text-[0.7rem]">
-                  /var/run/docker.sock
-                </code>
-                .
-              </p>
-            </div>
-            <Switch
-              checked={Boolean(upd.allow_in_app_apply)}
-              onCheckedChange={(v) => setUpdatesPath(["allow_in_app_apply"], v)}
-            />
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <Label>
-                Image repository
-                <OverrideMarker path={["updates", "image_repository"]} />
-              </Label>
-              <Input
-                value={String(upd.image_repository ?? "")}
-                onChange={(e) => setUpdatesPath(["image_repository"], e.target.value)}
-                placeholder="ghcr.io/owner/name"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>
-                Image tag
-                <OverrideMarker path={["updates", "image_tag"]} />
-              </Label>
-              <Input
-                value={String(upd.image_tag ?? "")}
-                onChange={(e) => setUpdatesPath(["image_tag"], e.target.value)}
-                placeholder="latest"
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>
-                Container name
-                <OverrideMarker path={["updates", "container_name"]} />
-              </Label>
-              <Input
-                value={String(upd.container_name ?? "")}
-                onChange={(e) => setUpdatesPath(["container_name"], e.target.value)}
-                placeholder="miramedia"
-              />
-              <p className="text-xs text-muted-foreground">
-                The Docker container to recreate on apply.
-              </p>
-            </div>
           </div>
         </CardContent>
       </Card>

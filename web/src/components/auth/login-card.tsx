@@ -4,7 +4,7 @@ import * as React from "react";
 import Link from "next/link";
 import { AlertCircle } from "lucide-react";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,6 +13,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "@/lib/api/client";
 import { beginAuthTransition, handleOauth, hardNavigate } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 
 type Props = {
   oauthProviderNames: string[];
@@ -143,9 +144,10 @@ export function LoginCard({ oauthProviderNames, allowRegistration = false }: Pro
           ))}
           {allowRegistration && (
             <div className="mt-4 text-center text-sm">
-              <Button render={<Link href="/login/signup" />} variant="link">
+              {/* Plain Link (not Button+render) so assistive tech exposes a real link. */}
+              <Link href="/login/signup" className={cn(buttonVariants({ variant: "link" }))}>
                 Don&apos;t have an account? Sign up
-              </Button>
+              </Link>
             </div>
           )}
         </CardContent>

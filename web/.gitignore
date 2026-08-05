@@ -20,6 +20,12 @@
 # fumadocs-mdx generated source
 /.source/
 
+# playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+
 # production
 /build
 

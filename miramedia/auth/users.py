@@ -79,11 +79,9 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         log.info(f"User {user.id} requested a password reset.")
 
         if not get_live_auth_config().email_password_resets:
-            # No email channel is configured, so the log is deliberately the
-            # only delivery mechanism for the reset link. WARNING level keeps
-            # it visible; the token grants a one-time password reset.
             log.warning(
-                f"Email password resets are disabled; reset link for user {user.id} (contains a sensitive one-time token): {link}"
+                "Email password resets are disabled; no reset email was sent for user %s",
+                user.id,
             )
             return
 

@@ -50,7 +50,10 @@ async def list_requests(
     media_type: Annotated[MediaType | None, Query()] = None,
     mine: Annotated[bool, Query()] = False,
 ) -> list[MediaRequest]:
-    requested_by = UUID(str(user.id)) if mine else None
+    if user.is_superuser and not mine:
+        requested_by = None
+    else:
+        requested_by = UUID(str(user.id))
     return await request_service.list_requests(
         status=request_status,
         media_type=media_type,

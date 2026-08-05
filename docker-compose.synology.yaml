@@ -20,8 +20,7 @@ name: miramedia
 services:
   api:
     # Locally-built image, loaded on the NAS via `docker load < miramedia-local-amd64.tar.gz`.
-    # Swap to ghcr.io/miramedia-app/miramedia:<tag> once the registry image is published
-    # and the in-app updater will pull from there.
+    # Swap to ghcr.io/miramedia-app/miramedia:<tag> once the registry image is published.
     # ":local" is the slim image (no Chromium). For the Cloudflare native solver,
     # build the chromium variant (`--target app-cf -t miramedia:local-cf`) and set
     # this to `miramedia:local-cf` — or use an external solver, which runs on slim.
@@ -37,16 +36,6 @@ services:
     # primary GID. Without this, ACL evaluation denies writes even when the
     # POSIX bits look 0777.
     user: "1000:65536"
-    # In-app updates (updates.allow_in_app_apply) talk to the host Docker daemon
-    # over /var/run/docker.sock (mounted below). The non-root container user
-    # can't reach the socket unless it carries the socket's group as a
-    # supplementary GID — and because `user:` pins the primary GID, `group_add`
-    # is the only way to grant it. On DSM the socket is owned root:root mode 660,
-    # so group 0 (root) has rw. VERIFY on your NAS and change if different:
-    #   stat -c '%g' /var/run/docker.sock
-    # Without this, apply fails with "[Errno 13] Permission denied" on connect.
-    group_add:
-      - "0"
     environment:
       - MIRAMEDIA_CONFIG_DIR=/app/config
       # The non-root user needs writable HOME / uv cache locations because the
@@ -121,10 +110,6 @@ services:
       #   torrent_directory = "/data/torrents"
       # (paths are container-side: /volume1/data on the host = /data inside).
       - /volume1/data:/data
-      # Required for in-app updates (updates.allow_in_app_apply). Read-write
-      # because the apply flow uses the Docker HTTP API to pull a new image
-      # and stop this container so the restart policy recreates it.
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - 8000:8000
       # Native libtorrent backend listen port. Must match

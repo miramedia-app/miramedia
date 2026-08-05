@@ -96,27 +96,16 @@ shipped `docker-compose.synology.yaml` already does this). See the
 [Synology guide](installation/synology). If Chromium is OOM-killed on a small
 NAS, disable the bypass with `enabled = false` under `[cloudflare]`.
 
-## In-app update fails with "Permission denied"
+## Applying updates
 
-`[Errno 13] Permission denied` when applying an update means the container
-user can't open `/var/run/docker.sock`. It happens when the service pins a
-non-root `user:` (the Synology compose does) — the socket's group isn't
-carried, and because `user:` fixes the primary GID, only `group_add` can grant
-it. Check the socket's group on the host and add it:
+MiraMedia detects new releases in-app but applies them on the host. From the
+compose directory on the NAS:
 
 ```bash
-stat -c '%g' /var/run/docker.sock
+docker compose pull && docker compose up -d
 ```
 
-```yaml title="docker-compose.yaml (excerpt)"
-services:
-  api:
-    group_add:
-      - "0" # replace with the GID printed above
-```
-
-See [Updates](configuration/updates) and the
-[Synology guide](installation/synology).
+See [Updates](configuration/updates).
 
 ## Docker image pull errors (401/403)
 

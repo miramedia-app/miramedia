@@ -97,6 +97,8 @@ REDACTED_FIELDS = {
 # managed elsewhere. Their dotted paths must match the singleton attribute path.
 DEPRECATED_FIELDS: set[tuple[str, ...]] = {
     ("auth", "admin_emails"),
+    ("updates", "allow_in_app_apply"),
+    ("updates", "container_name"),
 }
 
 
@@ -139,11 +141,18 @@ def _python_type_label(annotation: Any) -> str:  # noqa: ANN401
     return str(annotation)
 
 
+def _pydantic_model_fields(model: Any) -> Any:  # noqa: ANN401 — model class or instance
+    """Return ``model_fields`` from the Pydantic model class (not the instance)."""
+    model_cls = model if isinstance(model, type) else type(model)
+    return model_cls.model_fields
+
+
 def _walk_schema(model: Any, path: list[str], out: list[dict]) -> None:  # noqa: ANN401
     """Recursively flatten a pydantic model's fields into search-friendly entries."""
-    if not hasattr(model, "model_fields"):
+    model_cls = model if isinstance(model, type) else type(model)
+    if not hasattr(model_cls, "model_fields"):
         return
-    for field_name, field_info in model.model_fields.items():
+    for field_name, field_info in _pydantic_model_fields(model).items():
         if field_name.startswith("_"):
             continue
         current_path = [*path, field_name]
@@ -391,8 +400,11 @@ def _apply_nested_overrides(obj: Any, overrides: dict) -> None:  # noqa: ANN401 
             _apply_nested_overrides(current, value)
         else:
             # For enum fields, try to convert string name to enum member
+            model_cls = type(obj)
             field_info = (
-                obj.model_fields.get(key) if hasattr(obj, "model_fields") else None
+                _pydantic_model_fields(obj).get(key)
+                if hasattr(model_cls, "model_fields")
+                else None
             )
             if field_info and isinstance(value, str):
                 annotation = field_info.annotation

@@ -12,6 +12,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import type { MediaStreamSource, StreamingPlayer } from "@/lib/mediabunny";
+import { loadSubtitlesIfCurrent, runPlaybackLoad } from "@/lib/video-player-subtitles";
 
 type PlayerState = "idle" | "loading" | "playing" | "error";
 
@@ -53,22 +54,29 @@ export function VideoPlayerDialog({
     return `${apiUrl}/api/v1/streams/subtitles/${endpoint}/${mediaId}/${language}?file_id=${encodeURIComponent(fileId)}`;
   }
 
-  async function loadSubtitleBlobs(signal: AbortSignal) {
-    const results: { lang: string; url: string }[] = [];
-    for (const lang of subtitleLanguages) {
-      try {
-        const res = await fetch(subtitleTrackUrl(lang), {
-          signal,
-          credentials: "include",
-        });
-        if (res.ok) {
-          const text = await res.text();
-          const blob = new Blob([text], { type: "text/vtt" });
-          results.push({ lang, url: URL.createObjectURL(blob) });
-        }
-      } catch {}
-    }
-    return results;
+  /**
+   * Kick off optional subtitle downloads concurrently, without blocking
+   * playback. Results are installed only if `signal` is still the current load;
+   * otherwise every created object URL is revoked so nothing leaks. Installed
+   * URLs are owned by `subtitleSrcs` state and revoked in `cleanup`.
+   */
+  function startSubtitleLoad(signal: AbortSignal) {
+    void loadSubtitlesIfCurrent({
+      languages: subtitleLanguages,
+      trackUrl: subtitleTrackUrl,
+      signal,
+      deps: {
+        fetch: (input, init) => fetch(input, init),
+        createObjectURL: (blob) => URL.createObjectURL(blob),
+        revokeObjectURL: (url) => URL.revokeObjectURL(url),
+      },
+      isCurrent: () => loadControllerRef.current?.signal === signal,
+      install: (tracks) =>
+        setSubtitleSrcs((prev) => {
+          for (const sub of prev) URL.revokeObjectURL(sub.url);
+          return tracks;
+        }),
+    });
   }
 
   const cleanup = React.useCallback(() => {
@@ -158,50 +166,36 @@ export function VideoPlayerDialog({
     const { signal } = controller;
 
     setPlayerState("loading");
-    setSubtitleSrcs(await loadSubtitleBlobs(signal));
-    if (signal.aborted) return;
 
     const qIndex = streamUrl.indexOf("?");
     const streamBase = qIndex >= 0 ? streamUrl.slice(0, qIndex) : streamUrl;
     const query = qIndex >= 0 ? streamUrl.slice(qIndex) : "";
     const probeUrl = `${streamBase}/probe${query}`;
-    try {
-      const probeRes = await fetch(probeUrl, { signal, credentials: "include" });
-      if (probeRes.ok) {
-        const probe = (await probeRes.json()) as {
-          direct_play: boolean;
-          hls_playlist_url?: string | null;
-        };
-        // Warm-cache HLS: the server already transcoded to H.264/AAC. Safari plays
-        // the .m3u8 natively; other browsers remux it through Mediabunny (cheap — no
-        // client-side decode/re-encode) instead of transcoding the raw file on the CPU.
-        if (!probe.direct_play && probe.hls_playlist_url) {
-          const hlsUrl = `${apiUrl}${probe.hls_playlist_url}`;
-          if (canPlayHlsNatively()) {
-            usingHlsRef.current = true;
-            setVideoSrc(hlsUrl);
-            setPlayerState("playing");
-            return;
-          }
-          try {
-            await playWithMediabunny({ type: "url", url: hlsUrl }, signal);
-            return;
-          } catch (err: unknown) {
-            const e = err as { name?: string };
-            if (e?.name === "AbortError") return;
-            // HLS remux failed — fall through to raw direct stream + transcode.
-          }
-        }
-      }
-    } catch (err: unknown) {
-      const e = err as { name?: string };
-      if (e?.name === "AbortError") return;
-      // Fall through to direct stream attempt.
-    }
 
-    usingHlsRef.current = false;
-    setVideoSrc(streamUrl);
-    setPlayerState("playing");
+    // Warm-cache HLS: the server already transcoded to H.264/AAC. Safari plays
+    // the .m3u8 natively; other browsers remux it through Mediabunny (cheap — no
+    // client-side decode/re-encode) instead of transcoding the raw file on the CPU.
+    // Subtitles are optional and load concurrently — playback never awaits them.
+    await runPlaybackLoad({
+      fetch: (input, init) => fetch(input, init),
+      probeUrl,
+      streamUrl,
+      apiUrl,
+      signal,
+      startSubtitles: () => startSubtitleLoad(signal),
+      canPlayHlsNatively,
+      playWithMediabunny: (source, sig) => playWithMediabunny(source, sig),
+      onNativeHls: (hlsUrl) => {
+        usingHlsRef.current = true;
+        setVideoSrc(hlsUrl);
+        setPlayerState("playing");
+      },
+      onDirect: (url) => {
+        usingHlsRef.current = false;
+        setVideoSrc(url);
+        setPlayerState("playing");
+      },
+    });
   }
 
   // Native <video> failed — transcode/remux via Mediabunny with HTTP range reads.

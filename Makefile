@@ -13,9 +13,9 @@ APP_SVC ?= api
 FRONTEND_SVC ?= web
 
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
-	lint format format-check ty test integration-test migration-head-audit check audit \
+	lint format format-check ty test integration-test migration-head-audit check check-ci audit \
 	frontend-bootstrap frontend-generate \
-	tsc frontend-build frontend-test frontend-lint plans-link
+	tsc frontend-build frontend-test frontend-e2e frontend-lint plans-link
 
 help:
 	@echo "Usage:"
@@ -32,12 +32,14 @@ help:
 	@echo "  make test                   # Run the backend test suite on the host (no docker needed)"
 	@echo "  make integration-test       # PostgreSQL integration suite (requires MIRAMEDIA_TEST_DATABASE_URL)"
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
-	@echo "  make check                  # lint + format-check + ty + test + tsc (CI parity minus OpenAPI drift)"
+	@echo "  make check                  # Fast local gate (lint, tests, typecheck, migration audit)"
+	@echo "  make check-ci               # Pre-PR CI parity: check + build + OpenAPI drift + integration + Playwright (needs MIRAMEDIA_TEST_DATABASE_URL and Chromium)"
 	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
 	@echo "  make frontend-generate      # Generate web build prerequisites (web 'generate' script)"
 	@echo "  make frontend-build         # Generate prerequisites, then build the static export"
 	@echo "  make tsc                    # Type-check the Next.js frontend"
 	@echo "  make frontend-test          # Run the frontend unit tests (vitest, no backend/browser)"
+	@echo "  make frontend-e2e           # Playwright browser smoke tests (install Chromium first; see developer guide)"
 	@echo "  make frontend-lint          # Frontend lint + format check (oxlint, oxfmt --check)"
 	@echo "  make plans-link             # Symlink the shared (untracked) plans/ dir into this worktree"
 
@@ -118,9 +120,20 @@ audit:
 	@uvx pip-audit --strict -r /tmp/req.txt --disable-pip
 	@cd web && pnpm audit --audit-level high
 
-# CI parity minus OpenAPI/api.d.ts drift checks (PR-only in ci.yml) and the
-# frontend production build (slow; typecheck covers most build breaks).
+# Fast local gate — run often. Omits the production frontend build, OpenAPI drift
+# checks, and PostgreSQL integration suites (see check-ci).
 check: lint format-check ty test tsc frontend-test frontend-lint migration-head-audit
+
+# Slower CI-parity gate before opening a PR. Requires MIRAMEDIA_TEST_DATABASE_URL
+# for integration-test and a Playwright Chromium install for frontend-e2e.
+# Regenerates OpenAPI artifacts; fails if web/public/openapi.json or
+# web/src/lib/api/api.d.ts drift (run make openapi and commit).
+check-ci: check frontend-build
+	@$(MAKE) openapi
+	@git diff --exit-code web/public/openapi.json web/src/lib/api/api.d.ts \
+		|| { echo "OpenAPI artifacts stale — run 'make openapi' and commit the changes." >&2; exit 1; }
+	@$(MAKE) integration-test
+	@$(MAKE) frontend-e2e
 
 # Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
 # collections + Next type declarations, and nothing here runs `next build`, so
@@ -138,6 +151,11 @@ frontend-build:
 # generated artifacts required — safe on a bare `pnpm install`.
 frontend-test:
 	@cd web && pnpm test
+
+# Playwright browser smoke suite. Install Chromium once:
+#   cd web && pnpm exec playwright install --with-deps chromium
+frontend-e2e:
+	@cd web && pnpm run test:e2e
 
 frontend-lint:
 	@cd web && pnpm run lint && pnpm run format:check

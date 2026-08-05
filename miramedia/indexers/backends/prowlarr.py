@@ -1,4 +1,7 @@
 import logging
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from requests import Response, Session
@@ -11,6 +14,11 @@ from miramedia.movies.schemas import Movie
 from miramedia.shows.schemas import Show
 
 log = logging.getLogger(__name__)
+
+# Torznab providers often default to ~100 rows; cap parsing work per indexer call.
+_NEWZNAB_RESULT_LIMIT = 500
+_SEARCH_MAX_WORKERS = 4
+_CAPABILITY_CACHE_TTL_SECONDS = 30.0
 
 
 @dataclass
@@ -37,6 +45,8 @@ class Prowlarr(GenericIndexer, TorznabMixin):
         """
         super().__init__(name="prowlarr")
         self.config = MiraMediaConfig().indexers.prowlarr
+        self._indexer_cache_lock = threading.Lock()
+        self._indexer_cache_entry: tuple[float, list[IndexerInfo]] | None = None
 
     def _call_prowlarr_api(self, path: str, parameters: dict | None = None) -> Response:
         url = f"{self.config.url}/api/v1{path}"
@@ -50,25 +60,25 @@ class Prowlarr(GenericIndexer, TorznabMixin):
                 headers=headers,
             )
 
+    def _invalidate_indexer_cache(self) -> None:
+        with self._indexer_cache_lock:
+            self._indexer_cache_entry = None
+
     def _newznab_search(
         self, indexer: IndexerInfo, parameters: dict | None = None
     ) -> list[IndexerQueryResult]:
-        if parameters is None:
-            parameters = {}
-
-        parameters["limit"] = 10000
+        params = dict(parameters or {})
+        params["limit"] = _NEWZNAB_RESULT_LIMIT
         results = self._call_prowlarr_api(
-            path=f"/indexer/{indexer.id}/newznab", parameters=parameters
+            path=f"/indexer/{indexer.id}/newznab", parameters=params
         )
-        results = self.process_search_result(xml=results.content)
+        parsed = self.process_search_result(xml=results.content)
         log.info(
-            f"Indexer {indexer.name} returned {len(results)} results for search: {parameters}"
+            f"Indexer {indexer.name} returned {len(parsed)} results for search: {params}"
         )
-        return results
+        return parsed
 
-    def _get_indexers(self) -> list[IndexerInfo]:
-        indexers = self._call_prowlarr_api(path="/indexer")
-        indexers = indexers.json()
+    def _parse_indexer_list(self, indexers: list[dict]) -> list[IndexerInfo]:
         indexer_info_list: list[IndexerInfo] = []
         for indexer in indexers:
             supports_tv_search = False
@@ -104,11 +114,52 @@ class Prowlarr(GenericIndexer, TorznabMixin):
             indexer_info_list.append(indexer_info)
         return indexer_info_list
 
+    def _fetch_indexers_from_api(self) -> list[IndexerInfo]:
+        indexers = self._call_prowlarr_api(path="/indexer")
+        return self._parse_indexer_list(indexers.json())
+
+    def _get_indexers(self) -> list[IndexerInfo]:
+        now = time.monotonic()
+        with self._indexer_cache_lock:
+            if self._indexer_cache_entry is not None:
+                cached_at, cached = self._indexer_cache_entry
+                if now - cached_at < _CAPABILITY_CACHE_TTL_SECONDS:
+                    return list(cached)
+
+        indexers = self._fetch_indexers_from_api()
+        with self._indexer_cache_lock:
+            self._indexer_cache_entry = (time.monotonic(), list(indexers))
+        return indexers
+
     def _get_tv_indexers(self) -> list[IndexerInfo]:
         return [x for x in self._get_indexers() if x.supports_tv_search]
 
     def _get_movie_indexers(self) -> list[IndexerInfo]:
         return [x for x in self._get_indexers() if x.supports_movie_search]
+
+    def _fan_out_newznab_searches(
+        self,
+        searches: list[tuple[IndexerInfo, dict]],
+    ) -> list[IndexerQueryResult]:
+        if not searches:
+            return []
+
+        max_workers = min(len(searches), _SEARCH_MAX_WORKERS)
+        raw_results: list[IndexerQueryResult] = []
+
+        with ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="prowlarr-search"
+        ) as executor:
+            futures = [
+                executor.submit(
+                    self._newznab_search, indexer=indexer, parameters=parameters
+                )
+                for indexer, parameters in searches
+            ]
+            for future in futures:
+                raw_results.extend(future.result())
+
+        return raw_results
 
     def search(self, query: str, is_tv: bool) -> list[IndexerQueryResult]:
         log.info(f"Searching for: {query}")
@@ -116,20 +167,16 @@ class Prowlarr(GenericIndexer, TorznabMixin):
             "q": query,
             "t": "tvsearch" if is_tv else "movie",
         }
-        raw_results = []
         indexers = self._get_tv_indexers() if is_tv else self._get_movie_indexers()
-
-        for indexer in indexers:
-            raw_results.extend(self._newznab_search(parameters=params, indexer=indexer))
-
-        return raw_results
+        return self._fan_out_newznab_searches(
+            [(indexer, params) for indexer in indexers]
+        )
 
     def search_season(
         self, query: str, show: Show, season_number: int
     ) -> list[IndexerQueryResult]:
         indexers = self._get_tv_indexers()
-
-        raw_results = []
+        searches: list[tuple[IndexerInfo, dict]] = []
 
         for indexer in indexers:
             log.debug("Preparing search for indexer: " + indexer.name)
@@ -148,16 +195,13 @@ class Prowlarr(GenericIndexer, TorznabMixin):
             if indexer.supports_tv_search_season:
                 search_params["season"] = season_number
 
-            raw_results.extend(
-                self._newznab_search(parameters=search_params, indexer=indexer)
-            )
+            searches.append((indexer, search_params))
 
-        return raw_results
+        return self._fan_out_newznab_searches(searches)
 
     def search_movie(self, query: str, movie: Movie) -> list[IndexerQueryResult]:
         indexers = self._get_movie_indexers()
-
-        raw_results = []
+        searches: list[tuple[IndexerInfo, dict]] = []
 
         for indexer in indexers:
             log.debug("Preparing search for indexer: " + indexer.name)
@@ -175,8 +219,6 @@ class Prowlarr(GenericIndexer, TorznabMixin):
             if indexer.supports_movie_search_imdb:
                 search_params["imdbid"] = movie.imdb_id
 
-            raw_results.extend(
-                self._newznab_search(parameters=search_params, indexer=indexer)
-            )
+            searches.append((indexer, search_params))
 
-        return raw_results
+        return self._fan_out_newznab_searches(searches)

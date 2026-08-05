@@ -4,14 +4,20 @@ import {
   BUCKET_ORDER,
   KIND_LABELS,
   KIND_ORDER,
+  apiTabFromBucketFilter,
   bucketOf,
+  effectiveChoice,
   importsListViewState,
+  rankedChoices,
 } from "@/lib/imports";
 import type {
   ImportItem,
   IntegrityImport,
   MediaImport,
+  ScanCandidate,
   ScanImport,
+  ScanProviderCandidate,
+  StagedChoice,
   TorrentImport,
 } from "@/lib/imports";
 
@@ -137,6 +143,111 @@ describe("kind vocabulary and buckets", () => {
   it("keeps every kind inside the label vocabulary", () => {
     const items: ImportItem[] = [torrent({}), scan("pending"), media(), integrity()];
     for (const it of items) expect(KIND_LABELS[it.kind]).toBeTruthy();
+  });
+});
+
+describe("apiTabFromBucketFilter", () => {
+  it("defaults to 'all' with no filter", () => {
+    expect(apiTabFromBucketFilter(null)).toBe("all");
+    expect(apiTabFromBucketFilter("")).toBe("all");
+  });
+
+  it("maps the first bucket value to its API tab", () => {
+    expect(apiTabFromBucketFilter("bucket:Review")).toBe("review");
+    expect(apiTabFromBucketFilter("bucket:Retry")).toBe("retry");
+    expect(apiTabFromBucketFilter("bucket:Done")).toBe("done");
+  });
+
+  it("ignores non-bucket and negated segments and unknown values", () => {
+    expect(apiTabFromBucketFilter("kind:torrent")).toBe("all");
+    expect(apiTabFromBucketFilter("!bucket:Review")).toBe("all");
+    expect(apiTabFromBucketFilter("bucket:Whatever")).toBe("all");
+    expect(apiTabFromBucketFilter("kind:torrent&bucket:Done")).toBe("done");
+  });
+
+  it("uses only the first bucket value and trims before decoding", () => {
+    expect(apiTabFromBucketFilter("bucket:Review,Done")).toBe("review");
+    // Trim runs on the raw (pre-decode) value, so encoded spaces survive and
+    // the value no longer matches a known bucket.
+    expect(apiTabFromBucketFilter("bucket:%20Retry%20")).toBe("all");
+  });
+});
+
+function candidate(over: Partial<ScanCandidate> = {}): ScanCandidate {
+  return {
+    media_type: "movie",
+    media_id: "00000000-0000-0000-0000-0000000000c1",
+    media_name: "Lib Movie",
+    media_year: 2020,
+    confidence: 0.5,
+    breakdown: null,
+    ...over,
+  } as ScanCandidate;
+}
+
+function provider(over: Partial<ScanProviderCandidate> = {}): ScanProviderCandidate {
+  return {
+    media_type: "movie",
+    external_id: "tt1",
+    metadata_provider: "tmdb",
+    name: "Provider Movie",
+    year: 2021,
+    confidence: 0.5,
+    breakdown: null,
+    ...over,
+  } as ScanProviderCandidate;
+}
+
+function scanWith(
+  candidates: ScanCandidate[],
+  providers: ScanProviderCandidate[],
+  status = "pending",
+): ScanImport {
+  const s = scan(status);
+  s.result.candidates = candidates;
+  s.result.provider_candidates = providers;
+  return s;
+}
+
+describe("rankedChoices", () => {
+  it("merges library and provider candidates sorted by descending confidence", () => {
+    const s = scanWith(
+      [candidate({ confidence: 0.3 }), candidate({ confidence: 0.9, media_id: "hi" })],
+      [provider({ confidence: 0.6 })],
+    );
+    const ranked = rankedChoices(s.result);
+    expect(ranked.map((r) => r.confidence)).toEqual([0.9, 0.6, 0.3]);
+    expect(ranked[0].kind).toBe("candidate");
+    expect(ranked[1].kind).toBe("provider");
+  });
+
+  it("treats missing confidence as 0 and returns [] for no candidates", () => {
+    expect(rankedChoices(scanWith([], []).result)).toEqual([]);
+    const s = scanWith([candidate({ confidence: undefined as unknown as number })], []);
+    expect(rankedChoices(s.result)[0].confidence).toBe(0);
+  });
+
+  it("returns the same cached array for the same result reference", () => {
+    const s = scanWith([candidate()], []);
+    expect(rankedChoices(s.result)).toBe(rankedChoices(s.result));
+  });
+});
+
+describe("effectiveChoice", () => {
+  it("returns the staged choice verbatim when present", () => {
+    const s = scanWith([candidate({ confidence: 0.9 })], []);
+    const staged: StagedChoice = { kind: "provider", data: provider() };
+    expect(effectiveChoice(s, staged)).toBe(staged);
+  });
+
+  it("falls back to the top-ranked candidate when nothing is staged", () => {
+    const s = scanWith([candidate({ confidence: 0.2 })], [provider({ confidence: 0.8 })]);
+    const eff = effectiveChoice(s, undefined);
+    expect(eff).toEqual({ kind: "provider", data: provider({ confidence: 0.8 }) });
+  });
+
+  it("returns null when there is no candidate to fall back to", () => {
+    expect(effectiveChoice(scanWith([], []), undefined)).toBeNull();
   });
 });
 

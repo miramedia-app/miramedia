@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from miramedia.settings.normalize import (
+    migrate_native_metadata_enabled,
+    migrate_requests_section,
+    migrate_subtitles_section,
+)
+
 
 class SettingsSectionSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -278,12 +284,7 @@ class NativeMetadataSettingsSchema(SettingsSectionSchema):
         """Legacy `[metadata.native].enabled` → split into tvmaze + cinemeta."""
         if not isinstance(data, dict):
             return data
-        if "enabled" in data:
-            legacy = data.pop("enabled")
-            if legacy is not None:
-                data.setdefault("tvmaze", {}).setdefault("enabled", legacy)
-                data.setdefault("cinemeta", {}).setdefault("enabled", legacy)
-        return data
+        return migrate_native_metadata_enabled(data)
 
 
 class TmdbSettingsSchema(SettingsSectionSchema):
@@ -330,14 +331,7 @@ class RequestsSettingsSchema(SettingsSectionSchema):
         """Map legacy ``requests.enabled = true`` → ``native.enabled = true``."""
         if not isinstance(data, dict):
             return data
-        if "enabled" in data:
-            legacy_master = data.pop("enabled")
-            if legacy_master:
-                native = data.setdefault("native", {}) or {}
-                if isinstance(native, dict):
-                    native.setdefault("enabled", True)
-                    data["native"] = native
-        return data
+        return migrate_requests_section(data)
 
 
 # --- Subtitles ---
@@ -364,18 +358,7 @@ class SubtitleSettingsSchema(SettingsSectionSchema):
         """Legacy ``subtitles.enabled = false`` → flip both backends off."""
         if not isinstance(data, dict):
             return data
-        if "enabled" in data:
-            legacy_master = data.pop("enabled")
-            if legacy_master is False:
-                native = data.get("native") or {}
-                if isinstance(native, dict):
-                    native.setdefault("enabled", False)
-                    data["native"] = native
-                bazarr = data.get("bazarr") or {}
-                if isinstance(bazarr, dict):
-                    bazarr.setdefault("enabled", False)
-                    data["bazarr"] = bazarr
-        return data
+        return migrate_subtitles_section(data)
 
 
 # --- Updates ---

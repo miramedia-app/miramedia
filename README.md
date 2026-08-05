@@ -52,7 +52,7 @@ get started. Plug in external services later if you want them.
 - Library scanner to ingest existing on-disk media
 
 **Playback & extras**
-- In-browser media streaming with client-side transcoding for instant seeking
+- In-browser streaming (original-file HTTP range playback, with WebCodecs/Mediabunny fallback when native decode fails)
 - Subtitle management via native search (subliminal + first-party subdl/subsource/yifysubtitles, vendored keyless plugins, or optional Bazarr); SRT auto-converted to WebVTT for playback
 - Optional media request system (native fulfillment and/or forward to Overseerr/Jellyseerr)
 
@@ -87,15 +87,10 @@ To install an update on the host:
 docker compose pull && docker compose up -d
 ```
 
-For unattended updates, you can either:
-
-1. **Pin a tag** (`image: ghcr.io/miramedia-app/miramedia:v0.2.0`) and bump
-   it deliberately — recommended for stable deployments.
-2. **Enable in-app apply** (experimental): mount `/var/run/docker.sock` into
-   the container and set `updates.allow_in_app_apply = true`. The Updates page
-   will then show an "Apply update" button that pulls the latest image and
-   restarts the container via the docker socket. Requires
-   `restart: unless-stopped` on the compose service.
+For unattended updates, pin a tag (`image: ghcr.io/miramedia-app/miramedia:v0.2.0`)
+and bump it deliberately, or track `:latest` and run the host command above on a
+schedule. The **System → Updates** page detects new releases but does not apply
+them from inside the container.
 
 ## Architecture
 
@@ -173,7 +168,9 @@ Common commands:
 | `make up` / `make down` | start / stop the dev stack |
 | `make logs ARGS="--follow miramedia"` | tail backend logs |
 | `make app` / `make frontend` | shell into the backend / frontend container |
-| `make check` | lint, format-check, ty, test, and frontend typecheck (CI parity minus OpenAPI drift) |
+| `make check` | fast local gate: lint, format-check, ty, test, frontend typecheck, and migration audit |
+| `make check-ci` | pre-PR CI parity: `check` + production frontend build + OpenAPI drift check + PostgreSQL integration tests + Playwright e2e (`MIRAMEDIA_TEST_DATABASE_URL` and Chromium required) |
+| `make frontend-e2e` | Playwright browser smoke tests (`cd web && pnpm exec playwright install --with-deps chromium` once) |
 | `make lint` / `make format` / `make format-check` / `make ty` | backend lint, format, format check, typecheck |
 | `make test` | run the backend test suite on the host |
 | `make frontend-bootstrap` | fresh-clone web setup (`pnpm install` + fumadocs-mdx + next typegen) |

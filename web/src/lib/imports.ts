@@ -5,8 +5,75 @@ export type ScanImport = components["schemas"]["ScanImportItem"];
 export type MediaImport = components["schemas"]["MediaImportItem"];
 export type IntegrityImport = components["schemas"]["IntegrityImportItem"];
 export type IntegrityMismatch = components["schemas"]["IntegrityMismatch"];
+export type ScanCandidate = components["schemas"]["ScanCandidate"];
+export type ScanProviderCandidate = components["schemas"]["ScanProviderCandidate"];
 
 export type ImportItem = TorrentImport | ScanImport | MediaImport | IntegrityImport;
+
+/** Imports API `tab` query values. */
+export type ImportTabApi = "all" | "review" | "retry" | "done";
+
+/** Map search-bar Status facet (URL ``f`` param) to the imports API tab. */
+export function apiTabFromBucketFilter(filterParam: string | null): ImportTabApi {
+  if (!filterParam) return "all";
+  for (const segment of filterParam.split("&")) {
+    if (!segment || segment.startsWith("!")) continue;
+    const [facetId, rawValues = ""] = segment.split(":");
+    if (facetId !== "bucket") continue;
+    const value = decodeURIComponent(rawValues.split(",")[0]?.trim() ?? "");
+    if (value === "Review") return "review";
+    if (value === "Retry") return "retry";
+    if (value === "Done") return "done";
+    return "all";
+  }
+  return "all";
+}
+
+export type RankedChoice =
+  | { kind: "candidate"; data: ScanCandidate; confidence: number }
+  | { kind: "provider"; data: ScanProviderCandidate; confidence: number };
+
+/** A destination the user staged for a scan row (no computed confidence). */
+export type StagedChoice =
+  | { kind: "candidate"; data: ScanCandidate }
+  | { kind: "provider"; data: ScanProviderCandidate };
+
+// Memoize per scan-result reference. Same object identity (until a refetch
+// replaces it) reuses the previous ranked list, avoiding the two-loop +
+// sort each time the row renders (destination column + row actions).
+const rankedCache = new WeakMap<ScanImport["result"], RankedChoice[]>();
+
+/** Library + provider candidates for a scan result, merged and confidence-sorted. */
+export function rankedChoices(r: ScanImport["result"]): RankedChoice[] {
+  const cached = rankedCache.get(r);
+  if (cached) return cached;
+  const out: RankedChoice[] = [];
+  for (const c of r.candidates ?? []) {
+    out.push({ kind: "candidate", data: c, confidence: c.confidence ?? 0 });
+  }
+  for (const c of r.provider_candidates ?? []) {
+    out.push({ kind: "provider", data: c, confidence: c.confidence ?? 0 });
+  }
+  out.sort((a, b) => b.confidence - a.confidence);
+  rankedCache.set(r, out);
+  return out;
+}
+
+/**
+ * The destination a scan row will import into: an explicitly-staged choice if
+ * the user picked one, otherwise the highest-confidence candidate.
+ */
+export function effectiveChoice(
+  item: ScanImport,
+  staged: StagedChoice | undefined,
+): StagedChoice | null {
+  if (staged) return staged;
+  const top = rankedChoices(item.result)[0];
+  if (!top) return null;
+  return top.kind === "candidate"
+    ? { kind: "candidate", data: top.data }
+    : { kind: "provider", data: top.data };
+}
 
 export type ImportBucket = "Review" | "Retry" | "Done";
 

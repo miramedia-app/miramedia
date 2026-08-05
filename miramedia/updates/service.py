@@ -5,7 +5,6 @@ import os
 import re
 import threading
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Self, cast
 
 import httpx
@@ -326,10 +325,7 @@ class UpdateService:
 
     @staticmethod
     def is_apply_supported() -> bool:
-        cfg = MiraMediaConfig().updates
-        if not cfg.allow_in_app_apply:
-            return False
-        return Path(cfg.docker_socket_path).exists()
+        return False
 
     def get_apply_state(self) -> ApplyState:
         with self._apply_lock:
@@ -356,59 +352,10 @@ class UpdateService:
                 self._apply_state.finished_at = datetime.now(UTC)
 
     def trigger_apply(self, target_tag: str | None = None) -> tuple[bool, str | None]:
-        """Kick off a background apply. Returns (accepted, detail)."""
-        if not self.is_apply_supported():
-            return (
-                False,
-                "in-app apply is not supported (config disabled or docker socket missing)",
-            )
-
-        with self._apply_lock:
-            if self._apply_state.state in (
-                UpdateStatusState.checking,
-                UpdateStatusState.pulling,
-                UpdateStatusState.restarting,
-            ):
-                return (
-                    False,
-                    f"apply already in progress (state={self._apply_state.state.value})",
-                )
-            self._apply_state = ApplyState(
-                state=UpdateStatusState.pulling,
-                target_version=target_tag,
-                started_at=datetime.now(UTC),
-                log=[],
-            )
-
-        thread = threading.Thread(
-            target=self._run_apply,
-            args=(target_tag,),
-            name="update-apply",
-            daemon=True,
+        """Reject in-app apply — updates must be applied on the host."""
+        _ = target_tag
+        return (
+            False,
+            "in-app Docker apply is disabled; run "
+            "`docker compose pull && docker compose up -d` on the host",
         )
-        thread.start()
-        return True, None
-
-    def _run_apply(self, target_tag: str | None) -> None:
-        from miramedia.updates.docker_apply import perform_docker_apply
-
-        cfg = MiraMediaConfig().updates
-        tag = target_tag or cfg.image_tag
-        try:
-            self._set_apply_state(log_line=f"pulling {cfg.image_repository}:{tag}")
-            perform_docker_apply(
-                socket_path=cfg.docker_socket_path,
-                image_repository=cfg.image_repository,
-                image_tag=tag,
-                container_name=cfg.container_name,
-                on_log=lambda line: self._set_apply_state(log_line=line),
-                on_state=lambda s: self._set_apply_state(state=s),
-            )
-            self._set_apply_state(state=UpdateStatusState.applied, finished=True)
-        except Exception as exc:
-            log.exception("update apply failed")
-            self._set_apply_state(
-                state=UpdateStatusState.failed,
-                error=str(exc),
-                finished=True,
-            )

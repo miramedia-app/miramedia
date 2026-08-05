@@ -59,12 +59,10 @@ if [ "$(id -u)" = '0' ]; then
         fi
     fi
 
-    # In-app updates talk to the host Docker daemon over its UNIX socket. The
-    # socket is owned root:docker (mode 660) on the host, but the host 'docker'
-    # gid varies per platform (Synology often 101). Grant the miramedia user
-    # access by adding it to a group matching the socket's actual gid, so gosu
-    # carries that supplementary group when it drops privileges. Without this,
-    # the apply flow fails with "[Errno 13] Permission denied" on connect.
+    # Legacy: if /var/run/docker.sock is still mounted, align the app user's
+    # supplementary groups with the socket GID so a manual docker CLI inside
+    # the container can connect. In-app apply is disabled; updates belong on
+    # the host (`docker compose pull && docker compose up -d`).
     DOCKER_SOCK=${MIRAMEDIA_UPDATES__DOCKER_SOCKET_PATH:-/var/run/docker.sock}
     if [ -S "$DOCKER_SOCK" ]; then
         SOCK_GID="$(stat -c '%g' "$DOCKER_SOCK")"

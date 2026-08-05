@@ -144,6 +144,36 @@ jobs:
       - name: Build
         run: pnpm run build:generated
 
+  # Chromium smoke suite for the critical media mutation workflows (manual
+  # torrent add + import recovery). No backend/DB: every /api/** request is
+  # intercepted inside the specs. Separate job so a browser flake never blocks
+  # the fast unit/lint/type gates above.
+  frontend-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # Playwright's own dev server (`next dev`) needs the generated fumadocs
+      # source + Next type declarations present up front (see web/CLAUDE.md).
+      - name: Generate types (fumadocs source + next typegen)
+        run: pnpm run generate
+      - name: Install Chromium runtime
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Browser smoke tests
+        run: pnpm run test:e2e
+
   # Regenerate the OpenAPI spec + client types on main and open a PR if they drift,
   # so the Pages docs site (which renders the committed web/public/openapi.json) is
   # never stale — no manual `make openapi` needed. Runs only on direct pushes to main

@@ -1,6 +1,8 @@
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
+from miramedia.settings.normalize import migrate_requests_section
+
 
 class SeerrConfig(BaseSettings):
     enabled: bool = False
@@ -27,15 +29,9 @@ class RequestsConfig(BaseSettings):
         - Map legacy ``enabled = true`` → ``native.enabled = true`` (legacy
           installs implicitly used the built-in fulfillment path).
         """
-        if isinstance(data, dict):
-            data.pop("auto_approve_superuser", None)
-            if "enabled" in data:
-                legacy_master = data.pop("enabled")
-                if legacy_master:
-                    native = data.setdefault("native", {})
-                    if isinstance(native, dict):
-                        native.setdefault("enabled", True)
-        return data
+        if not isinstance(data, dict):
+            return data
+        return migrate_requests_section(data)
 
     @property
     def enabled(self) -> bool:

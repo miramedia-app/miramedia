@@ -10,14 +10,31 @@ its show/movie detail page.
 
 ## Playback
 
-Click **Play** to open the video player dialog. It streams the original file
-directly (seeking works immediately via range requests). If the browser's
-native `<video>` element can't decode the container/codec, the player falls
-back to an in-browser **WebCodecs**-based re-encode (`mediabunny`). When the
-browser doesn't support WebCodecs, the error reads
-**"This browser cannot play this file."** — in that case use the
-**Download File** button (shown both on error and in the dialog footer) and
-play it locally.
+Click **Play** to open the video player dialog. The player uses this fallback
+sequence:
+
+1. **Direct stream** — the original file over HTTP range requests so you can
+   seek immediately.
+2. **Browser-side remux/re-encode** — when native playback fails or the file
+   needs conversion (for example a Matroska container or audio codecs the
+   browser won't decode, such as AC3), Mediabunny remuxes or re-encodes via
+   **WebCodecs** when `VideoDecoder` and `AudioDecoder` are available.
+3. **Download** — fetch the raw file when WebCodecs isn't available or
+   playback still fails.
+
+When WebCodecs is missing, the error reads **"This browser cannot play this
+file."** Use the **Download File** button (shown on error and in the dialog
+footer) and play locally.
+
+<Callout type="info">
+
+**Server-side transcoding (optional).** For containers outside MP4, M4V, WebM,
+and MOV, the API may offer a cached HLS rendition (H.264/AAC) when `ffmpeg` is
+installed. Safari can play that playlist natively; other browsers remux it
+through Mediabunny without re-encoding on the client. That path is separate
+from the browser-side fallback in step 2 above.
+
+</Callout>
 
 ## Subtitles
 
@@ -32,7 +49,7 @@ for files your browser can't decode, or just for offline copies.
 
 <Callout type="info">
 
-Playback ultimately depends on browser codec support. For exotic files,
-download and play in a desktop player instead.
+Playback depends on your browser, container, and codecs. For files that still
+won't play in-browser, download and use a desktop player instead.
 
 </Callout>

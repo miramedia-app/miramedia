@@ -532,10 +532,20 @@ def test_get_torrent_hash_writes_sidecar_under_completed(
     )
 
     class FakeResponse:
-        content = payload
+        def __init__(self) -> None:
+            self.status_code = 200
+            self.headers: dict[str, str] = {}
+            self.closed = False
 
         def raise_for_status(self) -> None:
             return None
+
+        def iter_content(self, chunk_size: int = 0):
+            del chunk_size
+            yield payload
+
+        def close(self) -> None:
+            self.closed = True
 
     monkeypatch.setattr(utils.requests, "get", lambda *_a, **_k: FakeResponse())
     monkeypatch.setattr(

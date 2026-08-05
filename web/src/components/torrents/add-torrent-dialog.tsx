@@ -291,7 +291,16 @@ export function AddTorrentDialog() {
         if (!o) reset();
       }}
     >
-      <DialogTrigger render={<Button variant="default" size="default" className="gap-1 text-xs" />}>
+      <DialogTrigger
+        render={
+          <Button
+            variant="default"
+            size="default"
+            className="gap-1 text-xs"
+            data-testid="add-torrent-trigger"
+          />
+        }
+      >
         <Plus className="h-4 w-4" />
         Add Torrent
       </DialogTrigger>
@@ -343,7 +352,11 @@ export function AddTorrentDialog() {
               <Button variant="secondary" onClick={() => setOpen(false)}>
                 Cancel
               </Button>
-              <Button onClick={handleParse} disabled={isLoading || (!magnetLink && !torrentFile)}>
+              <Button
+                data-testid="parse-torrent-submit"
+                onClick={handleParse}
+                disabled={isLoading || (!magnetLink && !torrentFile)}
+              >
                 {isLoading && <LoaderCircle className="mr-2 animate-spin" size={16} />}
                 Parse Torrent
               </Button>
@@ -471,7 +484,11 @@ export function AddTorrentDialog() {
               <Button variant="secondary" onClick={() => setStep("input")}>
                 Back
               </Button>
-              <Button onClick={handleDownload} disabled={isLoading || !selectedCandidate}>
+              <Button
+                data-testid="download-torrent-submit"
+                onClick={handleDownload}
+                disabled={isLoading || !selectedCandidate}
+              >
                 {isLoading && <LoaderCircle className="mr-2 animate-spin" size={16} />}
                 Download Torrent
               </Button>

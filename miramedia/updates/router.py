@@ -87,7 +87,7 @@ async def trigger_apply(
             detail="confirm must be true",
         )
     accepted, detail = svc.trigger_apply(target_tag=body.target_tag)
-    if not accepted and detail and "not supported" in detail:
+    if not accepted and detail and ("not supported" in detail or "disabled" in detail):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=detail,

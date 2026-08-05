@@ -113,8 +113,8 @@ def test_verification_token_not_logged(caplog):
     assert str(user.id) in info_records[0].getMessage()
 
 
-def test_link_logged_as_warning_when_email_disabled(monkeypatch, caplog):
-    """When email resets are disabled, exactly one WARNING record containing the link is emitted."""
+def test_token_not_logged_when_email_disabled(monkeypatch, caplog):
+    """When email resets are disabled, the reset token must not appear in any log record."""
     from miramedia.config import MiraMediaConfig
 
     monkeypatch.setattr(MiraMediaConfig().auth, "email_password_resets", False)
@@ -126,15 +126,17 @@ def test_link_logged_as_warning_when_email_disabled(monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG, logger="miramedia.auth.users"):
         asyncio.run(manager.on_after_forgot_password(user, token))
 
-    frontend_url = MiraMediaConfig().misc.frontend_url
-    expected_link = f"{frontend_url}web/login/reset-password?token={token}"
+    for record in caplog.records:
+        _assert_no_secret_in_log_record(record, token)
 
-    warning_records = [
-        r
-        for r in caplog.records
-        if r.levelno == logging.WARNING and expected_link in r.getMessage()
-    ]
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warning_records) == 1, (
-        f"Expected exactly 1 WARNING record containing the link, got {len(warning_records)}. "
+        f"Expected exactly 1 WARNING record, got {len(warning_records)}. "
         f"Records: {[r.getMessage() for r in caplog.records]}"
     )
+    warning_message = warning_records[0].getMessage().lower()
+    assert "disabled" in warning_message, (
+        f"Expected credential-free disabled-delivery diagnostic, got: "
+        f"{warning_records[0].getMessage()!r}"
+    )
+    assert str(user.id) in warning_records[0].getMessage()

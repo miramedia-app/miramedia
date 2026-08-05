@@ -49,6 +49,40 @@ export async function beginAuthTransition(queryClient: QueryClient) {
 }
 
 /**
+ * Prefix a root-relative same-app destination with `NEXT_PUBLIC_BASE_PATH`.
+ *
+ * MiraMedia can be served beneath a configured base path (static export under a
+ * subdirectory). Full-document navigation and same-app `window.open` targets are
+ * host-root paths in source, so they bypass the base path unless rewritten here.
+ *
+ * Only root-relative same-app paths (`/login`, `/dashboard`, `/docs`) are
+ * prefixed. Absolute (`http:`/`https:`), protocol-relative (`//host`), fragment,
+ * and other-scheme destinations — e.g. absolute OAuth authorize URLs — are left
+ * untouched. Already-prefixed paths are returned unchanged to avoid doubling the
+ * base. Trailing slashes on the configured base are normalized away so the join
+ * never produces `//`.
+ */
+export function withBasePath(path: string): string {
+  // Only root-relative same-app destinations get prefixed. `//host` is
+  // protocol-relative (absolute), so exclude it.
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    return path;
+  }
+  let base = (process.env.NEXT_PUBLIC_BASE_PATH ?? "").replace(/\/+$/, "");
+  if (!base) {
+    return path;
+  }
+  if (!base.startsWith("/")) {
+    base = `/${base}`;
+  }
+  // Avoid double-prefixing an already-prefixed destination.
+  if (path === base || path.startsWith(`${base}/`)) {
+    return path;
+  }
+  return `${base}${path}`;
+}
+
+/**
  * Leave the SPA via a full document load — never an SPA navigation.
  *
  * A client-side `router.push` keeps the JS context, and with it every live
@@ -65,6 +99,9 @@ export async function beginAuthTransition(queryClient: QueryClient) {
  * @returns true if a full-document navigation was initiated.
  */
 export function hardNavigate(path: string): boolean {
+  // Transform once, up front: every fallback attempt navigates to the same
+  // base-path-aware destination.
+  const target = withBasePath(path);
   const attempts: ((p: string) => void)[] = [
     (p) => window.location.replace(p),
     (p) => window.location.assign(p),
@@ -74,7 +111,7 @@ export function hardNavigate(path: string): boolean {
   ];
   for (const attempt of attempts) {
     try {
-      attempt(path);
+      attempt(target);
       return true;
     } catch {
       // Try the next full-document mechanism.
