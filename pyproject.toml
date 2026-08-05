@@ -41,7 +41,7 @@ dependencies = [
     # Upper bound: guessit 4.0 bumps rebulk to 6.x and forces a subliminal
     # *downgrade* (2.6 -> 2.2), dropping knowit/trakit and changing the parse
     # behaviour the import pipeline depends on. Lift after validating 4.x.
-    "guessit>=3.8.0,<4",
+    "guessit>=4.4.0,<5",
     "pymediainfo>=7.0.1",
     "curl-cffi>=0.7",
     "cryptography>=44.0.0",
