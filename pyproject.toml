@@ -5,7 +5,7 @@ description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [
     "cachetools>=6.0.0",
-    "fastapi[standard]>=0.115.12",
+    "fastapi[standard]>=0.141.1",
     "fastapi-users[sqlalchemy]>=15.0.2",
     "httpx>=0.28.1",
     "httpx-oauth>=0.16.1",
