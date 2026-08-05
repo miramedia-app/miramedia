@@ -1331,7 +1331,7 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.115.12" },
-    { name = "fastapi-users", extras = ["sqlalchemy"], specifier = ">=15.0.2" },
+    { name = "fastapi-users", extras = ["sqlalchemy"], specifier = ">=15.0.5" },
     { name = "greenlet", specifier = ">=3.1.1" },
     { name = "guessit", specifier = ">=3.8.0,<4" },
     { name = "httpx", specifier = ">=0.28.1" },

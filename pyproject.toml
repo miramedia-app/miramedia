@@ -6,7 +6,7 @@ requires-python = ">=3.13"
 dependencies = [
     "cachetools>=6.0.0",
     "fastapi[standard]>=0.115.12",
-    "fastapi-users[sqlalchemy]>=15.0.2",
+    "fastapi-users[sqlalchemy]>=15.0.5",
     "httpx>=0.28.1",
     "httpx-oauth>=0.16.1",
     "jsonschema>=4.24.0",
