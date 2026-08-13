@@ -9,13 +9,7 @@ from starlette import status
 
 from miramedia.auth.users import current_active_user, current_superuser
 from miramedia.updates.dependencies import update_service_dep
-from miramedia.updates.schemas import (
-    ApplyRequest,
-    ApplyState,
-    ApplyTriggerResponse,
-    UpdateInfo,
-    VersionInfo,
-)
+from miramedia.updates.schemas import UpdateInfo, VersionInfo
 
 log = logging.getLogger(__name__)
 
@@ -63,40 +57,3 @@ async def trigger_check(svc: update_service_dep) -> UpdateInfo:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="manual update check failed",
         ) from exc
-
-
-@router.get(
-    "/updates/status",
-    dependencies=[Depends(current_superuser)],
-)
-async def get_apply_status(svc: update_service_dep) -> ApplyState:
-    return svc.get_apply_state()
-
-
-@router.post(
-    "/updates/apply",
-    dependencies=[Depends(current_superuser)],
-)
-async def trigger_apply(
-    body: ApplyRequest,
-    svc: update_service_dep,
-) -> ApplyTriggerResponse:
-    if not body.confirm:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="confirm must be true",
-        )
-    accepted, detail = svc.trigger_apply(target_tag=body.target_tag)
-    if not accepted and detail and ("not supported" in detail or "disabled" in detail):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=detail,
-        )
-    state = svc.get_apply_state()
-    if not accepted:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=detail or "apply not accepted",
-        )
-    log.info(f"update apply triggered (target={body.target_tag or 'default'})")
-    return ApplyTriggerResponse(accepted=True, state=state, detail=detail)

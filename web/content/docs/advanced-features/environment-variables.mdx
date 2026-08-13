@@ -80,6 +80,7 @@ small NAS, raise them on bigger hardware.
 | `MIRAMEDIA_BYPASS_MAX_FETCHES`                                         | `25`             | Cookie-cached fetches before a Cloudflare re-solve.    |
 | `MIRAMEDIA_BYPASS_BREAKER_THRESHOLD` / `_BREAKER_COOLDOWN`             | `3` / `600`      | Cloudflare-bypass circuit-breaker trip threshold and cooldown (s). |
 | `MIRAMEDIA_METADATA_CACHE_TTL_SECONDS` / `_MAXSIZE`                    | `86400` / `1024` | Metadata-provider response cache.                      |
+| `MIRAMEDIA_NOTIFY_SUPPRESS_SECONDS`                                    | `900`            | Duplicate notification suppression window (seconds).   |
 | `MIRAMEDIA_AUTH_CACHE_TTL_SECONDS` / `_MAXSIZE`                        | `30` / `2048`    | Token → user lookup cache.                             |
 | `MIRAMEDIA_LIBRARY_WATCHER` / `_INTERVAL`                              | `false` / `120`  | Periodic library-state refresh loop and its interval (s, min 30). |
 | `MIRAMEDIA_LOG_POOL_SIZE` / `MIRAMEDIA_LOG_QUEUE_MAX`                  | `5` / `20000`    | DB log-handler write pool and bounded queue size.      |

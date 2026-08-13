@@ -120,6 +120,7 @@ docker-compose.override.yml
 .aider*
 skills-lock.json
 plans
+evidence/
 
 # ---- Misc ----
 *.bak

@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from typing import TYPE_CHECKING, Annotated
 
 from fastapi import Depends, HTTPException
+from fastapi.exceptions import RequestValidationError
 from sqlalchemy import event
 from sqlalchemy.engine.url import URL
 from sqlalchemy.ext.asyncio import (
@@ -334,9 +335,10 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
         try:
             yield db
             await db.commit()
-        except (HTTPException, MiraMediaError):
+        except (HTTPException, RequestValidationError, MiraMediaError):
             # Expected control-flow exceptions (404, 401, 403, 422 raised
-            # from dependencies/routes, plus the registered domain errors).
+            # from dependencies/routes, plus request-body validation failures
+            # and the registered domain errors).
             # Roll back but don't log: a deleted show / stale link should
             # not flood logs with CRITICAL tracebacks.
             await db.rollback()

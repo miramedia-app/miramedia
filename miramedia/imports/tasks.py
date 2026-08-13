@@ -449,7 +449,7 @@ async def resolve_import_task(body_json: dict) -> None:
                 result.detail,
             )
             from miramedia.imports.queue_hooks import (
-                schedule_import_queue_rebuild,
+                schedule_scan_queue_sync,
                 schedule_torrent_queue_sync,
             )
 
@@ -458,7 +458,7 @@ async def resolve_import_task(body_json: dict) -> None:
 
                 schedule_torrent_queue_sync(UUID(body.id))
             else:
-                schedule_import_queue_rebuild()
+                schedule_scan_queue_sync(body.id)
         except Exception as exc:
             log.exception("Queued import failed for %s", body.id)
             if body.kind == "scan":

@@ -174,6 +174,66 @@ jobs:
       - name: Browser smoke tests
         run: pnpm run test:e2e
 
+  # Real full-stack smoke: Chromium → static export served by FastAPI → Postgres.
+  # Self-sufficient: builds the frontend in-job (`pnpm build` generates Fumadocs
+  # MDX itself — never prepend `pnpm run generate` here; see CLAUDE.md).
+  frontend-smoke-real:
+    runs-on: ubuntu-latest
+    env:
+      UV_PYTHON: "3.13"
+      MIRAMEDIA_TEST_DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/miramedia_integration_test
+      MIRAMEDIA_LOG_FILE: /dev/null
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: miramedia_integration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test -d miramedia_integration_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Sync dependencies (frozen)
+        run: uv sync --frozen
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install web deps (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        working-directory: web
+      - name: Build static export (self-sufficient — generates MDX itself)
+        run: pnpm build
+        working-directory: web
+      - name: Install Chromium runtime
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: web
+      - name: Real frontend smoke test
+        run: pnpm run test:smoke
+        working-directory: web
+      - name: Upload Playwright artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@bda57500c8ffc6570d5530b025ebbf9982fb4a4d # v5.0.0
+        with:
+          name: frontend-smoke-real
+          path: |
+            web/test-results-smoke/
+            web/playwright-report/
+          if-no-files-found: ignore
+
   # Regenerate the OpenAPI spec + client types on main and open a PR if they drift,
   # so the Pages docs site (which renders the committed web/public/openapi.json) is
   # never stale — no manual `make openapi` needed. Runs only on direct pushes to main

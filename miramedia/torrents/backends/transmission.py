@@ -41,20 +41,17 @@ class TransmissionDownloadClient(AbstractDownloadClient):
 
     def __init__(self) -> None:
         self.config = MiraMediaConfig().torrents.transmission
-        try:
-            self._client = transmission_rpc.Client(
-                host=self.config.host,
-                port=self.config.port,
-                username=self.config.username,
-                password=self.config.password,
-                protocol="https" if self.config.https_enabled else "http",
-                path=self.config.path,
-            )
-            # Test connection
-            self._client.session_stats()
-        except Exception:
-            log.exception("Failed to connect to Transmission")
-            raise
+        self._client = transmission_rpc.Client(
+            host=self.config.host,
+            port=self.config.port,
+            username=self.config.username,
+            password=self.config.password,
+            protocol="https" if self.config.https_enabled else "http",
+            path=self.config.path,
+        )
+
+    def check_connection(self) -> None:
+        self._client.session_stats()
 
     def download_torrent(self, indexer_result: IndexerQueryResult) -> Torrent:
         """

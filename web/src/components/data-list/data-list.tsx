@@ -1,8 +1,17 @@
 "use client";
 
 import * as React from "react";
+import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { SelectionBar } from "@/components/selection-bar";
 import { DataListBulkBar } from "./data-list-bulk-bar";
 import { DataListEmpty } from "./data-list-empty";
@@ -27,6 +36,27 @@ import type {
   GroupByDef,
   SortOption,
 } from "./types";
+
+export function isServerPaginationTotalKnown(serverPaged: boolean, totalCount?: number): boolean {
+  return !serverPaged || (typeof totalCount === "number" && Number.isFinite(totalCount));
+}
+
+export function computePaginationPages(total: number, pageSize: number): number {
+  return Math.max(1, Math.ceil(total / pageSize));
+}
+
+export function shouldSnapPaginationPage(
+  page: number,
+  pageSize: number,
+  totalCount: number | undefined,
+  serverPaged: boolean,
+  paginationEnabled: boolean,
+): boolean {
+  if (!paginationEnabled) return false;
+  if (!isServerPaginationTotalKnown(serverPaged, totalCount)) return false;
+  const paginationTotal = serverPaged ? totalCount! : 0;
+  return page > computePaginationPages(paginationTotal, pageSize);
+}
 
 export interface DataListProps<T> {
   data: T[];
@@ -84,6 +114,14 @@ export interface DataListProps<T> {
   pageSize?: number;
   /** Selectable page-size options for the footer dropdown. */
   pageSizeOptions?: number[];
+  /**
+   * Server-driven list total (`X-Total-Count`). When `onPaginationChange` is
+   * provided, `data` is treated as the current page (no client slice). Omit or
+   * pass `undefined` while the total is still loading.
+   */
+  totalCount?: number;
+  /** Fires when page or pageSize changes — use to refetch a server page. */
+  onPaginationChange?: (next: { page: number; pageSize: number }) => void;
 
   /** Show table-style header row above the list. Defaults true. */
   showHeader?: boolean;
@@ -129,11 +167,15 @@ export function DataList<T>({
   collapseStorageKey,
   pageSize: defaultPageSize = 50,
   pageSizeOptions = [20, 50, 100, 200],
+  totalCount,
+  onPaginationChange,
   showHeader = true,
   bulkBarVariant = "inline",
   className,
 }: DataListProps<T>) {
   const paginationEnabled = !!defaultPageSize;
+  const serverPaged = onPaginationChange != null;
+  const totalKnown = isServerPaginationTotalKnown(serverPaged, totalCount);
   const filtersState = useListFilters({
     urlSync,
     defaultSort,
@@ -154,6 +196,10 @@ export function DataList<T>({
     pageSize,
     setPageSize,
   } = filtersState;
+
+  React.useEffect(() => {
+    onPaginationChange?.({ page, pageSize });
+  }, [page, pageSize, onPaginationChange]);
 
   const searchRef = React.useRef<HTMLInputElement>(null);
 
@@ -198,18 +244,28 @@ export function DataList<T>({
   }, [filtered, sort, sortOptions]);
 
   const totalFiltered = sorted.length;
+  // Select-all / empty-state counts stay page-local; the footer uses the
+  // server total when it is known.
+  const paginationTotal = serverPaged && totalKnown ? totalCount! : totalFiltered;
 
   const paged = React.useMemo(() => {
-    if (!paginationEnabled) return sorted;
+    if (!paginationEnabled || serverPaged) return sorted;
     const start = (page - 1) * pageSize;
     return sorted.slice(start, start + pageSize);
-  }, [sorted, page, pageSize, paginationEnabled]);
+  }, [sorted, page, pageSize, paginationEnabled, serverPaged]);
 
-  // Snap to last page if current page exceeds totals (after filter narrowing).
-  const totalPages = Math.max(1, Math.ceil(totalFiltered / pageSize));
+  // Snap to last page if current page exceeds totals (after filter narrowing,
+  // or when the server total shrinks below the current page).
+  const totalPages =
+    totalKnown && serverPaged
+      ? computePaginationPages(totalCount!, pageSize)
+      : totalKnown
+        ? computePaginationPages(totalFiltered, pageSize)
+        : 1;
   React.useEffect(() => {
+    if (!totalKnown) return;
     if (paginationEnabled && page > totalPages) setPage(totalPages);
-  }, [paginationEnabled, page, totalPages, setPage]);
+  }, [paginationEnabled, page, totalPages, setPage, totalKnown]);
 
   const activeGrouping = React.useMemo(() => {
     if (!groupings || !group || group === "none") return null;
@@ -529,16 +585,73 @@ export function DataList<T>({
         </div>
       )}
 
-      {paginationEnabled && (
-        <DataListPagination
-          total={totalFiltered}
-          page={page}
-          pageSize={pageSize}
-          pageSizeOptions={pageSizeOptions}
-          onPageChange={setPage}
-          onPageSizeChange={setPageSize}
-        />
-      )}
+      {paginationEnabled &&
+        (totalKnown ? (
+          <DataListPagination
+            total={paginationTotal}
+            page={page}
+            pageSize={pageSize}
+            pageSizeOptions={pageSizeOptions}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
+        ) : (
+          <div
+            className={cn(
+              "grid grid-cols-[1fr_auto_1fr] items-center gap-3 px-1 text-xs text-muted-foreground",
+            )}
+          >
+            <div className="justify-self-start tabular-nums">
+              Page <span className="font-medium text-foreground">{page}</span>
+            </div>
+            <div className="flex items-center gap-1 justify-self-center">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={page <= 1}
+                onClick={() => setPage(page - 1)}
+                aria-label="Previous page"
+              >
+                <ChevronLeftIcon className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                disabled={totalFiltered < pageSize}
+                onClick={() => setPage(page + 1)}
+                aria-label="Next page"
+              >
+                <ChevronRightIcon className="h-4 w-4" />
+              </Button>
+            </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="sm" className="h-7 gap-1 justify-self-end text-xs">
+                    Items:{" "}
+                    <span className="font-medium text-foreground tabular-nums">{pageSize}</span>
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuGroup>
+                  <DropdownMenuRadioGroup
+                    value={String(pageSize)}
+                    onValueChange={(v) => setPageSize(Number(v))}
+                  >
+                    {pageSizeOptions.map((n) => (
+                      <DropdownMenuRadioItem key={n} value={String(n)}>
+                        {n} per page
+                      </DropdownMenuRadioItem>
+                    ))}
+                  </DropdownMenuRadioGroup>
+                </DropdownMenuGroup>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        ))}
 
       {selectable && bulkActions && bulkActions.length > 0 && bulkBarVariant === "floating" && (
         <DataListBulkBar

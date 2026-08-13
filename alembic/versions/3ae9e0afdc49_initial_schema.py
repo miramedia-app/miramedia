@@ -547,13 +547,16 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Drop every application object, then restore alembic's own bookkeeping
-    # table so the post-downgrade version stamp can complete.
-    op.execute("DROP SCHEMA public CASCADE")
-    op.execute("CREATE SCHEMA public")
-    op.execute(
-        "CREATE TABLE alembic_version ("
-        "version_num VARCHAR(32) NOT NULL, "
-        "CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num))"
+    # Safe contract: refuse downgrade below the base revision. The squashed
+    # initial schema cannot enumerate every MiraMedia-owned object reliably,
+    # and the previous implementation dropped all of public (including
+    # unrelated tables, extensions, and grants). The supported migration floor
+    # is this revision; use a disposable database or restore from backup.
+    msg = (
+        "Refusing to downgrade below the base migration revision "
+        f"{revision}. Reversing the initial schema would require dropping the "
+        "entire public schema, which may delete unrelated database objects. "
+        "The supported migration floor is this revision; recreate a disposable "
+        "database or restore from backup instead of downgrading further."
     )
-    op.execute("INSERT INTO alembic_version (version_num) VALUES ('3ae9e0afdc49')")
+    raise RuntimeError(msg)

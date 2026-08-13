@@ -47,6 +47,9 @@ def fake_scheduler_config(
     *,
     requests_enabled: bool = True,
     integrity_check_enabled: bool = True,
+    log_retention_days: int = 30,
+    notifications_enabled: bool = True,
+    notification_retention_days: int = 30,
 ) -> SimpleNamespace:
     """Config stub for scheduler task bodies."""
     return SimpleNamespace(
@@ -54,9 +57,16 @@ def fake_scheduler_config(
         misc=SimpleNamespace(
             integrity_check_enabled=integrity_check_enabled,
             integrity_check_interval_hours=24,
+            log_retention_days=log_retention_days,
             show_libraries=[],
             movie_libraries=[],
             show_directory=Path("fake-shows"),
             movie_directory=Path("fake-movies"),
+        ),
+        notifications=SimpleNamespace(
+            native=SimpleNamespace(
+                enabled=notifications_enabled,
+                retention_days=notification_retention_days,
+            ),
         ),
     )

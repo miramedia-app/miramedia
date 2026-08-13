@@ -18,6 +18,7 @@ import {
 } from "@/lib/imports";
 import type {
   ImportItem,
+  ImportTabApi,
   IntegrityImport,
   ScanCandidate,
   ScanImport,
@@ -29,6 +30,40 @@ import type { components } from "@/lib/api/api";
 
 type ScanRunStatus = components["schemas"]["ScanRunStatus"];
 
+/** Single-page imports list fetch — no client page-walking. */
+export async function fetchImportsPage(
+  apiTab: ImportTabApi,
+  page: number,
+  pageSize: number,
+  signal?: AbortSignal,
+): Promise<{ items: ImportItem[]; total: number }> {
+  const { data, error } = await apiClient.GET("/api/v1/imports", {
+    params: { query: { tab: apiTab, offset: (page - 1) * pageSize, limit: pageSize } },
+    signal,
+  });
+  if (error) throw error;
+  return { items: (data?.items ?? []) as ImportItem[], total: data?.total ?? 0 };
+}
+
+/**
+ * Keep optimistic "queued" flags for ids absent from the current page (they may
+ * live on another page under server paging). Drop only when the row is present
+ * and no longer pending.
+ */
+export function pruneQueuedScanIds(prev: Set<string>, pageItems: ImportItem[]): Set<string> {
+  if (prev.size === 0) return prev;
+  const onPage = new Map<string, ScanImport>();
+  for (const it of pageItems) {
+    if (it.kind === "scan") onPage.set(it.id, it);
+  }
+  const next = new Set<string>();
+  for (const id of prev) {
+    const row = onPage.get(id);
+    if (row === undefined || row.result.status === "pending") next.add(id);
+  }
+  return next.size === prev.size ? prev : next;
+}
+
 /**
  * Orchestrates the imports queue: list/scan/counts queries, SSE-driven
  * invalidation, progress/scan toasts, optimistic "queued" + staged-choice
@@ -39,7 +74,7 @@ type ScanRunStatus = components["schemas"]["ScanRunStatus"];
  * wording, toast copy, and cache invalidation — is preserved exactly from the
  * original page implementation.
  */
-export function useImportsQueue(filterParam: string | null) {
+export function useImportsQueue(filterParam: string | null, page: number, pageSize: number) {
   const qc = useQueryClient();
   const apiTab = React.useMemo(() => apiTabFromBucketFilter(filterParam), [filterParam]);
 
@@ -76,28 +111,8 @@ export function useImportsQueue(filterParam: string | null) {
   }, []);
 
   const listQuery = useQuery({
-    queryKey: [...qk.imports.list(apiTab), "all"],
-    queryFn: async ({ signal }) => {
-      const PAGE = 200; // server cap (le=200)
-      const items: ImportItem[] = [];
-      let offset = 0;
-      let total = 0;
-      // Hard ceiling: 20 pages (4k rows). The queue is tab-bucketed; hitting
-      // this means something is wrong — bail with what we have.
-      for (let i = 0; i < 20; i++) {
-        const { data, error } = await apiClient.GET("/api/v1/imports", {
-          params: { query: { tab: apiTab, offset, limit: PAGE } },
-          signal,
-        });
-        if (error) throw error;
-        const page = (data?.items ?? []) as ImportItem[];
-        items.push(...page);
-        total = data?.total ?? items.length;
-        offset += page.length;
-        if (page.length < PAGE || items.length >= total) break;
-      }
-      return { items, total };
-    },
+    queryKey: qk.imports.list(apiTab, page, pageSize),
+    queryFn: ({ signal }) => fetchImportsPage(apiTab, page, pageSize, signal),
     placeholderData: (prev) => prev,
   });
 
@@ -192,20 +207,11 @@ export function useImportsQueue(filterParam: string | null) {
   const isLoading = listQuery.isLoading || listQuery.isFetching;
   const listView = importsListViewState({ isError: listQuery.isError, count: items.length });
 
-  // Drop the optimistic "queued" flag once the server-side scan row has caught
-  // up (status is no longer "pending") or the row has left the list — from then
-  // on the real ``result.status`` drives the UI.
+  // Drop the optimistic "queued" flag once the server-side scan row on the
+  // current page is no longer "pending". Ids absent from this page are kept —
+  // under server paging they may still be pending on another page.
   React.useEffect(() => {
-    setQueuedScanIds((prev) => {
-      if (prev.size === 0) return prev;
-      const stillPending = new Set<string>();
-      for (const it of items) {
-        if (it.kind === "scan" && it.result.status === "pending" && prev.has(it.id)) {
-          stillPending.add(it.id);
-        }
-      }
-      return stillPending.size === prev.size ? prev : stillPending;
-    });
+    setQueuedScanIds((prev) => pruneQueuedScanIds(prev, items));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [listQuery.data]);
 
@@ -493,6 +499,7 @@ export function useImportsQueue(filterParam: string | null) {
 
   return {
     items,
+    totalCount: listQuery.data?.total,
     isLoading,
     listView,
     refetchList: listQuery.refetch,

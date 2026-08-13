@@ -30,42 +30,42 @@ export function IndexersTab({
           <CardDescription>Shared settings applied to all indexer providers.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>
-              Search result cache retention (days)
-              <OverrideMarker path={["misc", "indexer_query_result_retention_days"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(m.indexer_query_result_retention_days ?? "") || ""}
-              onChange={(e) =>
-                setMiscPath(["indexer_query_result_retention_days"], Number(e.target.value) || 0)
-              }
-              placeholder="7"
-              className="max-w-[120px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              Purges stale rows from the indexer query cache nightly. Lower values save database
-              space; search re-fetches from indexers when needed.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label>
-              Timeout (seconds)
-              <OverrideMarker path={["indexers", "timeout_seconds"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(ind.timeout_seconds ?? "") || ""}
-              onChange={(e) => setIndexersPath(["timeout_seconds"], Number(e.target.value) || 0)}
-              placeholder="60"
-              className="max-w-[120px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              HTTP timeout shared by Prowlarr, Jackett, and the native indexer.
-            </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>
+                Search result cache retention (days)
+                <OverrideMarker path={["misc", "indexer_query_result_retention_days"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(m.indexer_query_result_retention_days ?? "") || ""}
+                onChange={(e) =>
+                  setMiscPath(["indexer_query_result_retention_days"], Number(e.target.value) || 0)
+                }
+                placeholder="7"
+              />
+              <p className="text-xs text-muted-foreground">
+                Purges stale rows from the indexer query cache nightly. Lower values save database
+                space; search re-fetches from indexers when needed.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>
+                Timeout (seconds)
+                <OverrideMarker path={["indexers", "timeout_seconds"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(ind.timeout_seconds ?? "") || ""}
+                onChange={(e) => setIndexersPath(["timeout_seconds"], Number(e.target.value) || 0)}
+                placeholder="60"
+              />
+              <p className="text-xs text-muted-foreground">
+                HTTP timeout shared by Prowlarr, Jackett, and the native indexer.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -82,19 +82,20 @@ export function IndexersTab({
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label>Max Concurrent Searches</Label>
-              <Input
-                type="number"
-                value={Number(native.max_concurrent_searches ?? "") || ""}
-                onChange={(e) =>
-                  setIndexersPath(
-                    ["native", "max_concurrent_searches"],
-                    Number(e.target.value) || 0,
-                  )
-                }
-                className="max-w-[120px]"
-              />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Max Concurrent Searches</Label>
+                <Input
+                  type="number"
+                  value={Number(native.max_concurrent_searches ?? "") || ""}
+                  onChange={(e) =>
+                    setIndexersPath(
+                      ["native", "max_concurrent_searches"],
+                      Number(e.target.value) || 0,
+                    )
+                  }
+                />
+              </div>
             </div>
           </CardContent>
         </Card>

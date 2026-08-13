@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from tests.webhook_design_spike.envelope_signing import (
+from miramedia.notifications.envelope_signing import (
     CONTENT_TYPE,
     EVENT_TYPE,
     WEBHOOK_USER_AGENT,

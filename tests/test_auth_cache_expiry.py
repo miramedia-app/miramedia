@@ -83,7 +83,7 @@ def test_expired_cached_token_is_rejected() -> None:
     )
     key = _token_cache_key(token)
     assert key is not None
-    _user_cache[key] = (_detached_user_copy(user), expired_at.timestamp())
+    _user_cache[key] = (_detached_user_copy(user), expired_at.timestamp(), None)
 
     result = asyncio.run(strategy.read_token(token, manager))
 

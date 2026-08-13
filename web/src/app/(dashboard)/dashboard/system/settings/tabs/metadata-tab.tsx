@@ -44,21 +44,22 @@ export function MetadataTab({
               placeholder="Add a language"
             />
           </div>
-          <div className="space-y-2">
-            <Label>
-              Check Interval (hours)
-              <OverrideMarker path={["metadata", "check_interval_hours"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(meta.check_interval_hours ?? "") || ""}
-              onChange={(e) =>
-                setMetadataPath(["check_interval_hours"], Number(e.target.value) || 0)
-              }
-              placeholder="24"
-              className="max-w-[120px]"
-            />
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>
+                Check Interval (hours)
+                <OverrideMarker path={["metadata", "check_interval_hours"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(meta.check_interval_hours ?? "") || ""}
+                onChange={(e) =>
+                  setMetadataPath(["check_interval_hours"], Number(e.target.value) || 0)
+                }
+                placeholder="24"
+              />
+            </div>
           </div>
         </CardContent>
       </Card>

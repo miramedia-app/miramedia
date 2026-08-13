@@ -162,15 +162,17 @@ export function SubtitlesTab({
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label>Scan Interval (hours)</Label>
-            <Input
-              type="number"
-              value={Number(subNative.scan_interval_hours ?? "") || ""}
-              onChange={(e) =>
-                setSubtitlesPath(["native", "scan_interval_hours"], Number(e.target.value) || 0)
-              }
-            />
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Scan Interval (hours)</Label>
+              <Input
+                type="number"
+                value={Number(subNative.scan_interval_hours ?? "") || ""}
+                onChange={(e) =>
+                  setSubtitlesPath(["native", "scan_interval_hours"], Number(e.target.value) || 0)
+                }
+              />
+            </div>
           </div>
           <Separator />
 

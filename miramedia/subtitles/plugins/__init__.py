@@ -17,7 +17,10 @@ import logging
 from subliminal.extensions import provider_manager
 from subliminal.video import Episode, Movie, Video
 
-from miramedia.subtitles.plugins.adapter import build_plugin_provider
+from miramedia.subtitles.plugins.adapter import (
+    build_plugin_provider,
+    install_bounded_vendored_extract_patches,
+)
 from miramedia.subtitles.plugins.vendored.embeddedsubtitles import (
     EmbeddedSubtitlesProvider,
 )
@@ -432,6 +435,7 @@ def _evict_provider(name: str) -> None:
 
 
 def _register() -> None:
+    install_bounded_vendored_extract_patches()
     for provider_id, hub_class, languages, video_types in _PLUGIN_SPECS:
         cls = build_plugin_provider(provider_id, hub_class, languages, video_types)
         # Bind as a module attribute so the entry-point string resolves it.

@@ -93,12 +93,18 @@ class NotificationRepository:
 
     async def mark_notification_as_read(self, nid: NotificationId) -> None:
         stmt = update(Notification).where(Notification.id == nid).values(read=True)
-        await self.db.execute(stmt)
+        result = await self.db.execute(stmt)
+        if result.rowcount == 0:
+            msg = f"Notification with id {nid} not found."
+            raise NotFoundError(msg)
         return
 
     async def mark_notification_as_unread(self, nid: NotificationId) -> None:
         stmt = update(Notification).where(Notification.id == nid).values(read=False)
-        await self.db.execute(stmt)
+        result = await self.db.execute(stmt)
+        if result.rowcount == 0:
+            msg = f"Notification with id {nid} not found."
+            raise NotFoundError(msg)
         return
 
     async def delete_notification(self, nid: NotificationId) -> None:

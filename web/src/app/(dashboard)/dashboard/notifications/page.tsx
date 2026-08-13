@@ -8,7 +8,7 @@ import { DashboardHeader } from "@/components/dashboard-header";
 import { Button } from "@/components/ui/button";
 import { DataList, DataListEmpty } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
-import { useFeatures } from "@/components/providers/features-provider";
+import { useFeatures, useFeaturesStatus } from "@/components/providers/features-provider";
 import apiClient from "@/lib/api/client";
 import { pLimit } from "@/lib/p-limit";
 import type { components } from "@/lib/api/api";
@@ -18,6 +18,7 @@ type Notification = components["schemas"]["Notification"];
 export default function NotificationsPage() {
   const qc = useQueryClient();
   const { notifications: notificationsEnabled } = useFeatures();
+  const { isError: featuresError } = useFeaturesStatus();
 
   const allQuery = useQuery({
     queryKey: ["notifications", "all"],
@@ -195,8 +196,12 @@ export default function NotificationsPage() {
         <main className="flex w-full flex-col gap-4 p-4 pt-0">
           <DataListEmpty
             icon={<BellOff />}
-            title="Notifications disabled"
-            description="Enable them in System → Settings → Notifications."
+            title={featuresError ? "Features could not be loaded" : "Notifications disabled"}
+            description={
+              featuresError
+                ? "The feature settings request failed. Check that the backend is reachable."
+                : "Enable them in System → Settings → Notifications."
+            }
           />
         </main>
       </>

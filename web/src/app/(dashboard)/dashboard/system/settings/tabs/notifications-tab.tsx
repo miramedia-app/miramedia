@@ -67,25 +67,26 @@ export function NotificationsTab({
           </div>
         </CardHeader>
         <CardContent>
-          <div className="space-y-2">
-            <Label>
-              Retention (days)
-              <OverrideMarker path={["notifications", "native", "retention_days"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(native.retention_days ?? "") || ""}
-              onChange={(e) =>
-                setNotificationsPath(["native", "retention_days"], Number(e.target.value) || 0)
-              }
-              placeholder="30"
-              className="max-w-[120px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              Read notifications older than this are auto-deleted daily. Unread notifications are
-              never deleted.
-            </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>
+                Retention (days)
+                <OverrideMarker path={["notifications", "native", "retention_days"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(native.retention_days ?? "") || ""}
+                onChange={(e) =>
+                  setNotificationsPath(["native", "retention_days"], Number(e.target.value) || 0)
+                }
+                placeholder="30"
+              />
+              <p className="text-xs text-muted-foreground">
+                Read notifications older than this are auto-deleted daily. Unread notifications are
+                never deleted.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

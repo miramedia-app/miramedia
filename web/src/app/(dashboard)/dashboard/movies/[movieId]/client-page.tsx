@@ -5,7 +5,17 @@ import { useRouteUuid } from "@/lib/use-route-id";
 import { movieDetailBundleQueryOptions } from "@/lib/api/media-queries";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Trash2, EllipsisVertical, Pause, Play, RotateCcw } from "lucide-react";
+import {
+  Ban,
+  Check,
+  Eye,
+  EyeOff,
+  Trash2,
+  EllipsisVertical,
+  Pause,
+  Play,
+  RotateCcw,
+} from "lucide-react";
 import { DataListSection } from "@/components/data-list";
 import type { ColumnDef } from "@/components/data-list/types";
 import { torrentProgressColumn, torrentStatusColumn } from "@/components/torrents/torrent-columns";
@@ -36,12 +46,17 @@ import { MediaPicture } from "@/components/media-picture";
 import { MediaStatusBadge } from "@/components/media-status-badge";
 import { MediaActionsMenu } from "@/components/media-actions-menu";
 import { MovieSettingsSheet } from "@/components/movies/movie-settings-sheet";
+import { AddToWatchlist } from "@/components/watchlists/add-to-watchlist";
+import { WatchedMenuItems } from "@/components/watchlists/watched-button";
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
+import { useFeatures } from "@/components/providers/features-provider";
 import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
+import { useSetWatched } from "@/hooks/use-watched-state";
 import apiClient from "@/lib/api/client";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import {
+  formatCastLine,
   formatFileSuffix,
   getFullyQualifiedMediaName,
   getTorrentQualityString,
@@ -54,6 +69,7 @@ const VideoPlayerDialog = dynamic(
 );
 import { languageName } from "@/lib/languages";
 import type { components } from "@/lib/api/api";
+import { watchlistOverflowActionsEnabled } from "@/lib/watchlists";
 
 type MovieFile = components["schemas"]["PublicMovieFile"];
 type SubtitleFile = components["schemas"]["SubtitleFile"];
@@ -82,6 +98,8 @@ export default function MovieDetailClientPage() {
   const queryClient = useQueryClient();
   const { user } = useUser();
   const isSuperuser = !!user?.is_superuser;
+  const { watchlists, custom_lists } = useFeatures();
+  const { markWatched } = watchlistOverflowActionsEnabled({ watchlists, custom_lists });
 
   // The detail bundle is heavy (movie + files + subtitles + torrents). It must
   // NOT poll on an interval. It refetches on invalidation / SSE only; a
@@ -233,6 +251,25 @@ export default function MovieDetailClientPage() {
     retryOne: retryTorrent,
   } = useBulkTorrentActions(invalidateAll);
   const bulkWorking = torrentBulkWorking || otherBulkWorking;
+  const setWatched = useSetWatched();
+
+  async function setMovieSkipped(skipped: boolean) {
+    if (!movie?.id) return;
+    setOtherBulkWorking(true);
+    try {
+      const { error } = await apiClient.POST("/api/v1/movies/{movie_id}/skip", {
+        params: { path: { movie_id: movie.id }, query: { skipped } },
+      });
+      if (error) {
+        toast.error("Failed to update skip status");
+        return;
+      }
+      toast.success(skipped ? "Movie marked as skipped" : "Movie marked as wanted");
+      await invalidateAll();
+    } finally {
+      setOtherBulkWorking(false);
+    }
+  }
 
   async function bulkDeleteTorrents() {
     const ids = torrentIds.filter((id) => selectedTorrents.has(id));
@@ -421,31 +458,39 @@ export default function MovieDetailClientPage() {
                 buttonSize="icon"
               />
             )}
-            {isSuperuser && (
+            {(movie?.id && markWatched) || isSuperuser ? (
               <DropdownMenu>
                 <DropdownMenuTrigger
                   render={
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7 text-muted-foreground"
+                      aria-label="More actions"
+                    >
                       <EllipsisVertical className="h-4 w-4" />
                     </Button>
                   }
                 />
                 <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    className="text-destructive"
-                    onClick={() =>
-                      openDeleteModal({
-                        type: "file",
-                        fileId: r.data.id!,
-                      })
-                    }
-                  >
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </DropdownMenuItem>
+                  {movie?.id ? <WatchedMenuItems mediaKind="movie" mediaId={movie.id} /> : null}
+                  {isSuperuser && (
+                    <DropdownMenuItem
+                      className="text-destructive"
+                      onClick={() =>
+                        openDeleteModal({
+                          type: "file",
+                          fileId: r.data.id!,
+                        })
+                      }
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
-            )}
+            ) : null}
           </>
         );
       }
@@ -470,7 +515,7 @@ export default function MovieDetailClientPage() {
         </DropdownMenu>
       ) : null;
     },
-    [movie, subtitleLanguages, isSuperuser],
+    [movie, subtitleLanguages, isSuperuser, markWatched],
   );
 
   const torrentColumns = React.useMemo<ColumnDef<RichTorrent>[]>(
@@ -659,11 +704,20 @@ export default function MovieDetailClientPage() {
               {movie.runtime ? `${Math.floor(movie.runtime / 60)}h ${movie.runtime % 60}m` : ""}
             </div>
             {movie.cast && movie.cast.length > 0 && (
-              <p className="line-clamp-1 text-xs text-muted-foreground">{movie.cast.join(", ")}</p>
+              <p className="line-clamp-1 text-xs text-muted-foreground">
+                {formatCastLine(movie.cast)}
+              </p>
             )}
             <div className="mt-3 flex flex-wrap items-center gap-2 md:mt-auto md:pt-3">
-              <MediaActionsMenu media={movie} mediaType="movie" />
-              {isSuperuser && <MovieSettingsSheet movie={movie} />}
+              <MediaActionsMenu
+                media={movie}
+                mediaType="movie"
+                afterSubtitles={
+                  <AddToWatchlist mediaKind="movie" mediaId={movie.id!} triggerLabel="Watchlists" />
+                }
+              >
+                {isSuperuser ? <MovieSettingsSheet movie={movie} /> : null}
+              </MediaActionsMenu>
             </div>
           </div>
         </div>
@@ -683,15 +737,65 @@ export default function MovieDetailClientPage() {
                   : "Select all files"
               }
               actions={
-                <Button
-                  size="sm"
-                  variant="destructive"
-                  onClick={() => openDeleteModal({ type: "bulk-files" })}
-                  disabled={bulkWorking || selectedFiles.size === 0}
-                >
-                  <Trash2 className="h-4 w-4" />
-                  Delete
-                </Button>
+                <>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() =>
+                      setWatched.mutate({
+                        media_kind: "movie",
+                        media_id: movie.id!,
+                        watched: true,
+                      })
+                    }
+                    disabled={bulkWorking || setWatched.isPending}
+                  >
+                    <Eye className="h-4 w-4" />
+                    Watched
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() =>
+                      setWatched.mutate({
+                        media_kind: "movie",
+                        media_id: movie.id!,
+                        watched: false,
+                      })
+                    }
+                    disabled={bulkWorking || setWatched.isPending}
+                  >
+                    <EyeOff className="h-4 w-4" />
+                    Unwatched
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void setMovieSkipped(false)}
+                    disabled={bulkWorking}
+                  >
+                    <Check className="h-4 w-4" />
+                    Wanted
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void setMovieSkipped(true)}
+                    disabled={bulkWorking}
+                  >
+                    <Ban className="h-4 w-4" />
+                    Skipped
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => openDeleteModal({ type: "bulk-files" })}
+                    disabled={bulkWorking || selectedFiles.size === 0}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    Delete
+                  </Button>
+                </>
               }
             />
           )}

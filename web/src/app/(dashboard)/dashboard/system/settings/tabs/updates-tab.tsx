@@ -24,7 +24,8 @@ export function UpdatesTab({
   const updateInfoQuery = useQuery({
     queryKey: ["system", "updates"],
     queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/system/updates", { signal });
+      const { data, error } = await apiClient.GET("/api/v1/system/updates", { signal });
+      if (error) throw error;
       return data ?? null;
     },
     retry: false,
@@ -42,6 +43,13 @@ export function UpdatesTab({
         <CardContent className="space-y-4">
           {updateInfoQuery.isLoading ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : updateInfoQuery.isError ? (
+            <div className="flex items-center gap-2">
+              <p className="text-sm text-muted-foreground">Could not fetch update info.</p>
+              <Button variant="outline" size="sm" onClick={() => updateInfoQuery.refetch()}>
+                Try again
+              </Button>
+            </div>
           ) : !info ? (
             <p className="text-sm text-muted-foreground">Could not fetch update info.</p>
           ) : (

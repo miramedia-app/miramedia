@@ -60,7 +60,7 @@ get started. Plug in external services later if you want them.
 - OAuth/OIDC + email-password auth, dashboard-managed superusers
 - Notifications: email, Pushover, Gotify, Ntfy
 - Database-backed system logs with filtering, viewable in-app
-- In-app update checks with optional one-click apply via the Docker socket
+- In-app update checks for new releases; applying updates is done on the host with Docker Compose
 - Designed to be deployed with Docker
 
 ## Quick Start
@@ -109,7 +109,7 @@ them from inside the container.
 | `miramedia/subtitles/` | Subtitle management (subliminal; subdl/subsource/yifysubtitles; vendored keyless plugins; optional Bazarr) | `/api/v1/subtitles/` |
 | `miramedia/requests/` | Media request system (native + Seerr composite, optional) | `/api/v1/requests/` |
 | `miramedia/cloudflare/` | Shared Cloudflare bypass (nodriver + curl_cffi) | - |
-| `miramedia/updates/` | GitHub release checks + optional in-app apply | `/api/v1/system/` |
+| `miramedia/updates/` | GitHub release checks | `/api/v1/system/` |
 | `miramedia/logs/` | Database-backed system logs | `/api/v1/system/` |
 | `miramedia/settings/` | System configuration | `/api/v1/system/` |
 | `miramedia/auth/` | Authentication (JWT, cookies, OAuth/OIDC) | `/api/v1/auth/` |
@@ -150,6 +150,9 @@ Next.js 16 · React 19.
 
 Fully Dockerized dev environment with hot-reload for backend (FastAPI) and
 frontend (Next.js Fast Refresh); PostgreSQL is provisioned automatically.
+Quality gates (`make check`, `make check-ci`) run on the host — install
+`uv` (Python 3.13), `pnpm`, and run `make frontend-bootstrap` once per fresh
+clone before using them.
 
 ```sh
 mkdir -p res/config                 # first run only
@@ -166,11 +169,12 @@ Common commands:
 | Command | What it does |
 |---|---|
 | `make up` / `make down` | start / stop the dev stack |
-| `make logs ARGS="--follow miramedia"` | tail backend logs |
+| `make logs ARGS="--follow api"` | tail backend logs |
 | `make app` / `make frontend` | shell into the backend / frontend container |
-| `make check` | fast local gate: lint, format-check, ty, test, frontend typecheck, and migration audit |
-| `make check-ci` | pre-PR CI parity: `check` + production frontend build + OpenAPI drift check + PostgreSQL integration tests + Playwright e2e (`MIRAMEDIA_TEST_DATABASE_URL` and Chromium required) |
+| `make check` | fast local gate on the host: lint, format-check, ty, test, frontend typecheck, and migration audit (needs `uv`, Python 3.13, `pnpm`, and `make frontend-bootstrap`) |
+| `make check-ci` | pre-PR CI parity: `check` + production frontend build + OpenAPI drift check + PostgreSQL integration tests + Playwright e2e + real frontend smoke (`MIRAMEDIA_TEST_DATABASE_URL` and Chromium required) |
 | `make frontend-e2e` | Playwright browser smoke tests (`cd web && pnpm exec playwright install --with-deps chromium` once) |
+| `make frontend-smoke-real` | one real browser workflow against FastAPI + disposable PostgreSQL (`make frontend-build` first; needs `MIRAMEDIA_TEST_DATABASE_URL`) |
 | `make lint` / `make format` / `make format-check` / `make ty` | backend lint, format, format check, typecheck |
 | `make test` | run the backend test suite on the host |
 | `make frontend-bootstrap` | fresh-clone web setup (`pnpm install` + fumadocs-mdx + next typegen) |

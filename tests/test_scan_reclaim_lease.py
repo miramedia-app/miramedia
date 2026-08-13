@@ -500,7 +500,7 @@ def test_started_rows_are_never_selected_for_reclaim() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -528,7 +528,7 @@ def test_unstarted_stale_row_reclaims() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -593,7 +593,7 @@ def test_legacy_null_token_valid_old_timestamp_reclaims() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -620,7 +620,7 @@ def test_legacy_missing_timestamp_stamped_then_reclaimed_after_grace() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(first_seen),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -631,7 +631,7 @@ def test_legacy_missing_timestamp_stamped_then_reclaimed_after_grace() -> None:
 
         expired = first_seen + STALE_QUEUED_IMPORT_GRACE + timedelta(minutes=1)
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(expired),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -657,7 +657,7 @@ def test_compensation_requires_pre_start_exact_token() -> None:
     repo = _repo_with_state(state)
 
     async def _run() -> None:
-        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+        with patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"):
             ok = await repo.compensate_scan_cache_claim(
                 directory, claim_token="token-a", error="broker down"
             )
@@ -676,7 +676,7 @@ def test_compensation_requires_pre_start_exact_token() -> None:
             "worker_started_at": _FRESH,
         }
         repo.db.execute = AsyncMock(side_effect=state.execute)
-        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+        with patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"):
             after_begin = await repo.compensate_scan_cache_claim(
                 directory, claim_token="token-a", error="broker down"
             )
@@ -699,7 +699,7 @@ def test_complete_terminal_and_batch_reset_share_one_commit() -> None:
     repo = ImportsRepository(db=db)
 
     async def _run() -> None:
-        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+        with patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"):
             ok = await repo.complete_manual_scan_import(
                 "/safe/show",
                 claim_token="token-a",
@@ -735,7 +735,7 @@ def test_reclaim_resets_batch_in_same_commit_and_rolls_back_on_error() -> None:
 
     async def _run_success() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -797,7 +797,7 @@ def test_stalled_worker_old_row_reclaims() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(now),
         ):
             reclaimed = await repo.reclaim_stalled_worker_imports(
@@ -830,7 +830,7 @@ def test_stalled_worker_fresh_row_untouched() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stalled_worker_imports(
@@ -858,7 +858,7 @@ def test_stalled_worker_malformed_timestamp_stamped_then_reclaimed() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(first_seen),
         ):
             reclaimed = await repo.reclaim_stalled_worker_imports(
@@ -869,7 +869,7 @@ def test_stalled_worker_malformed_timestamp_stamped_then_reclaimed() -> None:
 
         expired = first_seen + STALLED_WORKER_GRACE + timedelta(minutes=1)
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(expired),
         ):
             reclaimed = await repo.reclaim_stalled_worker_imports(
@@ -895,16 +895,16 @@ def test_stalled_worker_reclaim_resets_batch_and_schedules_rebuild() -> None:
     state.batch_total = 3
     repo = _repo_with_state(state)
     now = datetime.fromisoformat(_OLD) + STALLED_WORKER_GRACE + timedelta(minutes=1)
-    rebuild = patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild")
+    sync_hook = patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync")
 
     async def _run() -> None:
-        with rebuild as rebuild_mock, _patch_repo_now(now):
+        with sync_hook as sync_mock, _patch_repo_now(now):
             reclaimed = await repo.reclaim_stalled_worker_imports(
                 older_than=STALLED_WORKER_GRACE
             )
         assert reclaimed == 1
         repo.db.commit.assert_awaited_once()
-        rebuild_mock.assert_called_once()
+        sync_mock.assert_called_once_with(directory)
         assert state.batch_total == 0
 
     asyncio.run(_run())
@@ -934,7 +934,7 @@ def test_reclaim_stale_queued_uses_one_batch_update_for_many_rows() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -980,7 +980,7 @@ def test_reclaim_stale_queued_empty_snapshot_executes_no_updates() -> None:
     repo = _repo_with_state(state)
 
     async def _run() -> None:
-        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+        with patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"):
             reclaimed = await repo.reclaim_stale_queued_imports(
                 older_than=STALE_QUEUED_IMPORT_GRACE
             )
@@ -1025,7 +1025,7 @@ def test_reclaim_stalled_worker_batch_cas_blocks_snapshot_drift() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(now),
         ):
             reclaimed = await repo.reclaim_stalled_worker_imports(
@@ -1107,7 +1107,7 @@ def test_reclaim_stale_queued_mixed_stamp_and_reclaim_single_commit() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(
@@ -1152,7 +1152,7 @@ def test_reclaim_stale_queued_chunks_at_five_hundred_rows() -> None:
 
     async def _run() -> None:
         with (
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
             _patch_repo_now(datetime.fromisoformat(_FRESH)),
         ):
             reclaimed = await repo.reclaim_stale_queued_imports(

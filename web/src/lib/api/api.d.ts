@@ -2391,24 +2391,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/system/updates/status": {
+    "/api/v1/playback/progress": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Apply Status */
-        get: operations["get_apply_status_api_v1_system_updates_status_get"];
-        put?: never;
+        /** Get Progress */
+        get: operations["get_progress_api_v1_playback_progress_get"];
+        /** Upsert Progress */
+        put: operations["upsert_progress_api_v1_playback_progress_put"];
         post?: never;
-        delete?: never;
+        /** Delete Progress */
+        delete: operations["delete_progress_api_v1_playback_progress_delete"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/system/updates/apply": {
+    "/api/v1/playback/progress/all": {
         parameters: {
             query?: never;
             header?: never;
@@ -2417,9 +2419,224 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Trigger Apply */
-        post: operations["trigger_apply_api_v1_system_updates_apply_post"];
+        post?: never;
+        /** Delete All Progress */
+        delete: operations["delete_all_progress_api_v1_playback_progress_all_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playback/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Continue */
+        get: operations["list_continue_api_v1_playback_continue_get"];
+        put?: never;
+        post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playback/watch-next": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Watch Next */
+        get: operations["list_watch_next_api_v1_playback_watch_next_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playback/watched": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Watched */
+        get: operations["get_watched_api_v1_playback_watched_get"];
+        /** Set Watched */
+        put: operations["set_watched_api_v1_playback_watched_put"];
+        post?: never;
+        /** Clear Watched Override */
+        delete: operations["clear_watched_override_api_v1_playback_watched_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playback/watched/season": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Season Watched */
+        put: operations["set_season_watched_api_v1_playback_watched_season_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playback/watched/show": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Show Watched */
+        put: operations["set_show_watched_api_v1_playback_watched_show_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/playback/viewing-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Viewing State */
+        delete: operations["delete_viewing_state_api_v1_playback_viewing_state_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/watchlists": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Watchlists */
+        get: operations["list_watchlists_api_v1_watchlists_get"];
+        put?: never;
+        /** Create Watchlist */
+        post: operations["create_watchlist_api_v1_watchlists_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/watchlists/upcoming": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Watchlists Upcoming
+         * @description Tracked library air/release dates for the Watchlists Upcoming view.
+         *
+         *     Defaults to today / next-30; `start`/`end` override either bound and the
+         *     span is clamped server-side to MAX_WINDOW_DAYS.
+         */
+        get: operations["get_watchlists_upcoming_api_v1_watchlists_upcoming_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/watchlists/{watchlist_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Watchlist */
+        get: operations["get_watchlist_api_v1_watchlists__watchlist_id__get"];
+        put?: never;
+        post?: never;
+        /** Delete Watchlist */
+        delete: operations["delete_watchlist_api_v1_watchlists__watchlist_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Watchlist */
+        patch: operations["update_watchlist_api_v1_watchlists__watchlist_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/watchlists/{watchlist_id}/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add Watchlist Item */
+        post: operations["add_watchlist_item_api_v1_watchlists__watchlist_id__items_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/watchlists/{watchlist_id}/items/order": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Reorder Watchlist Items */
+        put: operations["reorder_watchlist_items_api_v1_watchlists__watchlist_id__items_order_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/watchlists/{watchlist_id}/items/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove Watchlist Item */
+        delete: operations["remove_watchlist_item_api_v1_watchlists__watchlist_id__items__item_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2991,41 +3208,6 @@ export interface components {
             /** Expires At */
             expires_at: string | null;
         };
-        /** ApplyRequest */
-        ApplyRequest: {
-            /** Target Tag */
-            target_tag?: string | null;
-            /**
-             * Confirm
-             * @constant
-             */
-            confirm: true;
-        };
-        /** ApplyState */
-        ApplyState: {
-            state: components["schemas"]["UpdateStatusState"];
-            /** Target Version */
-            target_version?: string | null;
-            /** Started At */
-            started_at?: string | null;
-            /** Finished At */
-            finished_at?: string | null;
-            /** Error */
-            error?: string | null;
-            /**
-             * Log
-             * @default []
-             */
-            log: string[];
-        };
-        /** ApplyTriggerResponse */
-        ApplyTriggerResponse: {
-            /** Accepted */
-            accepted: boolean;
-            state: components["schemas"]["ApplyState"];
-            /** Detail */
-            detail?: string | null;
-        };
         /** AuthMetadata */
         AuthMetadata: {
             /** Oauth Providers */
@@ -3199,10 +3381,33 @@ export interface components {
             /** Path */
             path: string[];
         };
+        /** CloudflareBrowserRunSettingsSchema */
+        CloudflareBrowserRunSettingsSchema: {
+            /** Account Id */
+            account_id?: string | null;
+            /** Api Token */
+            api_token?: string | null;
+        };
+        /** CloudflareFirecrawlSettingsSchema */
+        CloudflareFirecrawlSettingsSchema: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Base Url */
+            base_url?: string | null;
+        };
+        /** CloudflareRemoteSettingsSchema */
+        CloudflareRemoteSettingsSchema: {
+            /** Endpoint */
+            endpoint?: string | null;
+        };
         /** CloudflareSettingsSchema */
         CloudflareSettingsSchema: {
             /** Enabled */
             enabled?: boolean | null;
+            /** Solver */
+            solver?: string | null;
+            /** Proxy */
+            proxy?: string | null;
             /** Browser Path */
             browser_path?: string | null;
             /** Cookie Ttl Seconds */
@@ -3219,6 +3424,16 @@ export interface components {
             challenge_wait_seconds?: number | null;
             /** Solve Timeout Seconds */
             solve_timeout_seconds?: number | null;
+            remote?: components["schemas"]["CloudflareRemoteSettingsSchema"] | null;
+            byparr?: components["schemas"]["CloudflareUrlBackendSettingsSchema"] | null;
+            flaresolverr?: components["schemas"]["CloudflareUrlBackendSettingsSchema"] | null;
+            browser_run?: components["schemas"]["CloudflareBrowserRunSettingsSchema"] | null;
+            firecrawl?: components["schemas"]["CloudflareFirecrawlSettingsSchema"] | null;
+        };
+        /** CloudflareUrlBackendSettingsSchema */
+        CloudflareUrlBackendSettingsSchema: {
+            /** Url */
+            url?: string | null;
         };
         /** CodecOptionSchema */
         CodecOptionSchema: {
@@ -3236,6 +3451,44 @@ export interface components {
              * @default true
              */
             enabled: boolean;
+        };
+        /** ContinueWatchingItem */
+        ContinueWatchingItem: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            media_kind: components["schemas"]["MediaKind"];
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /** Show Id */
+            show_id?: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Poster Media Id
+             * Format: uuid
+             */
+            poster_media_id: string;
+            /** Position Ms */
+            position_ms: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Year */
+            year?: number | null;
+            /** Season Number */
+            season_number?: number | null;
+            /** Episode Number */
+            episode_number?: number | null;
         };
         /** CreateUserRequest */
         CreateUserRequest: {
@@ -3319,6 +3572,8 @@ export interface components {
             skipped: boolean;
             /** Air Date */
             air_date?: string | null;
+            /** Air Time */
+            air_time?: string | null;
             /** Episode Files */
             episode_files?: components["schemas"]["EpisodeFile"][];
         };
@@ -3415,6 +3670,22 @@ export interface components {
             subtitles: boolean;
             /** Notifications */
             notifications: boolean;
+            /** Watchlists */
+            watchlists: boolean;
+            /** Custom Lists */
+            custom_lists: boolean;
+            /** Watch Next */
+            watch_next: boolean;
+            /** Watch Next Include Specials */
+            watch_next_include_specials: boolean;
+            /** Upcoming */
+            upcoming: boolean;
+            /** Upcoming Default Past Days */
+            upcoming_default_past_days: number;
+            /** Upcoming Default Future Days */
+            upcoming_default_future_days: number;
+            /** Continue Watching */
+            continue_watching: boolean;
         };
         /**
          * FileStatus
@@ -4136,6 +4407,11 @@ export interface components {
             /** Files */
             files: components["schemas"]["ImportFileDetail"][];
         };
+        /**
+         * MediaKind
+         * @enum {string}
+         */
+        MediaKind: "movie" | "episode";
         /** MediaRequest */
         MediaRequest: {
             /**
@@ -4298,6 +4574,8 @@ export interface components {
             cors_urls?: string[] | null;
             /** Development */
             development?: boolean | null;
+            /** Timezone */
+            timezone?: string | null;
             /** Show Libraries */
             show_libraries?: components["schemas"]["LibraryItemSchema"][] | null;
             /** Movie Libraries */
@@ -4321,6 +4599,16 @@ export interface components {
             integrity_check_enabled?: boolean | null;
             /** Integrity Check Interval Hours */
             integrity_check_interval_hours?: number | null;
+            /** Auto Pick Confidence Threshold */
+            auto_pick_confidence_threshold?: number | null;
+            /** Trusted Proxy Hosts */
+            trusted_proxy_hosts?: string[] | string | null;
+            /** Metrics Public */
+            metrics_public?: boolean | null;
+            /** Csp Enabled */
+            csp_enabled?: boolean | null;
+            /** Csp Enforce */
+            csp_enforce?: boolean | null;
         };
         /** Movie */
         Movie: {
@@ -4412,6 +4700,10 @@ export interface components {
             enabled?: boolean | null;
             /** Max Concurrent Searches */
             max_concurrent_searches?: number | null;
+            /** Custom Torznab Sites */
+            custom_torznab_sites?: components["schemas"]["TorznabSiteSettingsSchema"][] | null;
+            /** Disabled Sites */
+            disabled_sites?: string[] | null;
         };
         /** NativeMetadataSettingsSchema */
         NativeMetadataSettingsSchema: {
@@ -4436,6 +4728,21 @@ export interface components {
             enabled?: boolean | null;
             /** Scan Interval Hours */
             scan_interval_hours?: number | null;
+            gestdown?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            tvsubtitles?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            yifysubtitles?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            subtitlecat?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            subf2m?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            isubtitles?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            my_subs?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            embeddedsubtitles?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            opensubtitlescom?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            addic7ed?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            subdl?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            subsource?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            napiprojekt?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            subtis?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
+            subtitulamos?: components["schemas"]["SubtitleProviderSettingsSchema"] | null;
         };
         /** NativeTorrentSettingsSchema */
         NativeTorrentSettingsSchema: {
@@ -4447,6 +4754,23 @@ export interface components {
             max_download_rate?: number | null;
             /** Max Upload Rate */
             max_upload_rate?: number | null;
+        };
+        /** NativeWatchlistsSettingsSchema */
+        NativeWatchlistsSettingsSchema: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Custom Lists */
+            custom_lists?: boolean | null;
+            /** Watch Next */
+            watch_next?: boolean | null;
+            /** Watch Next Include Specials */
+            watch_next_include_specials?: boolean | null;
+            /** Upcoming */
+            upcoming?: boolean | null;
+            /** Upcoming Default Past Days */
+            upcoming_default_past_days?: number | null;
+            /** Upcoming Default Future Days */
+            upcoming_default_future_days?: number | null;
         };
         /** Notification */
         Notification: {
@@ -4558,6 +4882,39 @@ export interface components {
             offset: number;
             /** Limit */
             limit: number;
+        };
+        /** PlaybackProgress */
+        PlaybackProgress: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            media_kind: components["schemas"]["MediaKind"];
+            /** Position Ms */
+            position_ms: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Completed */
+            completed: boolean;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** PlaybackProgressUpsert */
+        PlaybackProgressUpsert: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            media_kind: components["schemas"]["MediaKind"];
+            /** Position Ms */
+            position_ms: number;
+            /** Duration Ms */
+            duration_ms: number;
         };
         /** PreferredCodecBody */
         PreferredCodecBody: {
@@ -5066,6 +5423,8 @@ export interface components {
             api_key?: string | null;
             /** Base Path */
             base_path?: string | null;
+            /** Verify Tls */
+            verify_tls?: boolean | null;
         };
         /**
          * ScanCandidate
@@ -5316,6 +5675,23 @@ export interface components {
             /** Episodes */
             episodes: components["schemas"]["Episode"][];
         };
+        /** SeasonWatchStateUpdate */
+        SeasonWatchStateUpdate: {
+            /**
+             * Show Id
+             * Format: uuid
+             */
+            show_id: string;
+            /** Season Number */
+            season_number: number;
+            /** Watched */
+            watched: boolean;
+            /**
+             * Include Specials
+             * @default false
+             */
+            include_specials: boolean;
+        };
         /** SeerrSettingsSchema */
         SeerrSettingsSchema: {
             /** Enabled */
@@ -5476,6 +5852,21 @@ export interface components {
             /** Episodes */
             episodes: components["schemas"]["EpisodeSubtitleStatus"][];
         };
+        /** ShowWatchStateUpdate */
+        ShowWatchStateUpdate: {
+            /**
+             * Show Id
+             * Format: uuid
+             */
+            show_id: string;
+            /** Watched */
+            watched: boolean;
+            /**
+             * Include Specials
+             * @default false
+             */
+            include_specials: boolean;
+        };
         /** SmtpSettingsSchema */
         SmtpSettingsSchema: {
             /** Smtp Host */
@@ -5506,6 +5897,17 @@ export interface components {
             language: string;
             /** File Name */
             file_name: string;
+        };
+        /** SubtitleProviderSettingsSchema */
+        SubtitleProviderSettingsSchema: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Username */
+            username?: string | null;
+            /** Password */
+            password?: string | null;
+            /** Api Key */
+            api_key?: string | null;
         };
         /** SubtitleSearchResponse */
         SubtitleSearchResponse: {
@@ -5570,6 +5972,10 @@ export interface components {
             requests: {
                 [key: string]: unknown;
             };
+            /** Watchlists */
+            watchlists: {
+                [key: string]: unknown;
+            };
             /** Subtitles */
             subtitles: {
                 [key: string]: unknown;
@@ -5607,6 +6013,7 @@ export interface components {
             indexers?: components["schemas"]["IndexerSettingsSchema"] | null;
             metadata?: components["schemas"]["MetadataSettingsSchema"] | null;
             requests?: components["schemas"]["RequestsSettingsSchema"] | null;
+            watchlists?: components["schemas"]["WatchlistsSettingsSchema"] | null;
             subtitles?: components["schemas"]["SubtitleSettingsSchema"] | null;
             updates?: components["schemas"]["UpdateSettingsSchema"] | null;
             cloudflare?: components["schemas"]["CloudflareSettingsSchema"] | null;
@@ -5784,6 +6191,25 @@ export interface components {
          * @enum {integer}
          */
         TorrentStatus: 1 | 2 | 3 | 4 | 5;
+        /** TorznabSiteSettingsSchema */
+        TorznabSiteSettingsSchema: {
+            /** Name */
+            name?: string | null;
+            /** Url */
+            url?: string | null;
+            /** Api Key */
+            api_key?: string | null;
+            /** Supports Tv */
+            supports_tv?: boolean | null;
+            /** Supports Movies */
+            supports_movies?: boolean | null;
+            /** Categories Tv */
+            categories_tv?: string | null;
+            /** Categories Movies */
+            categories_movies?: string | null;
+            /** Cloudflare Protected */
+            cloudflare_protected?: boolean | null;
+        };
         /** TransmissionSettingsSchema */
         TransmissionSettingsSchema: {
             /** Enabled */
@@ -5838,6 +6264,125 @@ export interface components {
             /** Library */
             library?: string | null;
         };
+        /** UpNextItem */
+        UpNextItem: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /**
+             * Media Kind
+             * @default episode
+             * @constant
+             */
+            media_kind: "episode";
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /**
+             * Show Id
+             * Format: uuid
+             */
+            show_id: string;
+            /** Show Name */
+            show_name: string;
+            /** Season Number */
+            season_number: number;
+            /** Episode Number */
+            episode_number: number;
+            /** Episode Title */
+            episode_title: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Poster Media Id
+             * Format: uuid
+             */
+            poster_media_id: string;
+            /**
+             * Watched
+             * @default false
+             */
+            watched: boolean;
+            /**
+             * Position Ms
+             * @default 0
+             */
+            position_ms: number;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /**
+             * Activity At
+             * Format: date-time
+             */
+            activity_at: string;
+        };
+        /**
+         * UpcomingItem
+         * @description One row for the Upcoming / Calendar list.
+         */
+        UpcomingItem: {
+            /**
+             * Media Type
+             * @enum {string}
+             */
+            media_type: "episode" | "movie";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Air Time */
+            air_time?: string | null;
+            /**
+             * Poster Id
+             * Format: uuid
+             */
+            poster_id: string;
+            /** Show Id */
+            show_id?: string | null;
+            /** Show Name */
+            show_name?: string | null;
+            /** Season Number */
+            season_number?: number | null;
+            /** Episode Number */
+            episode_number?: number | null;
+            /**
+             * Downloaded
+             * @default false
+             */
+            downloaded: boolean;
+        };
+        /** UpcomingResponse */
+        UpcomingResponse: {
+            /** Items */
+            items?: components["schemas"]["UpcomingItem"][];
+            /**
+             * Window Start
+             * Format: date
+             */
+            window_start: string;
+            /**
+             * Window End
+             * Format: date
+             */
+            window_end: string;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
         /** UpdateInfo */
         UpdateInfo: {
             /** Enabled */
@@ -5858,8 +6403,6 @@ export interface components {
             last_checked_at: string | null;
             /** Repo */
             repo: string;
-            /** Apply Supported */
-            apply_supported: boolean;
         };
         /** UpdateSettingsSchema */
         UpdateSettingsSchema: {
@@ -5873,22 +6416,15 @@ export interface components {
             include_prereleases?: boolean | null;
             /** Cache Ttl Seconds */
             cache_ttl_seconds?: number | null;
+            /** Request Timeout Seconds */
+            request_timeout_seconds?: number | null;
             /** Notify On New Version */
             notify_on_new_version?: boolean | null;
-            /** Allow In App Apply */
-            allow_in_app_apply?: boolean | null;
             /** Image Repository */
             image_repository?: string | null;
             /** Image Tag */
             image_tag?: string | null;
-            /** Container Name */
-            container_name?: string | null;
         };
-        /**
-         * UpdateStatusState
-         * @enum {string}
-         */
-        UpdateStatusState: "idle" | "checking" | "pulling" | "restarting" | "applied" | "failed";
         /** UserCreate */
         UserCreate: {
             /**
@@ -5978,6 +6514,213 @@ export interface components {
             image: string | null;
             /** Base Path */
             base_path: string | null;
+        };
+        /** WatchState */
+        WatchState: {
+            /**
+             * Media Kind
+             * @enum {string}
+             */
+            media_kind: "movie" | "episode";
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /** Watched */
+            watched: boolean;
+            /** Source */
+            source: ("derived" | "manual") | null;
+            /** Watched At */
+            watched_at: string | null;
+        };
+        /** WatchStateUpdate */
+        WatchStateUpdate: {
+            /**
+             * Media Kind
+             * @enum {string}
+             */
+            media_kind: "movie" | "episode";
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /** Watched */
+            watched: boolean;
+        };
+        /** WatchlistCreate */
+        WatchlistCreate: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+        };
+        /** WatchlistDetail */
+        WatchlistDetail: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            /** Items */
+            items: components["schemas"]["WatchlistItemView"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** WatchlistItemCreate */
+        WatchlistItemCreate: {
+            /**
+             * Media Kind
+             * @enum {string}
+             */
+            media_kind: "movie" | "show" | "episode";
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+        };
+        /** WatchlistItemView */
+        WatchlistItemView: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Position */
+            position: number;
+            /**
+             * Media Kind
+             * @enum {string}
+             */
+            media_kind: "movie" | "show" | "episode";
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /** Title */
+            title: string;
+            /**
+             * Poster Media Id
+             * Format: uuid
+             */
+            poster_media_id: string;
+            /** Watched */
+            watched: boolean;
+            /** Year */
+            year?: number | null;
+            /** File Id */
+            file_id?: string | null;
+            /** Position Ms */
+            position_ms?: number | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            /** Show Id */
+            show_id?: string | null;
+            /** Season Number */
+            season_number?: number | null;
+            /** Episode Number */
+            episode_number?: number | null;
+            next_episode?: components["schemas"]["WatchlistNextEpisode"] | null;
+            /** Show Status */
+            show_status?: ("all_available_episodes_watched" | "no_downloaded_episode_available") | null;
+        };
+        /** WatchlistNextEpisode */
+        WatchlistNextEpisode: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /** Season Number */
+            season_number: number;
+            /** Episode Number */
+            episode_number: number;
+            /** Episode Title */
+            episode_title: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Watched
+             * @default false
+             */
+            watched: boolean;
+            /**
+             * Position Ms
+             * @default 0
+             */
+            position_ms: number;
+            /** Duration Ms */
+            duration_ms?: number | null;
+        };
+        /** WatchlistReorder */
+        WatchlistReorder: {
+            /** Item Ids */
+            item_ids: string[];
+        };
+        /** WatchlistSummary */
+        WatchlistSummary: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Name */
+            name: string;
+            /** Description */
+            description: string | null;
+            /** Item Count */
+            item_count: number;
+            /** Cover Poster Media Id */
+            cover_poster_media_id?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** WatchlistUpdate */
+        WatchlistUpdate: {
+            /** Name */
+            name?: string | null;
+            /** Description */
+            description?: string | null;
+        };
+        /** WatchlistsSettingsSchema */
+        WatchlistsSettingsSchema: {
+            /** Auto Remove Watched */
+            auto_remove_watched?: boolean | null;
+            /** Continue Watching */
+            continue_watching?: boolean | null;
+            /** Max Lists Per User */
+            max_lists_per_user?: number | null;
+            /** Max Items Per List */
+            max_items_per_list?: number | null;
+            native?: components["schemas"]["NativeWatchlistsSettingsSchema"] | null;
         };
         /**
          * MediaType
@@ -10109,7 +10852,359 @@ export interface operations {
             };
         };
     };
-    get_apply_status_api_v1_system_updates_status_get: {
+    get_progress_api_v1_playback_progress_get: {
+        parameters: {
+            query: {
+                file_id: string;
+                media_kind?: components["schemas"]["MediaKind"] | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybackProgress"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upsert_progress_api_v1_playback_progress_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PlaybackProgressUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlaybackProgress"] | null;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_progress_api_v1_playback_progress_delete: {
+        parameters: {
+            query: {
+                file_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_all_progress_api_v1_playback_progress_all_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_continue_api_v1_playback_continue_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContinueWatchingItem"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_watch_next_api_v1_playback_watch_next_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                include_specials?: boolean | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpNextItem"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_watched_api_v1_playback_watched_get: {
+        parameters: {
+            query: {
+                media_kind: components["schemas"]["MediaKind"];
+                media_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_watched_api_v1_playback_watched_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchStateUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_watched_override_api_v1_playback_watched_delete: {
+        parameters: {
+            query: {
+                media_kind: components["schemas"]["MediaKind"];
+                media_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchState"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_season_watched_api_v1_playback_watched_season_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeasonWatchStateUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_show_watched_api_v1_playback_watched_show_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ShowWatchStateUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_viewing_state_api_v1_playback_viewing_state_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    list_watchlists_api_v1_watchlists_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -10124,12 +11219,12 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApplyState"];
+                    "application/json": components["schemas"]["WatchlistSummary"][];
                 };
             };
         };
     };
-    trigger_apply_api_v1_system_updates_apply_post: {
+    create_watchlist_api_v1_watchlists_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -10138,7 +11233,136 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["ApplyRequest"];
+                "application/json": components["schemas"]["WatchlistCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_watchlists_upcoming_api_v1_watchlists_upcoming_get: {
+        parameters: {
+            query?: {
+                /** @description Window start (inclusive). */
+                start?: string | null;
+                /** @description Window end (inclusive). */
+                end?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpcomingResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_watchlist_api_v1_watchlists__watchlist_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_watchlist_api_v1_watchlists__watchlist_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_watchlist_api_v1_watchlists__watchlist_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistUpdate"];
             };
         };
         responses: {
@@ -10148,8 +11372,117 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApplyTriggerResponse"];
+                    "application/json": components["schemas"]["WatchlistDetail"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    add_watchlist_item_api_v1_watchlists__watchlist_id__items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistItemCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistItemView"];
+                };
+            };
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistItemView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reorder_watchlist_items_api_v1_watchlists__watchlist_id__items_order_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistReorder"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_watchlist_item_api_v1_watchlists__watchlist_id__items__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                watchlist_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

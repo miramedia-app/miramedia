@@ -13,13 +13,13 @@ APP_SVC ?= api
 FRONTEND_SVC ?= web
 
 .PHONY: help up up-all dev down logs ps restart app frontend openapi openapi-json \
-	lint format format-check ty test integration-test migration-head-audit check check-ci audit \
+	lint format format-check ty test coverage integration-test migration-head-audit check check-ci audit \
 	frontend-bootstrap frontend-generate \
-	tsc frontend-build frontend-test frontend-e2e frontend-lint plans-link
+	tsc frontend-build frontend-test frontend-e2e frontend-smoke-real frontend-lint plans-link
 
 help:
 	@echo "Usage:"
-	@echo "  All commands run using docker-compose.dev.yaml"
+	@echo "  Docker lifecycle (docker-compose.dev.yaml):"
 	@echo ""
 	@echo "  make up                     # Up core stack (api/web/db), build if needed"
 	@echo "  make up-all                 # Up core + external tools (prowlarr/qbittorrent/jackett)"
@@ -29,17 +29,22 @@ help:
 	@echo "  make ps | restart           # Check status or restart containers"
 	@echo "  make app                    # Shell into $(APP_SVC) container"
 	@echo "  make frontend               # Shell into $(FRONTEND_SVC) container"
+	@echo ""
+	@echo "  Host quality gates (uv + Python 3.13 + pnpm on the host; see developer guide):"
+	@echo ""
 	@echo "  make test                   # Run the backend test suite on the host (no docker needed)"
+	@echo "  make coverage               # Backend coverage report (informational, not part of make check)"
 	@echo "  make integration-test       # PostgreSQL integration suite (requires MIRAMEDIA_TEST_DATABASE_URL)"
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
 	@echo "  make check                  # Fast local gate (lint, tests, typecheck, migration audit)"
-	@echo "  make check-ci               # Pre-PR CI parity: check + build + OpenAPI drift + integration + Playwright (needs MIRAMEDIA_TEST_DATABASE_URL and Chromium)"
+	@echo "  make check-ci               # Pre-PR CI parity: check + build + OpenAPI drift + integration + Playwright + real smoke (needs MIRAMEDIA_TEST_DATABASE_URL and Chromium)"
 	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
 	@echo "  make frontend-generate      # Generate web build prerequisites (web 'generate' script)"
 	@echo "  make frontend-build         # Generate prerequisites, then build the static export"
 	@echo "  make tsc                    # Type-check the Next.js frontend"
 	@echo "  make frontend-test          # Run the frontend unit tests (vitest, no backend/browser)"
 	@echo "  make frontend-e2e           # Playwright browser smoke tests (install Chromium first; see developer guide)"
+	@echo "  make frontend-smoke-real    # Real frontend→FastAPI→Postgres smoke (needs Chromium, Postgres, frontend-build)"
 	@echo "  make frontend-lint          # Frontend lint + format check (oxlint, oxfmt --check)"
 	@echo "  make plans-link             # Symlink the shared (untracked) plans/ dir into this worktree"
 
@@ -81,7 +86,7 @@ openapi-json:
 
 # Regenerate frontend OpenAPI client types (web/src/lib/api/api.d.ts) without running the server.
 openapi: openapi-json
-	@cd web && pnpm exec openapi-typescript public/openapi.json -o src/lib/api/api.d.ts
+	@cd web && pnpm run openapi:from-file
 
 lint:
 	@uv run --python 3.13 ruff check .
@@ -98,7 +103,7 @@ ty:
 # Canonical frontend generation, for workflows that need the generated artifacts
 # WITHOUT running a build: `web/src` imports the Fumadocs collections
 # (`collections/*` -> `web/.source`) and Next's generated type declarations, both
-# gitignored, so a bare `tsgo --noEmit` on a fresh clone would fail without this.
+# gitignored, so a bare `tsc --noEmit` on a fresh clone would fail without this.
 #
 # Do NOT wrap this around `pnpm build` — the build script generates on its own
 # (see web/package.json). Both scripts run `fumadocs-mdx` explicitly and then set
@@ -134,8 +139,9 @@ check-ci: check frontend-build
 		|| { echo "OpenAPI artifacts stale — run 'make openapi' and commit the changes." >&2; exit 1; }
 	@$(MAKE) integration-test
 	@$(MAKE) frontend-e2e
+	@$(MAKE) frontend-smoke-real
 
-# Type-check the Next.js frontend. Standalone: `tsgo` needs the generated
+# Type-check the Next.js frontend. Standalone: `tsc` needs the generated
 # collections + Next type declarations, and nothing here runs `next build`, so
 # `pnpm run typecheck` generates them exactly once first. Use
 # `pnpm run typecheck:generated` in a path that has already generated.
@@ -157,12 +163,23 @@ frontend-test:
 frontend-e2e:
 	@cd web && pnpm run test:e2e
 
+# Real frontend→FastAPI→PostgreSQL smoke (static export served by FastAPI).
+# Requires: `make frontend-build`, Chromium (`cd web && pnpm exec playwright install --with-deps chromium`),
+# and MIRAMEDIA_TEST_DATABASE_URL pointing at disposable PostgreSQL.
+frontend-smoke-real:
+	@test -d web/out || { echo "Missing web/out — run 'make frontend-build' first." >&2; exit 1; }
+	@cd web && pnpm run test:smoke
+
 frontend-lint:
 	@cd web && pnpm run lint && pnpm run format:check
 
 # Run the backend test suite on the host (no docker needed).
 test:
 	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest
+
+# Coverage report (non-gating — informational only, not part of `make check`).
+coverage:
+	@MIRAMEDIA_LOG_FILE=/dev/null uv run --python 3.13 pytest --cov=miramedia --cov-report=term-missing
 
 # PostgreSQL integration suite — not collected by `make test`.
 integration-test:

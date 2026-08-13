@@ -25,6 +25,7 @@ from tests.pg_disposable import (
 pytestmark = pytest.mark.integration
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_BASE_REVISION = "3ae9e0afdc49"
 
 
 def _script_directory() -> ScriptDirectory:
@@ -104,6 +105,51 @@ def _database_revision(sync_url: str) -> str:
         engine.dispose()
 
 
+def _plant_unrelated_sentinel(sync_url: str) -> None:
+    engine = create_engine(sync_url, pool_pre_ping=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS plan246_unrelated_sentinel (
+                        id integer PRIMARY KEY
+                    )
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO plan246_unrelated_sentinel (id) VALUES (1) "
+                    "ON CONFLICT DO NOTHING"
+                )
+            )
+    finally:
+        engine.dispose()
+
+
+def _sentinel_row_count(sync_url: str) -> int:
+    engine = create_engine(sync_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT COUNT(*) FROM plan246_unrelated_sentinel")
+            ).first()
+            assert row is not None
+            return int(row[0])
+    finally:
+        engine.dispose()
+
+
+def _drop_unrelated_sentinel(sync_url: str) -> None:
+    engine = create_engine(sync_url, pool_pre_ping=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS plan246_unrelated_sentinel"))
+    finally:
+        engine.dispose()
+
+
 def test_repository_head_is_singular() -> None:
     head = _repo_head_revision()
     assert head.strip()
@@ -149,6 +195,52 @@ def test_alembic_reversible_traversal_head_to_immediate_predecessor(
         assert upgrade.returncode == 0, _format_alembic_failure(upgrade, sync_url)
         assert _database_revision(sync_url) == head
     finally:
+        restore = _restore_head_revision(sync_url)
+        if restore.returncode != 0:
+            restore_error = _format_alembic_failure(restore, sync_url)
+        elif _database_revision(sync_url) != head:
+            restore_error = (
+                f"failed to restore head revision {head} "
+                f"(database={_sanitize_database_url(sync_url)}, "
+                f"actual={_database_revision(sync_url)!r})"
+            )
+
+    if restore_error is not None:
+        pytest.fail(restore_error)
+
+
+def test_alembic_downgrade_to_base_floor_then_refuses_below(
+    integration_db_url: str,
+) -> None:
+    sync_url = alembic_sync_url(integration_db_url)
+    _assert_disposable_database_for_alembic_downgrade(sync_url)
+
+    head = _repo_head_revision()
+    restore_error: str | None = None
+
+    try:
+        to_floor = _run_alembic(sync_url, "downgrade", _BASE_REVISION)
+        assert to_floor.returncode == 0, _format_alembic_failure(to_floor, sync_url)
+        assert _database_revision(sync_url) == _BASE_REVISION
+
+        _plant_unrelated_sentinel(sync_url)
+
+        below_floor = _run_alembic(sync_url, "downgrade", "base")
+        assert below_floor.returncode != 0, (
+            "expected downgrade below base to fail; "
+            f"stdout:\n{below_floor.stdout}\nstderr:\n{below_floor.stderr}"
+        )
+        assert "Refusing to downgrade below the base migration revision" in (
+            below_floor.stderr + below_floor.stdout
+        )
+        assert _database_revision(sync_url) == _BASE_REVISION
+        assert _sentinel_row_count(sync_url) == 1
+
+        upgrade = _run_alembic(sync_url, "upgrade", "head")
+        assert upgrade.returncode == 0, _format_alembic_failure(upgrade, sync_url)
+        assert _database_revision(sync_url) == head
+    finally:
+        _drop_unrelated_sentinel(sync_url)
         restore = _restore_head_revision(sync_url)
         if restore.returncode != 0:
             restore_error = _format_alembic_failure(restore, sync_url)
@@ -209,3 +301,65 @@ async def _jsonb_round_trip(db) -> None:
 
 def test_jsonb_payload_round_trip_and_nullable_keys(db, run_async) -> None:
     run_async(_jsonb_round_trip(db))
+
+
+_WATCHLIST_REVISION = "l0a1b2c3d4e5"
+
+
+def test_upgrade_and_downgrade_traverse_new_watchlist_revision(
+    integration_db_url: str,
+) -> None:
+    sync_url = alembic_sync_url(integration_db_url)
+    _assert_disposable_database_for_alembic_downgrade(sync_url)
+
+    head = _repo_head_revision()
+    assert head == _WATCHLIST_REVISION
+    predecessor = _immediate_predecessor_revision(head)
+    assert predecessor == "k9f0a1b2c3d4"
+    restore_error: str | None = None
+
+    try:
+        downgrade = _run_alembic(sync_url, "downgrade", predecessor)
+        assert downgrade.returncode == 0, _format_alembic_failure(downgrade, sync_url)
+        assert _database_revision(sync_url) == predecessor
+
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        try:
+            with engine.connect() as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        text(
+                            """
+                            SELECT tablename
+                            FROM pg_tables
+                            WHERE schemaname = 'public'
+                              AND tablename IN (
+                                'media_watch_state',
+                                'watchlist',
+                                'watchlist_item'
+                              )
+                            """
+                        )
+                    )
+                }
+            assert tables == set()
+        finally:
+            engine.dispose()
+
+        upgrade = _run_alembic(sync_url, "upgrade", "head")
+        assert upgrade.returncode == 0, _format_alembic_failure(upgrade, sync_url)
+        assert _database_revision(sync_url) == head
+    finally:
+        restore = _restore_head_revision(sync_url)
+        if restore.returncode != 0:
+            restore_error = _format_alembic_failure(restore, sync_url)
+        elif _database_revision(sync_url) != head:
+            restore_error = (
+                f"failed to restore head revision {head} "
+                f"(database={_sanitize_database_url(sync_url)}, "
+                f"actual={_database_revision(sync_url)!r})"
+            )
+
+    if restore_error is not None:
+        pytest.fail(restore_error)

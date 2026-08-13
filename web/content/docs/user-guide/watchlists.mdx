@@ -1,0 +1,96 @@
+---
+title: Watchlists
+description: "Private lists, Watch Next, Upcoming, and per-user watched state."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The **Watchlists** section in the sidebar replaces the old Calendar entry. It
+has three tabs:
+
+| Tab | Purpose |
+| --- | ------- |
+| **Watch Next** | Your personal queue of the next episode to watch for each started show |
+| **Upcoming** | Release calendar with the same date window, search, filters, and download links as before |
+| **My Lists** | Custom lists you create, rename, reorder, and delete |
+
+<Callout type="info">
+
+Bookmarks to **Calendar** (`/dashboard/calendar`) still work — they redirect to
+**Upcoming** inside Watchlists.
+
+</Callout>
+
+## Private ownership
+
+Every watchlist belongs to the account that created it. Other users cannot see
+your lists, your Watch Next row, or your watched checkmarks. Deleting a user
+removes their lists and viewing activity together.
+
+## Custom lists
+
+From **My Lists**, click **Create list** (or **New list** in the tab bar) and
+give the list a name. Open a list to rename it, add a description, reorder
+items, or delete the list.
+
+Add media from any show, movie, or episode detail page with **Add to
+Watchlist**. The same title cannot be added twice to one list. Lists can hold
+movies, whole shows, or individual episodes together.
+
+### Show entries advance automatically
+
+When a list contains a **show**, the row always points at the next downloaded,
+unwatched episode. After you finish that episode — through playback or by
+marking it watched — the row updates to the following episode without re-adding
+the show.
+
+## Watch Next
+
+**Watch Next** is separate from custom lists. It shows at most one row per show you
+have started watching, ordered by recent activity. A show appears after you begin
+an episode (playback progress) or add the show to a list.
+
+Each row offers **Play** / **Resume** and a watched toggle for that episode.
+When the current episode is marked watched or completes during playback, the row
+advances to the next unwatched episode for that show.
+
+<Callout type="info">
+
+Watch Next is per user. Clearing your lists does not clear Watch Next until viewing
+activity for those shows is gone.
+
+</Callout>
+
+## Watched state
+
+Watched checkmarks on shows, seasons, episodes, and movies are **global for your
+account** — the same state appears on detail pages, custom lists, and Watch Next
+regardless of list membership.
+
+- **Automatic completion** — finishing playback marks the movie or episode
+  watched.
+- **Manual override** — use **Mark watched** / **Mark unwatched** anywhere the
+  toggle appears. Manual choice overrides automatic completion until you change
+  it again.
+- **Batch actions** — show and season menus can mark every downloaded episode at
+  once.
+
+Watched state does not remove items from your lists; it only affects progress
+display and what Watch Next considers "next".
+
+## Upcoming
+
+**Upcoming** keeps the release calendar: pick a date range, sort ascending or
+descending, search by title, filter by media type or download status, and open
+linked shows or movies. Nothing about those controls changed when Calendar moved
+under Watchlists.
+
+## Clearing viewing activity vs deleting lists
+
+| Action | Where | Effect |
+| ------ | ----- | ------ |
+| **Clear viewing activity** | My Account | Resets watched state and playback progress; **lists are kept** |
+| **Delete list** | List detail | Removes only that list; library files and watched state stay |
+
+Use **Clear viewing activity** when you want a fresh progress slate without
+rebuilding your lists.

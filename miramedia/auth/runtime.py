@@ -313,8 +313,29 @@ class DynamicOAuthClient(BaseOAuth2[OAuth2Token]):
     async def get_id_email(self, token: str) -> tuple[str, str | None]:
         return await self._require_client().get_id_email(token)
 
+    async def get_id_email_verified(self, token: str) -> tuple[str, str | None, bool]:
+        return await get_oauth_id_email_verified(self._require_client(), token)
+
     async def get_profile(self, token: str) -> dict[str, object]:
         return await self._require_client().get_profile(token)
+
+
+def email_verified_from_profile(profile: dict[str, object]) -> bool:
+    """Return True only when the provider positively asserts email_verified."""
+    return profile.get("email_verified") is True
+
+
+async def get_oauth_id_email_verified(
+    client: OpenID,
+    token: str,
+) -> tuple[str, str | None, bool]:
+    """Load OIDC identity and whether the provider verified the email."""
+    profile = await client.get_profile(token)
+    account_id = str(profile["sub"])
+    account_email = profile.get("email")
+    if account_email is not None and not isinstance(account_email, str):
+        account_email = str(account_email)
+    return account_id, account_email, email_verified_from_profile(profile)
 
 
 dynamic_oauth_client = DynamicOAuthClient()

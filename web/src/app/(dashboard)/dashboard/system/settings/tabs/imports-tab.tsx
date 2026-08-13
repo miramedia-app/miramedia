@@ -50,22 +50,24 @@ export function ImportsTab({
                 onCheckedChange={(v) => setImportsPath(["auto_scan_enabled"], v)}
               />
             </div>
-            <div className="space-y-2">
-              <Label>
-                Scan interval (hours)
-                <OverrideMarker path={["imports", "auto_scan_interval_hours"]} />
-              </Label>
-              <Input
-                type="number"
-                min={1}
-                value={Number(imp.auto_scan_interval_hours ?? "") || ""}
-                onChange={(e) =>
-                  setImportsPath(["auto_scan_interval_hours"], Number(e.target.value) || 0)
-                }
-              />
-              <p className="text-xs text-muted-foreground">
-                Changing this reschedules the background scan without a restart.
-              </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>
+                  Scan interval (hours)
+                  <OverrideMarker path={["imports", "auto_scan_interval_hours"]} />
+                </Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={Number(imp.auto_scan_interval_hours ?? "") || ""}
+                  onChange={(e) =>
+                    setImportsPath(["auto_scan_interval_hours"], Number(e.target.value) || 0)
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Changing this reschedules the background scan without a restart.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -84,29 +86,31 @@ export function ImportsTab({
                 onCheckedChange={(v) => setImportsPath(["auto_import_on_scan"], v)}
               />
             </div>
-            <div className="space-y-2">
-              <Label>
-                Minimum confidence to auto-import (0–1)
-                <OverrideMarker path={["imports", "auto_import_min_confidence"]} />
-              </Label>
-              <Input
-                type="number"
-                min={0}
-                max={1}
-                step={0.05}
-                value={
-                  imp.auto_import_min_confidence === undefined
-                    ? ""
-                    : Number(imp.auto_import_min_confidence)
-                }
-                onChange={(e) =>
-                  setImportsPath(["auto_import_min_confidence"], Number(e.target.value) || 0)
-                }
-              />
-              <p className="text-xs text-muted-foreground">
-                Lower values import more aggressively but risk wrong matches. 0.9 is conservative;
-                1.0 requires an exact title + year match.
-              </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>
+                  Minimum confidence to auto-import (0–1)
+                  <OverrideMarker path={["imports", "auto_import_min_confidence"]} />
+                </Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={
+                    imp.auto_import_min_confidence === undefined
+                      ? ""
+                      : Number(imp.auto_import_min_confidence)
+                  }
+                  onChange={(e) =>
+                    setImportsPath(["auto_import_min_confidence"], Number(e.target.value) || 0)
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  Lower values import more aggressively but risk wrong matches. 0.9 is conservative;
+                  1.0 requires an exact title + year match.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -125,41 +129,42 @@ export function ImportsTab({
                 onCheckedChange={(v) => setImportsPath(["provider_search_on_scan"], v)}
               />
             </div>
-            <div className="space-y-2">
-              <Label>
-                Max provider results per directory
-                <OverrideMarker path={["imports", "provider_search_max_results"]} />
-              </Label>
-              <Input
-                type="number"
-                min={1}
-                value={Number(imp.provider_search_max_results ?? "") || ""}
-                onChange={(e) =>
-                  setImportsPath(["provider_search_max_results"], Number(e.target.value) || 0)
-                }
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>
-                Auto-pick threshold (0–1)
-                <OverrideMarker path={["misc", "auto_pick_confidence_threshold"]} />
-              </Label>
-              <Input
-                type="number"
-                step="0.05"
-                min={0}
-                max={1}
-                value={Number(m.auto_pick_confidence_threshold ?? "") || ""}
-                onChange={(e) =>
-                  setMiscPath(["auto_pick_confidence_threshold"], Number(e.target.value) || 0)
-                }
-                placeholder="0.8"
-                className="max-w-[120px]"
-              />
-              <p className="text-xs text-muted-foreground">
-                When a scanned directory&apos;s top existing-library match meets this confidence,
-                provider search is skipped. Default 0.8.
-              </p>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>
+                  Max provider results per directory
+                  <OverrideMarker path={["imports", "provider_search_max_results"]} />
+                </Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={Number(imp.provider_search_max_results ?? "") || ""}
+                  onChange={(e) =>
+                    setImportsPath(["provider_search_max_results"], Number(e.target.value) || 0)
+                  }
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>
+                  Auto-pick threshold (0–1)
+                  <OverrideMarker path={["misc", "auto_pick_confidence_threshold"]} />
+                </Label>
+                <Input
+                  type="number"
+                  step="0.05"
+                  min={0}
+                  max={1}
+                  value={Number(m.auto_pick_confidence_threshold ?? "") || ""}
+                  onChange={(e) =>
+                    setMiscPath(["auto_pick_confidence_threshold"], Number(e.target.value) || 0)
+                  }
+                  placeholder="0.8"
+                />
+                <p className="text-xs text-muted-foreground">
+                  When a scanned directory&apos;s top existing-library match meets this confidence,
+                  provider search is skipped. Default 0.8.
+                </p>
+              </div>
             </div>
           </div>
 

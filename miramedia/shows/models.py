@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from uuid import UUID
 
 from sqlalchemy import (
@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Time,
     UniqueConstraint,
     text,
 )
@@ -124,6 +125,10 @@ class Episode(Base):
     overview: Mapped[str | None] = mapped_column(nullable=True)
     skipped: Mapped[bool] = mapped_column(default=False, index=True)
     air_date: Mapped[date | None] = mapped_column(Date, default=None, nullable=True)
+    # Local air time-of-day (same configured zone as air_date), when a provider
+    # supplies a datetime (Cinemeta 'released', TVMaze 'airstamp'). NULL when the
+    # provider gives only a date. Display-only — the scheduler keys off air_date.
+    air_time: Mapped[time | None] = mapped_column(Time, default=None, nullable=True)
     downloaded: Mapped[bool] = mapped_column(default=False, index=True)
 
     season: Mapped["Season"] = relationship(back_populates="episodes")

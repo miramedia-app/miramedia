@@ -1,21 +1,13 @@
 "use client";
 
-import * as React from "react";
-import dynamic from "next/dynamic";
-
 import { Badge } from "@/components/ui/badge";
 import { MediaPicture } from "@/components/media-picture";
 import { MediaStatusBadge } from "@/components/media-status-badge";
 import { MediaActionsMenu } from "@/components/media-actions-menu";
+import { AddToWatchlist } from "@/components/watchlists/add-to-watchlist";
+import { ShowSettingsSheet } from "@/components/shows/show-settings-sheet";
 import type { ShowDetail } from "@/hooks/use-show-detail";
-
-const ShowSettingsSheet = dynamic(
-  () =>
-    import("@/components/shows/show-settings-sheet").then((m) => ({
-      default: m.ShowSettingsSheet,
-    })),
-  { ssr: false },
-);
+import { formatCastLine } from "@/lib/utils";
 
 export interface ShowDetailHeroProps {
   show: ShowDetail;
@@ -66,11 +58,18 @@ export function ShowDetailHero({ show, isSuperuser }: ShowDetailHeroProps) {
           );
         })()}
         {show.cast && show.cast.length > 0 && (
-          <p className="line-clamp-1 text-xs text-muted-foreground">{show.cast.join(", ")}</p>
+          <p className="line-clamp-1 text-xs text-muted-foreground">{formatCastLine(show.cast)}</p>
         )}
         <div className="mt-3 flex flex-wrap items-center gap-2 md:mt-auto md:pt-3">
-          <MediaActionsMenu media={show} mediaType="show" />
-          {isSuperuser && <ShowSettingsSheet show={show} />}
+          <MediaActionsMenu
+            media={show}
+            mediaType="show"
+            afterSubtitles={
+              <AddToWatchlist mediaKind="show" mediaId={show.id ?? ""} triggerLabel="Watchlists" />
+            }
+          >
+            {isSuperuser ? <ShowSettingsSheet show={show} /> : null}
+          </MediaActionsMenu>
         </div>
       </div>
     </div>

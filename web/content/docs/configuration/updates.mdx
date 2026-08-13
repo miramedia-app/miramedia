@@ -36,8 +36,9 @@ docker compose pull && docker compose up -d
 <Callout type="info">
 
 Legacy keys such as `allow_in_app_apply`, `docker_socket_path`, and
-`container_name` are still accepted in `config.toml` for compatibility but are
-ignored. Do not mount `/var/run/docker.sock` for updates.
+`container_name` may still appear in older `config.toml` files. They are
+ignored at startup with a warning. Do not mount `/var/run/docker.sock` for
+updates.
 
 </Callout>
 

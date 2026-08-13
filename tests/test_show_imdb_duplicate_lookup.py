@@ -201,9 +201,11 @@ def test_show_imdb_duplicate_lookup_db_error_returns_none() -> None:
 
 
 def test_add_show_imdb_duplicate_returns_existing_show() -> None:
-    existing = _large_show_fixture()
+    full_show = _large_show_fixture()
+    summary = full_show.model_copy(update={"seasons": []})
     show_repo = MagicMock()
-    show_repo.show_exists_by_imdb_id = AsyncMock(return_value=existing)
+    show_repo.show_exists_by_imdb_id = AsyncMock(return_value=summary)
+    show_repo.get_show_by_id = AsyncMock(return_value=full_show)
     show_repo.save_show = AsyncMock()
     show_repo.db = MagicMock()
 
@@ -224,10 +226,11 @@ def test_add_show_imdb_duplicate_returns_existing_show() -> None:
     svc = ShowService(show_repo, MagicMock(), None, None)
     result = run_async(svc.add_show("77169", provider))
 
-    assert result is existing
+    assert result is full_show
     assert len(result.seasons) == 5
     show_repo.save_show.assert_not_called()
     show_repo.show_exists_by_imdb_id.assert_awaited_once_with("tt0903747")
+    show_repo.get_show_by_id.assert_awaited_once_with(show_id=summary.id)
 
 
 def test_add_show_imdb_absent_skips_duplicate_lookup() -> None:

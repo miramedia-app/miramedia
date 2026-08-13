@@ -37,6 +37,7 @@ class MiscSettingsSchema(SettingsSectionSchema):
     frontend_url: str | None = None
     cors_urls: list[str] | None = None
     development: bool | None = None
+    timezone: str | None = None
     show_libraries: list[LibraryItemSchema] | None = None
     movie_libraries: list[LibraryItemSchema] | None = None
     naming: NamingSettingsSchema | None = None
@@ -49,6 +50,26 @@ class MiscSettingsSchema(SettingsSectionSchema):
     import_sweep_interval_minutes: int | None = None
     integrity_check_enabled: bool | None = None
     integrity_check_interval_hours: int | None = None
+    auto_pick_confidence_threshold: float | None = None
+    trusted_proxy_hosts: list[str] | str | None = None
+    metrics_public: bool | None = None
+    csp_enabled: bool | None = None
+    csp_enforce: bool | None = None
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str | None) -> str | None:
+        """Reject unknown zones so the UI surfaces a clear error. Blank = server zone."""
+        if not value:
+            return value
+        from zoneinfo import available_timezones
+
+        if value not in available_timezones():
+            msg = (
+                f"Unknown timezone {value!r}; use an IANA name like 'America/New_York'."
+            )
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="before")
     @classmethod
@@ -164,6 +185,7 @@ class SabnzbdSettingsSchema(SettingsSectionSchema):
     port: int | None = None
     api_key: str | None = None
     base_path: str | None = None
+    verify_tls: bool | None = None
 
 
 class NativeTorrentSettingsSchema(SettingsSectionSchema):
@@ -194,13 +216,46 @@ class JackettSettingsSchema(SettingsSectionSchema):
     indexers: list[str] | None = None
 
 
+class TorznabSiteSettingsSchema(SettingsSectionSchema):
+    name: str | None = None
+    url: str | None = None
+    api_key: str | None = None
+    supports_tv: bool | None = None
+    supports_movies: bool | None = None
+    categories_tv: str | None = None
+    categories_movies: str | None = None
+    cloudflare_protected: bool | None = None
+
+
 class NativeIndexerSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     max_concurrent_searches: int | None = None
+    custom_torznab_sites: list[TorznabSiteSettingsSchema] | None = None
+    disabled_sites: list[str] | None = None
+
+
+class CloudflareRemoteSettingsSchema(SettingsSectionSchema):
+    endpoint: str | None = None
+
+
+class CloudflareUrlBackendSettingsSchema(SettingsSectionSchema):
+    url: str | None = None
+
+
+class CloudflareBrowserRunSettingsSchema(SettingsSectionSchema):
+    account_id: str | None = None
+    api_token: str | None = None
+
+
+class CloudflareFirecrawlSettingsSchema(SettingsSectionSchema):
+    api_key: str | None = None
+    base_url: str | None = None
 
 
 class CloudflareSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
+    solver: str | None = None
+    proxy: str | None = None
     browser_path: str | None = None
     cookie_ttl_seconds: int | None = None
     impersonate_profile: str | None = None
@@ -209,6 +264,11 @@ class CloudflareSettingsSchema(SettingsSectionSchema):
     page_load_timeout_seconds: int | None = None
     challenge_wait_seconds: float | None = None
     solve_timeout_seconds: int | None = None
+    remote: CloudflareRemoteSettingsSchema | None = None
+    byparr: CloudflareUrlBackendSettingsSchema | None = None
+    flaresolverr: CloudflareUrlBackendSettingsSchema | None = None
+    browser_run: CloudflareBrowserRunSettingsSchema | None = None
+    firecrawl: CloudflareFirecrawlSettingsSchema | None = None
 
 
 class TitleScoringRuleSchema(SettingsSectionSchema):
@@ -334,10 +394,51 @@ class RequestsSettingsSchema(SettingsSectionSchema):
         return migrate_requests_section(data)
 
 
+# --- Watchlists ---
+class NativeWatchlistsSettingsSchema(SettingsSectionSchema):
+    enabled: bool | None = None
+    custom_lists: bool | None = None
+    watch_next: bool | None = None
+    watch_next_include_specials: bool | None = None
+    upcoming: bool | None = None
+    upcoming_default_past_days: int | None = None
+    upcoming_default_future_days: int | None = None
+
+
+class WatchlistsSettingsSchema(SettingsSectionSchema):
+    auto_remove_watched: bool | None = None
+    continue_watching: bool | None = None
+    max_lists_per_user: int | None = None
+    max_items_per_list: int | None = None
+    native: NativeWatchlistsSettingsSchema | None = None
+
+
 # --- Subtitles ---
+class SubtitleProviderSettingsSchema(SettingsSectionSchema):
+    enabled: bool | None = None
+    username: str | None = None
+    password: str | None = None
+    api_key: str | None = None
+
+
 class NativeSubtitleSettingsSchema(SettingsSectionSchema):
     enabled: bool | None = None
     scan_interval_hours: int | None = None
+    gestdown: SubtitleProviderSettingsSchema | None = None
+    tvsubtitles: SubtitleProviderSettingsSchema | None = None
+    yifysubtitles: SubtitleProviderSettingsSchema | None = None
+    subtitlecat: SubtitleProviderSettingsSchema | None = None
+    subf2m: SubtitleProviderSettingsSchema | None = None
+    isubtitles: SubtitleProviderSettingsSchema | None = None
+    my_subs: SubtitleProviderSettingsSchema | None = None
+    embeddedsubtitles: SubtitleProviderSettingsSchema | None = None
+    opensubtitlescom: SubtitleProviderSettingsSchema | None = None
+    addic7ed: SubtitleProviderSettingsSchema | None = None
+    subdl: SubtitleProviderSettingsSchema | None = None
+    subsource: SubtitleProviderSettingsSchema | None = None
+    napiprojekt: SubtitleProviderSettingsSchema | None = None
+    subtis: SubtitleProviderSettingsSchema | None = None
+    subtitulamos: SubtitleProviderSettingsSchema | None = None
 
 
 class BazarrSettingsSchema(SettingsSectionSchema):
@@ -368,11 +469,10 @@ class UpdateSettingsSchema(SettingsSectionSchema):
     check_interval_hours: int | None = None
     include_prereleases: bool | None = None
     cache_ttl_seconds: int | None = None
+    request_timeout_seconds: int | None = None
     notify_on_new_version: bool | None = None
-    allow_in_app_apply: bool | None = None
     image_repository: str | None = None
     image_tag: str | None = None
-    container_name: str | None = None
 
 
 # --- Imports ---
@@ -396,6 +496,7 @@ class SystemSettingsUpdate(SettingsSectionSchema):
     indexers: IndexerSettingsSchema | None = None
     metadata: MetadataSettingsSchema | None = None
     requests: RequestsSettingsSchema | None = None
+    watchlists: WatchlistsSettingsSchema | None = None
     subtitles: SubtitleSettingsSchema | None = None
     updates: UpdateSettingsSchema | None = None
     cloudflare: CloudflareSettingsSchema | None = None
@@ -412,6 +513,7 @@ class SystemSettingsRead(BaseModel):
     indexers: dict
     metadata: dict
     requests: dict
+    watchlists: dict
     subtitles: dict
     updates: dict
     cloudflare: dict

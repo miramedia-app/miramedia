@@ -7,22 +7,28 @@ authored offline from the site modules, never fetched live.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import pytest
 from selectolax.parser import HTMLParser
 
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.sites.base import DEFAULT_TRACKERS, build_magnet
+from miramedia.indexers.sites.bittorrented import BitTorrentedSite
 from miramedia.indexers.sites.eztv import EztvSite
 from miramedia.indexers.sites.limetorrents import LimeTorrentsSite
 from miramedia.indexers.sites.nyaa import NyaaSite
 from miramedia.indexers.sites.thepiratebay import ThePirateBaySite
 from miramedia.indexers.sites.torrentgalaxy import TorrentGalaxySite
-from miramedia.indexers.sites.x1337 import X1337Site
+from miramedia.indexers.sites.x1337 import (
+    UNKNOWN_AGE_DAYS,
+    X1337Site,
+    parse_upload_age_days,
+)
 from miramedia.indexers.sites.yts import YtsSite
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "indexer_sites"
@@ -62,6 +68,22 @@ def _load_json_fixture(name: str) -> Any:
 
 
 class TestBuildMagnet:
+    def test_default_trackers_are_deduplicated(self) -> None:
+        assert len(DEFAULT_TRACKERS) == len(set(DEFAULT_TRACKERS))
+
+    def test_default_trackers_include_udp_and_http_endpoints(self) -> None:
+        assert any(t.startswith("udp://") for t in DEFAULT_TRACKERS)
+        assert any(t.startswith(("http://", "https://")) for t in DEFAULT_TRACKERS)
+
+    def test_each_tracker_encoded_as_separate_tr_parameter(self) -> None:
+        magnet = build_magnet(_VALID_HEX_HASH, "title")
+        params = _magnet_query_params(magnet)
+
+        assert len(params["tr"]) == len(DEFAULT_TRACKERS)
+        assert set(params["tr"]) == set(DEFAULT_TRACKERS)
+        for tracker in DEFAULT_TRACKERS:
+            assert f"tr={quote(tracker, safe='')}" in magnet
+
     def test_dn_encoding_blocks_injected_tracker_params(self) -> None:
         title = "Release &tr=udp://evil.example:80/announce"
         magnet = build_magnet(_VALID_HEX_HASH, title)
@@ -209,8 +231,11 @@ class TestX1337Parsing:
             "/torrent/1003/movie-2024/": ("magnet:?xt=urn:btih:ccc333&dn=Movie+2024"),
         }
 
-        def fake_fetch_magnet(meta: dict) -> str:
-            return magnets[meta["detail_path"]]
+        def fake_fetch_magnet(
+            meta: dict, *, origin: str = "", **_kwargs: Any
+        ) -> tuple[str, int]:
+            _ = origin
+            return magnets[meta["detail_path"]], 0
 
         html = _load_fixture("x1337.html")
         with patch.object(site, "_fetch_magnet", side_effect=fake_fetch_magnet):
@@ -232,9 +257,388 @@ class TestX1337Parsing:
         assert hard_error is False
 
 
+class TestX1337MirrorFailover:
+    @pytest.fixture
+    def site(self) -> X1337Site:
+        return X1337Site(bypass=None, timeout=5)
+
+    @staticmethod
+    def _response(
+        *,
+        status_code: int = 200,
+        text: str = "",
+        url: str = "",
+        headers: dict[str, str] | None = None,
+    ) -> Any:
+        return type(
+            "Resp",
+            (),
+            {
+                "status_code": status_code,
+                "text": text,
+                "headers": headers or {},
+                "url": url,
+            },
+        )()
+
+    def test_configured_host_success_skips_other_mirrors(self, site: X1337Site) -> None:
+        site.url = "https://mirror-a.example"
+        html = _load_fixture("x1337.html")
+        calls: list[str] = []
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            calls.append(url)
+            return self._response(
+                text=html,
+                url=url,
+            )
+
+        with (
+            patch.object(site, "_plain_get", side_effect=fake_plain_get),
+            patch.object(site, "_fetch_magnet", return_value=(None, UNKNOWN_AGE_DAYS)),
+        ):
+            results, hard_error = site._search("show", "TV")
+
+        assert hard_error is False
+        assert results == []
+        assert len(calls) == 1
+        assert calls[0].startswith("https://mirror-a.example/")
+
+    def test_cloudflare_mirror_falls_through_to_later_plain_mirror(
+        self, site: X1337Site
+    ) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+        ]
+        site._mirror_pref = None
+        html = _load_fixture("x1337.html")
+        challenge = _load_fixture("x1337_challenge.html")
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            if url.startswith("https://mirror-a.example"):
+                return self._response(
+                    status_code=403,
+                    text=challenge,
+                    url=url,
+                    headers={"server": "cloudflare"},
+                )
+            return self._response(text=html, url=url)
+
+        with (
+            patch.object(site, "_plain_get", side_effect=fake_plain_get),
+            patch.object(site, "_fetch_magnet", return_value=(None, UNKNOWN_AGE_DAYS)),
+            patch.object(site, "_fetch_with_bypass") as bypass_fetch,
+        ):
+            results, hard_error = site._search("show", "TV")
+
+        bypass_fetch.assert_not_called()
+        assert hard_error is False
+        assert results == []
+        assert site._get_mirror_pref().ordered()[0] == "https://mirror-b.example"
+
+    def test_offlist_redirect_falls_back_to_requested_mirror(
+        self, site: X1337Site
+    ) -> None:
+        site.url = "https://1337xx.to"
+        site.available_urls = ["https://1337xx.to"]
+        site._mirror_pref = None
+        html = _load_fixture("x1337.html")
+        detail_html = _load_fixture("x1337_detail_dated.html")
+        detail_calls: list[str] = []
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            if "/torrent/" in url:
+                detail_calls.append(url)
+                return self._response(text=detail_html, url=url)
+            return self._response(
+                text=html,
+                url="https://www.1337xx.to/sort-category-search/show/TV/seeders/desc/1/",
+            )
+
+        with patch.object(site, "_plain_get", side_effect=fake_plain_get):
+            results, hard_error = site._search("show", "TV")
+
+        assert hard_error is False
+        assert len(results) == 3
+        assert detail_calls
+        assert all(url.startswith("https://1337xx.to/") for url in detail_calls)
+
+    def test_onlist_redirect_origin_is_adopted(self, site: X1337Site) -> None:
+        site.url = "https://1337x.to"
+        site.available_urls = ["https://1337x.to", "https://1337x.st"]
+        site._mirror_pref = None
+        html = _load_fixture("x1337.html")
+        detail_html = _load_fixture("x1337_detail_dated.html")
+        detail_calls: list[str] = []
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            if "/torrent/" in url:
+                detail_calls.append(url)
+                return self._response(text=detail_html, url=url)
+            return self._response(
+                text=html,
+                url="https://1337x.st/sort-category-search/show/TV/seeders/desc/1/",
+            )
+
+        with patch.object(site, "_plain_get", side_effect=fake_plain_get):
+            results, hard_error = site._search("show", "TV")
+
+        assert hard_error is False
+        assert len(results) == 3
+        assert detail_calls
+        assert all(url.startswith("https://1337x.st/") for url in detail_calls)
+
+    def test_trending_offlist_redirect_does_not_raise(self, site: X1337Site) -> None:
+        site.url = "https://1337xx.to"
+        site.available_urls = ["https://1337xx.to"]
+        site._mirror_pref = None
+        html = _load_fixture("x1337.html")
+
+        def fake_plain_get(_url: str, **_kwargs: Any) -> Any:
+            return self._response(
+                text=html,
+                url="https://evil.example/top-100-television",
+            )
+
+        with (
+            patch.object(site, "_plain_get", side_effect=fake_plain_get),
+            patch.object(
+                site,
+                "_fetch_magnet",
+                return_value=("magnet:?xt=urn:btih:test", UNKNOWN_AGE_DAYS),
+            ),
+        ):
+            results = site._search_trending("TV", "show")
+
+        assert results
+
+    def test_valid_empty_result_stops_without_other_mirrors(
+        self, site: X1337Site
+    ) -> None:
+        site.url = "https://mirror-a.example"
+        empty = _load_fixture("x1337_empty.html")
+        calls: list[str] = []
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            calls.append(url)
+            return self._response(text=empty, url=url)
+
+        with patch.object(site, "_plain_get", side_effect=fake_plain_get):
+            results, hard_error = site._search("missing", "TV")
+
+        assert results == []
+        assert hard_error is False
+        assert len(calls) == 1
+
+    def test_all_plain_fail_without_bypass_never_calls_solver(
+        self, site: X1337Site
+    ) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+        ]
+        site._mirror_pref = None
+        challenge = _load_fixture("x1337_challenge.html")
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            return self._response(
+                status_code=403,
+                text=challenge,
+                url=url,
+                headers={"server": "cloudflare"},
+            )
+
+        with (
+            patch.object(site, "_plain_get", side_effect=fake_plain_get),
+            patch.object(site, "_fetch_with_bypass") as bypass_fetch,
+            patch(
+                "miramedia.indexers.sites.x1337.CloudflareSession",
+                create=True,
+            ) as session_cls,
+        ):
+            results, hard_error = site._search("show", "TV")
+
+        bypass_fetch.assert_not_called()
+        session_cls.assert_not_called()
+        assert results == []
+        assert hard_error is True
+
+    def test_bypass_second_phase_uses_shared_deadline(self, site: X1337Site) -> None:
+        bypass = type(
+            "Bypass",
+            (),
+            {
+                "config": type("Cfg", (), {"enabled": True})(),
+                "solve": lambda _url, _timeout=None: None,
+            },
+        )()
+        site = X1337Site(bypass=bypass, timeout=5)
+        site.url = "https://mirror-a.example"
+        site.available_urls = ["https://mirror-a.example"]
+        site._mirror_pref = None
+        challenge = _load_fixture("x1337_challenge.html")
+        html = _load_fixture("x1337.html")
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            return self._response(
+                status_code=403,
+                text=challenge,
+                url=url,
+                headers={"server": "cloudflare"},
+            )
+
+        solve_calls: list[float] = []
+
+        def fake_bypass(_url: str, *, timeout: float) -> str | None:
+            solve_calls.append(timeout)
+            return html
+
+        with (
+            patch.object(site, "_plain_get", side_effect=fake_plain_get),
+            patch.object(site, "_fetch_via_bypass_session", return_value=None),
+            patch.object(site, "_fetch_with_bypass", side_effect=fake_bypass),
+            patch.object(site, "_fetch_magnet", return_value=(None, UNKNOWN_AGE_DAYS)),
+            patch.object(site, "_solver_deadline_seconds", return_value=100.0),
+            patch(
+                "miramedia.indexers.sites.x1337.time.monotonic", side_effect=[0.0, 50.0]
+            ),
+        ):
+            results, hard_error = site._search("show", "TV")
+
+        assert hard_error is False
+        assert results == []
+        assert len(solve_calls) == 1
+        assert solve_calls[0] == pytest.approx(50.0)
+
+    def test_concurrent_searches_keep_complete_mirror_snapshots(self) -> None:
+        import threading
+
+        site = X1337Site(bypass=None, timeout=5)
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+            "https://mirror-c.example",
+        ]
+        site._mirror_pref = None
+        empty = _load_fixture("x1337_empty.html")
+        barrier = threading.Barrier(4)
+        snapshots: list[tuple[str, ...]] = []
+
+        def fake_plain_get(url: str, **_kwargs: Any) -> Any:
+            return TestX1337MirrorFailover._response(text=empty, url=url)
+
+        def worker() -> None:
+            barrier.wait(timeout=5)
+            for _ in range(20):
+                snapshots.append(site._get_mirror_pref().ordered())
+                site._get_mirror_pref().mark_success("https://mirror-b.example")
+
+        with patch.object(site, "_plain_get", side_effect=fake_plain_get):
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+                assert not thread.is_alive()
+            site._search("show", "TV")
+
+        expected = {
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+            "https://mirror-c.example",
+        }
+        for snapshot in snapshots:
+            assert set(snapshot) == expected
+            assert len(snapshot) == 3
+
+
+class TestX1337UploadAge:
+    def test_valid_ordinal_date(self) -> None:
+        html = _load_fixture("x1337_detail_dated.html")
+        now = datetime(2026, 7, 1, tzinfo=UTC)
+        assert parse_upload_age_days(html, now=now) == 5
+
+    def test_year_boundary(self) -> None:
+        html = "<span><strong>Date uploaded</strong></span><span>Dec. 31st '25</span>"
+        now = datetime(2026, 1, 2, tzinfo=UTC)
+        assert parse_upload_age_days(html, now=now) == 2
+
+    def test_future_skew_clamped_to_zero(self) -> None:
+        html = "<span><strong>Date uploaded</strong></span><span>Jan. 10th '27</span>"
+        now = datetime(2026, 8, 9, tzinfo=UTC)
+        assert parse_upload_age_days(html, now=now) == 0
+
+    def test_missing_and_malformed_use_sentinel(self) -> None:
+        assert parse_upload_age_days("<html></html>") == UNKNOWN_AGE_DAYS
+        assert (
+            parse_upload_age_days(
+                "<span><strong>Date uploaded</strong></span><span>Foob. 99th '99</span>"
+            )
+            == UNKNOWN_AGE_DAYS
+        )
+
+
 # ---------------------------------------------------------------------------
-# TorrentGalaxy
+# BitTorrented — JSON API
 # ---------------------------------------------------------------------------
+
+
+class TestBitTorrentedParsing:
+    @pytest.fixture
+    def site(self) -> BitTorrentedSite:
+        return BitTorrentedSite()
+
+    def test_map_fixture_rows(self, site: BitTorrentedSite) -> None:
+        payload = _load_json_fixture("bittorrented.json")
+        results = site._map_results(payload["results"])
+
+        assert len(results) == 3
+        assert results[0].title == "Sample Series S01E01 1080p"
+        assert results[0].seeders == 42
+        assert results[0].size == 1610612736
+        assert results[0].indexer == "bittorrented"
+        assert results[0].download_url == build_magnet(
+            "aabbccddeeff00112233445566778899aabbccdd",
+            "Sample Series S01E01 1080p",
+        )
+
+        assert results[1].seeders == 0
+        assert results[2].title == "Release & Partner S02E03"
+        params = _magnet_query_params(results[2].download_url)
+        assert unquote(params["dn"][0]) == "Release & Partner S02E03"
+
+    def test_short_query_skips_request(self, site: BitTorrentedSite) -> None:
+        with patch.object(site, "_fetch_json") as fetch_json:
+            assert site._search_api("ab") == []
+        fetch_json.assert_not_called()
+
+    def test_malformed_envelope_fails_safe(self, site: BitTorrentedSite) -> None:
+        with patch.object(site, "_fetch_json", return_value={"results": "nope"}):
+            assert site._search_api("valid query") == []
+
+    def test_api_error_returns_empty(self, site: BitTorrentedSite) -> None:
+        with patch.object(site, "_fetch_json", side_effect=RuntimeError("boom")):
+            assert site._search_api("valid query") == []
+
+    def test_search_uses_expected_params(self, site: BitTorrentedSite) -> None:
+        payload = _load_json_fixture("bittorrented.json")
+        with patch.object(site, "_fetch_json", return_value=payload) as fetch_json:
+            site.search("sample show", "tv")
+
+        fetch_json.assert_called_once()
+        url, kwargs = fetch_json.call_args
+        assert url == ("https://bittorrented.com/api/search/torrents",)
+        assert kwargs["params"] == {
+            "q": "sample show",
+            "type": "video",
+            "limit": 50,
+            "sortBy": "seeders",
+            "sortOrder": "desc",
+        }
 
 
 class TestTorrentGalaxyParsing:
@@ -518,7 +922,7 @@ class TestYtsParsing:
 
     def test_search_yts(self, site: YtsSite) -> None:
         payload = _load_json_fixture("yts.json")
-        with patch.object(site, "_fetch_json", return_value=payload):
+        with patch.object(site, "_fetch_yts_json", return_value=payload):
             results = site._search_yts("test movie")
 
         assert len(results) == 2
@@ -537,7 +941,7 @@ class TestYtsParsing:
 
     def test_empty_results(self, site: YtsSite) -> None:
         payload = _load_json_fixture("yts_empty.json")
-        with patch.object(site, "_fetch_json", return_value=payload):
+        with patch.object(site, "_fetch_yts_json", return_value=payload):
             results = site._search_yts("nonexistent")
         assert results == []
 
@@ -569,7 +973,7 @@ class TestYtsParsing:
                 ]
             },
         }
-        with patch.object(site, "_fetch_json", return_value=payload):
+        with patch.object(site, "_fetch_yts_json", return_value=payload):
             results = site._search_yts("test movie")
 
         assert len(results) == 1
@@ -577,6 +981,245 @@ class TestYtsParsing:
         assert results[0].download_url == build_magnet(
             _VALID_HEX_HASH, "Test Movie (2024) 720p web"
         )
+
+
+class TestYtsMirrorFailover:
+    @pytest.fixture
+    def site(self) -> YtsSite:
+        return YtsSite(timeout=5)
+
+    @staticmethod
+    def _response(
+        *,
+        status_code: int = 200,
+        json_data: dict | None = None,
+        url: str = "",
+    ) -> Any:
+        return type(
+            "Resp",
+            (),
+            {
+                "status_code": status_code,
+                "json": lambda _self: json_data,
+                "url": url,
+            },
+        )()
+
+    def test_configured_host_success_skips_other_mirrors(self, site: YtsSite) -> None:
+        site.url = "https://mirror-a.example"
+        payload = _load_json_fixture("yts.json")
+        calls: list[str] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            calls.append(url)
+            return self._response(json_data=payload, url=url)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert len(results) == 2
+        assert len(calls) == 1
+        assert calls[0].startswith("https://mirror-a.example/")
+
+    def test_redirect_normalized_https_origin_is_accepted(self, site: YtsSite) -> None:
+        site.url = "https://yts.bz"
+        site.available_urls = ["https://yts.bz", "https://yts.gg"]
+        site._mirror_pref = None
+        payload = _load_json_fixture("yts.json")
+
+        def fake_yts_get(_url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            return self._response(
+                json_data=payload,
+                url="https://yts.gg/api/v2/list_movies.json?query_term=test+movie&limit=50",
+            )
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert len(results) == 2
+        assert site._get_mirror_pref().ordered()[0] == "https://yts.gg"
+
+    def test_falls_through_every_mirror_before_failing(self, site: YtsSite) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+            "https://mirror-c.example",
+        ]
+        site._mirror_pref = None
+        calls: list[str] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            calls.append(url)
+            return self._response(status_code=503, url=url)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert results == []
+        assert len(calls) == 3
+        assert {call.split("/")[2] for call in calls} == {
+            "mirror-a.example",
+            "mirror-b.example",
+            "mirror-c.example",
+        }
+
+    def test_valid_empty_result_stops_without_other_mirrors(
+        self, site: YtsSite
+    ) -> None:
+        site.url = "https://mirror-a.example"
+        payload = _load_json_fixture("yts_empty.json")
+        calls: list[str] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            calls.append(url)
+            return self._response(json_data=payload, url=url)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("nonexistent")
+
+        assert results == []
+        assert len(calls) == 1
+
+    def test_api_error_response_advances_to_next_mirror(self, site: YtsSite) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+        ]
+        site._mirror_pref = None
+        payload = _load_json_fixture("yts.json")
+        calls: list[str] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            calls.append(url)
+            if url.startswith("https://mirror-a.example"):
+                return self._response(
+                    json_data={"status": "error", "status_message": "bad"},
+                    url=url,
+                )
+            return self._response(json_data=payload, url=url)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert len(results) == 2
+        assert len(calls) == 2
+        assert site._get_mirror_pref().ordered()[0] == "https://mirror-b.example"
+
+    def test_malformed_json_advances_to_next_mirror(self, site: YtsSite) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+        ]
+        site._mirror_pref = None
+        payload = _load_json_fixture("yts.json")
+        calls: list[str] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            calls.append(url)
+            if url.startswith("https://mirror-a.example"):
+                return type(
+                    "Resp",
+                    (),
+                    {
+                        "status_code": 200,
+                        "json": lambda _self: (_ for _ in ()).throw(ValueError("bad")),
+                        "url": url,
+                    },
+                )()
+            return self._response(json_data=payload, url=url)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert len(results) == 2
+        assert len(calls) == 2
+
+    def test_untrusted_redirect_advances_to_next_mirror(self, site: YtsSite) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+        ]
+        site._mirror_pref = None
+        payload = _load_json_fixture("yts.json")
+        calls: list[str] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            calls.append(url)
+            if url.startswith("https://mirror-a.example"):
+                return self._response(
+                    json_data=payload,
+                    url="https://evil.example/api/v2/list_movies.json",
+                )
+            return self._response(json_data=payload, url=url)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert len(results) == 2
+        assert len(calls) == 2
+
+    def test_all_mirrors_fail_returns_empty_list(self, site: YtsSite) -> None:
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+        ]
+        site._mirror_pref = None
+
+        def fake_yts_get(_url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            msg = "down"
+            raise ConnectionError(msg)
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            results = site._search_yts("test movie")
+
+        assert results == []
+
+    def test_concurrent_searches_keep_complete_mirror_snapshots(self) -> None:
+        import threading
+
+        site = YtsSite(timeout=5)
+        site.url = "https://mirror-a.example"
+        site.available_urls = [
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+            "https://mirror-c.example",
+        ]
+        site._mirror_pref = None
+        payload = _load_json_fixture("yts_empty.json")
+        barrier = threading.Barrier(4)
+        snapshots: list[tuple[str, ...]] = []
+
+        def fake_yts_get(url: str, _params: dict | None, **_kwargs: Any) -> Any:
+            return TestYtsMirrorFailover._response(json_data=payload, url=url)
+
+        def worker() -> None:
+            barrier.wait(timeout=5)
+            for _ in range(20):
+                snapshots.append(site._get_mirror_pref().ordered())
+                site._get_mirror_pref().mark_success("https://mirror-b.example")
+
+        with patch.object(site, "_yts_get", side_effect=fake_yts_get):
+            threads = [threading.Thread(target=worker) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=30)
+                assert not thread.is_alive()
+            site._search_yts("test movie")
+
+        expected = {
+            "https://mirror-a.example",
+            "https://mirror-b.example",
+            "https://mirror-c.example",
+        }
+        for snapshot in snapshots:
+            assert set(snapshot) == expected
+            assert len(snapshot) == 3
 
 
 # ---------------------------------------------------------------------------

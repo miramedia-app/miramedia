@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from datetime import time as dt_time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from miramedia.shows.schemas import (
     Episode,
+    EpisodeAttributeChange,
     EpisodeId,
     EpisodeNumber,
     Season,
@@ -25,6 +27,7 @@ def _episode(
     title: str = "Pilot",
     overview: str | None = None,
     air_date: date | None = None,
+    air_time: dt_time | None = None,
 ) -> Episode:
     return Episode(
         id=EpisodeId(uuid.uuid4()),
@@ -32,6 +35,7 @@ def _episode(
         title=title,
         overview=overview,
         air_date=air_date,
+        air_time=air_time,
     )
 
 
@@ -67,7 +71,7 @@ def _run_reconcile(
     show_repo.db.commit = AsyncMock()
     show_repo.db.close = AsyncMock()
     show_repo.update_show_attributes = AsyncMock()
-    show_repo.update_episode_attributes = AsyncMock()
+    show_repo.update_episodes_attributes_bulk = AsyncMock()
     show_repo.add_episodes_to_season = AsyncMock()
     show_repo.add_season_to_show = AsyncMock()
     show_repo.get_show_by_id = AsyncMock(return_value=db_show)
@@ -100,7 +104,7 @@ class TestUpdateShowMetadataEpisodeReconcile:
 
         show_repo = _run_reconcile(db_show, fresh_show)
 
-        show_repo.update_episode_attributes.assert_not_called()
+        show_repo.update_episodes_attributes_bulk.assert_not_called()
 
     def test_updates_when_title_differs(self) -> None:
         existing = _episode(
@@ -114,11 +118,15 @@ class TestUpdateShowMetadataEpisodeReconcile:
 
         show_repo = _run_reconcile(db_show, fresh_show)
 
-        show_repo.update_episode_attributes.assert_awaited_once_with(
+        show_repo.update_episodes_attributes_bulk.assert_awaited_once()
+        changes = show_repo.update_episodes_attributes_bulk.await_args.args[0]
+        assert len(changes) == 1
+        assert changes[0] == EpisodeAttributeChange(
             episode_id=existing.id,
             title="New Title",
             overview="Synopsis",
             air_date=date(2020, 1, 1),
+            air_time=None,
         )
 
     def test_skips_when_fresh_air_date_is_none(self) -> None:
@@ -133,7 +141,25 @@ class TestUpdateShowMetadataEpisodeReconcile:
 
         show_repo = _run_reconcile(db_show, fresh_show)
 
-        show_repo.update_episode_attributes.assert_not_called()
+        show_repo.update_episodes_attributes_bulk.assert_not_called()
+
+    def test_skips_when_fresh_air_time_is_none(self) -> None:
+        existing = _episode(
+            1,
+            title="Pilot",
+            overview="Synopsis",
+            air_date=date(2020, 1, 1),
+            air_time=dt_time(21, 0),
+        )
+        db_show = _show_with_episodes(existing)
+        fresh_show = _fresh_show_from_db(db_show)
+        fresh_show.seasons[0].episodes[0] = (
+            fresh_show.seasons[0].episodes[0].model_copy(update={"air_time": None})
+        )
+
+        show_repo = _run_reconcile(db_show, fresh_show)
+
+        show_repo.update_episodes_attributes_bulk.assert_not_called()
 
     def test_updates_when_overview_differs(self) -> None:
         existing = _episode(
@@ -149,11 +175,15 @@ class TestUpdateShowMetadataEpisodeReconcile:
 
         show_repo = _run_reconcile(db_show, fresh_show)
 
-        show_repo.update_episode_attributes.assert_awaited_once_with(
+        show_repo.update_episodes_attributes_bulk.assert_awaited_once()
+        changes = show_repo.update_episodes_attributes_bulk.await_args.args[0]
+        assert len(changes) == 1
+        assert changes[0] == EpisodeAttributeChange(
             episode_id=existing.id,
             title="Pilot",
             overview="New overview",
             air_date=date(2020, 1, 1),
+            air_time=None,
         )
 
     def test_mixed_season_calls_update_only_for_changed_episode(self) -> None:
@@ -168,11 +198,15 @@ class TestUpdateShowMetadataEpisodeReconcile:
 
         show_repo = _run_reconcile(db_show, fresh_show)
 
-        show_repo.update_episode_attributes.assert_awaited_once_with(
+        show_repo.update_episodes_attributes_bulk.assert_awaited_once()
+        changes = show_repo.update_episodes_attributes_bulk.await_args.args[0]
+        assert len(changes) == 1
+        assert changes[0] == EpisodeAttributeChange(
             episode_id=ep2.id,
             title="E2 revised",
             overview="B",
             air_date=date(2020, 1, 8),
+            air_time=None,
         )
 
     def test_new_episode_keeps_air_date(self) -> None:

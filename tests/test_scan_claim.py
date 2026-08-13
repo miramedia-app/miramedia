@@ -6,6 +6,7 @@ import asyncio
 import uuid
 from collections.abc import Generator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -107,8 +108,8 @@ def test_claim_success_bumps_batch_in_same_commit() -> None:
 
     async def _run() -> None:
         with patch(
-            "miramedia.imports.queue_hooks.schedule_import_queue_rebuild"
-        ) as rebuild:
+            "miramedia.imports.queue_hooks.schedule_scan_queue_sync"
+        ) as sync_hook:
             outcome = await repo.claim_scan_cache_row("/safe/show", media_type="show")
 
         assert outcome.result is ScanClaimResult.claimed
@@ -124,7 +125,7 @@ def test_claim_success_bumps_batch_in_same_commit() -> None:
         assert params["directory"] == "/safe/show"
         assert params["media_type"] == "show"
         assert params["claim_token"] == outcome.claim_token
-        rebuild.assert_called_once()
+        sync_hook.assert_called_once_with("/safe/show")
 
     asyncio.run(_run())
 
@@ -144,7 +145,7 @@ def test_second_claim_is_ineligible_without_second_bump() -> None:
     repo = _repo_with_db(db)
 
     async def _run() -> None:
-        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+        with patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"):
             first = await repo.claim_scan_cache_row("/safe/show", media_type="show")
             second = await repo.claim_scan_cache_row("/safe/show", media_type="show")
 
@@ -228,7 +229,7 @@ def test_compensation_uses_claim_token_and_resets_idle_batch_in_one_commit() -> 
     repo = _repo_with_db(db)
 
     async def _run() -> None:
-        with patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"):
+        with patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"):
             ok = await repo.compensate_scan_cache_claim(
                 "/safe/show",
                 claim_token="token-a",
@@ -407,6 +408,91 @@ def test_begin_with_stale_claim_token_returns_stale() -> None:
     asyncio.run(_run())
 
 
+def test_stale_terminal_cas_not_logged_as_completed_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import types
+    from contextlib import asynccontextmanager
+
+    from miramedia.imports.schemas import ResolveImportTaskPayload, ResolveRequest
+    from miramedia.imports.service import ImportsService
+    from miramedia.imports.tasks import resolve_import_task
+
+    show_root = tmp_path / "shows"
+    show_root.mkdir()
+    target = show_root / "show"
+    target.mkdir()
+    misc = types.SimpleNamespace(
+        show_directory=show_root,
+        movie_directory=tmp_path / "movies",
+        show_libraries=(),
+        movie_libraries=(),
+    )
+    monkeypatch.setattr(
+        "miramedia.media_paths.MiraMediaConfig",
+        lambda: types.SimpleNamespace(misc=misc),
+    )
+
+    directory = str(target)
+    body = ResolveRequest.model_validate(_scan_body(directory))
+    payload = ResolveImportTaskPayload(body=body, scan_claim_token="token-a")
+    show = MagicMock(id=uuid.uuid4(), name="Show")
+    show_service = MagicMock()
+    show_service.get_show_by_id = AsyncMock(return_value=show)
+    show_service.import_show_from_directory = AsyncMock(return_value=True)
+    repo = MagicMock()
+    repo.begin_manual_scan_worker = AsyncMock(
+        return_value=ScanWorkerBeginOutcome(
+            ScanWorkerBeginResult.started,
+            worker_started_at="2026-07-13T00:00:00+00:00",
+        )
+    )
+    repo.get_scan_cache_entry = AsyncMock(
+        return_value={
+            "directory": directory,
+            "status": "queued",
+            "media_type_hint": "show",
+            "claim_token": "token-a",
+            "worker_started_at": "2026-07-13T00:00:00+00:00",
+        }
+    )
+    repo.complete_manual_scan_import = AsyncMock(return_value=False)
+    repo.fail_manual_scan_import = AsyncMock(return_value=False)
+    service = ImportsService(
+        repository=repo,
+        torrent_service=MagicMock(),
+        show_service=show_service,
+        movie_service=MagicMock(),
+    )
+
+    @asynccontextmanager
+    async def _session():
+        yield MagicMock()
+
+    async def _run() -> None:
+        with (
+            patch("miramedia.database.background_session", _session),
+            patch("miramedia.imports.repository.ImportsRepository", return_value=repo),
+            patch("miramedia.imports.service.ImportsService", return_value=service),
+            patch(
+                "miramedia.imports.queue_hooks.schedule_scan_queue_sync"
+            ) as rebuild_mock,
+            patch("miramedia.imports.tasks.log") as log_mock,
+        ):
+            await resolve_import_task(payload.model_dump(mode="json"))
+
+        log_mock.info.assert_not_called()
+        rebuild_mock.assert_not_called()
+        repo.complete_manual_scan_import.assert_awaited_once()
+        repo.fail_manual_scan_import.assert_awaited_once_with(
+            directory,
+            claim_token="token-a",
+            error="409: scan entry not eligible",
+        )
+
+    asyncio.run(_run())
+
+
 def test_duplicate_scan_task_deliveries_invoke_service_once() -> None:
     from contextlib import asynccontextmanager
 
@@ -470,7 +556,7 @@ def test_duplicate_scan_task_deliveries_invoke_service_once() -> None:
                 "miramedia.imports.service.ImportsService",
                 return_value=service,
             ),
-            patch("miramedia.imports.queue_hooks.schedule_import_queue_rebuild"),
+            patch("miramedia.imports.queue_hooks.schedule_scan_queue_sync"),
         ):
             dumped = payload.model_dump(mode="json")
             await resolve_import_task(dumped)

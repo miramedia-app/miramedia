@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from miramedia.imports.queue.sync import _bucket_rank
+from miramedia.imports.queue.projector import bucket_rank as _bucket_rank
 from miramedia.imports.schemas import ScanImportItem, ScanResult, TorrentImportItem
 from miramedia.torrents.schemas import (
     ImportProgress,

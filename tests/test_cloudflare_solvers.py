@@ -7,25 +7,22 @@ FlareSolverrSolver (``miramedia.cloudflare.solvers.proxy``):
   - Success: ``{"status": "ok", "solution": {"response": html, "cookies": [{name,value}],
     "userAgent": ua}}`` → ``SolveResult`` with mapped html/cookies/user_agent.
   - Failures: any ``httpx``/parse exception → None; non-2xx (``raise_for_status``) → None;
-    ``status != "ok"`` → None; HTTP 200 ``status: ok`` with missing/empty ``solution`` →
-    **CF-SOLVER-EMPTY-RESULT finding**: returns ``SolveResult(html=None, cookies={})``
-    instead of ``None`` (see ``test_flare_solver_malformed_success_returns_none``).
+    ``status != "ok"`` → None; HTTP 200 ``status: ok`` with missing/empty ``solution`` or
+    with no html and no cookies → None (see ``test_flare_solver_malformed_success_returns_none``).
 
 BrowserRunSolver (``miramedia.cloudflare.solvers.browser_run``):
   - POST Cloudflare ``/browser-rendering/content`` with Bearer token, ``{"url": ...}``.
   - Success: ``{"success": true, "result": "<html>"}`` → ``SolveResult(html=...)``, cookies empty.
   - Failures: missing account_id/api_token → None; any HTTP/parse exception → None;
-    ``success: false`` → None; HTTP 200 ``success: true`` without a string ``result`` →
-    **CF-SOLVER-EMPTY-RESULT finding**: returns ``SolveResult(html=None)`` instead of
-    ``None`` (see ``test_browser_run_malformed_success_returns_none``).
+    ``success: false`` → None; HTTP 200 ``success: true`` without a non-empty string
+    ``result`` → None (see ``test_browser_run_malformed_success_returns_none``).
 
 FirecrawlSolver (``miramedia.cloudflare.solvers.firecrawl``):
   - POST ``{base_url}/v1/scrape`` with Bearer token, ``{"url", "formats", "proxy"}``.
   - Success: ``{"success": true, "data": {"rawHtml": ...}}`` → ``SolveResult(html=...)``.
   - Failures: missing api_key → None; any HTTP/parse exception → None;
     ``success: false`` → None; HTTP 200 ``success: true`` without ``data``/html fields →
-    **CF-SOLVER-EMPTY-RESULT finding**: returns ``SolveResult(html=None)`` instead of
-    ``None`` (see ``test_firecrawl_malformed_success_returns_none``).
+    None (see ``test_firecrawl_malformed_success_returns_none``).
 """
 
 from __future__ import annotations
@@ -310,11 +307,6 @@ def test_firecrawl_cookieless_response_still_returns_html(
 # Malformed-success shapes (HTTP 200, missing expected keys)
 # ---------------------------------------------------------------------------
 
-_CF_SOLVER_EMPTY_RESULT = (
-    "CF-SOLVER-EMPTY-RESULT finding: solver returns SolveResult(html=None) "
-    "instead of None on HTTP 200 with missing expected payload keys"
-)
-
 _FLARE_MALFORMED_SUCCESS = [
     pytest.param({"status": "ok"}, id="missing_solution"),
     pytest.param({"status": "ok", "solution": {}}, id="empty_solution"),
@@ -338,7 +330,6 @@ _FIRECRAWL_MALFORMED_SUCCESS = [
 
 
 @pytest.mark.parametrize("payload", _FLARE_MALFORMED_SUCCESS)
-@pytest.mark.xfail(reason=_CF_SOLVER_EMPTY_RESULT, strict=True)
 def test_flare_solver_malformed_success_returns_none(
     monkeypatch: pytest.MonkeyPatch,
     payload: dict[str, Any],
@@ -352,7 +343,6 @@ def test_flare_solver_malformed_success_returns_none(
 
 
 @pytest.mark.parametrize("payload", _BROWSER_RUN_MALFORMED_SUCCESS)
-@pytest.mark.xfail(reason=_CF_SOLVER_EMPTY_RESULT, strict=True)
 def test_browser_run_malformed_success_returns_none(
     monkeypatch: pytest.MonkeyPatch,
     payload: dict[str, Any],
@@ -369,7 +359,6 @@ def test_browser_run_malformed_success_returns_none(
 
 
 @pytest.mark.parametrize("payload", _FIRECRAWL_MALFORMED_SUCCESS)
-@pytest.mark.xfail(reason=_CF_SOLVER_EMPTY_RESULT, strict=True)
 def test_firecrawl_malformed_success_returns_none(
     monkeypatch: pytest.MonkeyPatch,
     payload: dict[str, Any],

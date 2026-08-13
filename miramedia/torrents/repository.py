@@ -261,6 +261,23 @@ class TorrentRepository:
         await self.db.execute(stmt)
         await self.db.commit()
 
+    async def get_torrent_history_by_id(
+        self, history_id: uuid.UUID
+    ) -> TorrentHistory | None:
+        stmt = select(TorrentHistory).where(TorrentHistory.id == history_id)
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
+    async def get_torrent_history_by_torrent_id(
+        self, torrent_id: uuid.UUID
+    ) -> TorrentHistory | None:
+        stmt = (
+            select(TorrentHistory)
+            .where(TorrentHistory.torrent_id == torrent_id)
+            .order_by(TorrentHistory.imported_at.desc().nullslast())
+            .limit(1)
+        )
+        return (await self.db.execute(stmt)).scalar_one_or_none()
+
     async def mark_torrent_history_removed(self, info_hash: str) -> None:
         """Stamp ``removed_at`` when the live torrent is deleted. Keeps the
         prior ``outcome`` (an imported torrent stays ``imported``)."""

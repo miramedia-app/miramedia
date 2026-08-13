@@ -535,6 +535,14 @@ async def _shutdown_startup_impl(
         )
 
     try:
+        from miramedia.torrents.manager import reset_download_manager
+
+        _best_effort_sync("download manager shutdown", failures, reset_download_manager)
+    except Exception as exc:
+        log.exception("Download manager shutdown failed (non-fatal)")
+        failures.append(exc)
+
+    try:
         from miramedia.cloudflare import get_cloudflare_bypass
 
         bypass = get_cloudflare_bypass()

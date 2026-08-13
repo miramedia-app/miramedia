@@ -225,7 +225,7 @@ class TestMetadataRefreshBatchWrites:
         show_repo = MagicMock()
         show_repo.db = MagicMock()
         show_repo.update_show_attributes = AsyncMock()
-        show_repo.update_episode_attributes = AsyncMock()
+        show_repo.update_episodes_attributes_bulk = AsyncMock()
         show_repo.get_show_by_id = AsyncMock(return_value=db_show)
         add_episodes = AsyncMock(return_value=[])
         show_repo.add_episodes_to_season = add_episodes

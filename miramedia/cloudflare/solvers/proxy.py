@@ -89,15 +89,34 @@ class FlareSolverrSolver:
             _emit(progress, f"{self.label} could not solve the challenge")
             return None
 
-        solution = data.get("solution") or {}
+        solution = data.get("solution")
+        if not solution:
+            log.warning(
+                "%s returned ok with empty solution for %s",
+                self.label,
+                url,
+            )
+            _emit(progress, f"{self.label} returned an empty solution")
+            return None
+
         cookies = {
             c["name"]: c["value"]
             for c in solution.get("cookies", [])
             if isinstance(c, dict) and c.get("name")
         }
+        html = solution.get("response")
+        if not html and not cookies:
+            log.warning(
+                "%s returned ok with no html or cookies for %s",
+                self.label,
+                url,
+            )
+            _emit(progress, f"{self.label} returned an empty solution")
+            return None
+
         _emit(progress, f"{self.label} cleared the challenge")
         return SolveResult(
-            html=solution.get("response"),
+            html=html,
             cookies=cookies,
             user_agent=solution.get("userAgent", ""),
         )

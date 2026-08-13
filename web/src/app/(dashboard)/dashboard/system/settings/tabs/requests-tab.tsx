@@ -37,24 +37,25 @@ export function RequestsTab({
               onCheckedChange={(v) => setRequestsPath(["auto_approve_users"], v)}
             />
           </div>
-          <div className="space-y-2">
-            <Label>
-              Fulfill Interval (hours)
-              <OverrideMarker path={["requests", "fulfill_interval_hours"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(req.fulfill_interval_hours ?? "") || ""}
-              onChange={(e) =>
-                setRequestsPath(["fulfill_interval_hours"], Number(e.target.value) || 0)
-              }
-              placeholder="2"
-              className="max-w-[120px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              How often the scheduler tries to fulfill pending requests.
-            </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>
+                Fulfill Interval (hours)
+                <OverrideMarker path={["requests", "fulfill_interval_hours"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(req.fulfill_interval_hours ?? "") || ""}
+                onChange={(e) =>
+                  setRequestsPath(["fulfill_interval_hours"], Number(e.target.value) || 0)
+                }
+                placeholder="2"
+              />
+              <p className="text-xs text-muted-foreground">
+                How often the scheduler tries to fulfill pending requests.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

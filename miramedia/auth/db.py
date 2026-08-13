@@ -39,6 +39,9 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    credentials_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 async def get_user_db(

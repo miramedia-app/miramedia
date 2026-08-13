@@ -6,10 +6,8 @@ Searches yifysubtitles.ch by IMDB ID — complements the YTS torrent indexer.
 
 from __future__ import annotations
 
-import io
 import logging
 import re
-import zipfile
 from typing import TYPE_CHECKING, ClassVar
 from urllib.parse import urljoin
 
@@ -20,6 +18,8 @@ from requests.exceptions import Timeout
 from subliminal.providers import Provider
 from subliminal.subtitle import Subtitle, fix_line_ending
 from subliminal.video import Movie, Video
+
+from miramedia.subtitles.bounded_decode import decode_bounded_subtitle_content
 
 if TYPE_CHECKING:
     from bs4 import Tag
@@ -273,13 +273,6 @@ class YifySubtitlesProvider(Provider):
             log.exception("Failed to download YIFY subtitle file")
             return
 
-        archive_stream = io.BytesIO(dl_response.content)
-        if zipfile.is_zipfile(archive_stream):
-            with zipfile.ZipFile(archive_stream) as zf:
-                for name in zf.namelist():
-                    if name.lower().endswith((".srt", ".sub", ".ass", ".ssa", ".vtt")):
-                        subtitle.content = fix_line_ending(zf.read(name))
-                        return
-        else:
-            # Maybe raw subtitle content
-            subtitle.content = fix_line_ending(dl_response.content)
+        decoded = decode_bounded_subtitle_content(dl_response.content)
+        if decoded.content is not None:
+            subtitle.content = fix_line_ending(decoded.content)

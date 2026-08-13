@@ -1,59 +1,56 @@
 [project]
 name = "miramedia"
-version = "1.0.15"
+version = "1.1.0"
 description = "Self-hosted media manager for movies and TV shows"
 requires-python = ">=3.13"
 dependencies = [
-    "cachetools>=6.0.0",
-    "fastapi[standard]>=0.115.12",
-    "fastapi-users[sqlalchemy]>=15.0.2",
+    "cachetools>=7.1.7",
+    "fastapi[standard]>=0.141.1",
+    "fastapi-users[sqlalchemy]>=15.0.5",
     "httpx>=0.28.1",
     "httpx-oauth>=0.16.1",
-    "jsonschema>=4.24.0",
-    "psycopg[binary,pool]>=3.2.9",
+    "psycopg[binary,pool]>=3.3.4",
     "asyncpg>=0.30.0",
-    "greenlet>=3.1.1",
+    "greenlet>=3.5.4",
     "pydantic>=2.11.5",
-    "pydantic-settings[toml]>=2.9.1",
+    "pydantic-settings[toml]>=2.14.2",
     "python-json-logger>=3.3.0",
-    "qbittorrent-api>=2025.5.0",
+    "qbittorrent-api>=2026.8.0",
     "requests>=2.32.3",
     "sqlalchemy>=2.0.41",
     "starlette>=0.49.1",
-    "tmdbsimple>=2.9.1",
+    "tmdbsimple>=2.9.8",
     "tvdb-v4-official>=1.1.0",
-    "uvicorn>=0.34.2",
+    "uvicorn>=0.52.1",
     "taskiq>=0.12.0",
     "taskiq-fastapi>=0.4.0",
     "taskiq-postgresql[psycopg]>=0.4.0",
     "alembic>=1.16.1",
     "pillow>=11.3.0",
-    "sabnzbd-api>=0.1.2",
     "transmission-rpc>=7.0.11",
     "libtorrent>=2.0.11",
     "pathvalidate>=3.3.1",
     "asgi-correlation-id>=4.3.4",
     "beautifulsoup4>=4.12",
-    "selectolax>=0.3.21",
+    "selectolax>=0.4.11",
     "nodriver>=0.38",
-    "subliminal>=2.2",
+    "subliminal>=2.7.1",
     "babelfish>=0.6",
-    # Upper bound: guessit 4.0 bumps rebulk to 6.x and forces a subliminal
-    # *downgrade* (2.6 -> 2.2), dropping knowit/trakit and changing the parse
-    # behaviour the import pipeline depends on. Lift after validating 4.x.
-    "guessit>=3.8.0,<4",
+    "guessit>=4,<5",
     "pymediainfo>=7.0.1",
-    "curl-cffi>=0.7",
-    "cryptography>=44.0.0",
+    "curl-cffi>=0.16.0",
+    "cryptography>=50.0.0",
     "defusedxml>=0.7.1",
-    "sse-starlette>=3.4.4",
-    "prometheus-fastapi-instrumentator>=8.0.1",
+    "sse-starlette>=3.4.6",
+    "prometheus-fastapi-instrumentator>=8.1.0",
 ]
 
 [dependency-groups]
 dev = [
+    "anyio>=4.14.1",
     "pytest>=8.4.0",
-    "ruff",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.20,<0.16",
     "ty>=0.0.9",
 ]
 
@@ -321,6 +318,7 @@ include = [
     "miramedia/notifications/repository.py",
     "miramedia/logs/repository.py",
     "miramedia/logs/handler.py",
+    "miramedia/watchlists/repository.py",
 ]
 
 [tool.ty.overrides.rules]

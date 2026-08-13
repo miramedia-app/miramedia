@@ -251,8 +251,8 @@ async def _refresh_show_progress_scoped_show_id(db: AsyncSession) -> None:
     await refresh_show_progress(db, show_id=target.id)
     await db.commit()
 
-    target_row = await db.get(Show, target.id)
-    other_row = await db.get(Show, other.id)
+    target_row = await db.get(Show, target.id, populate_existing=True)
+    other_row = await db.get(Show, other.id, populate_existing=True)
 
     assert target_row is not None
     assert other_row is not None

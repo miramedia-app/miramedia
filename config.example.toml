@@ -57,6 +57,12 @@ auto_pick_confidence_threshold = 0.8
 # scraper has no credentials and the endpoint is firewalled from end-users.
 # metrics_public = false
 
+# Content-Security-Policy rollout. Default: report-only so violations surface
+# in the browser console without breaking the SPA. Set csp_enforce = true to
+# promote the same policy to an enforcing Content-Security-Policy header.
+# csp_enabled = true
+# csp_enforce = false
+
 # Single-worker deployment: size pools for one API process + Postgres.
 # Rule of thumb: pool_size + max_overflow <= postgres max_connections minus headroom for taskiq.
 
@@ -166,6 +172,25 @@ enabled = false
 url = ""        # e.g. http://overseerr:5055
 api_key = ""    # Seerr -> Settings -> General -> API Key
 
+# Watchlists — custom lists, Watch Next, Upcoming, and Continue Watching.
+# Master switch enables the sidebar; Custom lists / Watch Next / Upcoming
+# can be toggled independently while the master remains on. Continue Watching
+# is the dashboard row and can be toggled independently of Native Watchlists.
+[watchlists]
+auto_remove_watched = false
+continue_watching = true   # dashboard Continue Watching row
+max_lists_per_user = 0   # 0 = unlimited
+max_items_per_list = 0   # 0 = unlimited
+
+[watchlists.native]
+enabled = true
+custom_lists = true
+watch_next = true
+watch_next_include_specials = false
+upcoming = true
+upcoming_default_past_days = 0
+upcoming_default_future_days = 30
+
 [torrents]
 # qBittorrent settings
 [torrents.qbittorrent]
@@ -194,6 +219,7 @@ host = "http://localhost"
 port = 8080
 api_key = ""
 base_path = "/api"
+# verify_tls = true  # set false for self-signed HTTPS
 
 # Native torrent client (lightweight alternative to qBittorrent/Transmission)
 # Save path is misc.torrent_directory (and optionally misc.incomplete_torrent_path
@@ -376,8 +402,8 @@ shim_api_key = ""    # API key Bazarr uses to call MiraMedia's Sonarr/Radarr shi
 # Metadata Providers
 # Native provider (TVmaze + Cinemeta) works out of the box with no API key
 # TMDB and TVDB require free API keys from their respective websites
-# Updates — checks GitHub for new MiraMedia releases and (optionally)
-# applies them in-place via the local Docker socket.
+# Updates — checks GitHub for new MiraMedia releases.
+# Apply on the host with `docker compose pull && docker compose up -d`.
 [updates]
 enabled = true
 repo = "miramedia-app/miramedia"     # GitHub owner/repo for releases API
@@ -386,12 +412,6 @@ include_prereleases = false             # only stable releases
 cache_ttl_seconds = 3600
 request_timeout_seconds = 10            # GitHub releases API HTTP timeout
 notify_on_new_version = false           # send via configured notification providers
-
-# In-app update checks only — apply on the host with `docker compose pull && docker compose up -d`.
-# Legacy keys below are accepted but ignored.
-# allow_in_app_apply = false
-# docker_socket_path = "/var/run/docker.sock"
-# container_name = "miramedia"
 image_repository = "ghcr.io/miramedia-app/miramedia"
 image_tag = "latest"
 

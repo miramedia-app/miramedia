@@ -3,13 +3,15 @@
 import { useQueries } from "@tanstack/react-query";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { AlertOctagon, AlertTriangle } from "lucide-react";
+import { AlertOctagon, AlertTriangle, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ContinueWatchingRow } from "@/components/continue-watching-row";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { StatCards } from "@/components/stats/stat-cards";
 import { MediaGridSkeleton } from "@/components/media-grid-skeleton";
 import { useUser } from "@/components/providers/user-provider";
 import apiClient from "@/lib/api/client";
+import { dashboardImportWarningCounts, dashboardSummaryViewState } from "@/lib/dashboard-summary";
 
 const RecommendedMediaCarousel = dynamic(
   () => import("@/components/recommended-media-carousel").then((m) => m.RecommendedMediaCarousel),
@@ -62,19 +64,31 @@ export function DashboardHome() {
     ],
   });
 
-  const summary = summaryQuery.data;
-  const importCounts = isSuperuser
-    ? {
-        failed: summary?.imports_failed ?? 0,
-        ambiguous: summary?.imports_ambiguous ?? 0,
-      }
-    : null;
+  const summaryView = dashboardSummaryViewState({
+    isPending: summaryQuery.isPending,
+    isError: summaryQuery.isError,
+    data: summaryQuery.data
+      ? {
+          shows: summaryQuery.data.shows,
+          movies: summaryQuery.data.movies,
+          torrents: summaryQuery.data.torrents,
+          requestsPending: summaryQuery.data.requests_pending,
+          importsFailed: summaryQuery.data.imports_failed,
+          importsAmbiguous: summaryQuery.data.imports_ambiguous,
+        }
+      : null,
+  });
+
+  const importCounts = dashboardImportWarningCounts({
+    view: summaryView,
+    isSuperuser,
+  });
 
   return (
     <>
       <DashboardHeader crumbs={[{ label: "Dashboard" }]} />
       <main className="flex flex-1 flex-col gap-10 p-4 pt-0">
-        {importCounts && (importCounts.failed > 0 || importCounts.ambiguous > 0) && (
+        {importCounts && (
           <div className="flex items-center justify-between gap-3 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
             <div className="flex items-center gap-2">
               {importCounts.failed > 0 && (
@@ -104,12 +118,37 @@ export function DashboardHome() {
           </div>
         )}
 
-        <StatCards
-          showCount={summary?.shows ?? 0}
-          moviesCount={summary?.movies ?? 0}
-          torrentCount={summary?.torrents ?? 0}
-          requestCount={summary?.requests_pending ?? 0}
-        />
+        {summaryView.status === "error" ? (
+          <div
+            role="alert"
+            className="flex flex-col items-start gap-3 rounded-md border border-dashed px-4 py-6 sm:flex-row sm:items-center sm:justify-between"
+          >
+            <div className="flex items-start gap-3">
+              <TriangleAlert className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">{summaryView.message}</p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void summaryQuery.refetch();
+              }}
+            >
+              Retry
+            </Button>
+          </div>
+        ) : summaryView.status === "pending" ? (
+          <StatCards isLoading />
+        ) : (
+          <StatCards
+            showCount={summaryView.counts.shows}
+            moviesCount={summaryView.counts.movies}
+            torrentCount={summaryView.counts.torrents}
+            requestCount={summaryView.counts.requestsPending}
+          />
+        )}
+
+        <ContinueWatchingRow />
 
         <div className="space-y-4">
           <RecommendedMediaCarousel

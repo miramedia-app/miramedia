@@ -39,6 +39,12 @@ services:
       - "6881:6881"
       - "6881:6881/udp"
     environment:
+      # Container timezone — the fallback for air-date parsing and the calendar
+      # window (metadata.parse_iso_date, upcoming.local_today) when the in-app
+      # Timezone setting (Settings → General) is blank. Cinemeta reports air times
+      # as UTC datetimes, so a US-evening episode falls on the next UTC day; set a
+      # real zone here or in the UI. Precedence: UI setting → TZ → UTC.
+      - TZ=${TZ:-UTC}
       - MIRAMEDIA_CONFIG_DIR=/app/config
     volumes:
       # Single mount for the in-container /data tree. Pre-create subdirs

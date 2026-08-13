@@ -24,7 +24,7 @@ from miramedia.torrents.integrity import (
     batch_resolve_episode_paths_async,
     batch_resolve_movie_paths_async,
 )
-from miramedia.torrents.manager import DownloadManager
+from miramedia.torrents.manager import DownloadManager, get_download_manager
 from miramedia.torrents.repository import TorrentRepository
 from miramedia.torrents.schemas import (
     ImportFileDetail,
@@ -79,7 +79,7 @@ class TorrentService:
         download_manager: DownloadManager | None = None,
     ) -> None:
         self.torrent_repository = torrent_repository
-        self.download_manager = download_manager or DownloadManager()
+        self.download_manager = download_manager or get_download_manager()
 
     async def get_episode_files_of_torrent(self, torrent: Torrent) -> list[EpisodeFile]:
         """
@@ -1890,6 +1890,94 @@ class TorrentService:
             next_offset=next_offset,
         )
 
+    async def get_integrity_mismatch(
+        self,
+        *,
+        media_type: MediaType,
+        file_id: uuid.UUID,
+        show_service: "ShowService",
+        movie_service: "MovieService",
+    ) -> IntegrityMismatch | None:
+        """Fetch one integrity mismatch row, or None when the file is clean."""
+        show_repo = show_service.show_repository
+        movie_repo = movie_service.movie_repository
+        from miramedia.database import release_sessions_before_external_io
+
+        layout = IntegrityPathLayout.from_config()
+        if media_type == MediaType.show:
+            rows = await show_repo.get_sha1_mismatch_episode_files_by_ids([file_id])
+            row = rows.get(file_id)
+            if row is None:
+                return None
+            episode_context = await show_repo.batch_episodes_with_context(
+                [row.episode_id]
+            )
+            shows = await show_repo.get_shows_by_ids(
+                list({ctx.show_id for ctx in episode_context.values()})
+            )
+            await release_sessions_before_external_io(
+                self.torrent_repository.db,
+                show_repo.db,
+            )
+            paths = await batch_resolve_episode_paths_async(
+                [row], episode_context, shows, layout
+            )
+            media_title = ""
+            episode_label: str | None = None
+            try:
+                ctx = episode_context[row.episode_id]
+                media_title = ctx.show_name
+                episode_label = f"S{ctx.season_number:02d}E{ctx.episode_number:02d}"
+            except Exception:
+                log.exception(
+                    "Failed to resolve show title for mismatched episode_file %s",
+                    row.id,
+                )
+            path = paths.get(row.id)
+            return IntegrityMismatch(
+                file_id=row.id,
+                media_type="show",
+                media_title=media_title,
+                episode=episode_label,
+                path=str(path) if path is not None else None,
+                quality=Quality(row.quality),
+                variant_tag=row.variant or "",
+                import_error=row.import_error or "",
+                detected_at=row.last_attempt_at,
+            )
+
+        rows = await movie_repo.get_sha1_mismatch_movie_files_by_ids([file_id])
+        row = rows.get(file_id)
+        if row is None:
+            return None
+        movies = await movie_repo.get_movies_by_ids([row.movie_id])
+        movie_names = await movie_repo.get_movie_names_by_ids([row.movie_id])
+        await release_sessions_before_external_io(
+            self.torrent_repository.db,
+            movie_repo.db,
+        )
+        paths = await batch_resolve_movie_paths_async([row], movies, layout)
+        media_title = ""
+        try:
+            media_title = movie_names[row.movie_id]
+        except Exception:
+            log.exception(
+                "Failed to resolve movie title for mismatched movie_file %s",
+                row.id,
+            )
+        path = paths.get(row.id)
+        return IntegrityMismatch(
+            file_id=row.id,
+            media_type="movie",
+            media_title=media_title,
+            episode=None,
+            path=str(path) if path is not None else None,
+            quality=Quality(row.quality),
+            variant_tag=row.variant or "",
+            import_error=row.import_error or "",
+            detected_at=row.last_attempt_at,
+        )
+
     async def rebaseline_file(
         self,
         *,
@@ -1906,7 +1994,7 @@ class TorrentService:
             show_service=show_service,
             movie_service=movie_service,
         )
-        self._schedule_integrity_queue_refresh()
+        self._schedule_integrity_queue_sync(media_type=media_type, file_id=file_id)
         return IntegrityActionResult(ok=True)
 
     async def dismiss_mismatch(
@@ -1925,15 +2013,17 @@ class TorrentService:
             show_service=show_service,
             movie_service=movie_service,
         )
-        self._schedule_integrity_queue_refresh()
+        self._schedule_integrity_queue_sync(media_type=media_type, file_id=file_id)
         return IntegrityActionResult(ok=True)
 
     @staticmethod
-    def _schedule_integrity_queue_refresh() -> None:
-        """Drop the resolved mismatch from the imports queue (debounced rebuild)."""
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+    def _schedule_integrity_queue_sync(
+        *, media_type: MediaType, file_id: uuid.UUID
+    ) -> None:
+        """Drop or refresh one integrity row after user action."""
+        from miramedia.imports.queue_hooks import schedule_integrity_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_integrity_queue_sync(media_type=media_type.value, file_id=file_id)
 
     async def _clear_integrity_state(
         self,

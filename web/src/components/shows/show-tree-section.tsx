@@ -17,7 +17,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { MediaStatusBadge } from "@/components/media-status-badge";
 import { SearchTorrentButton } from "@/components/download-dialogs/download-media-dialog";
+import { SeasonWatchedMenuItems } from "@/components/watchlists/watched-batch-menu";
+import { WatchedMenuItems } from "@/components/watchlists/watched-button";
+import { AddToWatchlist, AddToWatchlistMenuItem } from "@/components/watchlists/add-to-watchlist";
+import { useFeatures } from "@/components/providers/features-provider";
 import { formatFileSuffix, getTorrentQualityString } from "@/lib/utils";
+import { watchlistOverflowActionsEnabled } from "@/lib/watchlists";
 import { languageName } from "@/lib/languages";
 import type { DeleteTarget, Season, TreeRow } from "@/lib/show-detail";
 import type { ShowDetail } from "@/hooks/use-show-detail";
@@ -68,6 +73,10 @@ export function ShowTreeSection({
   loadSubtitles,
   openDeleteModal,
 }: ShowTreeSectionProps) {
+  const [watchlistEpisodeId, setWatchlistEpisodeId] = React.useState<string | null>(null);
+  const { watchlists, custom_lists } = useFeatures();
+  const { markWatched } = watchlistOverflowActionsEnabled({ watchlists, custom_lists });
+  const showOverflowMenu = markWatched || isSuperuser;
   const treeColumns = React.useMemo<ColumnDef<TreeRow>[]>(
     () => [
       {
@@ -228,174 +237,211 @@ export function ShowTreeSection({
   );
 
   return (
-    <DataListSection<TreeRow>
-      data={treeRows}
-      getId={(r) => r.id}
-      selectable={isSuperuser}
-      selectedIds={allSelectedTreeIds}
-      onToggleSelected={onToggleTreeRowSelected}
-      onToggleAllSelected={onToggleSelectAllTreeRows}
-      columns={treeColumns}
-      rowActions={(r) => {
-        if (r.kind === "season") {
-          return (
-            <>
-              {isSuperuser && (
-                <SearchTorrentButton show={show} seasonNumber={r.data.number} iconOnly />
-              )}
-              <SubtitleSearchDialog
-                mode="show"
-                showId={show.id ?? ""}
-                showName={show.name}
-                seasonNumber={r.data.number}
-                hasAllSubtitles={seasonHasAllSubtitles(r.data)}
-                onUpdate={() => void loadSubtitles()}
-              />
-              {isSuperuser && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
-                        <EllipsisVertical className="h-4 w-4" />
-                      </Button>
-                    }
-                  />
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive"
-                      onClick={() =>
-                        openDeleteModal({
-                          type: "season",
-                          seasonId: r.id,
-                        })
-                      }
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </>
-          );
-        }
-        if (r.kind === "episode") {
-          return (
-            <>
-              {isSuperuser && (
-                <SearchTorrentButton
-                  show={show}
-                  seasonNumber={r.seasonNumber}
-                  episodeNumber={r.data.number}
-                  iconOnly
+    <>
+      <DataListSection<TreeRow>
+        data={treeRows}
+        getId={(r) => r.id}
+        selectable={isSuperuser}
+        selectedIds={allSelectedTreeIds}
+        onToggleSelected={onToggleTreeRowSelected}
+        onToggleAllSelected={onToggleSelectAllTreeRows}
+        columns={treeColumns}
+        rowActions={(r) => {
+          if (r.kind === "season") {
+            return (
+              <>
+                {isSuperuser && (
+                  <SearchTorrentButton show={show} seasonNumber={r.data.number} iconOnly />
+                )}
+                <SubtitleSearchDialog
+                  mode="show"
+                  showId={show.id ?? ""}
+                  showName={show.name}
+                  seasonNumber={r.data.number}
+                  hasAllSubtitles={seasonHasAllSubtitles(r.data)}
+                  onUpdate={() => void loadSubtitles()}
                 />
-              )}
-              <SubtitleSearchDialog
-                mode="episode"
-                episodeId={r.data.id ?? ""}
-                label={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.data.number).padStart(2, "0")} ${r.data.title ?? ""}`}
-                hasSubtitles={(subtitlesByEpisode[r.data.id ?? ""] ?? []).length > 0}
-                onUpdate={() => void loadSubtitles()}
-              />
-              {isSuperuser && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
-                        <EllipsisVertical className="h-4 w-4" />
-                      </Button>
-                    }
-                  />
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive"
-                      onClick={() =>
-                        openDeleteModal({
-                          type: "episode",
-                          episodeId: r.data.id,
-                          seasonId: r.seasonId,
-                        })
+                {showOverflowMenu ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground"
+                        >
+                          <EllipsisVertical className="h-4 w-4" />
+                        </Button>
                       }
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </>
-          );
-        }
-        if (r.kind === "file") {
-          return (
-            <>
-              {r.data.file_status === "imported" && (
-                <VideoPlayerDialog
-                  mediaType="show"
-                  mediaId={r.episodeId}
-                  fileId={r.data.id!}
-                  title={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.episodeNumber).padStart(2, "0")} ${r.episodeTitle}`}
-                  subtitleLanguages={subtitlesByEpisode[r.episodeId] ?? []}
-                  buttonVariant="ghost"
-                  buttonSize="icon"
+                    />
+                    <DropdownMenuContent align="end">
+                      <SeasonWatchedMenuItems showId={show.id ?? ""} seasonNumber={r.data.number} />
+                      {isSuperuser && (
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={() =>
+                            openDeleteModal({
+                              type: "season",
+                              seasonId: r.id,
+                            })
+                          }
+                        >
+                          <Trash2 className="size-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
+              </>
+            );
+          }
+          if (r.kind === "episode") {
+            return (
+              <>
+                {isSuperuser && (
+                  <SearchTorrentButton
+                    show={show}
+                    seasonNumber={r.seasonNumber}
+                    episodeNumber={r.data.number}
+                    iconOnly
+                  />
+                )}
+                <SubtitleSearchDialog
+                  mode="episode"
+                  episodeId={r.data.id ?? ""}
+                  label={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.data.number).padStart(2, "0")} ${r.data.title ?? ""}`}
+                  hasSubtitles={(subtitlesByEpisode[r.data.id ?? ""] ?? []).length > 0}
+                  onUpdate={() => void loadSubtitles()}
                 />
-              )}
-              {isSuperuser && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
-                        <EllipsisVertical className="h-4 w-4" />
-                      </Button>
-                    }
-                  />
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem
-                      className="text-destructive"
-                      onClick={() =>
-                        openDeleteModal({
-                          type: "file",
-                          fileId: r.data.id!,
-                        })
+                {showOverflowMenu ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground"
+                          aria-label="More actions"
+                        >
+                          <EllipsisVertical className="h-4 w-4" />
+                        </Button>
                       }
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </>
-          );
-        }
-        // subtitle
-        return isSuperuser ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
-                  <EllipsisVertical className="h-4 w-4" />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem
-                className="text-destructive"
-                onClick={() =>
-                  openDeleteModal({
-                    type: "subtitle",
-                    episodeId: r.episodeId,
-                    fileName: r.data.file_name,
-                  })
+                    />
+                    <DropdownMenuContent align="end">
+                      {r.data.id ? (
+                        <WatchedMenuItems mediaKind="episode" mediaId={r.data.id} />
+                      ) : null}
+                      <AddToWatchlistMenuItem
+                        onSelect={() => r.data.id && setWatchlistEpisodeId(r.data.id)}
+                      />
+                      {isSuperuser ? (
+                        <DropdownMenuItem
+                          className="text-destructive"
+                          onClick={() =>
+                            openDeleteModal({
+                              type: "episode",
+                              episodeId: r.data.id,
+                              seasonId: r.seasonId,
+                            })
+                          }
+                        >
+                          <Trash2 className="size-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      ) : null}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
+              </>
+            );
+          }
+          if (r.kind === "file") {
+            return (
+              <>
+                {r.data.file_status === "imported" && (
+                  <VideoPlayerDialog
+                    mediaType="show"
+                    mediaId={r.episodeId}
+                    fileId={r.data.id!}
+                    title={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.episodeNumber).padStart(2, "0")} ${r.episodeTitle}`}
+                    subtitleLanguages={subtitlesByEpisode[r.episodeId] ?? []}
+                    buttonVariant="ghost"
+                    buttonSize="icon"
+                  />
+                )}
+                {isSuperuser && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground"
+                        >
+                          <EllipsisVertical className="h-4 w-4" />
+                        </Button>
+                      }
+                    />
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        className="text-destructive"
+                        onClick={() =>
+                          openDeleteModal({
+                            type: "file",
+                            fileId: r.data.id!,
+                          })
+                        }
+                      >
+                        <Trash2 className="size-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </>
+            );
+          }
+          // subtitle
+          return isSuperuser ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground">
+                    <EllipsisVertical className="h-4 w-4" />
+                  </Button>
                 }
-              >
-                <Trash2 className="mr-2 h-4 w-4" />
-                Delete
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null;
-      }}
-    />
+              />
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  className="text-destructive"
+                  onClick={() =>
+                    openDeleteModal({
+                      type: "subtitle",
+                      episodeId: r.episodeId,
+                      fileName: r.data.file_name,
+                    })
+                  }
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null;
+        }}
+      />
+      {watchlistEpisodeId ? (
+        <AddToWatchlist
+          mediaKind="episode"
+          mediaId={watchlistEpisodeId}
+          open
+          hideTrigger
+          onOpenChange={(next) => {
+            if (!next) setWatchlistEpisodeId(null);
+          }}
+        />
+      ) : null}
+    </>
   );
 }

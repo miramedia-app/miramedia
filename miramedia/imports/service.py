@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import types
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -65,6 +66,8 @@ from miramedia.torrents.service import TorrentService
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from miramedia.torrents.models import TorrentHistory
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +140,7 @@ class ImportsService:
             ):
                 return
             if await import_queue_is_empty(db):
-                await rebuild_import_queue(db, self)
+                await rebuild_import_queue(db, self, only_if_empty=True)
             _queue_built_at = datetime.now(UTC)
 
     async def list_imports(
@@ -251,33 +254,82 @@ class ImportsService:
             offset = page.next_offset
         return items
 
+    async def build_scan_import_item(self, directory: str) -> ScanImportItem | None:
+        cache_row = await self.repository.get_scan_cache_entry(directory)
+        if cache_row is None:
+            return None
+        try:
+            result = ScanResult.model_validate(cache_row)
+        except Exception:
+            log.exception("Skipping corrupt scan_result_cache row for %s", directory)
+            return None
+        return ScanImportItem(id=result.directory, result=result)
+
+    async def build_media_import_item(
+        self, history_id: uuid.UUID
+    ) -> MediaImportItem | None:
+        from miramedia.torrents.schemas import TorrentHistoryOutcome
+
+        history = (
+            await self.torrent_service.torrent_repository.get_torrent_history_by_id(
+                history_id
+            )
+        )
+        if history is None or history.outcome != TorrentHistoryOutcome.imported.value:
+            return None
+        return self._media_import_item_from_history(history)
+
+    async def build_integrity_import_item(
+        self, *, media_type: str, file_id: uuid.UUID
+    ) -> IntegrityImportItem | None:
+        from miramedia.imports.queue.projector import integrity_ref_id
+        from miramedia.torrents.schemas import MediaType
+
+        mismatch = await self.torrent_service.get_integrity_mismatch(
+            media_type=MediaType(media_type),
+            file_id=file_id,
+            show_service=self.show_service,
+            movie_service=self.movie_service,
+        )
+        if mismatch is None:
+            return None
+        return IntegrityImportItem(
+            id=integrity_ref_id(media_type, file_id),
+            mismatch=mismatch,
+        )
+
+    def _media_import_item_from_history(
+        self, h: TorrentHistory
+    ) -> MediaImportItem | None:
+        if not h.media_type:
+            return None
+        try:
+            files = [ImportFileDetail.model_validate(f) for f in (h.files or [])]
+        except Exception:
+            files = []
+        progress = ImportProgress(
+            total=h.files_total,
+            imported=h.files_imported,
+            last_attempt_at=h.imported_at,
+        )
+        return MediaImportItem(
+            id=str(h.id),
+            media_type=MediaType(h.media_type),
+            media_name=h.media_name or h.title,
+            media_year=h.media_year,
+            torrent_title=h.title or "",
+            imported_at=h.imported_at,
+            progress=progress,
+            files=files,
+        )
+
     async def _collect_history_items(self) -> list[MediaImportItem]:
         items: list[MediaImportItem] = []
         rows = await self.torrent_service.torrent_repository.list_imported_torrent_history()
         for h in rows:
-            if not h.media_type:
-                continue  # no media context — nothing useful to show
-            try:
-                files = [ImportFileDetail.model_validate(f) for f in (h.files or [])]
-            except Exception:
-                files = []
-            progress = ImportProgress(
-                total=h.files_total,
-                imported=h.files_imported,
-                last_attempt_at=h.imported_at,
-            )
-            items.append(
-                MediaImportItem(
-                    id=str(h.id),
-                    media_type=MediaType(h.media_type),
-                    media_name=h.media_name or h.title,
-                    media_year=h.media_year,
-                    torrent_title=h.title or "",
-                    imported_at=h.imported_at,
-                    progress=progress,
-                    files=files,
-                )
-            )
+            item = self._media_import_item_from_history(h)
+            if item is not None:
+                items.append(item)
         return items
 
     def _tab_matches(
@@ -350,7 +402,11 @@ class ImportsService:
         if latest is None:
             return 0
         backoff_minutes = min(2 ** max(max_attempts - 1, 0), 120)
-        elapsed = datetime.now(UTC).replace(tzinfo=None) - ImportsService._naive(latest)
+        now = datetime.now(UTC)
+        latest_utc = latest
+        if latest_utc.tzinfo is None:
+            latest_utc = latest_utc.replace(tzinfo=UTC)
+        elapsed = now - latest_utc
         remaining = timedelta(minutes=backoff_minutes) - elapsed
         return max(int(remaining.total_seconds()), 0)
 
@@ -438,7 +494,18 @@ class ImportsService:
         if not cache_row.get("worker_started_at"):
             raise HTTPException(409, "scan entry not eligible")
 
-        roots = library_roots_for_media_type(body.media_type)
+        # Snapshot request scalars before releasing the session — the import
+        # path below performs filesystem and metadata-provider I/O.
+        media_type = body.media_type
+        media_id = body.media_id
+        external_id = body.external_id
+        metadata_provider_name = body.metadata_provider
+        roots = library_roots_for_media_type(media_type)
+
+        from miramedia.database import release_session_before_external_io
+
+        await release_session_before_external_io(self.repository.db)
+
         try:
             path = await asyncio.to_thread(
                 resolve_path_within_roots,
@@ -452,31 +519,31 @@ class ImportsService:
             raise HTTPException(404, "scan entry not found") from exc
 
         imported_media = None
-        if body.media_id is not None:
+        if media_id is not None:
             # Pick an existing tracked show/movie.
-            if body.media_type == MediaType.show:
-                show = await self.show_service.get_show_by_id(show_id=body.media_id)
+            if media_type == MediaType.show:
+                show = await self.show_service.get_show_by_id(show_id=media_id)
                 ok = await self.show_service.import_show_from_directory(
                     show=show, source_directory=path
                 )
                 imported_media = show
             else:
-                movie = await self.movie_service.get_movie_by_id(body.media_id)
+                movie = await self.movie_service.get_movie_by_id(media_id)
                 ok = await self.movie_service.import_movie_from_directory(
                     movie=movie, source_directory=path
                 )
                 imported_media = movie
-        elif body.external_id and body.metadata_provider:
+        elif external_id and metadata_provider_name:
             # Create the media from a metadata-provider hit, then import.
             from miramedia.metadata.dependencies import (
                 get_metadata_provider,
             )
 
-            metadata_provider = get_metadata_provider(body.metadata_provider)
+            metadata_provider = get_metadata_provider(metadata_provider_name)
             try:
-                if body.media_type == MediaType.show:
+                if media_type == MediaType.show:
                     show = await self.show_service.add_show(
-                        external_id=body.external_id,
+                        external_id=external_id,
                         metadata_provider=metadata_provider,
                     )
                     ok = await self.show_service.import_show_from_directory(
@@ -485,7 +552,7 @@ class ImportsService:
                     imported_media = show
                 else:
                     movie = await self.movie_service.add_movie(
-                        external_id=body.external_id,
+                        external_id=external_id,
                         metadata_provider=metadata_provider,
                     )
                     ok = await self.movie_service.import_movie_from_directory(
@@ -514,24 +581,33 @@ class ImportsService:
                 directory, claim_token=claim_token, error="import failed"
             )
             raise HTTPException(400, "import failed")
-        await self.repository.complete_manual_scan_import(
+
+        imported_media_id = (
+            str(imported_media.id) if imported_media is not None else None
+        )
+        imported_name = imported_media.name if imported_media is not None else None
+        completed = await self.repository.complete_manual_scan_import(
             directory,
             claim_token=claim_token,
-            imported_name=getattr(imported_media, "name", None),
-            imported_media_id=str(getattr(imported_media, "id", "")) or None,
-            imported_media_type=body.media_type.value
-            if body.media_type is not None
-            else None,
+            imported_name=imported_name,
+            imported_media_id=imported_media_id,
+            imported_media_type=media_type.value,
         )
+        if not completed:
+            raise HTTPException(409, "scan entry not eligible")
 
         # Re-apply global-default behaviour so a partial import is completed
         # (missing episodes / movie) and subtitles are fetched.
         from miramedia.imports.followup import run_post_import_completion
 
+        followup_media = types.SimpleNamespace(
+            id=imported_media.id,
+            name=imported_name,
+        )
         await run_post_import_completion(
             db=self.repository.db,
-            media_type=body.media_type,
-            media=imported_media,
+            media_type=media_type,
+            media=followup_media,
             show_service=self.show_service,
             movie_service=self.movie_service,
         )

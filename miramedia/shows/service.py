@@ -74,6 +74,7 @@ from miramedia.shows.models import Show as ShowOrm  # noqa: E402
 from miramedia.shows.repository import ShowRepository  # noqa: E402
 from miramedia.shows.schemas import (  # noqa: E402
     Episode,
+    EpisodeAttributeChange,
     EpisodeFile,
     EpisodeId,
     EpisodeIntegrityContext,
@@ -348,7 +349,7 @@ class ShowService(MediaService[Show, ShowId]):
                 show_with_metadata.imdb_id
             )
             if existing:
-                return existing
+                return await self.show_repository.get_show_by_id(show_id=existing.id)
         # Specials (Season 0) are persisted as skipped on add unless specials
         # auto-download is enabled — so the skipped flag is the single source of
         # truth (a user can later mark an individual special wanted and it
@@ -487,10 +488,10 @@ class ShowService(MediaService[Show, ShowId]):
             if season_dir.exists() and season_dir.is_dir():
                 await asyncio.to_thread(shutil.rmtree, season_dir)
                 log.info(f"Deleted season directory: {season_dir}")
-        for episode in season.episodes:
-            await self.show_repository.update_episode_skipped(
-                episode_id=episode.id, skipped=True
-            )
+        await self.show_repository.update_episodes_skipped_bulk(
+            [episode.id for episode in season.episodes],
+            skipped=True,
+        )
 
         from miramedia.media_state import refresh_media_state
 
@@ -1754,12 +1755,13 @@ class ShowService(MediaService[Show, ShowId]):
         try:
             await self._run_import_show_from_torrent(show=show, torrent=torrent)
         finally:
-            # Full (debounced) rebuild rather than a targeted torrent sync:
-            # cleanup_after_import may have deleted the torrent, in which case
-            # the imported files surface as a torrent-independent Done entry.
-            from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+            # Targeted torrent + history sync: cleanup_after_import may delete the
+            # live torrent while the durable Done row is upserted separately.
+            from miramedia.imports.queue_hooks import (
+                schedule_import_completion_queue_sync,
+            )
 
-            schedule_import_queue_rebuild()
+            schedule_import_completion_queue_sync(torrent.id)
 
     async def _run_import_show_from_torrent(self, show: Show, torrent: Torrent) -> None:
         """Map torrent files onto the pre-created EpisodeFile rows for this
@@ -1806,12 +1808,11 @@ class ShowService(MediaService[Show, ShowId]):
                         "Re-download or remove the torrent via Imports."
                     ),
                 )
-            for ef in episode_files:
-                await self.show_repository.update_episode_file_import_status(
-                    file_id=ef.id,
-                    status=ImportOutcome.failed_io,
-                    error="Source files missing on disk.",
-                )
+            await self.show_repository.update_episode_file_import_status_bulk(
+                file_ids=[ef.id for ef in episode_files],
+                status=ImportOutcome.failed_io,
+                error="Source files missing on disk.",
+            )
             return
 
         imported_episodes_by_season: dict[int, list[int]] = {}
@@ -2038,6 +2039,8 @@ class ShowService(MediaService[Show, ShowId]):
         # formats differ — matching by external_id would create duplicate
         # seasons/episodes on the next refresh.
         existing_seasons_by_number = {s.number: s for s in db_show.seasons}
+        pending_episode_updates: list[EpisodeAttributeChange] = []
+        pending_episode_log_labels: list[tuple[int, int]] = []
 
         for fresh_season_data in fresh_show_data.seasons:
             if fresh_season_data.number in existing_seasons_by_number:
@@ -2074,14 +2077,24 @@ class ShowService(MediaService[Show, ShowId]):
                                     fresh_episode_data.air_date,
                                     existing_episode.air_date,
                                 ),
+                                (
+                                    fresh_episode_data.air_time,
+                                    existing_episode.air_time,
+                                ),
                             )
                         )
                         if changed:
-                            await self.show_repository.update_episode_attributes(
-                                episode_id=existing_episode.id,
-                                title=fresh_episode_data.title,
-                                overview=fresh_episode_data.overview,
-                                air_date=fresh_episode_data.air_date,
+                            pending_episode_updates.append(
+                                EpisodeAttributeChange(
+                                    episode_id=existing_episode.id,
+                                    title=fresh_episode_data.title,
+                                    overview=fresh_episode_data.overview,
+                                    air_date=fresh_episode_data.air_date,
+                                    air_time=fresh_episode_data.air_time,
+                                )
+                            )
+                            pending_episode_log_labels.append(
+                                (existing_season.number, existing_episode.number)
                             )
                     else:
                         # Add new episode — inherit skipped from season
@@ -2140,6 +2153,16 @@ class ShowService(MediaService[Show, ShowId]):
                 )
                 await self.show_repository.add_season_to_show(
                     show_id=db_show.id, season_data=season_schema, skipped=skip_new
+                )
+
+        if pending_episode_updates:
+            await self.show_repository.update_episodes_attributes_bulk(
+                pending_episode_updates
+            )
+            for season_number, episode_number in pending_episode_log_labels:
+                log.debug(
+                    f"Updated episode S{season_number:02d}E{episode_number:02d} "
+                    f"for show {db_show.name}"
                 )
 
         updated_show = await self.show_repository.get_show_by_id(show_id=db_show.id)

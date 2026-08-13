@@ -31,8 +31,30 @@ import type { ImportItem, ScanImport } from "@/lib/imports";
 
 export default function ImportsPage() {
   const searchParams = useSearchParams();
+  // Mirror DataList's URL-synced page/pageSize so the query key tracks the
+  // server page immediately (including deep links with ?p=).
+  const [listPage, setListPage] = React.useState(() => {
+    const pageRaw = searchParams.get("p");
+    const psRaw = searchParams.get("ps");
+    return {
+      page: pageRaw ? Math.max(1, Number.parseInt(pageRaw, 10) || 1) : 1,
+      pageSize: psRaw ? Math.max(1, Number.parseInt(psRaw, 10) || 50) : 50,
+    };
+  });
+  const onPaginationChange = React.useCallback((next: { page: number; pageSize: number }) => {
+    setListPage((prev) =>
+      prev.page === next.page && prev.pageSize === next.pageSize ? prev : next,
+    );
+  }, []);
+  // Tab filter (?f=) is outside DataList — reset to page 1 when it changes so
+  // the user doesn't land on an out-of-range page for the new tab.
+  const filterParam = searchParams.get("f");
+  React.useEffect(() => {
+    setListPage((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
+  }, [filterParam]);
   const {
     items,
+    totalCount,
     isLoading,
     listView,
     refetchList,
@@ -51,7 +73,7 @@ export default function ImportsPage() {
     ignoreItem,
     bulkRetry,
     bulkImport,
-  } = useImportsQueue(searchParams.get("f"));
+  } = useImportsQueue(filterParam, listPage.page, listPage.pageSize);
 
   const [mapDialogTorrent, setMapDialogTorrent] = React.useState<{
     id: string;
@@ -150,6 +172,8 @@ export default function ImportsPage() {
             getId={(it) => it.id}
             columns={columns}
             pageSize={50}
+            totalCount={totalCount}
+            onPaginationChange={onPaginationChange}
             searchPlaceholder="Search or filter imports…"
             searchMatch={importSearchMatch}
             loading={isLoading && items.length === 0}

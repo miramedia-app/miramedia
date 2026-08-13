@@ -113,6 +113,39 @@ def test_health_details_returns_full_payload_for_superuser() -> None:
         app.dependency_overrides.clear()
 
 
+def test_features_reflects_config_flags() -> None:
+    from miramedia.config import MiraMediaConfig
+    from miramedia.database import get_session
+    from miramedia.main import app
+
+    config = MiraMediaConfig()
+
+    async def _stub_session() -> Any:
+        yield None
+
+    app.dependency_overrides[get_session] = _stub_session
+    try:
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/api/v1/features")
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body == {
+            "requests": config.requests.enabled,
+            "subtitles": config.subtitles.enabled,
+            "notifications": config.notifications.native.enabled,
+            "watchlists": config.watchlists.enabled,
+            "custom_lists": config.watchlists.custom_lists_enabled,
+            "watch_next": config.watchlists.watch_next_enabled,
+            "watch_next_include_specials": config.watchlists.native.watch_next_include_specials,
+            "upcoming": config.watchlists.upcoming_enabled,
+            "upcoming_default_past_days": config.watchlists.native.upcoming_default_past_days,
+            "upcoming_default_future_days": config.watchlists.native.upcoming_default_future_days,
+            "continue_watching": config.watchlists.continue_watching_enabled,
+        }
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_dashboard_summary_requires_auth_anonymous() -> None:
     from miramedia.database import get_session
     from miramedia.main import app

@@ -2,8 +2,8 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   Pause,
@@ -15,6 +15,7 @@ import {
   DownloadIcon,
   FilmIcon,
   TvIcon,
+  TriangleAlert,
 } from "lucide-react";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
@@ -37,7 +38,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { AddTorrentDialog } from "@/components/torrents/add-torrent-dialog";
 import { torrentProgressColumn, torrentStatusColumn } from "@/components/torrents/torrent-columns";
-import { DataList } from "@/components/data-list";
+import { DataList, DataListEmpty } from "@/components/data-list";
 import type {
   BulkAction,
   ColumnDef,
@@ -47,8 +48,7 @@ import type {
 } from "@/components/data-list";
 import { useUser } from "@/components/providers/user-provider";
 import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
-import { useEventStream } from "@/hooks/use-event-stream";
-import apiClient from "@/lib/api/client";
+import { useTorrentsList, type RichTorrent } from "@/hooks/use-torrents-list";
 import { qk } from "@/lib/query-keys";
 import {
   getTorrentQualityString,
@@ -56,9 +56,6 @@ import {
   convertTorrentSeasonRangeToIntegerRange,
   convertTorrentEpisodeRangeToIntegerRange,
 } from "@/lib/utils";
-import type { components } from "@/lib/api/api";
-
-type RichTorrent = components["schemas"]["RichTorrent"];
 
 const getTorrentId = (t: RichTorrent) => t.id!;
 
@@ -75,6 +72,9 @@ function getMediaLink(t: RichTorrent): string | null {
   return `/dashboard/movies/${t.media.media_id}`;
 }
 
+const torrentSearchMatch = (t: RichTorrent, q: string) =>
+  t.title.toLowerCase().includes(q) || (t.media?.media_name ?? "").toLowerCase().includes(q);
+
 const STATUS_ORDER: Record<string, number> = {
   Downloading: 0,
   Paused: 1,
@@ -87,82 +87,32 @@ export default function TorrentsPage() {
   const { user } = useUser();
   const router = useRouter();
   const qc = useQueryClient();
-  const torrentsQuery = useQuery({
-    queryKey: [...qk.torrents.list(), "all"],
-    queryFn: async ({ signal }) => {
-      const PAGE = 500; // server cap (le=500)
-      const items: RichTorrent[] = [];
-      let offset = 0;
-      let total = 0;
-      // Hard ceiling: 20 pages (10k rows). The torrent table is active-only;
-      // hitting this means something is wrong — bail with what we have.
-      for (let i = 0; i < 20; i++) {
-        const listRes = await apiClient.GET("/api/v1/torrents", {
-          signal,
-          params: { query: { limit: PAGE, offset } },
-        });
-        if (listRes.error) throw listRes.error;
-        const page = (listRes.data ?? []) as RichTorrent[];
-        items.push(...page);
-        total = Number(listRes.response?.headers?.get("x-total-count") ?? items.length);
-        offset += page.length;
-        if (page.length < PAGE || items.length >= total) break;
-      }
-      return { items, total };
-    },
-    placeholderData: (prev) => prev,
-    // SSE drives near-realtime invalidation; polling stays as a backstop in
-    // case the event stream drops without reconnecting in time.
-    refetchInterval: 60000,
-    refetchIntervalInBackground: false,
-  });
-
-  // Surgical SSE updates: avoid the full-list refetch storm when many
-  // torrents tick at once. `torrent.updated` and `import.updated` only
-  // invalidate the affected detail key + coalesce a single list refetch via
-  // a 250ms debounce. Create/delete still bust the list immediately because
-  // they change row count, not a single row's payload.
-  const pendingListInvalidate = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const queueListInvalidate = React.useCallback(() => {
-    if (pendingListInvalidate.current) return;
-    pendingListInvalidate.current = setTimeout(() => {
-      pendingListInvalidate.current = null;
-      void qc.invalidateQueries({ queryKey: qk.torrents.list() });
-    }, 250);
-  }, [qc]);
-  React.useEffect(() => {
-    return () => {
-      if (pendingListInvalidate.current) clearTimeout(pendingListInvalidate.current);
+  const searchParams = useSearchParams();
+  // Mirror DataList's URL-synced page/pageSize so the query key tracks the
+  // server page immediately (including deep links with ?p=).
+  const [listPage, setListPage] = React.useState(() => {
+    const pageRaw = searchParams.get("p");
+    const psRaw = searchParams.get("ps");
+    return {
+      page: pageRaw ? Math.max(1, Number.parseInt(pageRaw, 10) || 1) : 1,
+      pageSize: psRaw ? Math.max(1, Number.parseInt(psRaw, 10) || 50) : 50,
     };
-  }, []);
-
-  useEventStream({
-    handlers: {
-      "torrent.updated": (d: unknown) => {
-        const id = (d as { id?: string } | null)?.id;
-        if (id) void qc.invalidateQueries({ queryKey: qk.torrents.detail(id) });
-        queueListInvalidate();
-      },
-      "torrent.created": () => {
-        void qc.invalidateQueries({ queryKey: qk.torrents.list() });
-      },
-      "torrent.deleted": (d: unknown) => {
-        const id = (d as { id?: string } | null)?.id;
-        void qc.invalidateQueries({ queryKey: qk.torrents.list() });
-        if (id) qc.removeQueries({ queryKey: qk.torrents.detail(id) });
-      },
-      "torrent.refresh": () => {
-        void qc.invalidateQueries({ queryKey: qk.torrents.list() });
-      },
-      "import.updated": (d: unknown) => {
-        const torrentId = (d as { torrent_id?: string } | null)?.torrent_id;
-        if (torrentId) void qc.invalidateQueries({ queryKey: qk.torrents.detail(torrentId) });
-        queueListInvalidate();
-      },
-    },
   });
+  const onPaginationChange = React.useCallback((next: { page: number; pageSize: number }) => {
+    setListPage((prev) =>
+      prev.page === next.page && prev.pageSize === next.pageSize ? prev : next,
+    );
+  }, []);
+  const torrentsQuery = useTorrentsList(listPage.page, listPage.pageSize);
 
-  const torrents = torrentsQuery.data?.items ?? [];
+  const torrents = React.useMemo(() => torrentsQuery.data?.items ?? [], [torrentsQuery.data]);
+  const totalCount = torrentsQuery.data?.total ?? undefined;
+  const loadError = torrentsQuery.isError ? "Failed to load torrents" : null;
+  // Facets/sort/grouping are client predicates over the loaded page only.
+  // With more than one server page they mislead (facet counts, cross-page
+  // sort), so offer them only when the whole dataset fits one page.
+  // Server-side q/sort/status params are a deferred follow-up.
+  const singlePage = totalCount !== undefined && totalCount <= listPage.pageSize;
 
   const [deleteDialogTorrent, setDeleteDialogTorrent] = React.useState<RichTorrent | null>(null);
   const [blockHash, setBlockHash] = React.useState(false);
@@ -544,31 +494,43 @@ export default function TorrentsPage() {
         crumbs={[{ label: "Dashboard", href: "/dashboard" }, { label: "Torrents" }]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <DataList<RichTorrent>
-          data={torrents}
-          getId={getTorrentId}
-          columns={columns}
-          pageSize={50}
-          searchPlaceholder="Search or filter torrents…"
-          searchMatch={(t, q) =>
-            t.title.toLowerCase().includes(q) ||
-            (t.media?.media_name ?? "").toLowerCase().includes(q)
-          }
-          facets={facets}
-          sortOptions={sortOptions}
-          defaultSort="title-asc"
-          groupings={groupings}
-          defaultGroupId="status"
-          collapseStorageKey="torrents"
-          bulkActions={bulkActions}
-          loading={torrentsQuery.isLoading}
-          density="rich"
-          emptyIcon={<DownloadIcon />}
-          emptyTitle="No torrents yet"
-          emptyDescription="Search a show or movie to start downloading."
-          toolbarTrailing={user?.is_superuser ? <AddTorrentDialog /> : null}
-          rowActions={renderRowActions}
-        />
+        {loadError ? (
+          <DataListEmpty
+            icon={<TriangleAlert />}
+            title={loadError}
+            description="Check that the backend is reachable, then retry."
+            action={
+              <Button variant="outline" size="sm" onClick={() => torrentsQuery.refetch()}>
+                Retry
+              </Button>
+            }
+          />
+        ) : (
+          <DataList<RichTorrent>
+            data={torrents}
+            getId={getTorrentId}
+            columns={columns}
+            pageSize={50}
+            totalCount={totalCount}
+            onPaginationChange={onPaginationChange}
+            searchPlaceholder="Search or filter torrents…"
+            searchMatch={torrentSearchMatch}
+            facets={singlePage ? facets : undefined}
+            sortOptions={singlePage ? sortOptions : undefined}
+            defaultSort={singlePage ? "title-asc" : undefined}
+            groupings={singlePage ? groupings : undefined}
+            defaultGroupId={singlePage ? "status" : undefined}
+            collapseStorageKey="torrents"
+            bulkActions={bulkActions}
+            loading={torrentsQuery.isLoading}
+            density="rich"
+            emptyIcon={<DownloadIcon />}
+            emptyTitle="No torrents yet"
+            emptyDescription="Search a show or movie to start downloading."
+            toolbarTrailing={user?.is_superuser ? <AddTorrentDialog /> : null}
+            rowActions={renderRowActions}
+          />
+        )}
       </main>
 
       <Dialog

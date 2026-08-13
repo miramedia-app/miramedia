@@ -11,10 +11,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { usePlaybackProgress } from "@/hooks/use-playback-progress";
 import type { MediaStreamSource, StreamingPlayer } from "@/lib/mediabunny";
 import { loadSubtitlesIfCurrent, runPlaybackLoad } from "@/lib/video-player-subtitles";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 type PlayerState = "idle" | "loading" | "playing" | "error";
+
+function formatResumeClock(positionMs: number): string {
+  const totalSec = Math.max(0, Math.floor(positionMs / 1000));
+  const mm = Math.floor(totalSec / 60);
+  const ss = totalSec % 60;
+  return `${mm}:${ss.toString().padStart(2, "0")}`;
+}
 
 export function VideoPlayerDialog({
   mediaType,
@@ -24,6 +34,10 @@ export function VideoPlayerDialog({
   subtitleLanguages = [],
   buttonVariant = "outline",
   buttonSize = "sm",
+  buttonClassName,
+  triggerLabel,
+  resumeFromMs,
+  trigger,
 }: {
   mediaType: "show" | "movie";
   mediaId: string;
@@ -32,23 +46,58 @@ export function VideoPlayerDialog({
   subtitleLanguages?: string[];
   buttonVariant?: "outline" | "ghost" | "default";
   buttonSize?: "sm" | "default" | "icon";
+  buttonClassName?: string;
+  /** Visible label on the trigger button. Icon-only when omitted and size is icon. */
+  triggerLabel?: string;
+  /** When set (e.g. continue-watching), seek here and skip the resume prompt. */
+  resumeFromMs?: number;
+  /** Replaces the default play button. Use for poster/card triggers. */
+  trigger?: React.ReactElement;
 }) {
   const [open, setOpen] = React.useState(false);
   const [playerState, setPlayerState] = React.useState<PlayerState>("idle");
   const [errorMessage, setErrorMessage] = React.useState("");
   const [videoSrc, setVideoSrc] = React.useState<string | undefined>(undefined);
   const [subtitleSrcs, setSubtitleSrcs] = React.useState<{ lang: string; url: string }[]>([]);
+  const [showResumePrompt, setShowResumePrompt] = React.useState(false);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const streamPlayerRef = React.useRef<StreamingPlayer | null>(null);
   const loadControllerRef = React.useRef<AbortController | null>(null);
   // True while the native <video> src is the HLS playlist (Safari warm-cache path).
   const usingHlsRef = React.useRef(false);
+  const appliedResumeFromMsRef = React.useRef(false);
+
+  const mediaKind = mediaType === "movie" ? "movie" : "episode";
+  const { initialProgress, reporter } = usePlaybackProgress({
+    fileId,
+    mediaKind,
+    enabled: open,
+  });
 
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
   const endpoint = mediaType === "movie" ? "movies" : "episodes";
   // Streaming endpoints identify the target file by its surrogate uuid.
   const streamUrl = `${apiUrl}/api/v1/streams/${endpoint}/${mediaId}?file_id=${encodeURIComponent(fileId)}`;
   const downloadUrl = `${streamUrl}&download=true`;
+
+  const resumePromptPositionMs =
+    resumeFromMs == null &&
+    initialProgress &&
+    !initialProgress.completed &&
+    initialProgress.position_ms >= 5_000
+      ? initialProgress.position_ms
+      : null;
+
+  React.useEffect(() => {
+    if (playerState !== "playing") return;
+    if (resumeFromMs != null) {
+      setShowResumePrompt(false);
+      return;
+    }
+    if (resumePromptPositionMs != null) {
+      setShowResumePrompt(true);
+    }
+  }, [playerState, resumeFromMs, resumePromptPositionMs]);
 
   function subtitleTrackUrl(language: string): string {
     return `${apiUrl}/api/v1/streams/subtitles/${endpoint}/${mediaId}/${language}?file_id=${encodeURIComponent(fileId)}`;
@@ -87,6 +136,7 @@ export function VideoPlayerDialog({
       streamPlayerRef.current = null;
     }
     usingHlsRef.current = false;
+    appliedResumeFromMsRef.current = false;
     setVideoSrc((prev) => {
       if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
       return undefined;
@@ -95,6 +145,7 @@ export function VideoPlayerDialog({
       for (const sub of prev) URL.revokeObjectURL(sub.url);
       return [];
     });
+    setShowResumePrompt(false);
     setPlayerState("idle");
     setErrorMessage("");
   }, []);
@@ -116,6 +167,12 @@ export function VideoPlayerDialog({
       };
       requestAnimationFrame(check);
     });
+  }
+
+  function applyResumeFromMsSeek(video: HTMLVideoElement) {
+    if (resumeFromMs == null || appliedResumeFromMsRef.current) return;
+    appliedResumeFromMsRef.current = true;
+    video.currentTime = resumeFromMs / 1000;
   }
 
   /** Mediabunny playback via UrlSource (range/HLS) or blob — no full-file download for URLs. */
@@ -150,7 +207,9 @@ export function VideoPlayerDialog({
     setVideoSrc(undefined);
     setPlayerState("playing");
     await waitForVideoElement(signal);
-    await streamPlayer.attach(videoRef.current!, 0);
+    const startSeconds = resumeFromMs != null ? resumeFromMs / 1000 : 0;
+    await streamPlayer.attach(videoRef.current!, startSeconds);
+    if (resumeFromMs != null) appliedResumeFromMsRef.current = true;
   }
 
   function canPlayHlsNatively(): boolean {
@@ -221,25 +280,93 @@ export function VideoPlayerDialog({
   function handleOpen(isOpen: boolean) {
     setOpen(isOpen);
     if (!isOpen) {
+      reporter.flush("close");
       cleanup();
       return;
     }
     requestAnimationFrame(() => requestAnimationFrame(() => loadAndPlay()));
   }
 
+  function sampleFromVideo(video: HTMLVideoElement) {
+    return {
+      positionMs: video.currentTime * 1000,
+      durationMs: video.duration * 1000,
+    };
+  }
+
+  function handleTimeUpdate(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const video = event.currentTarget;
+    const { positionMs, durationMs } = sampleFromVideo(video);
+    reporter.report(positionMs, durationMs);
+  }
+
+  function handlePause(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const video = event.currentTarget;
+    const { positionMs, durationMs } = sampleFromVideo(video);
+    reporter.report(positionMs, durationMs);
+    reporter.flush("pause");
+  }
+
+  function handleSeeked(event: React.SyntheticEvent<HTMLVideoElement>) {
+    if (showResumePrompt) setShowResumePrompt(false);
+    const video = event.currentTarget;
+    const { positionMs, durationMs } = sampleFromVideo(video);
+    reporter.report(positionMs, durationMs);
+    reporter.flush("seeked");
+  }
+
+  function handleEnded(event: React.SyntheticEvent<HTMLVideoElement>) {
+    const video = event.currentTarget;
+    const durationMs = video.duration * 1000;
+    reporter.report(durationMs, durationMs);
+    reporter.flush("ended");
+  }
+
+  function handleLoadedMetadata(event: React.SyntheticEvent<HTMLVideoElement>) {
+    applyResumeFromMsSeek(event.currentTarget);
+  }
+
+  function resumeFromPrompt() {
+    if (resumePromptPositionMs == null || !videoRef.current) return;
+    setShowResumePrompt(false);
+    videoRef.current.currentTime = resumePromptPositionMs / 1000;
+  }
+
+  async function startOverFromPrompt() {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const ok = await reporter.clearProgress();
+    if (!ok) {
+      toast.error("Could not clear saved resume position");
+    }
+    // Keep playback usable either way; only successful DELETE claims a clear.
+    setShowResumePrompt(false);
+    video.currentTime = 0;
+  }
+
   return (
     <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogTrigger
-        render={
-          <Button
-            variant={buttonVariant}
-            size={buttonSize}
-            className={buttonSize === "icon" ? "h-7 w-7 text-muted-foreground" : undefined}
-          />
-        }
-      >
-        <Play className="h-3.5 w-3.5" />
-      </DialogTrigger>
+      {trigger ? (
+        <DialogTrigger render={trigger} />
+      ) : (
+        <DialogTrigger
+          render={
+            <Button
+              variant={buttonVariant}
+              size={buttonSize}
+              className={cn(
+                buttonSize === "icon" ? "text-muted-foreground" : undefined,
+                buttonSize === "icon" && !buttonClassName ? "h-7 w-7" : undefined,
+                buttonClassName,
+              )}
+              aria-label={triggerLabel ?? "Play"}
+            />
+          }
+        >
+          <Play className={buttonSize === "icon" ? "size-4" : "h-3.5 w-3.5"} />
+          {triggerLabel && buttonSize !== "icon" ? <span>{triggerLabel}</span> : null}
+        </DialogTrigger>
+      )}
       <DialogContent className="flex max-h-[90vh] w-[95vw] max-w-6xl flex-col sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -270,6 +397,11 @@ export function VideoPlayerDialog({
               autoPlay
               crossOrigin="use-credentials"
               src={videoSrc}
+              onLoadedMetadata={handleLoadedMetadata}
+              onTimeUpdate={handleTimeUpdate}
+              onPause={handlePause}
+              onSeeked={handleSeeked}
+              onEnded={handleEnded}
               onError={() => {
                 // Browser refused the native stream — likely MKV / AC3 / HEVC
                 // without hardware support, or a failed HLS playlist load (Safari
@@ -291,6 +423,18 @@ export function VideoPlayerDialog({
                 />
               ))}
             </video>
+          )}
+          {playerState === "playing" && showResumePrompt && resumePromptPositionMs != null && (
+            <div className="absolute inset-x-0 bottom-14 z-10 flex justify-center px-4">
+              <div className="flex flex-wrap items-center justify-center gap-2 rounded-md border bg-background/95 px-3 py-2 shadow-sm">
+                <Button size="sm" onClick={resumeFromPrompt}>
+                  Resume from {formatResumeClock(resumePromptPositionMs)}
+                </Button>
+                <Button size="sm" variant="outline" onClick={startOverFromPrompt}>
+                  Start over
+                </Button>
+              </div>
+            </div>
           )}
         </div>
         <DialogFooter>

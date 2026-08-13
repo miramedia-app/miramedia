@@ -1,4 +1,5 @@
 import asyncio
+import html
 import logging
 import re
 import socket
@@ -151,9 +152,9 @@ def _parse_cinemeta_cast(cast_value: object) -> list[str]:
     if cast_value is None:
         return []
     if isinstance(cast_value, list):
-        return [str(c).strip() for c in cast_value if c]
+        return [html.unescape(str(c)).strip() for c in cast_value if c]
     if isinstance(cast_value, str):
-        return [c.strip() for c in cast_value.split(",") if c.strip()]
+        return [html.unescape(c).strip() for c in cast_value.split(",") if c.strip()]
     return []
 
 
@@ -530,13 +531,17 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                 key=lambda x: x.get("number", x.get("episode")) or 0,
             ):
                 episode_no = v.get("number", v.get("episode"))
-                released = (v.get("released") or v.get("firstAired") or "")[:10]
+                # Keep the full value (may be a UTC datetime): parse_iso_date
+                # converts it to the local calendar date. Truncating to [:10] here
+                # would freeze the UTC date and reintroduce the air-date off-by-one.
+                released = v.get("released") or v.get("firstAired") or ""
                 episodes.append(
                     Episode(
                         title=v.get("name") or f"Episode {episode_no}",
                         number=EpisodeNumber(int(episode_no)),
                         overview=_strip_html(v.get("overview") or v.get("description")),
                         air_date=miramedia.metadata.utils.parse_iso_date(released),
+                        air_time=miramedia.metadata.utils.parse_iso_time(released),
                     )
                 )
             season_list.append(
@@ -591,6 +596,10 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                         air_date=miramedia.metadata.utils.parse_iso_date(
                             ep.get("airdate")
                         ),
+                        # airstamp is the UTC datetime; airdate is date-only.
+                        air_time=miramedia.metadata.utils.parse_iso_time(
+                            ep.get("airstamp")
+                        ),
                     )
                     for ep in eps_data
                     if ep.get("number") is not None
@@ -632,6 +641,9 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                         air_date=miramedia.metadata.utils.parse_iso_date(
                             ep.get("airdate")
                         ),
+                        air_time=miramedia.metadata.utils.parse_iso_time(
+                            ep.get("airstamp")
+                        ),
                     )
                     for i, ep in enumerate(specials, start=1)
                 ]
@@ -653,7 +665,7 @@ class NativeMetadataProvider(AbstractMetadataProvider):
             try:
                 person_name = member.get("person", {}).get("name")
                 if person_name:
-                    cast_names.append(person_name)
+                    cast_names.append(html.unescape(person_name))
             except Exception:  # noqa: S110 — best-effort cast parse, failure non-fatal
                 pass
 

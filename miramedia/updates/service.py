@@ -11,12 +11,7 @@ import httpx
 from cachetools import TTLCache
 
 from miramedia.config import MiraMediaConfig
-from miramedia.updates.schemas import (
-    ApplyState,
-    UpdateInfo,
-    UpdateStatusState,
-    VersionInfo,
-)
+from miramedia.updates.schemas import UpdateInfo, VersionInfo
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +143,7 @@ class _UpdateCheckCache:
 
 
 class UpdateService:
-    """Singleton update service: fetches GitHub releases, caches, exposes apply state."""
+    """Singleton update service: fetches GitHub releases and caches results."""
 
     _instance: UpdateService | None = None
     _instance_lock = threading.Lock()
@@ -165,8 +160,6 @@ class UpdateService:
             return
         cfg = MiraMediaConfig().updates
         self._cache = _UpdateCheckCache(ttl_seconds=cfg.cache_ttl_seconds)
-        self._apply_state = ApplyState(state=UpdateStatusState.idle)
-        self._apply_lock = threading.Lock()
         self._initialized = True
 
     # ----- version helpers -----
@@ -246,7 +239,6 @@ class UpdateService:
                 published_at=None,
                 last_checked_at=self._cache.last_checked_at,
                 repo=cfg.repo,
-                apply_supported=self.is_apply_supported(),
             )
 
         cache_key = f"{cfg.repo}:{cfg.include_prereleases}"
@@ -281,7 +273,6 @@ class UpdateService:
                 published_at=None,
                 last_checked_at=self._cache.last_checked_at,
                 repo=cfg.repo,
-                apply_supported=self.is_apply_supported(),
             )
 
         latest_tag = cached.get("tag_name") or ""
@@ -315,47 +306,7 @@ class UpdateService:
             published_at=published_at,
             last_checked_at=self._cache.last_checked_at,
             repo=cfg.repo,
-            apply_supported=self.is_apply_supported(),
         )
 
     def invalidate_cache(self) -> None:
         self._cache.invalidate()
-
-    # ----- apply support -----
-
-    @staticmethod
-    def is_apply_supported() -> bool:
-        return False
-
-    def get_apply_state(self) -> ApplyState:
-        with self._apply_lock:
-            return self._apply_state.model_copy(deep=True)
-
-    def _set_apply_state(
-        self,
-        state: UpdateStatusState | None = None,
-        target_version: str | None = None,
-        error: str | None = None,
-        log_line: str | None = None,
-        finished: bool = False,
-    ) -> None:
-        with self._apply_lock:
-            if state is not None:
-                self._apply_state.state = state
-            if target_version is not None:
-                self._apply_state.target_version = target_version
-            if error is not None:
-                self._apply_state.error = error
-            if log_line is not None:
-                self._apply_state.log = ([*self._apply_state.log, log_line])[-50:]
-            if finished:
-                self._apply_state.finished_at = datetime.now(UTC)
-
-    def trigger_apply(self, target_tag: str | None = None) -> tuple[bool, str | None]:
-        """Reject in-app apply — updates must be applied on the host."""
-        _ = target_tag
-        return (
-            False,
-            "in-app Docker apply is disabled; run "
-            "`docker compose pull && docker compose up -d` on the host",
-        )

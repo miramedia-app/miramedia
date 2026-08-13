@@ -3,7 +3,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from miramedia.auth.api_tokens import UserApiToken, generate_token
@@ -82,6 +82,21 @@ class ApiTokenCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     expires_at: datetime | None = None
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def strip_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expires_at_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return value
+        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+            msg = "expires_at must be timezone-aware with a UTC offset"
+            raise ValueError(msg)
+        return value
+
 
 class ApiTokenCreated(ApiTokenRead):
     """Response on creation — includes the plaintext token, shown to the user once."""
@@ -120,15 +135,15 @@ async def create_my_token(
     db: DbSessionDependency,
     user: CurrentUserDep,
 ) -> ApiTokenCreated:
-    plaintext, token_hash, preview = generate_token()
     if data.expires_at is not None and data.expires_at <= datetime.now(UTC):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="expires_at must be in the future",
         )
+    plaintext, token_hash, preview = generate_token()
     row = UserApiToken(
         user_id=user.id,
-        name=data.name.strip(),
+        name=data.name,
         token_hash=token_hash,
         preview=preview,
         expires_at=data.expires_at,

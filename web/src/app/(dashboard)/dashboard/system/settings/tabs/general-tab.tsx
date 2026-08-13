@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, CheckIcon, ChevronsUpDownIcon } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,8 +9,93 @@ import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { OverrideMarker } from "../_marker";
 import { csvToArray, newRowKey, type AnyObj, type Keyed, type SetPath } from "../_shared";
+
+// IANA zones straight from the browser's Intl DB — no bundled list to age out.
+// Guarded because Intl.supportedValuesOf is not in every runtime's typings.
+const supportedTimeZones = (
+  Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] }
+).supportedValuesOf;
+const TIMEZONES: string[] =
+  typeof supportedTimeZones === "function" ? supportedTimeZones("timeZone") : [];
+
+const SERVER_DEFAULT_LABEL = "Server Default";
+
+/** Searchable IANA timezone picker. Empty value = use the server's zone. */
+function TimezoneCombobox({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const listboxId = React.useId();
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        render={
+          <Button
+            variant="outline"
+            className="w-full justify-between font-normal"
+            role="combobox"
+            aria-expanded={open}
+            aria-controls={listboxId}
+          />
+        }
+      >
+        <span className={cn("truncate", !value && "text-muted-foreground")}>
+          {value || SERVER_DEFAULT_LABEL}
+        </span>
+        <ChevronsUpDownIcon className="opacity-50" />
+      </PopoverTrigger>
+      <PopoverContent className="p-0" align="start">
+        <Command id={listboxId}>
+          <CommandInput placeholder="Search timezone..." />
+          <CommandList>
+            <CommandEmpty>No timezone found.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem
+                value={SERVER_DEFAULT_LABEL}
+                onSelect={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+              >
+                <CheckIcon className={cn("mr-2", value === "" ? "opacity-100" : "opacity-0")} />
+                {SERVER_DEFAULT_LABEL}
+              </CommandItem>
+              {TIMEZONES.map((tz) => (
+                <CommandItem
+                  key={tz}
+                  value={tz}
+                  onSelect={() => {
+                    onChange(tz);
+                    setOpen(false);
+                  }}
+                >
+                  <CheckIcon className={cn("mr-2", value === tz ? "opacity-100" : "opacity-0")} />
+                  {tz}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 const CF_SOLVERS = [
   [
@@ -198,6 +283,19 @@ export function GeneralTab({
             </div>
             <div className="space-y-2">
               <Label>
+                Timezone
+                <OverrideMarker path={["misc", "timezone"]} />
+              </Label>
+              <TimezoneCombobox
+                value={String(m.timezone ?? "")}
+                onChange={(v) => setMiscPath(["timezone"], v)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Timezone used for episode/movie air dates.
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>
                 Log Retention (days)
                 <OverrideMarker path={["misc", "log_retention_days"]} />
               </Label>
@@ -207,7 +305,6 @@ export function GeneralTab({
                 value={Number(m.log_retention_days ?? "") || ""}
                 onChange={(e) => setMiscPath(["log_retention_days"], Number(e.target.value) || 0)}
                 placeholder="30"
-                className="max-w-[120px]"
               />
               <p className="text-xs text-muted-foreground">
                 Activity log entries older than this are auto-deleted daily.

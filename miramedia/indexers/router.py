@@ -288,90 +288,166 @@ async def _run_site_test(
         get_preloaded_sites().get(site.name) if site.site_type != "torznab" else None
     )
 
-    try:
+    # Preloaded native sites carry mirror lists (e.g. 1337x has .to/.st/.ws
+    # fallbacks). The primary may be Cloudflare-walled while a mirror serves
+    # plain HTTP, so probe every mirror before concluding the site is
+    # unreachable — matches the real search's mirror failover.
+    probe_urls: list[str] = [site.url]
+    if site.site_type != "torznab" and site_cls is not None:
+        seen = {site.url.rstrip("/")}
+        for mirror in getattr(site_cls, "available_urls", None) or []:
+            normalized = mirror.rstrip("/")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                probe_urls.append(mirror)
+
+    def _probe(base_url: str) -> requests.Response:
         if site.site_type == "torznab":
             params = {"t": "caps"}
             if site.api_key:
                 params["apikey"] = site.api_key
-            response = await asyncio.to_thread(
-                lambda: requests.get(
-                    site.url,
-                    params=params,
-                    timeout=15,
-                    headers={"User-Agent": ua},
-                )
+            return requests.get(
+                base_url, params=params, timeout=15, headers={"User-Agent": ua}
             )
-        else:
-            test_path = getattr(site_cls, "test_path", "") or ""
-            probe_url = site.url.rstrip("/") + test_path if test_path else site.url
-            response = await asyncio.to_thread(
-                lambda: requests.get(
-                    probe_url,
-                    timeout=15,
-                    headers={"User-Agent": ua},
-                )
-            )
+        test_path = getattr(site_cls, "test_path", "") or ""
+        probe_url = base_url.rstrip("/") + test_path if test_path else base_url
+        return requests.get(probe_url, timeout=15, headers={"User-Agent": ua})
 
+    try:
         from miramedia.cloudflare import get_cloudflare_bypass, is_cloudflare_challenge
 
-        cf_detected = is_cloudflare_challenge(response)
+        # Probe every mirror with plain HTTP. First non-challenged 2xx wins; a
+        # Cloudflare-walled or errored mirror doesn't abort the sweep — we fall
+        # through to the next one, and only reach for the bypass if every
+        # reachable mirror is CF-gated.
+        first_cf_detected = False
+        challenged_urls: list[str] = []
+        working_url: str | None = None
+        working_response: requests.Response | None = None
+        last_bad_response: requests.Response | None = None
+        last_error_message: str | None = None
+
+        for idx, base_url in enumerate(probe_urls):
+            try:
+                response = await asyncio.to_thread(_probe, base_url)
+            except requests.Timeout:
+                log.warning(
+                    "Indexer test %s (%s): mirror timed out (15s)", site.name, base_url
+                )
+                last_error_message = "Connection timed out"
+                continue
+            except requests.ConnectionError as exc:
+                # Never log the exception itself: for torznab probes the wrapped
+                # urllib3 error's str() embeds the full URL including the
+                # ``apikey`` query parameter, and logs are persisted to the DB.
+                log.warning(
+                    "Indexer test %s (%s): mirror connection error (%s)",
+                    site.name,
+                    base_url,
+                    type(exc).__name__,
+                )
+                last_error_message = "Connection failed — check the URL"
+                continue
+
+            cf = is_cloudflare_challenge(response)
+            if idx == 0:
+                first_cf_detected = cf
+            if not cf and response.ok:
+                working_url = base_url
+                working_response = response
+                break
+            if cf:
+                _emit(f"Cloudflare challenge detected at {base_url}")
+                challenged_urls.append(base_url)
+            else:
+                last_bad_response = response
+                last_error_message = f"HTTP {response.status_code}: {response.reason}"
 
         # Persist the Cloudflare flag. For preloaded native sites trust the
         # class declaration — a single probe can't decide it (a 200 now doesn't
         # mean never-challenged; a gated landing page doesn't mean the data
-        # endpoint is walled). Fall back to probe detection for custom/torznab.
+        # endpoint is walled). Fall back to primary-probe detection otherwise.
         flag_value = (
-            site_cls.cloudflare_protected if site_cls is not None else cf_detected
+            site_cls.cloudflare_protected if site_cls is not None else first_cf_detected
         )
         if site.cloudflare_protected != flag_value:
             await repo.update_site(
                 site_id, IndexerSiteUpdate(cloudflare_protected=flag_value)
             )
 
-        if cf_detected:
-            _emit("Cloudflare challenge detected")
+        if working_response is not None:
+            if working_url and working_url.rstrip("/") != site.url.rstrip("/"):
+                log.info(
+                    "Indexer test %s: OK via mirror %s (HTTP %s)",
+                    site.name,
+                    working_url,
+                    working_response.status_code,
+                )
+                return IndexerSiteTestResult(
+                    success=True,
+                    message=f"Successfully connected to {site.name} via mirror {working_url}",
+                    cloudflare_detected=bool(challenged_urls),
+                )
+            log.info(
+                "Indexer test %s (%s): OK (HTTP %s)",
+                site.name,
+                site.url,
+                working_response.status_code,
+            )
+            return IndexerSiteTestResult(
+                success=True,
+                message=f"Successfully connected to {site.name}",
+                cloudflare_detected=False,
+            )
+
+        if challenged_urls:
             bypass = get_cloudflare_bypass()
             if not bypass.config.enabled:
                 log.warning(
-                    "Indexer test %s (%s): Cloudflare detected but bypass is disabled",
+                    "Indexer test %s: Cloudflare detected on every reachable mirror "
+                    "(%s) but bypass is disabled",
                     site.name,
-                    site.url,
+                    challenged_urls,
                 )
                 return IndexerSiteTestResult(
                     success=False,
                     message=(
-                        f"{site.name} is behind Cloudflare but the Cloudflare "
-                        "bypass is disabled. Enable it in System Settings."
+                        f"{site.name} is behind Cloudflare on every reachable mirror "
+                        "and the Cloudflare bypass is disabled. Enable it in System "
+                        "Settings."
                     ),
                     cloudflare_detected=True,
                     cloudflare_solved=False,
                 )
             from urllib.parse import urlparse
 
-            domain = urlparse(site.url).netloc
-            cached = bypass.get_cached_session(domain)
-            if cached:
-                log.info(
-                    "Indexer test %s (%s): OK via cached CF bypass", site.name, site.url
-                )
-                _emit("Using cached Cloudflare session")
-                return IndexerSiteTestResult(
-                    success=True,
-                    message=f"Successfully connected to {site.name} (using cached Cloudflare bypass)",
-                    cloudflare_detected=True,
-                    cloudflare_solved=True,
-                )
+            for cf_url in challenged_urls:
+                domain = urlparse(cf_url).netloc
+                if bypass.get_cached_session(domain):
+                    log.info(
+                        "Indexer test %s (%s): OK via cached CF bypass",
+                        site.name,
+                        cf_url,
+                    )
+                    _emit("Using cached Cloudflare session")
+                    return IndexerSiteTestResult(
+                        success=True,
+                        message=f"Successfully connected to {site.name} (using cached Cloudflare bypass)",
+                        cloudflare_detected=True,
+                        cloudflare_solved=True,
+                    )
 
-            # Drive a genuine solve, bounded so the request finishes before the
-            # dev proxy's timeout (see _TEST_CF_SOLVE_TIMEOUT_SECONDS). The
-            # frontend streams progress over SSE and shows the live phase, then
-            # the real pass/fail.
+            # Drive a genuine solve on the first challenged mirror, bounded so
+            # the request finishes before the dev proxy's timeout (see
+            # _TEST_CF_SOLVE_TIMEOUT_SECONDS). The frontend streams progress
+            # over SSE and shows the live phase, then the real pass/fail.
+            target = challenged_urls[0]
             session = await asyncio.to_thread(
-                bypass.solve, site.url, _TEST_CF_SOLVE_TIMEOUT_SECONDS, progress
+                bypass.solve, target, _TEST_CF_SOLVE_TIMEOUT_SECONDS, progress
             )
             if session:
                 log.info(
-                    "Indexer test %s (%s): OK via fresh CF bypass", site.name, site.url
+                    "Indexer test %s (%s): OK via fresh CF bypass", site.name, target
                 )
                 return IndexerSiteTestResult(
                     success=True,
@@ -383,7 +459,7 @@ async def _run_site_test(
                 "Indexer test %s (%s): FAILED — Cloudflare bypass returned no "
                 "session within %.0fs",
                 site.name,
-                site.url,
+                target,
                 _TEST_CF_SOLVE_TIMEOUT_SECONDS,
             )
             return IndexerSiteTestResult(
@@ -393,51 +469,39 @@ async def _run_site_test(
                 cloudflare_solved=False,
             )
 
-        if response.ok:
-            log.info(
-                "Indexer test %s (%s): OK (HTTP %s)",
+        if last_bad_response is not None:
+            log.warning(
+                "Indexer test %s: FAILED — HTTP %s %s",
                 site.name,
-                site.url,
-                response.status_code,
+                last_bad_response.status_code,
+                last_bad_response.reason,
             )
             return IndexerSiteTestResult(
-                success=True,
-                message=f"Successfully connected to {site.name}",
-                cloudflare_detected=False,
+                success=False,
+                message=last_error_message
+                or f"HTTP {last_bad_response.status_code}: {last_bad_response.reason}",
             )
 
         log.warning(
-            "Indexer test %s (%s): FAILED — HTTP %s %s",
+            "Indexer test %s: FAILED — no reachable mirror (%s)",
             site.name,
-            site.url,
-            response.status_code,
-            response.reason,
+            last_error_message or "connection error",
         )
         return IndexerSiteTestResult(
             success=False,
-            message=f"HTTP {response.status_code}: {response.reason}",
+            message=last_error_message or "Connection failed — check the URL",
         )
 
-    except requests.Timeout:
+    except requests.RequestException as exc:
         log.warning(
-            "Indexer test %s (%s): FAILED — connection timed out (15s)",
+            "Indexer test %s (%s): FAILED — request error (%s)",
             site.name,
             site.url,
+            type(exc).__name__,
         )
         return IndexerSiteTestResult(
             success=False,
-            message="Connection timed out",
-        )
-    except requests.ConnectionError as exc:
-        log.warning(
-            "Indexer test %s (%s): FAILED — connection error: %s",
-            site.name,
-            site.url,
-            exc,
-        )
-        return IndexerSiteTestResult(
-            success=False,
-            message="Connection failed — check the URL",
+            message="Unexpected error — see server logs",
         )
     except Exception:
         log.exception(

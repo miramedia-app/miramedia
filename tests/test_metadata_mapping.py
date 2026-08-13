@@ -13,7 +13,11 @@ from typing import Any
 
 import pytest
 
-from miramedia.metadata.backends.native import NativeMetadataProvider
+from miramedia.config import MiraMediaConfig
+from miramedia.metadata.backends.native import (
+    NativeMetadataProvider,
+    _parse_cinemeta_cast,
+)
 from miramedia.metadata.backends.tmdb import (
     TmdbMetadataProvider,
     _extract_movie_content_rating,
@@ -32,6 +36,14 @@ def _load_json(name: str) -> Any:
 @pytest.fixture(autouse=True)
 def _clear_metadata_cache() -> None:
     invalidate_all()
+
+
+@pytest.fixture(autouse=True)
+def _pin_utc_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Provider air dates/times derive from UTC datetimes (Cinemeta 'released',
+    # TVMaze 'airstamp') converted to the configured zone. Pin UTC so these
+    # mapping assertions are deterministic regardless of the host's timezone.
+    monkeypatch.setattr(MiraMediaConfig().misc, "timezone", "UTC")
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +396,14 @@ def _native_provider(
     provider._tvmaze_enabled = tvmaze
     provider._cinemeta_enabled = cinemeta
     return provider
+
+
+def test_parse_cinemeta_cast_unescapes_html_entities() -> None:
+    assert _parse_cinemeta_cast(["Matt Smith", "Emma D&apos;Arcy", "Olivia Cooke"]) == [
+        "Matt Smith",
+        "Emma D'Arcy",
+        "Olivia Cooke",
+    ]
 
 
 def test_native_get_show_metadata_cinemeta_maps_imdb_and_specials(

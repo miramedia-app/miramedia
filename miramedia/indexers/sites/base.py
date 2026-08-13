@@ -9,6 +9,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
+from miramedia.indexers.http_retry import indexer_fanout_deadline, indexer_get
 from miramedia.indexers.schemas import IndexerQueryResult
 
 if TYPE_CHECKING:
@@ -73,6 +74,9 @@ def close_http_client() -> None:
 
 
 # Well-known torrent tracker announce URLs for magnet link construction.
+# UDP endpoints cover the common case; HTTP(S) mirrors help on VPNs and
+# networks where UDP is blocked. HTTP(S) entries were reviewed 2026-08-09
+# (dummy-hash announce probes); Torlink candidates were not copied blindly.
 DEFAULT_TRACKERS = [
     "udp://tracker.opentrackr.org:1337/announce",
     "udp://open.stealth.si:80/announce",
@@ -82,6 +86,11 @@ DEFAULT_TRACKERS = [
     "udp://tracker.dler.org:6969/announce",
     "udp://exodus.desync.com:6969",
     "udp://open.demonii.com:1337/announce",
+    # HTTP(S) — reviewed healthy announces; see plan 324 maintenance notes.
+    "http://tracker.opentrackr.org:1337/announce",
+    "http://tracker.dler.org:6969/announce",
+    "https://tracker.bt4g.com:443/announce",
+    "https://tracker.leechshield.link:443/announce",
 ]
 
 _BTIH_RE = re.compile(r"^(?:[0-9A-Fa-f]{40}|[A-Za-z2-7]{32})$")
@@ -177,7 +186,13 @@ class BaseSite(ABC):
             raise RuntimeError(msg)
 
         client = _get_http_client()
-        response = client.get(url, params=params, timeout=self.timeout)
+        response = indexer_get(
+            client,
+            url,
+            params=params,
+            timeout=self.timeout,
+            deadline=indexer_fanout_deadline(),
+        )
         response.raise_for_status()
         return response.text
 
@@ -270,7 +285,13 @@ class BaseSite(ABC):
     def _fetch_json(self, url: str, params: dict | None = None) -> dict | list:
         """Fetch a URL and parse the JSON response."""
         client = _get_http_client()
-        response = client.get(url, params=params, timeout=self.timeout)
+        response = indexer_get(
+            client,
+            url,
+            params=params,
+            timeout=self.timeout,
+            deadline=indexer_fanout_deadline(),
+        )
         response.raise_for_status()
         return response.json()
 

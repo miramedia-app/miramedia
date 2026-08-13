@@ -2,7 +2,7 @@ import ipaddress
 import logging
 import socket
 from collections.abc import Callable
-from datetime import date
+from datetime import date, datetime, time
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ from uuid import UUID
 import requests
 from PIL import Image
 
+from miramedia.config import configured_timezone
 from miramedia.exceptions import MetadataProviderUnavailableError
 
 log = logging.getLogger(__name__)
@@ -40,9 +41,37 @@ def parse_iso_date(value: str | None) -> date | None:
     if not value:
         return None
     try:
+        # Full datetime (Cinemeta 'released' is UTC, e.g. "2026-08-10T01:00:00.000Z"):
+        # convert to the server's local zone before taking the calendar date, so an
+        # evening-US air time isn't rolled forward to the next UTC day. This matches
+        # the server-local semantics of the upcoming window (see upcoming.local_today).
+        # Date-only strings (TMDB/TVDB/TVMaze) pass straight through.
+        if "T" in value:
+            dt = datetime.fromisoformat(value)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(configured_timezone())
+            return dt.date()
         return date.fromisoformat(value[:10])
     except (ValueError, TypeError):
         return None
+
+
+def parse_iso_time(value: str | None) -> time | None:
+    """Local air time-of-day from a provider datetime, or ``None``.
+
+    Returns ``None`` for date-only values (no time to show) and for missing /
+    malformed input. Datetimes are converted to the configured server zone first
+    so the time agrees with the calendar day derived by ``parse_iso_date``.
+    """
+    if not value or "T" not in value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(configured_timezone())
+    return dt.time()
 
 
 def is_provider_unreachable(exc: BaseException) -> bool:

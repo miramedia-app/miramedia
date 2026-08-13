@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { copyToClipboard } from "@/lib/utils";
 import { DashboardHeader } from "@/components/dashboard-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { statusVariant } from "@/components/ui/status-pill";
 import { Button } from "@/components/ui/button";
@@ -106,7 +107,7 @@ function LogsPageInner() {
   const logsQuery = useQuery({
     queryKey: ["system", "logs", level, moduleFilter, search, offset, limit],
     queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/system/logs", {
+      const { data, error } = await apiClient.GET("/api/v1/system/logs", {
         signal,
         params: {
           query: {
@@ -118,6 +119,7 @@ function LogsPageInner() {
           },
         },
       });
+      if (error) throw error;
       return data ?? null;
     },
     refetchInterval: tailing ? 3000 : false,
@@ -514,6 +516,18 @@ function LogsPageInner() {
             Clear
           </Button>
         </div>
+
+        {logsQuery.isError && (
+          <Alert variant="destructive">
+            <AlertTitle>Failed to load logs</AlertTitle>
+            <AlertDescription className="flex items-center gap-2">
+              Showing last loaded results.
+              <Button variant="outline" size="sm" onClick={() => logsQuery.refetch()}>
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
         {logsQuery.isLoading ? (
           <div className="overflow-hidden rounded-lg border bg-card">

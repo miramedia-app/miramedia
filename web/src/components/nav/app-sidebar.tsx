@@ -11,6 +11,7 @@ import {
   FolderInput,
   Home,
   Inbox,
+  ListChecks,
   ScrollText,
   Search,
   Settings,
@@ -36,6 +37,7 @@ const SYSTEM_ITEMS: NavSystemItem[] = [
   { title: "Settings", url: "/dashboard/system/settings", icon: Settings },
   { title: "Logs", url: "/dashboard/system/logs", icon: ScrollText },
 ];
+import { WATCHLISTS_SIDEBAR } from "@/components/watchlists/watchlists-routes";
 import { NavUser } from "./nav-user";
 import { VersionUpdate } from "./version-update";
 import { useUser } from "@/components/providers/user-provider";
@@ -45,7 +47,11 @@ import apiClient from "@/lib/api/client";
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const { user } = useUser();
   const isSuperuser = !!user?.is_superuser;
-  const { requests: requestsEnabled, notifications: notificationsEnabled } = useFeatures();
+  const {
+    requests: requestsEnabled,
+    notifications: notificationsEnabled,
+    watchlists: watchlistsEnabled,
+  } = useFeatures();
   const publicVersion = process.env.NEXT_PUBLIC_VERSION || "dev";
 
   const { data: runtimeVersionData } = useQuery({
@@ -76,6 +82,14 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
         addUrl: "/dashboard/movies/add",
       },
     ];
+    if (watchlistsEnabled) {
+      items.push({
+        title: WATCHLISTS_SIDEBAR.title,
+        url: WATCHLISTS_SIDEBAR.url,
+        icon: ListChecks,
+        isActive: true,
+      });
+    }
     if (requestsEnabled) {
       items.push({
         title: "Requests",
@@ -99,7 +113,7 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
       });
     }
     return items;
-  }, [requestsEnabled, isSuperuser]);
+  }, [requestsEnabled, watchlistsEnabled, isSuperuser]);
 
   return (
     <Sidebar {...props} variant="inset">

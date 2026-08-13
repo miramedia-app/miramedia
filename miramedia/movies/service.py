@@ -1228,12 +1228,13 @@ class MovieService(MediaService[Movie, MovieId]):
         try:
             await self._run_import_movie_from_torrent(movie=movie, torrent=torrent)
         finally:
-            # Full (debounced) rebuild rather than a targeted torrent sync:
-            # cleanup_after_import may have deleted the torrent, in which case
-            # the imported files surface as a torrent-independent Done entry.
-            from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+            # Targeted torrent + history sync: cleanup_after_import may delete the
+            # live torrent while the durable Done row is upserted separately.
+            from miramedia.imports.queue_hooks import (
+                schedule_import_completion_queue_sync,
+            )
 
-            schedule_import_queue_rebuild()
+            schedule_import_completion_queue_sync(torrent.id)
 
     async def _run_import_movie_from_torrent(
         self, movie: Movie, torrent: Torrent
@@ -1267,12 +1268,11 @@ class MovieService(MediaService[Movie, MovieId]):
                         "Re-download or remove the torrent via Imports."
                     ),
                 )
-            for mf in movie_files:
-                await self.movie_repository.update_movie_file_import_status(
-                    file_id=mf.id,
-                    status=ImportOutcome.failed_io,
-                    error="Source files missing on disk.",
-                )
+            await self.movie_repository.update_movie_file_import_status_bulk(
+                file_ids=[mf.id for mf in movie_files],
+                status=ImportOutcome.failed_io,
+                error="Source files missing on disk.",
+            )
             return
 
         primary_videos = await asyncio.to_thread(
@@ -1290,12 +1290,11 @@ class MovieService(MediaService[Movie, MovieId]):
             log.error(
                 f"No video file resolved for movie {movie.name}; marking ambiguous."
             )
-            for mf in movie_files:
-                await self.movie_repository.update_movie_file_import_status(
-                    file_id=mf.id,
-                    status=ImportOutcome.ambiguous,
-                    error="No video files; resolve manually.",
-                )
+            await self.movie_repository.update_movie_file_import_status_bulk(
+                file_ids=[mf.id for mf in movie_files],
+                status=ImportOutcome.ambiguous,
+                error="No video files; resolve manually.",
+            )
             return
 
         log.debug(
@@ -1327,12 +1326,11 @@ class MovieService(MediaService[Movie, MovieId]):
                             f"{movie.name}. Resolve via Imports page."
                         ),
                     )
-                for mf in movie_files:
-                    await self.movie_repository.update_movie_file_import_status(
-                        file_id=mf.id,
-                        status=ImportOutcome.ambiguous,
-                        error="Multiple comparable video files; resolve manually.",
-                    )
+                await self.movie_repository.update_movie_file_import_status_bulk(
+                    file_ids=[mf.id for mf in movie_files],
+                    status=ImportOutcome.ambiguous,
+                    error="Multiple comparable video files; resolve manually.",
+                )
                 return
 
         primary = primary_videos[0]

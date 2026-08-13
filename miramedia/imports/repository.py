@@ -404,6 +404,10 @@ class ImportsRepository:
         stmt = delete(ScanResultCache).where(ScanResultCache.directory == directory)
         result = await self.db.execute(stmt)
         await self.db.commit()
+        if (result.rowcount or 0) > 0:
+            from miramedia.imports.queue_hooks import schedule_scan_queue_sync
+
+            schedule_scan_queue_sync(directory)
         return (result.rowcount or 0) > 0
 
     async def count_queued_scans(self) -> int:
@@ -595,9 +599,10 @@ class ImportsRepository:
             await self.db.rollback()
             raise
 
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        for directory, _, _ in reclaim_rows:
+            schedule_scan_queue_sync(directory)
         return reclaimed
 
     async def reclaim_stalled_worker_imports(self, *, older_than: timedelta) -> int:
@@ -645,9 +650,10 @@ class ImportsRepository:
             await self.db.rollback()
             raise
 
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        for directory, _, _ in reclaim_rows:
+            schedule_scan_queue_sync(directory)
         return reclaimed
 
     async def claim_scan_cache_row(
@@ -689,9 +695,9 @@ class ImportsRepository:
             await self.db.rollback()
             raise
 
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_scan_queue_sync(directory)
         return ScanClaimOutcome(ScanClaimResult.claimed, claim_token=claim_token)
 
     async def compensate_scan_cache_claim(
@@ -722,9 +728,9 @@ class ImportsRepository:
             await self.db.rollback()
             raise
 
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_scan_queue_sync(directory)
         return True
 
     async def begin_manual_scan_worker(
@@ -795,9 +801,9 @@ class ImportsRepository:
             await self.db.rollback()
             raise
 
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_scan_queue_sync(directory)
         return True
 
     async def fail_manual_scan_import(
@@ -822,9 +828,9 @@ class ImportsRepository:
             await self.db.rollback()
             raise
 
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_scan_queue_sync(directory)
         return True
 
     async def mark_scan_cache_queued(self, directory: str) -> bool:
@@ -865,9 +871,9 @@ class ImportsRepository:
         await self.db.commit()
         # Worker finished this row → reset the batch once nothing is queued.
         await self.reset_import_batch_if_idle()
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_scan_queue_sync(directory)
         return True
 
     async def mark_scan_cache_failed(
@@ -888,9 +894,9 @@ class ImportsRepository:
         await self.db.commit()
         # Worker finished this row (failure is terminal) → maybe reset batch.
         await self.reset_import_batch_if_idle()
-        from miramedia.imports.queue_hooks import schedule_import_queue_rebuild
+        from miramedia.imports.queue_hooks import schedule_scan_queue_sync
 
-        schedule_import_queue_rebuild()
+        schedule_scan_queue_sync(directory)
         return True
 
     async def list_terminal_scan_cache(self) -> list[tuple[str, dict]]:

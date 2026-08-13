@@ -56,10 +56,13 @@ torrent_directory = "/data/torrents"
 ## Image source
 
 The Synology compose points at the published
-`ghcr.io/miramedia-app/miramedia:latest`, which is what the in-app updater
-pulls. To run a locally built image instead, set `image: miramedia:local` and
-load it on the NAS with `docker load < miramedia-local-amd64.tar.gz` — in-app
-apply won't work against a local-only tag.
+`ghcr.io/miramedia-app/miramedia:latest`. To apply updates on the NAS, pull
+and recreate the stack with `docker compose pull && docker compose up -d` (see
+[Updates](../configuration/updates)). Pin a version tag if you do not want
+`:latest` to move under you. To run a locally built image instead, set
+`image: miramedia:local` and load it on the NAS with
+`docker load < miramedia-local-amd64.tar.gz` — `docker compose pull` only works
+against tags published to the registry.
 
 For the Cloudflare `native` solver you need the Chromium variant —
 `ghcr.io/miramedia-app/miramedia-cf:<version>` (a separate repo, version tags

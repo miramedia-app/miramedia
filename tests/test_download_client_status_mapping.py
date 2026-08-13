@@ -29,6 +29,7 @@ SAB_PROGRESS_INPUT = 45.67
 SAB_PROGRESS_ROUNDED = 45.7
 SAB_KBPERSEC = 12
 SAB_DL_SPEED = SAB_KBPERSEC * 1024
+SAB_NZO_ID = "a" * 40
 
 
 def _sample_torrent() -> Torrent:
@@ -229,7 +230,13 @@ def _sab_queue(
     kbpersec: object = SAB_KBPERSEC,
 ) -> dict[str, object]:
     if slots is None:
-        slots = [{"percentage": SAB_PROGRESS_INPUT}]
+        slots = [
+            {
+                "percentage": SAB_PROGRESS_INPUT,
+                "status": status,
+                "nzo_id": SAB_NZO_ID,
+            }
+        ]
     return {
         "queue": {
             "status": status,
@@ -284,11 +291,13 @@ def test_sabnzbd_get_torrent_status_maps_client_state(state: str) -> None:
 def test_sabnzbd_get_torrent_status_empty_slots_returns_zero_progress() -> None:
     api = MagicMock()
     api.get_downloads.return_value = _sab_queue("Downloading", slots=[])
+    api.history.return_value = {"history": {"slots": []}}
     client = _make_sabnzbd_client(api)
 
     result = client.get_torrent_status(_sample_torrent())
 
-    assert result == (TorrentStatus.downloading, 0.0, 0, 0, SAB_DL_SPEED)
+    assert result == (TorrentStatus.unknown, 0.0, 0, 0, 0)
+    api.history.assert_called_once_with(nzo_ids=SAB_NZO_ID)
 
 
 def test_sabnzbd_get_torrent_status_non_numeric_percentage_returns_zero_progress() -> (
@@ -296,7 +305,14 @@ def test_sabnzbd_get_torrent_status_non_numeric_percentage_returns_zero_progress
 ):
     api = MagicMock()
     api.get_downloads.return_value = _sab_queue(
-        "Downloading", slots=[{"percentage": "N/A"}]
+        "Downloading",
+        slots=[
+            {
+                "percentage": "N/A",
+                "status": "Downloading",
+                "nzo_id": SAB_NZO_ID,
+            }
+        ],
     )
     client = _make_sabnzbd_client(api)
 

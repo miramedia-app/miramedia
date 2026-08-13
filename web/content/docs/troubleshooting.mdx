@@ -8,7 +8,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 <Callout type="info">
 
 Start with the logs. **System → Logs** in the dashboard shows filterable
-backend logs without shell access; `docker compose logs -f miramedia`
+backend logs without shell access; `docker compose logs -f api`
 shows the console stream. Set `MIRAMEDIA_LOG_LEVEL=DEBUG` for detail. See
 [Logging](configuration/logging).
 
@@ -18,7 +18,7 @@ shows the console stream. Set `MIRAMEDIA_LOG_LEVEL=DEBUG` for detail. See
 
 - Make sure you're **logging in**, not signing up.
 - First boot creates a bootstrap admin and prints the credentials to the
-  container log. Find them with `docker compose logs miramedia`.
+  container log. Find them with `docker compose logs api`.
 - If you've lost access, a superuser can reset another user's password from
   **System → Users**.
 

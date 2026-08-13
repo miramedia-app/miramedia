@@ -6,7 +6,7 @@ import socket
 
 import pytest
 
-from tests.webhook_design_spike.destination_policy import (
+from miramedia.notifications.destination_policy import (
     DestinationDenyReason,
     max_webhook_redirects,
     validate_redirect_chain,
@@ -90,7 +90,37 @@ def test_d8_opt_in_allows_http() -> None:
     d = validate_webhook_url(
         "http://ha.example.invalid:8123/api/webhook/x",
         allow_private_network=True,
+        allow_insecure_transport=True,
         resolver=_dns("10.0.0.5"),
+    )
+    assert d.allowed
+
+
+def test_d8b_private_network_does_not_waive_https() -> None:
+    d = validate_webhook_url(
+        "http://ha.example.invalid:8123/api/webhook/x",
+        allow_private_network=True,
+        resolver=_dns("192.168.1.50"),
+    )
+    assert not d.allowed
+    assert d.reason == DestinationDenyReason.SCHEME
+
+
+def test_d8c_insecure_transport_allows_http_private() -> None:
+    d = validate_webhook_url(
+        "http://ha.example.invalid/api/webhook/x",
+        allow_private_network=True,
+        allow_insecure_transport=True,
+        resolver=_dns("192.168.1.50"),
+    )
+    assert d.allowed
+
+
+def test_d8d_insecure_transport_allows_http_public() -> None:
+    d = validate_webhook_url(
+        "http://example.invalid/hook",
+        allow_insecure_transport=True,
+        resolver=_dns("1.1.1.1"),
     )
     assert d.allowed
 
@@ -136,6 +166,9 @@ def test_d11_redirect_limit() -> None:
         ("::1", False, False),
         ("::1", True, True),
         ("fe80::1", True, False),
+        ("2002:0a00:0001::1", False, False),
+        ("64:ff9b::7f00:1", False, False),
+        ("2002:5db8:d822::1", False, True),
     ],
 )
 def test_address_matrix(ip: str, allow: bool, ok: bool) -> None:

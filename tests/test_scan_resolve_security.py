@@ -524,3 +524,112 @@ def test_resolve_scan_does_not_import_outside_root(
 
     asyncio.run(_run())
     show_service.import_show_from_directory.assert_not_awaited()
+
+
+def test_resolve_scan_honors_lost_terminal_cas(
+    library_roots: tuple[Path, Path],
+) -> None:
+    from miramedia.imports.service import ImportsService
+
+    show_root, _ = library_roots
+    target = show_root / "show"
+    target.mkdir()
+    show_service = MagicMock()
+    show_service.get_show_by_id = AsyncMock(
+        return_value=MagicMock(id=uuid.uuid4(), name="Show")
+    )
+    show_service.import_show_from_directory = AsyncMock(return_value=True)
+    repository = MagicMock()
+    repository.get_scan_cache_entry = AsyncMock(
+        return_value={
+            "directory": str(target),
+            "status": "queued",
+            "media_type_hint": "show",
+            "claim_token": "token-a",
+            "worker_started_at": "2026-07-13T00:00:00+00:00",
+        }
+    )
+    repository.complete_manual_scan_import = AsyncMock(return_value=False)
+    service = ImportsService(
+        repository=repository,
+        torrent_service=MagicMock(),
+        show_service=show_service,
+        movie_service=MagicMock(),
+    )
+    body = ResolveRequest.model_validate(_scan_body(str(target)))
+
+    async def _run() -> None:
+        with (
+            patch(
+                "miramedia.imports.followup.run_post_import_completion",
+                new=AsyncMock(),
+            ) as followup_mock,
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await service.resolve_manual_scan(body, claim_token="token-a")
+        assert exc_info.value.status_code == 409
+        followup_mock.assert_not_awaited()
+
+    asyncio.run(_run())
+    show_service.import_show_from_directory.assert_awaited_once()
+    repository.complete_manual_scan_import.assert_awaited_once()
+
+
+def test_resolve_scan_releases_session_before_path_resolution(
+    library_roots: tuple[Path, Path],
+) -> None:
+    from miramedia.imports.service import ImportsService
+
+    show_root, _ = library_roots
+    target = show_root / "show"
+    target.mkdir()
+    show_service = MagicMock()
+    show_service.get_show_by_id = AsyncMock(
+        return_value=MagicMock(id=uuid.uuid4(), name="Show")
+    )
+    show_service.import_show_from_directory = AsyncMock(return_value=True)
+    repository = MagicMock()
+    repository.get_scan_cache_entry = AsyncMock(
+        return_value={
+            "directory": str(target),
+            "status": "queued",
+            "media_type_hint": "show",
+            "claim_token": "token-a",
+            "worker_started_at": "2026-07-13T00:00:00+00:00",
+        }
+    )
+    repository.complete_manual_scan_import = AsyncMock(return_value=True)
+    service = ImportsService(
+        repository=repository,
+        torrent_service=MagicMock(),
+        show_service=show_service,
+        movie_service=MagicMock(),
+    )
+    body = ResolveRequest.model_validate(_scan_body(str(target)))
+    events: list[str] = []
+
+    async def _release(_db: object) -> None:
+        events.append("release")
+
+    async def _import(**_kwargs: object) -> bool:
+        events.append("import")
+        return True
+
+    show_service.import_show_from_directory.side_effect = _import
+
+    async def _run() -> None:
+        with (
+            patch(
+                "miramedia.database.release_session_before_external_io",
+                side_effect=_release,
+            ),
+            patch(
+                "miramedia.imports.followup.run_post_import_completion",
+                new=AsyncMock(),
+            ),
+        ):
+            await service.resolve_manual_scan(body, claim_token="token-a")
+
+    asyncio.run(_run())
+    assert events.index("release") < events.index("import")
+    repository.get_scan_cache_entry.assert_awaited_once()

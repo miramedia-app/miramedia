@@ -9,6 +9,7 @@ import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import apiClient from "@/lib/api/client";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import { getTorrentStatusString } from "@/lib/utils";
+import { invalidateWatchedCaches } from "@/hooks/use-watched-state";
 import {
   buildTreeRows,
   fileKey,
@@ -121,12 +122,13 @@ export function useShowDetail(showId: string | null | undefined) {
   const seasonFileQueries = useQueries({
     queries: expandedSeasonIds.map((seasonId) => ({
       queryKey: ["season-files", seasonId],
-      queryFn: async ({ signal }) => {
-        const { data } = await apiClient.GET("/api/v1/seasons/{season_id}/files", {
+      queryFn: async ({ signal }): Promise<EpisodeFile[]> => {
+        const { data, error } = await apiClient.GET("/api/v1/seasons/{season_id}/files", {
           signal,
           params: { path: { season_id: seasonId } },
         });
-        return (data ?? []) as EpisodeFile[];
+        if (error) throw error;
+        return data ?? [];
       },
       staleTime: 60 * 1000,
     })),
@@ -138,6 +140,14 @@ export function useShowDetail(showId: string | null | undefined) {
       if (data) map.set(id, data);
     });
     return map;
+  }, [expandedSeasonIds, seasonFileQueries]);
+
+  const seasonFilesErrorIds = React.useMemo(() => {
+    const failed = new Set<string>();
+    expandedSeasonIds.forEach((id, i) => {
+      if (seasonFileQueries[i]?.isError) failed.add(id);
+    });
+    return failed;
   }, [expandedSeasonIds, seasonFileQueries]);
 
   const getEpisodeFiles = React.useCallback(
@@ -361,6 +371,36 @@ export function useShowDetail(showId: string | null | undefined) {
     [allSelectedEpisodes, invalidateAll, deselectAll],
   );
 
+  const bulkWatched = React.useCallback(
+    async (watched: boolean) => {
+      if (!allSelectedEpisodes.length) return;
+      setOtherBulkWorking(true);
+      try {
+        const { ok, failed } = await bulkMutate(allSelectedEpisodes, (id) =>
+          apiClient.PUT("/api/v1/playback/watched", {
+            body: { media_kind: "episode", media_id: id, watched },
+          }),
+        );
+        if (ok > 0) {
+          toast.success(
+            watched
+              ? `${ok} episode${ok === 1 ? "" : "s"} marked as watched`
+              : `${ok} episode${ok === 1 ? "" : "s"} marked as unwatched`,
+          );
+        }
+        if (failed > 0) {
+          toast.error(`${failed} episode${failed === 1 ? "" : "s"} could not be updated.`);
+        }
+        await invalidateAll();
+        await invalidateWatchedCaches(queryClient);
+        if (failed === 0) deselectAll();
+      } finally {
+        setOtherBulkWorking(false);
+      }
+    },
+    [allSelectedEpisodes, invalidateAll, deselectAll, queryClient],
+  );
+
   const bulkDeleteFiles = React.useCallback(async () => {
     if (!selectedFiles.size) return;
     setOtherBulkWorking(true);
@@ -566,6 +606,8 @@ export function useShowDetail(showId: string | null | undefined) {
     seasonHasAllSubtitles,
     sortedSeasons,
     treeRows,
+    seasonFilesErrorIds,
+    invalidateSeasonFiles,
     // expansion
     toggleSeason,
     toggleEpisode,
@@ -600,6 +642,7 @@ export function useShowDetail(showId: string | null | undefined) {
     // bulk + skip
     bulkWorking,
     bulkSkip,
+    bulkWatched,
     toggleEpisodeSkipped,
     toggleSeasonSkipped,
     // delete modal

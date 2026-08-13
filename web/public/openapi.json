@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.0.15"
+    "version": "1.1.0"
   },
   "paths": {
     "/api/v1/health": {
@@ -7499,20 +7499,520 @@
         ]
       }
     },
-    "/api/v1/system/updates/status": {
+    "/api/v1/playback/progress": {
       "get": {
         "tags": [
-          "system"
+          "playback"
         ],
-        "summary": "Get Apply Status",
-        "operationId": "get_apply_status_api_v1_system_updates_status_get",
+        "summary": "Get Progress",
+        "operationId": "get_progress_api_v1_playback_progress_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "File Id"
+            }
+          },
+          {
+            "name": "media_kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/MediaKind"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Media Kind"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApplyState"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PlaybackProgress"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get Progress Api V1 Playback Progress Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Upsert Progress",
+        "operationId": "upsert_progress_api_v1_playback_progress_put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlaybackProgressUpsert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/PlaybackProgress"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Upsert Progress Api V1 Playback Progress Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Delete Progress",
+        "operationId": "delete_progress_api_v1_playback_progress_delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/playback/progress/all": {
+      "delete": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Delete All Progress",
+        "operationId": "delete_all_progress_api_v1_playback_progress_all_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/playback/continue": {
+      "get": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "List Continue",
+        "operationId": "list_continue_api_v1_playback_continue_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ContinueWatchingItem"
+                  },
+                  "title": "Response List Continue Api V1 Playback Continue Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/playback/watch-next": {
+      "get": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "List Watch Next",
+        "operationId": "list_watch_next_api_v1_playback_watch_next_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "include_specials",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Include Specials"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UpNextItem"
+                  },
+                  "title": "Response List Watch Next Api V1 Playback Watch Next Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/playback/watched": {
+      "get": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Get Watched",
+        "operationId": "get_watched_api_v1_playback_watched_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "media_kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MediaKind"
+            }
+          },
+          {
+            "name": "media_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Media Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Set Watched",
+        "operationId": "set_watched_api_v1_playback_watched_put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchStateUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Clear Watched Override",
+        "operationId": "clear_watched_override_api_v1_playback_watched_delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "media_kind",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MediaKind"
+            }
+          },
+          {
+            "name": "media_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Media Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchState"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/playback/watched/season": {
+      "put": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Set Season Watched",
+        "operationId": "set_season_watched_api_v1_playback_watched_season_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeasonWatchStateUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -7528,30 +8028,125 @@
         ]
       }
     },
-    "/api/v1/system/updates/apply": {
-      "post": {
+    "/api/v1/playback/watched/show": {
+      "put": {
         "tags": [
-          "system"
+          "playback"
         ],
-        "summary": "Trigger Apply",
-        "operationId": "trigger_apply_api_v1_system_updates_apply_post",
+        "summary": "Set Show Watched",
+        "operationId": "set_show_watched_api_v1_playback_watched_show_put",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ApplyRequest"
+                "$ref": "#/components/schemas/ShowWatchStateUpdate"
               }
             }
           },
           "required": true
         },
         "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/playback/viewing-state": {
+      "delete": {
+        "tags": [
+          "playback"
+        ],
+        "summary": "Delete Viewing State",
+        "operationId": "delete_viewing_state_api_v1_playback_viewing_state_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/watchlists": {
+      "get": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "List Watchlists",
+        "operationId": "list_watchlists_api_v1_watchlists_get",
+        "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApplyTriggerResponse"
+                  "items": {
+                    "$ref": "#/components/schemas/WatchlistSummary"
+                  },
+                  "type": "array",
+                  "title": "Response List Watchlists Api V1 Watchlists Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Create Watchlist",
+        "operationId": "create_watchlist_api_v1_watchlists_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistDetail"
                 }
               }
             }
@@ -7575,6 +8170,424 @@
             "APIKeyCookie": []
           }
         ]
+      }
+    },
+    "/api/v1/watchlists/upcoming": {
+      "get": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Get Watchlists Upcoming",
+        "description": "Tracked library air/release dates for the Watchlists Upcoming view.\n\nDefaults to today / next-30; `start`/`end` override either bound and the\nspan is clamped server-side to MAX_WINDOW_DAYS.",
+        "operationId": "get_watchlists_upcoming_api_v1_watchlists_upcoming_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "start",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Window start (inclusive).",
+              "title": "Start"
+            },
+            "description": "Window start (inclusive)."
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Window end (inclusive).",
+              "title": "End"
+            },
+            "description": "Window end (inclusive)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpcomingResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlists/{watchlist_id}": {
+      "get": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Get Watchlist",
+        "operationId": "get_watchlist_api_v1_watchlists__watchlist_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "watchlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Watchlist Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Update Watchlist",
+        "operationId": "update_watchlist_api_v1_watchlists__watchlist_id__patch",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "watchlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Watchlist Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Delete Watchlist",
+        "operationId": "delete_watchlist_api_v1_watchlists__watchlist_id__delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "watchlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Watchlist Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlists/{watchlist_id}/items": {
+      "post": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Add Watchlist Item",
+        "operationId": "add_watchlist_item_api_v1_watchlists__watchlist_id__items_post",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "watchlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Watchlist Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistItemCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistItemView"
+                }
+              }
+            }
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistItemView"
+                }
+              }
+            },
+            "description": "Created"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlists/{watchlist_id}/items/order": {
+      "put": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Reorder Watchlist Items",
+        "operationId": "reorder_watchlist_items_api_v1_watchlists__watchlist_id__items_order_put",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "watchlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Watchlist Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistReorder"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlists/{watchlist_id}/items/{item_id}": {
+      "delete": {
+        "tags": [
+          "watchlists"
+        ],
+        "summary": "Remove Watchlist Item",
+        "operationId": "remove_watchlist_item_api_v1_watchlists__watchlist_id__items__item_id__delete",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "watchlist_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Watchlist Id"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/streams/movies/{movie_id}/probe": {
@@ -9498,125 +10511,6 @@
         ],
         "title": "ApiTokenRead"
       },
-      "ApplyRequest": {
-        "properties": {
-          "target_tag": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Tag"
-          },
-          "confirm": {
-            "type": "boolean",
-            "const": true,
-            "title": "Confirm"
-          }
-        },
-        "type": "object",
-        "required": [
-          "confirm"
-        ],
-        "title": "ApplyRequest"
-      },
-      "ApplyState": {
-        "properties": {
-          "state": {
-            "$ref": "#/components/schemas/UpdateStatusState"
-          },
-          "target_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Target Version"
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At"
-          },
-          "finished_at": {
-            "anyOf": [
-              {
-                "type": "string",
-                "format": "date-time"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Finished At"
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "log": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Log",
-            "default": []
-          }
-        },
-        "type": "object",
-        "required": [
-          "state"
-        ],
-        "title": "ApplyState"
-      },
-      "ApplyTriggerResponse": {
-        "properties": {
-          "accepted": {
-            "type": "boolean",
-            "title": "Accepted"
-          },
-          "state": {
-            "$ref": "#/components/schemas/ApplyState"
-          },
-          "detail": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Detail"
-          }
-        },
-        "type": "object",
-        "required": [
-          "accepted",
-          "state"
-        ],
-        "title": "ApplyTriggerResponse"
-      },
       "AuthMetadata": {
         "properties": {
           "oauth_providers": {
@@ -10108,6 +11002,82 @@
         ],
         "title": "ClearOverridePathRequest"
       },
+      "CloudflareBrowserRunSettingsSchema": {
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "api_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CloudflareBrowserRunSettingsSchema"
+      },
+      "CloudflareFirecrawlSettingsSchema": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CloudflareFirecrawlSettingsSchema"
+      },
+      "CloudflareRemoteSettingsSchema": {
+        "properties": {
+          "endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CloudflareRemoteSettingsSchema"
+      },
       "CloudflareSettingsSchema": {
         "properties": {
           "enabled": {
@@ -10120,6 +11090,28 @@
               }
             ],
             "title": "Enabled"
+          },
+          "solver": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Solver"
+          },
+          "proxy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proxy"
           },
           "browser_path": {
             "anyOf": [
@@ -10208,11 +11200,79 @@
               }
             ],
             "title": "Solve Timeout Seconds"
+          },
+          "remote": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudflareRemoteSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "byparr": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudflareUrlBackendSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "flaresolverr": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudflareUrlBackendSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "browser_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudflareBrowserRunSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "firecrawl": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CloudflareFirecrawlSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "CloudflareSettingsSchema"
+      },
+      "CloudflareUrlBackendSettingsSchema": {
+        "properties": {
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CloudflareUrlBackendSettingsSchema"
       },
       "CodecOptionSchema": {
         "properties": {
@@ -10245,6 +11305,104 @@
           "keywords"
         ],
         "title": "CodecOptionSchema"
+      },
+      "ContinueWatchingItem": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "show_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "poster_media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Poster Media Id"
+          },
+          "position_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position Ms"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 1000.0,
+            "title": "Duration Ms"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_kind",
+          "media_id",
+          "title",
+          "poster_media_id",
+          "position_ms",
+          "duration_ms",
+          "updated_at"
+        ],
+        "title": "ContinueWatchingItem"
       },
       "CreateUserRequest": {
         "properties": {
@@ -10389,6 +11547,18 @@
               }
             ],
             "title": "Air Date"
+          },
+          "air_time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Air Time"
           },
           "episode_files": {
             "items": {
@@ -10601,13 +11771,53 @@
           "notifications": {
             "type": "boolean",
             "title": "Notifications"
+          },
+          "watchlists": {
+            "type": "boolean",
+            "title": "Watchlists"
+          },
+          "custom_lists": {
+            "type": "boolean",
+            "title": "Custom Lists"
+          },
+          "watch_next": {
+            "type": "boolean",
+            "title": "Watch Next"
+          },
+          "watch_next_include_specials": {
+            "type": "boolean",
+            "title": "Watch Next Include Specials"
+          },
+          "upcoming": {
+            "type": "boolean",
+            "title": "Upcoming"
+          },
+          "upcoming_default_past_days": {
+            "type": "integer",
+            "title": "Upcoming Default Past Days"
+          },
+          "upcoming_default_future_days": {
+            "type": "integer",
+            "title": "Upcoming Default Future Days"
+          },
+          "continue_watching": {
+            "type": "boolean",
+            "title": "Continue Watching"
           }
         },
         "type": "object",
         "required": [
           "requests",
           "subtitles",
-          "notifications"
+          "notifications",
+          "watchlists",
+          "custom_lists",
+          "watch_next",
+          "watch_next_include_specials",
+          "upcoming",
+          "upcoming_default_past_days",
+          "upcoming_default_future_days",
+          "continue_watching"
         ],
         "title": "FeatureFlags"
       },
@@ -12358,6 +13568,14 @@
         "title": "MediaImportItem",
         "description": "A finished import whose torrent has been cleaned up.\n\nWith ``cleanup_after_import`` the torrent row is deleted on success, which\nnulls ``EpisodeFile.torrent_id`` / ``MovieFile.torrent_id``. Those imported\nfiles would otherwise vanish from the imports page. This item rebuilds a\ntorrent-independent ``Done`` row straight from the imported media files so\nthe confirmation log survives cleanup. Read-only \u2014 no retry/map/ignore."
       },
+      "MediaKind": {
+        "type": "string",
+        "enum": [
+          "movie",
+          "episode"
+        ],
+        "title": "MediaKind"
+      },
       "MediaRequest": {
         "properties": {
           "id": {
@@ -13001,6 +14219,17 @@
             ],
             "title": "Development"
           },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timezone"
+          },
           "show_libraries": {
             "anyOf": [
               {
@@ -13137,6 +14366,67 @@
               }
             ],
             "title": "Integrity Check Interval Hours"
+          },
+          "auto_pick_confidence_threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Pick Confidence Threshold"
+          },
+          "trusted_proxy_hosts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trusted Proxy Hosts"
+          },
+          "metrics_public": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metrics Public"
+          },
+          "csp_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csp Enabled"
+          },
+          "csp_enforce": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csp Enforce"
           }
         },
         "additionalProperties": false,
@@ -13498,6 +14788,34 @@
               }
             ],
             "title": "Max Concurrent Searches"
+          },
+          "custom_torznab_sites": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TorznabSiteSettingsSchema"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Torznab Sites"
+          },
+          "disabled_sites": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disabled Sites"
           }
         },
         "additionalProperties": false,
@@ -13601,6 +14919,156 @@
               }
             ],
             "title": "Scan Interval Hours"
+          },
+          "gestdown": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tvsubtitles": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "yifysubtitles": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitlecat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subf2m": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "isubtitles": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "my_subs": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "embeddedsubtitles": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opensubtitlescom": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "addic7ed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subdl": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subsource": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "napiprojekt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtis": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subtitulamos": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SubtitleProviderSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -13657,6 +15125,90 @@
         "additionalProperties": false,
         "type": "object",
         "title": "NativeTorrentSettingsSchema"
+      },
+      "NativeWatchlistsSettingsSchema": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "custom_lists": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Custom Lists"
+          },
+          "watch_next": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watch Next"
+          },
+          "watch_next_include_specials": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watch Next Include Specials"
+          },
+          "upcoming": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upcoming"
+          },
+          "upcoming_default_past_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upcoming Default Past Days"
+          },
+          "upcoming_default_future_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upcoming Default Future Days"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "NativeWatchlistsSettingsSchema"
       },
       "Notification": {
         "properties": {
@@ -14021,6 +15573,79 @@
           "limit"
         ],
         "title": "PaginatedResponse[ActivityLogRead]"
+      },
+      "PlaybackProgress": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "position_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position Ms"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "maximum": 86400000.0,
+            "minimum": 1000.0,
+            "title": "Duration Ms"
+          },
+          "completed": {
+            "type": "boolean",
+            "title": "Completed"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_kind",
+          "position_ms",
+          "duration_ms",
+          "completed",
+          "updated_at"
+        ],
+        "title": "PlaybackProgress"
+      },
+      "PlaybackProgressUpsert": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_kind": {
+            "$ref": "#/components/schemas/MediaKind"
+          },
+          "position_ms": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Position Ms"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "maximum": 86400000.0,
+            "minimum": 1000.0,
+            "title": "Duration Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_kind",
+          "position_ms",
+          "duration_ms"
+        ],
+        "title": "PlaybackProgressUpsert"
       },
       "PreferredCodecBody": {
         "properties": {
@@ -15422,6 +17047,17 @@
               }
             ],
             "title": "Base Path"
+          },
+          "verify_tls": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verify Tls"
           }
         },
         "additionalProperties": false,
@@ -15993,6 +17629,36 @@
         ],
         "title": "Season"
       },
+      "SeasonWatchStateUpdate": {
+        "properties": {
+          "show_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Show Id"
+          },
+          "season_number": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Season Number"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          },
+          "include_specials": {
+            "type": "boolean",
+            "title": "Include Specials",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "show_id",
+          "season_number",
+          "watched"
+        ],
+        "title": "SeasonWatchStateUpdate"
+      },
       "SeerrSettingsSchema": {
         "properties": {
           "enabled": {
@@ -16426,6 +18092,30 @@
         ],
         "title": "ShowSubtitleStatus"
       },
+      "ShowWatchStateUpdate": {
+        "properties": {
+          "show_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Show Id"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          },
+          "include_specials": {
+            "type": "boolean",
+            "title": "Include Specials",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "show_id",
+          "watched"
+        ],
+        "title": "ShowWatchStateUpdate"
+      },
       "SmtpSettingsSchema": {
         "properties": {
           "smtp_host": {
@@ -16545,6 +18235,57 @@
           "file_name"
         ],
         "title": "SubtitleFile"
+      },
+      "SubtitleProviderSettingsSchema": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SubtitleProviderSettingsSchema"
       },
       "SubtitleSearchResponse": {
         "properties": {
@@ -16688,6 +18429,11 @@
             "type": "object",
             "title": "Requests"
           },
+          "watchlists": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Watchlists"
+          },
           "subtitles": {
             "additionalProperties": true,
             "type": "object",
@@ -16735,6 +18481,7 @@
           "indexers",
           "metadata",
           "requests",
+          "watchlists",
           "subtitles",
           "updates",
           "cloudflare",
@@ -16810,6 +18557,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/RequestsSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "watchlists": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchlistsSettingsSchema"
               },
               {
                 "type": "null"
@@ -17285,6 +19042,101 @@
         ],
         "title": "TorrentStatus"
       },
+      "TorznabSiteSettingsSchema": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          },
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "supports_tv": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Tv"
+          },
+          "supports_movies": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supports Movies"
+          },
+          "categories_tv": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories Tv"
+          },
+          "categories_movies": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Categories Movies"
+          },
+          "cloudflare_protected": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloudflare Protected"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "TorznabSiteSettingsSchema"
+      },
       "TransmissionSettingsSchema": {
         "properties": {
           "enabled": {
@@ -17467,6 +19319,238 @@
         "title": "UnifiedDownloadRequest",
         "description": "Body for the unified torrent download endpoint."
       },
+      "UpNextItem": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_kind": {
+            "type": "string",
+            "const": "episode",
+            "title": "Media Kind",
+            "default": "episode"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "show_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Show Id"
+          },
+          "show_name": {
+            "type": "string",
+            "title": "Show Name"
+          },
+          "season_number": {
+            "type": "integer",
+            "title": "Season Number"
+          },
+          "episode_number": {
+            "type": "integer",
+            "title": "Episode Number"
+          },
+          "episode_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Title"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "poster_media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Poster Media Id"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched",
+            "default": false
+          },
+          "position_ms": {
+            "type": "integer",
+            "title": "Position Ms",
+            "default": 0
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Activity At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_id",
+          "show_id",
+          "show_name",
+          "season_number",
+          "episode_number",
+          "episode_title",
+          "title",
+          "poster_media_id",
+          "activity_at"
+        ],
+        "title": "UpNextItem"
+      },
+      "UpcomingItem": {
+        "properties": {
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "episode",
+              "movie"
+            ],
+            "title": "Media Type"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "date": {
+            "type": "string",
+            "format": "date",
+            "title": "Date"
+          },
+          "air_time": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Air Time"
+          },
+          "poster_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Poster Id"
+          },
+          "show_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Id"
+          },
+          "show_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Name"
+          },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "downloaded": {
+            "type": "boolean",
+            "title": "Downloaded",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "media_type",
+          "id",
+          "title",
+          "date",
+          "poster_id"
+        ],
+        "title": "UpcomingItem",
+        "description": "One row for the Upcoming / Calendar list."
+      },
+      "UpcomingResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UpcomingItem"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "window_start": {
+            "type": "string",
+            "format": "date",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date",
+            "title": "Window End"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "window_start",
+          "window_end"
+        ],
+        "title": "UpcomingResponse"
+      },
       "UpdateInfo": {
         "properties": {
           "enabled": {
@@ -17548,10 +19632,6 @@
           "repo": {
             "type": "string",
             "title": "Repo"
-          },
-          "apply_supported": {
-            "type": "boolean",
-            "title": "Apply Supported"
           }
         },
         "type": "object",
@@ -17564,8 +19644,7 @@
           "release_notes",
           "published_at",
           "last_checked_at",
-          "repo",
-          "apply_supported"
+          "repo"
         ],
         "title": "UpdateInfo"
       },
@@ -17626,6 +19705,17 @@
             ],
             "title": "Cache Ttl Seconds"
           },
+          "request_timeout_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Timeout Seconds"
+          },
           "notify_on_new_version": {
             "anyOf": [
               {
@@ -17636,17 +19726,6 @@
               }
             ],
             "title": "Notify On New Version"
-          },
-          "allow_in_app_apply": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Allow In App Apply"
           },
           "image_repository": {
             "anyOf": [
@@ -17669,34 +19748,11 @@
               }
             ],
             "title": "Image Tag"
-          },
-          "container_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Container Name"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "title": "UpdateSettingsSchema"
-      },
-      "UpdateStatusState": {
-        "type": "string",
-        "enum": [
-          "idle",
-          "checking",
-          "pulling",
-          "restarting",
-          "applied",
-          "failed"
-        ],
-        "title": "UpdateStatusState"
       },
       "UserCreate": {
         "properties": {
@@ -17945,6 +20001,587 @@
           "base_path"
         ],
         "title": "VersionInfo"
+      },
+      "WatchState": {
+        "properties": {
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "episode"
+            ],
+            "title": "Media Kind"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "derived",
+                  "manual"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "watched_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watched At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "media_kind",
+          "media_id",
+          "watched",
+          "source",
+          "watched_at"
+        ],
+        "title": "WatchState"
+      },
+      "WatchStateUpdate": {
+        "properties": {
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "episode"
+            ],
+            "title": "Media Kind"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          }
+        },
+        "type": "object",
+        "required": [
+          "media_kind",
+          "media_id",
+          "watched"
+        ],
+        "title": "WatchStateUpdate"
+      },
+      "WatchlistCreate": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 255,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "WatchlistCreate"
+      },
+      "WatchlistDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WatchlistItemView"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "items",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WatchlistDetail"
+      },
+      "WatchlistItemCreate": {
+        "properties": {
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "show",
+              "episode"
+            ],
+            "title": "Media Kind"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "media_kind",
+          "media_id"
+        ],
+        "title": "WatchlistItemCreate"
+      },
+      "WatchlistItemView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "movie",
+              "show",
+              "episode"
+            ],
+            "title": "Media Kind"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "poster_media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Poster Media Id"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "file_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Id"
+          },
+          "position_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Position Ms"
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
+          "show_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Id"
+          },
+          "season_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Season Number"
+          },
+          "episode_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Number"
+          },
+          "next_episode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WatchlistNextEpisode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "show_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "all_available_episodes_watched",
+                  "no_downloaded_episode_available"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "position",
+          "media_kind",
+          "media_id",
+          "title",
+          "poster_media_id",
+          "watched"
+        ],
+        "title": "WatchlistItemView"
+      },
+      "WatchlistNextEpisode": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "season_number": {
+            "type": "integer",
+            "title": "Season Number"
+          },
+          "episode_number": {
+            "type": "integer",
+            "title": "Episode Number"
+          },
+          "episode_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Title"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "watched": {
+            "type": "boolean",
+            "title": "Watched",
+            "default": false
+          },
+          "position_ms": {
+            "type": "integer",
+            "title": "Position Ms",
+            "default": 0
+          },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_id",
+          "season_number",
+          "episode_number",
+          "episode_title",
+          "title"
+        ],
+        "title": "WatchlistNextEpisode"
+      },
+      "WatchlistReorder": {
+        "properties": {
+          "item_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 10000,
+            "minItems": 1,
+            "title": "Item Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_ids"
+        ],
+        "title": "WatchlistReorder"
+      },
+      "WatchlistSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "item_count": {
+            "type": "integer",
+            "title": "Item Count"
+          },
+          "cover_poster_media_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cover Poster Media Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "description",
+          "item_count",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "WatchlistSummary"
+      },
+      "WatchlistUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 255,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "title": "WatchlistUpdate"
+      },
+      "WatchlistsSettingsSchema": {
+        "properties": {
+          "auto_remove_watched": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Remove Watched"
+          },
+          "continue_watching": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continue Watching"
+          },
+          "max_lists_per_user": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Lists Per User"
+          },
+          "max_items_per_list": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Items Per List"
+          },
+          "native": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NativeWatchlistsSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "WatchlistsSettingsSchema"
       },
       "miramedia__requests__schemas__MediaType": {
         "type": "string",

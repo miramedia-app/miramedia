@@ -1,5 +1,5 @@
-from collections.abc import Mapping
-from datetime import date, datetime
+from collections.abc import Mapping, Sequence
+from datetime import date, datetime, time
 from typing import Any
 from typing import cast as typing_cast
 from uuid import UUID
@@ -18,8 +18,8 @@ from miramedia.media_state import ProgressStatus
 from miramedia.shows import log
 from miramedia.shows.models import Episode, EpisodeFile, Season, Show
 from miramedia.shows.schemas import Episode as EpisodeSchema
-from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.shows.schemas import (
+    EpisodeAttributeChange,
     EpisodeId,
     EpisodeIntegrityContext,
     EpisodeNumber,
@@ -27,6 +27,7 @@ from miramedia.shows.schemas import (
     SeasonNumber,
     ShowId,
 )
+from miramedia.shows.schemas import EpisodeFile as EpisodeFileSchema
 from miramedia.shows.schemas import Season as SeasonSchema
 from miramedia.shows.schemas import Show as ShowSchema
 from miramedia.torrents.integrity import (
@@ -586,6 +587,8 @@ class ShowRepository:
                     db_episode = existing_episodes.get(episode.number)
                     if db_episode is not None and episode.air_date is not None:
                         db_episode.air_date = episode.air_date
+                    if db_episode is not None and episode.air_time is not None:
+                        db_episode.air_time = episode.air_time
         else:  # Insert new show
             db_show = Show(
                 id=show.id,
@@ -611,6 +614,7 @@ class ShowRepository:
                                 title=episode.title,
                                 overview=episode.overview,
                                 air_date=episode.air_date,
+                                air_time=episode.air_time,
                                 skipped=episode.skipped,
                             )
                             for episode in season.episodes
@@ -860,13 +864,29 @@ class ShowRepository:
         error: str | None = None,
     ) -> None:
         """Persist a new import outcome for the given episode file row."""
+        await self.update_episode_file_import_status_bulk(
+            file_ids=[file_id],
+            status=status,
+            error=error,
+        )
+
+    async def update_episode_file_import_status_bulk(
+        self,
+        *,
+        file_ids: list[UUID],
+        status: ImportOutcome,
+        error: str | None = None,
+    ) -> None:
+        """Persist the same import outcome for many episode file rows."""
+        if not file_ids:
+            return
         from datetime import UTC, datetime
 
         now = datetime.now(UTC)
         try:
             stmt = (
                 update(EpisodeFile)
-                .where(EpisodeFile.id == file_id)
+                .where(EpisodeFile.id.in_(file_ids))
                 .values(
                     import_status=status,
                     import_error=error,
@@ -883,7 +903,10 @@ class ShowRepository:
             await self.db.flush()
         except SQLAlchemyError:
             await self.db.rollback()
-            log.exception("Failed to update import status for episode_file %s", file_id)
+            log.exception(
+                "Failed to bulk-update import status for %d episode files",
+                len(file_ids),
+            )
             raise
 
     async def get_orphaned_failed_episode_files(self) -> list[EpisodeFileSchema]:
@@ -1029,6 +1052,28 @@ class ShowRepository:
         stmt = select(*_SHOW_INTEGRITY_COLUMNS).where(Show.id.in_(show_ids))
         rows = (await self.db.execute(stmt)).mappings().all()
         return {ShowId(row["id"]): _show_schema_from_row_mapping(row) for row in rows}
+
+    async def get_episode_ids_with_imported_files(self) -> list[EpisodeId]:
+        """Episode IDs with at least one imported episode file row.
+
+        Used by bulk subtitle scans to avoid loading full show/season trees.
+        """
+        try:
+            stmt = (
+                select(Episode.id)
+                .distinct()
+                .join(EpisodeFile, EpisodeFile.episode_id == Episode.id)
+                .where(EpisodeFile.import_status == ImportOutcome.imported)
+            )
+            return typing_cast(
+                "list[EpisodeId]",
+                list((await self.db.execute(stmt)).scalars().all()),
+            )
+        except SQLAlchemyError:
+            log.exception(
+                "Database error while retrieving episode ids with imported files"
+            )
+            raise
 
     async def batch_episodes_with_context(
         self, episode_ids: list[EpisodeId]
@@ -1424,6 +1469,7 @@ class ShowRepository:
                     number=ep_schema.number,
                     title=ep_schema.title,
                     air_date=ep_schema.air_date,
+                    air_time=ep_schema.air_time,
                     skipped=skipped,
                 )
                 for ep_schema in season_data.episodes
@@ -1478,6 +1524,7 @@ class ShowRepository:
             number=episode_data.number,
             title=episode_data.title,
             air_date=episode_data.air_date,
+            air_time=episode_data.air_time,
             skipped=skipped,
         )
 
@@ -1520,6 +1567,7 @@ class ShowRepository:
                 number=episode.number,
                 title=episode.title,
                 air_date=episode.air_date,
+                air_time=episode.air_time,
                 skipped=skipped,
             )
             for episode in episodes
@@ -1547,6 +1595,26 @@ class ShowRepository:
             raise NotFoundError(msg)
         db_episode.skipped = skipped
         await self.db.flush()
+
+    async def update_episodes_skipped_bulk(
+        self, episode_ids: list[EpisodeId], skipped: bool
+    ) -> None:
+        if not episode_ids:
+            return
+        try:
+            stmt = (
+                update(Episode)
+                .where(Episode.id.in_(episode_ids))
+                .values(skipped=skipped)
+            )
+            await self.db.execute(stmt)
+            await self.db.flush()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to bulk-update skipped for %d episodes", len(episode_ids)
+            )
+            raise
 
     async def update_season_skipped(self, season_id: SeasonId, skipped: bool) -> None:
         db_season = await self.db.get(Season, season_id)
@@ -1728,19 +1796,70 @@ class ShowRepository:
             db_show = (await self.db.execute(stmt)).unique().scalar_one()
         return ShowSchema.model_validate(db_show), updated
 
+    async def update_episodes_attributes_bulk(
+        self, changes: Sequence[EpisodeAttributeChange]
+    ) -> None:
+        """Apply metadata attribute updates for many episodes in one round-trip."""
+        if not changes:
+            return
+        episode_ids = [change.episode_id for change in changes]
+        try:
+            stmt = select(Episode).where(Episode.id.in_(episode_ids))
+            db_episodes = list((await self.db.execute(stmt)).scalars().all())
+            by_id = {episode.id: episode for episode in db_episodes}
+            for episode_id in episode_ids:
+                if episode_id not in by_id:
+                    msg = f"Episode with id {episode_id} not found."
+                    raise NotFoundError(msg)
+
+            updated = False
+            for change in changes:
+                db_episode = by_id[change.episode_id]
+                if change.title is not None and db_episode.title != change.title:
+                    db_episode.title = change.title
+                    updated = True
+                if (
+                    change.overview is not None
+                    and db_episode.overview != change.overview
+                ):
+                    db_episode.overview = change.overview
+                    updated = True
+                if (
+                    change.air_date is not None
+                    and db_episode.air_date != change.air_date
+                ):
+                    db_episode.air_date = change.air_date
+                    updated = True
+                if (
+                    change.air_time is not None
+                    and db_episode.air_time != change.air_time
+                ):
+                    db_episode.air_time = change.air_time
+                    updated = True
+
+            if updated:
+                await self.db.flush()
+        except SQLAlchemyError:
+            await self.db.rollback()
+            log.exception(
+                "Failed to bulk-update attributes for %d episodes", len(changes)
+            )
+            raise
+
     async def update_episode_attributes(
         self,
         episode_id: EpisodeId,
         title: str | None = None,
         overview: str | None = None,
         air_date: date | None = None,
+        air_time: time | None = None,
     ) -> EpisodeSchema:
         """Update attributes of an existing episode.
 
-        ``air_date`` takes ``date | None``; passing ``None`` here means "no
-        change" (we don't allow clearing the field via this path). The
-        sentinel value is reserved by checking against the actual current
-        value during the metadata refresh path.
+        ``air_date`` / ``air_time`` take ``... | None``; passing ``None`` here
+        means "no change" (we don't clear these via this path). The sentinel is
+        reserved by comparing against the actual current value during the
+        metadata refresh path.
         """
         stmt = (
             select(Episode)
@@ -1761,6 +1880,9 @@ class ShowRepository:
             updated = True
         if air_date is not None and db_episode.air_date != air_date:
             db_episode.air_date = air_date
+            updated = True
+        if air_time is not None and db_episode.air_time != air_time:
+            db_episode.air_time = air_time
             updated = True
 
         if updated:

@@ -20,6 +20,21 @@ from miramedia.settings.validation import (
 )
 
 
+def test_invalid_timezone_is_rejected() -> None:
+    with pytest.raises(ValidationError):
+        validate_incoming_settings_update({"misc": {"timezone": "Mars/Phobos"}})
+
+
+def test_valid_iana_timezone_is_accepted() -> None:
+    out = validate_incoming_settings_update({"misc": {"timezone": "America/New_York"}})
+    assert out["misc"]["timezone"] == "America/New_York"
+
+
+def test_blank_timezone_is_accepted_as_server_default() -> None:
+    out = validate_incoming_settings_update({"misc": {"timezone": ""}})
+    assert out["misc"]["timezone"] == ""
+
+
 def test_string_false_is_not_coerced_to_true() -> None:
     with pytest.raises(SettingsValidationError):
         build_merged_validated_config({"auth": {"email_password_resets": "false"}})

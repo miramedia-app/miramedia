@@ -64,6 +64,10 @@ const nextConfig: NextConfig = {
                 destination: "/dashboard/shows/_shell/_shell",
               },
               { source: `/dashboard/movies/${UUID}`, destination: "/dashboard/movies/_shell" },
+              {
+                source: `/dashboard/watchlists/${UUID}`,
+                destination: "/dashboard/watchlists/_shell",
+              },
               { source: "/api/:path*", destination: `${devApiTarget}/api/:path*` },
               { source: "/openapi.json", destination: `${devApiTarget}/openapi.json` },
             ],

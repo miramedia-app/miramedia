@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 
 def get_preloaded_sites() -> dict[str, type[BaseSite]]:
+    from miramedia.indexers.sites.bittorrented import BitTorrentedSite
     from miramedia.indexers.sites.eztv import EztvSite
     from miramedia.indexers.sites.limetorrents import LimeTorrentsSite
     from miramedia.indexers.sites.nyaa import NyaaSite
@@ -23,6 +24,7 @@ def get_preloaded_sites() -> dict[str, type[BaseSite]]:
         "eztv": EztvSite,
         "thepiratebay": ThePirateBaySite,
         "1337x": X1337Site,
+        "bittorrented": BitTorrentedSite,
         "torrentgalaxy": TorrentGalaxySite,
         "limetorrents": LimeTorrentsSite,
         "nyaa": NyaaSite,

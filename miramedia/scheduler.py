@@ -45,6 +45,31 @@ async def _compute_sha1_async(path: Path) -> str | None:
         return await asyncio.to_thread(compute_sha1, path)
 
 
+async def _hash_chunk_targets(chunk_targets: list[tuple]) -> list[tuple]:
+    """Hash a bounded chunk concurrently; drop rows whose hash is unavailable."""
+    if not chunk_targets:
+        return []
+
+    async def _hash_one(
+        file_id: uuid.UUID,
+        prior: str | None,
+        prior_error: str | None,
+        target: Path,
+    ) -> tuple | None:
+        sha = await _compute_sha1_async(target)
+        if sha is None:
+            return None
+        return (file_id, prior, prior_error, sha, target)
+
+    results = await asyncio.gather(
+        *(
+            _hash_one(file_id, prior, prior_error, target)
+            for file_id, prior, prior_error, target in chunk_targets
+        )
+    )
+    return [result for result in results if result is not None]
+
+
 def _build_db_connection_string_for_taskiq() -> str:
     from urllib.parse import quote
 
@@ -997,12 +1022,7 @@ async def verify_imported_files_task() -> None:
                         continue
                     chunk_targets.append((file_id, prior, prior_error, target))
 
-                chunk_results: list[tuple] = []
-                for file_id, prior, prior_error, target in chunk_targets:
-                    sha = await _compute_sha1_async(target)
-                    if sha is None:
-                        continue
-                    chunk_results.append((file_id, prior, prior_error, sha, target))
+                chunk_results = await _hash_chunk_targets(chunk_targets)
 
                 async with background_session() as db:
                     show_repo = ShowRepository(db)
@@ -1064,12 +1084,7 @@ async def verify_imported_files_task() -> None:
                         continue
                     chunk_targets.append((file_id, prior, prior_error, target))
 
-                chunk_results = []
-                for file_id, prior, prior_error, target in chunk_targets:
-                    sha = await _compute_sha1_async(target)
-                    if sha is None:
-                        continue
-                    chunk_results.append((file_id, prior, prior_error, sha, target))
+                chunk_results = await _hash_chunk_targets(chunk_targets)
 
                 async with background_session() as db:
                     movie_repo = MovieRepository(db)

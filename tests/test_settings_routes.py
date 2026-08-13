@@ -122,6 +122,44 @@ def test_post_settings_import_valid_persists() -> None:
     assert body["overrides"]["misc"]["continuous_download"] is False
 
 
+def test_allowed_sections_match_settings_sections() -> None:
+    from miramedia.settings.router import _ALLOWED_SECTIONS
+    from miramedia.settings.service import SETTINGS_SECTIONS
+
+    assert _ALLOWED_SECTIONS == frozenset(SETTINGS_SECTIONS)
+    assert "watchlists" in _ALLOWED_SECTIONS
+
+
+def test_post_settings_import_accepts_every_known_section() -> None:
+    from miramedia.settings.service import SETTINGS_SECTIONS
+
+    with settings_client() as (client, _fake_repo):
+        for section in SETTINGS_SECTIONS:
+            response = client.post(
+                f"{SETTINGS_PREFIX}/import",
+                json={"mode": "merge", "overrides": {section: {}}},
+            )
+            assert response.status_code == 200, (
+                f"import failed for section {section!r}: "
+                f"{response.status_code} {response.text}"
+            )
+
+
+def test_override_clear_accepts_watchlists_section() -> None:
+    repo = FakeSettingsRepository(
+        overrides={"watchlists": {"auto_remove_watched": True}}
+    )
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.post(
+            f"{SETTINGS_PREFIX}/override/clear",
+            json={"path": ["watchlists", "auto_remove_watched"]},
+        )
+    assert response.status_code == 200
+    assert response.json().get("detail") != "Invalid section: watchlists"
+    assert fake_repo.save_calls
+    assert "auto_remove_watched" not in fake_repo.overrides.get("watchlists", {})
+
+
 def test_post_settings_import_unknown_section_rejected() -> None:
     repo = FakeSettingsRepository(overrides={"misc": {"development": True}})
     with settings_client(repo=repo) as (client, fake_repo):

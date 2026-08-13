@@ -177,7 +177,6 @@ def setup_logging() -> None:
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("transmission_rpc").setLevel(logging.WARNING)
     logging.getLogger("qbittorrentapi").setLevel(logging.WARNING)
-    logging.getLogger("sabnzbd_api").setLevel(logging.WARNING)
     logging.getLogger("taskiq").setLevel(logging.WARNING)
     # Protocol byte-trace spam: websockets keepalive PING/PONG (~every 2s) and
     # httpcore connection traces carry zero app-diagnostic value. They stay

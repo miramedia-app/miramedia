@@ -109,5 +109,5 @@ def test_sync_torrent_import_queue_not_found_skips_release(monkeypatch) -> None:
     _run(sync_torrent_import_queue(db, service, torrent_id))
 
     assert calls == []
-    db.execute.assert_awaited_once()
+    assert db.execute.await_count == 2
     db.commit.assert_awaited_once()

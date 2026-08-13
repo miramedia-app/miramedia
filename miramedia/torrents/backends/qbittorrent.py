@@ -56,12 +56,14 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
             password=self.config.password,
             username=self.config.username,
         )
+
+    def check_connection(self) -> None:
         try:
             self.api_client.auth_log_in()
-        except Exception:
-            log.exception("Failed to log into qbittorrent")
-            raise
+        finally:
+            self.api_client.auth_log_out()
 
+    def _ensure_category(self) -> None:
         categories = self.api_client.torrents_categories()
         log.debug(f"Found following categories in qBittorrent: {categories}")
         if self.config.category_name in categories:
@@ -71,7 +73,6 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
                     f"Category '{self.config.category_name}' already exists in qBittorrent with the correct save path."
                 )
                 return
-            # category exists but with a different save path, attempt to update it
             log.debug(
                 f"Category '{self.config.category_name}' already exists in qBittorrent but with a different save path. Attempting to update it."
             )
@@ -88,7 +89,6 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
                     f" config to match the one in qBittorrent."
                 )
         else:
-            # create category if it doesn't exist
             log.debug(
                 f"Category '{self.config.category_name}' does not exist in qBittorrent. Attempting to create it."
             )
@@ -115,6 +115,7 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
 
         try:
             self.api_client.auth_log_in()
+            self._ensure_category()
             answer = self.api_client.torrents_add(
                 category="MiraMedia",
                 urls=indexer_result.download_url,

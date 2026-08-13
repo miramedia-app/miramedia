@@ -186,41 +186,41 @@ export function TorrentsTab({
               onCheckedChange={(v) => setMiscPath(["download_specials"], v)}
             />
           </div>
-          <div className="space-y-2">
-            <Label>
-              Auto-download interval (hours)
-              <OverrideMarker path={["misc", "auto_download_interval_hours"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(m.auto_download_interval_hours ?? "") || ""}
-              onChange={(e) =>
-                setMiscPath(["auto_download_interval_hours"], Number(e.target.value) || 0)
-              }
-              placeholder="6"
-              className="max-w-[120px]"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>
-              Background import sweep (minutes)
-              <OverrideMarker path={["misc", "import_sweep_interval_minutes"]} />
-            </Label>
-            <Input
-              type="number"
-              min={1}
-              value={Number(m.import_sweep_interval_minutes ?? "") || ""}
-              onChange={(e) =>
-                setMiscPath(["import_sweep_interval_minutes"], Number(e.target.value) || 0)
-              }
-              placeholder="5"
-              className="max-w-[120px]"
-            />
-            <p className="text-xs text-muted-foreground">
-              How often finished torrents are re-checked for import in the background. Manual import
-              is unchanged. Reschedules without a restart.
-            </p>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <Label>
+                Auto-download interval (hours)
+                <OverrideMarker path={["misc", "auto_download_interval_hours"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(m.auto_download_interval_hours ?? "") || ""}
+                onChange={(e) =>
+                  setMiscPath(["auto_download_interval_hours"], Number(e.target.value) || 0)
+                }
+                placeholder="6"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>
+                Background import sweep (minutes)
+                <OverrideMarker path={["misc", "import_sweep_interval_minutes"]} />
+              </Label>
+              <Input
+                type="number"
+                min={1}
+                value={Number(m.import_sweep_interval_minutes ?? "") || ""}
+                onChange={(e) =>
+                  setMiscPath(["import_sweep_interval_minutes"], Number(e.target.value) || 0)
+                }
+                placeholder="5"
+              />
+              <p className="text-xs text-muted-foreground">
+                How often finished torrents are re-checked for import in the background. Manual
+                import is unchanged. Reschedules without a restart.
+              </p>
+            </div>
           </div>
           <div className="flex items-center justify-between rounded-md border px-4 py-3">
             <div className="space-y-0.5">
@@ -238,21 +238,22 @@ export function TorrentsTab({
             />
           </div>
           {Boolean(m.integrity_check_enabled) && (
-            <div className="space-y-2">
-              <Label>
-                Integrity audit interval (hours)
-                <OverrideMarker path={["misc", "integrity_check_interval_hours"]} />
-              </Label>
-              <Input
-                type="number"
-                min={1}
-                value={Number(m.integrity_check_interval_hours ?? "") || ""}
-                onChange={(e) =>
-                  setMiscPath(["integrity_check_interval_hours"], Number(e.target.value) || 0)
-                }
-                placeholder="168"
-                className="max-w-[120px]"
-              />
+            <div className="grid gap-4 md:grid-cols-2">
+              <div className="space-y-2">
+                <Label>
+                  Integrity audit interval (hours)
+                  <OverrideMarker path={["misc", "integrity_check_interval_hours"]} />
+                </Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={Number(m.integrity_check_interval_hours ?? "") || ""}
+                  onChange={(e) =>
+                    setMiscPath(["integrity_check_interval_hours"], Number(e.target.value) || 0)
+                  }
+                  placeholder="168"
+                />
+              </div>
             </div>
           )}
         </CardContent>

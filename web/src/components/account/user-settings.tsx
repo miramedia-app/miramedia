@@ -3,21 +3,33 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Save } from "lucide-react";
+import { Save, Trash2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useUser } from "@/components/providers/user-provider";
+import { useClearViewingActivity } from "@/hooks/use-watched-state";
 import apiClient from "@/lib/api/client";
 
 export function UserSettings() {
   const { user } = useUser();
   const qc = useQueryClient();
+  const clearViewingActivity = useClearViewingActivity();
 
   const [newPassword, setNewPassword] = React.useState("");
   const [confirmPassword, setConfirmPassword] = React.useState("");
   const [newEmail, setNewEmail] = React.useState("");
+  const [clearOpen, setClearOpen] = React.useState(false);
   const [isPending, startTransition] = React.useTransition();
 
   const passwordMismatch = confirmPassword !== "" && newPassword !== confirmPassword;
@@ -109,6 +121,44 @@ export function UserSettings() {
               )}
             </div>
           </div>
+        </div>
+
+        <div className="space-y-4 rounded-lg border p-4">
+          <div>
+            <h3 className="text-sm font-medium">Viewing activity</h3>
+            <p className="text-sm text-muted-foreground">
+              Clear watched status and playback progress. Your custom watchlists are not removed.
+            </p>
+          </div>
+          <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
+            <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
+              <Trash2 className="mr-1.5 h-4 w-4" />
+              Clear viewing activity
+            </Button>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Clear viewing activity?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes watched status and resume positions for all movies and episodes.
+                  Custom watchlists and their items stay intact.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <Button
+                  variant="destructive"
+                  disabled={clearViewingActivity.isPending}
+                  onClick={() => {
+                    clearViewingActivity.mutate(undefined, {
+                      onSuccess: () => setClearOpen(false),
+                    });
+                  }}
+                >
+                  Clear activity
+                </Button>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
       </CardContent>
     </Card>

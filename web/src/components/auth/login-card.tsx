@@ -73,7 +73,10 @@ export function LoginCard({ oauthProviderNames, allowRegistration = false }: Pro
 
   return (
     <>
-      <Card className="mx-auto max-w-sm">
+      {/* w-full: parent is a flex column, and mx-auto cancels cross-axis stretch,
+          so without it the card shrinks to fit-content and only reaches max-w-sm
+          once an error alert widens the content. */}
+      <Card className="mx-auto w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-2xl">Login</CardTitle>
           <CardDescription>Enter your email below to log in to your account</CardDescription>

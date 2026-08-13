@@ -66,10 +66,10 @@ docker compose up -d
 
 On first boot the container runs database migrations, then creates a bootstrap
 admin because the user table is empty. The generated email and password are
-printed in the logs:
+printed in the logs (`api` is the compose service key — not the `container_name`):
 
 ```bash
-docker compose logs -f miramedia
+docker compose logs -f api
 ```
 
 ## 4. Log in

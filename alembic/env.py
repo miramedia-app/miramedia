@@ -38,6 +38,7 @@ from miramedia.logs.models import ActivityLog  # noqa: E402
 from miramedia.media_inventory import MediaFileInventory  # noqa: E402
 from miramedia.movies.models import Movie, MovieFile  # noqa: E402
 from miramedia.notifications.models import Notification  # noqa: E402
+from miramedia.playback.models import MediaWatchState, PlaybackProgress  # noqa: E402
 from miramedia.requests.models import MediaRequest  # noqa: E402, F401
 from miramedia.settings.models import SystemConfigOverride  # noqa: E402, F401
 from miramedia.shows.models import (  # noqa: E402
@@ -54,6 +55,7 @@ from miramedia.torrents.models import (  # noqa: E402, F401
     TorrentBlock,
     TorrentHistory,
 )
+from miramedia.watchlists.models import Watchlist, WatchlistItem  # noqa: E402
 
 target_metadata = Base.metadata
 
@@ -66,16 +68,20 @@ __all__ = [
     "ImportBatch",
     "IndexerQueryResult",
     "MediaFileInventory",
+    "MediaWatchState",
     "Movie",
     "MovieFile",
     "Notification",
     "OAuthAccount",
+    "PlaybackProgress",
     "ScanResultCache",
     "ScanRun",
     "Season",
     "Show",
     "Torrent",
     "User",
+    "Watchlist",
+    "WatchlistItem",
 ]
 
 

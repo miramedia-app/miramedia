@@ -5,11 +5,13 @@ from __future__ import annotations
 import copy
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.schemas import Movie, MovieFile, MovieId
+from miramedia.playback.schemas import MediaKind, PlaybackProgress, WatchState
 from miramedia.requests.schemas import (
     MediaRequest,
     MediaRequestId,
@@ -18,6 +20,7 @@ from miramedia.requests.schemas import (
 )
 from miramedia.shows.schemas import (
     Episode,
+    EpisodeAttributeChange,
     EpisodeFile,
     EpisodeId,
     EpisodeNumber,
@@ -98,6 +101,49 @@ class FakeShowRepository:
         self.shows[season.show_id] = show.model_copy(
             update={"seasons": updated_seasons}
         )
+
+    async def update_episodes_skipped_bulk(
+        self, episode_ids: list[EpisodeId], skipped: bool
+    ) -> None:
+        for episode_id in episode_ids:
+            await self.update_episode_skipped(episode_id=episode_id, skipped=skipped)
+
+    async def update_episodes_attributes_bulk(
+        self, changes: Sequence[EpisodeAttributeChange]
+    ) -> None:
+        for change in changes:
+            episode = self.episodes.get(change.episode_id)
+            if episode is None:
+                from miramedia.exceptions import NotFoundError
+
+                msg = f"Episode with id {change.episode_id} not found."
+                raise NotFoundError(msg)
+            updates: dict[str, object] = {}
+            if change.title is not None and episode.title != change.title:
+                updates["title"] = change.title
+            if change.overview is not None and episode.overview != change.overview:
+                updates["overview"] = change.overview
+            if change.air_date is not None and episode.air_date != change.air_date:
+                updates["air_date"] = change.air_date
+            if change.air_time is not None and episode.air_time != change.air_time:
+                updates["air_time"] = change.air_time
+            if not updates:
+                continue
+            self.episodes[change.episode_id] = episode.model_copy(update=updates)
+            season = _season_for_episode(self, change.episode_id)
+            updated_episodes = [
+                self.episodes[change.episode_id] if ep.id == change.episode_id else ep
+                for ep in season.episodes
+            ]
+            updated_season = season.model_copy(update={"episodes": updated_episodes})
+            self.seasons[season.id] = updated_season
+            show = self.shows[season.show_id]
+            updated_seasons = [
+                updated_season if s.id == season.id else s for s in show.seasons
+            ]
+            self.shows[season.show_id] = show.model_copy(
+                update={"seasons": updated_seasons}
+            )
 
     async def get_episode(self, *, episode_id: EpisodeId) -> Episode:
         return self.episodes[episode_id]
@@ -201,19 +247,33 @@ class FakeShowRepository:
         status: ImportOutcome,
         error: str | None = None,
     ) -> None:
-        row = self.episode_files[file_id]
-        now = datetime.now(UTC)
-        self.episode_files[file_id] = row.model_copy(
-            update={
-                "import_status": status,
-                "import_error": error,
-                "last_attempt_at": now,
-                "attempt_count": row.attempt_count + 1,
-                "imported_at": now
-                if status == ImportOutcome.imported
-                else row.imported_at,
-            }
+        await self.update_episode_file_import_status_bulk(
+            file_ids=[file_id],
+            status=status,
+            error=error,
         )
+
+    async def update_episode_file_import_status_bulk(
+        self,
+        *,
+        file_ids: list[UUID],
+        status: ImportOutcome,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.now(UTC)
+        for file_id in file_ids:
+            row = self.episode_files[file_id]
+            self.episode_files[file_id] = row.model_copy(
+                update={
+                    "import_status": status,
+                    "import_error": error,
+                    "last_attempt_at": now,
+                    "attempt_count": row.attempt_count + 1,
+                    "imported_at": now
+                    if status == ImportOutcome.imported
+                    else row.imported_at,
+                }
+            )
 
     async def finalize_episode_file_import(
         self,
@@ -323,6 +383,19 @@ class FakeMovieRepository:
             if movie_id in self.movies
         }
 
+    async def get_movie_ids(self) -> list[MovieId]:
+        return list(self.movies.keys())
+
+    async def get_movie_files_for_movies(
+        self, movie_ids: list[MovieId]
+    ) -> dict[MovieId, list[MovieFile]]:
+        grouped: dict[MovieId, list[MovieFile]] = {mid: [] for mid in movie_ids}
+        wanted = set(movie_ids)
+        for movie_file in self.movie_files.values():
+            if movie_file.movie_id in wanted:
+                grouped.setdefault(movie_file.movie_id, []).append(movie_file)
+        return grouped
+
     async def get_movie_names_by_ids(
         self, movie_ids: list[MovieId]
     ) -> dict[MovieId, str]:
@@ -354,19 +427,33 @@ class FakeMovieRepository:
         status: ImportOutcome,
         error: str | None = None,
     ) -> None:
-        row = self.movie_files[file_id]
-        now = datetime.now(UTC)
-        self.movie_files[file_id] = row.model_copy(
-            update={
-                "import_status": status,
-                "import_error": error,
-                "last_attempt_at": now,
-                "attempt_count": row.attempt_count + 1,
-                "imported_at": now
-                if status == ImportOutcome.imported
-                else row.imported_at,
-            }
+        await self.update_movie_file_import_status_bulk(
+            file_ids=[file_id],
+            status=status,
+            error=error,
         )
+
+    async def update_movie_file_import_status_bulk(
+        self,
+        *,
+        file_ids: list[UUID],
+        status: ImportOutcome,
+        error: str | None = None,
+    ) -> None:
+        now = datetime.now(UTC)
+        for file_id in file_ids:
+            row = self.movie_files[file_id]
+            self.movie_files[file_id] = row.model_copy(
+                update={
+                    "import_status": status,
+                    "import_error": error,
+                    "last_attempt_at": now,
+                    "attempt_count": row.attempt_count + 1,
+                    "imported_at": now
+                    if status == ImportOutcome.imported
+                    else row.imported_at,
+                }
+            )
 
     async def finalize_movie_file_import(
         self,
@@ -843,3 +930,533 @@ class FakeSettingsRepository:
         updated = compute_clear_override_path(self.overrides, path)
         saved, _revision = await self.save_overrides_cas(updated, self.revision)
         return saved
+
+
+class FakePlaybackRepository:
+    def __init__(self) -> None:
+        from unittest.mock import MagicMock
+
+        self.db = MagicMock()
+        self.progress: dict[tuple[UUID, UUID], PlaybackProgress] = {}
+        self.watch_states: dict[tuple[UUID, str, UUID], WatchState] = {}
+        self.logical_media: dict[tuple[UUID, MediaKind], UUID] = {}
+
+    def _progress_key(self, user_id: UUID, file_id: UUID) -> tuple[UUID, UUID]:
+        return (user_id, file_id)
+
+    def _watch_key(
+        self, user_id: UUID, media_kind: MediaKind, media_id: UUID
+    ) -> tuple[UUID, str, UUID]:
+        return (user_id, media_kind.value, media_id)
+
+    def seed_logical_media(
+        self, *, file_id: UUID, media_kind: MediaKind, media_id: UUID
+    ) -> None:
+        self.logical_media[(file_id, media_kind)] = media_id
+
+    async def get_logical_media_id(
+        self, *, file_id: UUID, media_kind: MediaKind
+    ) -> UUID:
+        media_id = self.logical_media.get((file_id, media_kind))
+        if media_id is None:
+            msg = f"{media_kind.value} file missing logical media id"
+            raise RuntimeError(msg)
+        return media_id
+
+    async def get_progress(
+        self,
+        *,
+        user_id: UUID,
+        file_id: UUID,
+        media_kind: MediaKind | None = None,
+    ) -> PlaybackProgress | None:
+        progress = self.progress.get(self._progress_key(user_id, file_id))
+        if progress is None:
+            return None
+        if media_kind is not None and progress.media_kind != media_kind:
+            return None
+        return progress
+
+    async def upsert_progress(
+        self,
+        *,
+        user_id: UUID,
+        file_id: UUID,
+        media_kind: MediaKind,
+        position_ms: int,
+        duration_ms: int,
+        completed: bool,
+    ) -> PlaybackProgress:
+        progress = PlaybackProgress(
+            file_id=file_id,
+            media_kind=media_kind,
+            position_ms=position_ms,
+            duration_ms=duration_ms,
+            completed=completed,
+            updated_at=datetime.now(UTC),
+        )
+        self.progress[self._progress_key(user_id, file_id)] = progress
+        media_id = self.logical_media.get((file_id, media_kind))
+        if media_id is not None:
+            await self._sync_derived_watch_state(
+                user_id=user_id,
+                media_kind=media_kind,
+                media_id=media_id,
+            )
+        return progress
+
+    async def delete_progress(
+        self,
+        *,
+        user_id: UUID,
+        file_id: UUID,
+    ) -> None:
+        key = self._progress_key(user_id, file_id)
+        progress = self.progress.pop(key, None)
+        if progress is not None:
+            media_id = self.logical_media.get((file_id, progress.media_kind))
+            if media_id is not None:
+                await self._sync_derived_watch_state(
+                    user_id=user_id,
+                    media_kind=progress.media_kind,
+                    media_id=media_id,
+                )
+
+    async def delete_all_progress(self, *, user_id: UUID) -> None:
+        self.progress = {
+            key: value for key, value in self.progress.items() if key[0] != user_id
+        }
+
+    async def delete_all_viewing_state(self, *, user_id: UUID) -> None:
+        self.progress = {
+            key: value for key, value in self.progress.items() if key[0] != user_id
+        }
+        self.watch_states = {
+            key: value for key, value in self.watch_states.items() if key[0] != user_id
+        }
+
+    def _has_completed_progress(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: MediaKind,
+        media_id: UUID,
+    ) -> bool:
+        for (row_user_id, file_id), progress in self.progress.items():
+            if row_user_id != user_id or not progress.completed:
+                continue
+            logical = self.logical_media.get((file_id, media_kind))
+            if logical == media_id and progress.media_kind == media_kind:
+                return True
+        return False
+
+    async def _sync_derived_watch_state(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: MediaKind,
+        media_id: UUID,
+    ) -> None:
+        key = self._watch_key(user_id, media_kind, media_id)
+        existing = self.watch_states.get(key)
+        if existing is not None and existing.source == "manual":
+            return
+        if self._has_completed_progress(
+            user_id=user_id,
+            media_kind=media_kind,
+            media_id=media_id,
+        ):
+            self.watch_states[key] = WatchState(
+                media_kind="movie" if media_kind == MediaKind.movie else "episode",
+                media_id=media_id,
+                watched=True,
+                source="derived",
+                watched_at=datetime.now(UTC),
+            )
+            return
+        if existing is not None and existing.source == "derived":
+            del self.watch_states[key]
+
+    async def get_watched(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: MediaKind,
+        media_id: UUID,
+    ) -> WatchState:
+        key = self._watch_key(user_id, media_kind, media_id)
+        row = self.watch_states.get(key)
+        if row is not None and row.source == "manual":
+            return row
+        if self._has_completed_progress(
+            user_id=user_id,
+            media_kind=media_kind,
+            media_id=media_id,
+        ):
+            return WatchState(
+                media_kind="movie" if media_kind == MediaKind.movie else "episode",
+                media_id=media_id,
+                watched=True,
+                source="derived",
+                watched_at=row.watched_at if row is not None else datetime.now(UTC),
+            )
+        return WatchState(
+            media_kind="movie" if media_kind == MediaKind.movie else "episode",
+            media_id=media_id,
+            watched=False,
+            source=None,
+            watched_at=None,
+        )
+
+    async def set_watched(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: MediaKind,
+        media_id: UUID,
+        watched: bool,
+    ) -> WatchState:
+        key = self._watch_key(user_id, media_kind, media_id)
+        state = WatchState(
+            media_kind="movie" if media_kind == MediaKind.movie else "episode",
+            media_id=media_id,
+            watched=watched,
+            source="manual",
+            watched_at=datetime.now(UTC) if watched else None,
+        )
+        self.watch_states[key] = state
+        return state
+
+    async def clear_watched_override(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: MediaKind,
+        media_id: UUID,
+    ) -> WatchState:
+        key = self._watch_key(user_id, media_kind, media_id)
+        row = self.watch_states.get(key)
+        if row is not None and row.source == "manual":
+            del self.watch_states[key]
+        return await self.get_watched(
+            user_id=user_id,
+            media_kind=media_kind,
+            media_id=media_id,
+        )
+
+    async def set_episodes_watched(
+        self,
+        *,
+        user_id: UUID,
+        episode_ids: list[UUID],
+        watched: bool,
+    ) -> None:
+        for episode_id in episode_ids:
+            await self.set_watched(
+                user_id=user_id,
+                media_kind=MediaKind.episode,
+                media_id=episode_id,
+                watched=watched,
+            )
+
+    async def list_continue(
+        self,
+        *,
+        user_id: UUID,
+        limit: int,
+    ) -> list:
+        from miramedia.playback.schemas import ContinueWatchingItem
+
+        items: list[ContinueWatchingItem] = []
+        for (row_user_id, _), progress in self.progress.items():
+            if row_user_id != user_id or progress.completed:
+                continue
+            items.append(
+                ContinueWatchingItem(
+                    file_id=progress.file_id,
+                    media_kind=progress.media_kind,
+                    media_id=progress.file_id,
+                    title="stub",
+                    poster_media_id=progress.file_id,
+                    position_ms=progress.position_ms,
+                    duration_ms=progress.duration_ms,
+                    updated_at=progress.updated_at,
+                )
+            )
+        items.sort(key=lambda item: item.updated_at, reverse=True)
+        return items[:limit]
+
+
+@dataclass
+class _FakeWatchlistRow:
+    id: UUID
+    user_id: UUID
+    name: str
+    description: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass
+class _FakeWatchlistItemRow:
+    id: UUID
+    watchlist_id: UUID
+    position: int
+    media_kind: str
+    media_id: UUID
+
+
+class FakeWatchlistRepository:
+    def __init__(self) -> None:
+        self.watchlists: dict[UUID, _FakeWatchlistRow] = {}
+        self.items: dict[UUID, _FakeWatchlistItemRow] = {}
+
+    def items_for(self, watchlist_id: UUID) -> list[_FakeWatchlistItemRow]:
+        return [
+            item for item in self.items.values() if item.watchlist_id == watchlist_id
+        ]
+
+    async def list_summaries(self, *, user_id: UUID):
+        from miramedia.watchlists.schemas import WatchlistSummary
+
+        rows = [row for row in self.watchlists.values() if row.user_id == user_id]
+        rows.sort(key=lambda row: row.name.casefold())
+        return [
+            WatchlistSummary(
+                id=row.id,
+                name=row.name,
+                description=row.description,
+                item_count=len(self.items_for(row.id)),
+                cover_poster_media_id=self._cover_poster_for(row.id),
+                created_at=row.created_at,
+                updated_at=row.updated_at,
+            )
+            for row in rows
+        ]
+
+    def _cover_poster_for(self, watchlist_id: UUID):
+        items = sorted(
+            self.items_for(watchlist_id),
+            key=lambda item: (item.position, item.id),
+        )
+        if not items:
+            return None
+        # Fake item views use media_id as poster_media_id.
+        return items[0].media_id
+
+    async def name_taken(
+        self,
+        *,
+        user_id: UUID,
+        name: str,
+        exclude_watchlist_id: UUID | None = None,
+    ) -> bool:
+        for row in self.watchlists.values():
+            if row.user_id != user_id:
+                continue
+            if exclude_watchlist_id is not None and row.id == exclude_watchlist_id:
+                continue
+            if row.name.casefold() == name.casefold():
+                return True
+        return False
+
+    async def create(
+        self,
+        *,
+        user_id: UUID,
+        name: str,
+        description: str | None,
+    ):
+        now = datetime.now(UTC)
+        row = _FakeWatchlistRow(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            name=name,
+            description=description,
+            created_at=now,
+            updated_at=now,
+        )
+        self.watchlists[row.id] = row
+        return row
+
+    async def get_owned(self, *, user_id: UUID, watchlist_id: UUID):
+        row = self.watchlists.get(watchlist_id)
+        if row is None or row.user_id != user_id:
+            return None
+        return row
+
+    async def get_detail(self, *, user_id: UUID, watchlist_id: UUID):
+        from miramedia.watchlists.schemas import WatchlistDetail, WatchlistItemView
+
+        row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
+        if row is None:
+            return None
+        items = sorted(
+            self.items_for(watchlist_id),
+            key=lambda item: (item.position, item.id),
+        )
+        return WatchlistDetail(
+            id=row.id,
+            name=row.name,
+            description=row.description,
+            items=[
+                WatchlistItemView(
+                    id=item.id,
+                    position=item.position,
+                    media_kind=item.media_kind,
+                    media_id=item.media_id,
+                    title="stub",
+                    poster_media_id=item.media_id,
+                    watched=False,
+                )
+                for item in items
+            ],
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+        )
+
+    async def update(
+        self,
+        *,
+        user_id: UUID,
+        watchlist_id: UUID,
+        name: str | None,
+        description: str | None | object = ...,
+    ):
+        row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
+        if row is None:
+            return None
+        if name is not None:
+            row.name = name
+        if description is not ...:
+            row.description = description  # type: ignore[assignment]
+        row.updated_at = datetime.now(UTC)
+        return row
+
+    async def delete(self, *, user_id: UUID, watchlist_id: UUID) -> bool:
+        row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
+        if row is None:
+            return False
+        del self.watchlists[watchlist_id]
+        for item_id, item in list(self.items.items()):
+            if item.watchlist_id == watchlist_id:
+                del self.items[item_id]
+        return True
+
+    async def add_item(
+        self,
+        *,
+        user_id: UUID,
+        watchlist_id: UUID,
+        media_kind: str,
+        media_id: UUID,
+    ):
+        from miramedia.watchlists.schemas import WatchlistItemView
+
+        row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
+        if row is None:
+            return None
+        for item in self.items_for(watchlist_id):
+            if item.media_kind == media_kind and item.media_id == media_id:
+                view = WatchlistItemView(
+                    id=item.id,
+                    position=item.position,
+                    media_kind=item.media_kind,
+                    media_id=item.media_id,
+                    title="stub",
+                    poster_media_id=item.media_id,
+                    watched=False,
+                )
+                return view, False
+        position = len(self.items_for(watchlist_id))
+        item = _FakeWatchlistItemRow(
+            id=uuid.uuid4(),
+            watchlist_id=watchlist_id,
+            position=position,
+            media_kind=media_kind,
+            media_id=media_id,
+        )
+        self.items[item.id] = item
+        row.updated_at = datetime.now(UTC)
+        view = WatchlistItemView(
+            id=item.id,
+            position=item.position,
+            media_kind=item.media_kind,
+            media_id=item.media_id,
+            title="stub",
+            poster_media_id=item.media_id,
+            watched=False,
+        )
+        return view, True
+
+    async def reorder_items(
+        self,
+        *,
+        user_id: UUID,
+        watchlist_id: UUID,
+        item_ids: list[UUID],
+    ):
+        row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
+        if row is None:
+            return None
+        current_ids = {item.id for item in self.items_for(watchlist_id)}
+        if set(item_ids) != current_ids or len(item_ids) != len(current_ids):
+            return None
+        for position, item_id in enumerate(item_ids):
+            self.items[item_id].position = position
+        row.updated_at = datetime.now(UTC)
+        return await self.get_detail(user_id=user_id, watchlist_id=watchlist_id)
+
+    async def remove_item(
+        self,
+        *,
+        user_id: UUID,
+        watchlist_id: UUID,
+        item_id: UUID,
+    ) -> bool:
+        row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
+        if row is None:
+            return False
+        item = self.items.get(item_id)
+        if item is None or item.watchlist_id != watchlist_id:
+            return False
+        del self.items[item_id]
+        row.updated_at = datetime.now(UTC)
+        return True
+
+    async def delete_items_for_media(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: str,
+        media_id: UUID,
+    ) -> int:
+        removed = 0
+        for item_id, item in list(self.items.items()):
+            owner = self.watchlists.get(item.watchlist_id)
+            if owner is None or owner.user_id != user_id:
+                continue
+            if item.media_kind == media_kind and item.media_id == media_id:
+                del self.items[item_id]
+                removed += 1
+        return removed
+
+    async def delete_items_for_media_ids(
+        self,
+        *,
+        user_id: UUID,
+        media_kind: str,
+        media_ids: list[UUID],
+    ) -> int:
+        if not media_ids:
+            return 0
+        target_ids = set(media_ids)
+        removed = 0
+        for item_id, item in list(self.items.items()):
+            owner = self.watchlists.get(item.watchlist_id)
+            if owner is None or owner.user_id != user_id:
+                continue
+            if item.media_kind == media_kind and item.media_id in target_ids:
+                del self.items[item_id]
+                removed += 1
+        return removed

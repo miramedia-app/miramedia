@@ -12,18 +12,9 @@ import {
 } from "fumadocs-ui/components/dialog/search";
 import { useDocsSearch } from "fumadocs-core/search/client";
 
-async function initOrama() {
-  const { create } = await import("@orama/orama");
-  return create({
-    schema: { _: "string" },
-    language: "english",
-  });
-}
-
 export default function DocsSearchDialog(props: SharedProps) {
   const { search, setSearch, query } = useDocsSearch({
     type: "static",
-    initOrama,
   });
 
   return (

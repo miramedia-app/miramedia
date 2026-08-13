@@ -13,6 +13,7 @@ import {
   PowerOff,
   ShieldCheck,
   Trash2,
+  TriangleAlert,
   User as UserIcon,
   UsersIcon,
 } from "lucide-react";
@@ -23,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { DashboardHeader } from "@/components/dashboard-header";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { StatusPill } from "@/components/ui/status-pill";
 import { TypePill } from "@/components/ui/type-pill";
 import { Button } from "@/components/ui/button";
@@ -75,7 +77,8 @@ export default function UsersPage() {
   const usersQuery = useQuery({
     queryKey: ["users", "all"],
     queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/users", { signal });
+      const { data, error } = await apiClient.GET("/api/v1/users", { signal });
+      if (error) throw error;
       return (data ?? []) as UserRead[];
     },
   });
@@ -480,25 +483,9 @@ export default function UsersPage() {
         ]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <DataList<UserRead>
-          data={users}
-          getId={(u) => u.id}
-          columns={columns}
-          searchPlaceholder="Search or filter users…"
-          searchMatch={(u, q) => u.email.toLowerCase().includes(q)}
-          facets={facets}
-          sortOptions={sortOptions}
-          defaultSort="email-asc"
-          groupings={groupings}
-          defaultGroupId="role"
-          bulkActions={bulkActions}
-          unselectableIds={unselectableIds}
-          loading={usersQuery.isLoading}
-          emptyIcon={<UsersIcon />}
-          emptyTitle="No users yet"
-          emptyDescription="Invite or add a user to get started."
-          toolbarTrailing={
-            <>
+        {usersQuery.isError ? (
+          <>
+            <div className="flex flex-wrap items-center justify-end gap-2">
               <Button
                 size="default"
                 variant="outline"
@@ -512,10 +499,56 @@ export default function UsersPage() {
                 <Plus className="mr-1 h-4 w-4" />
                 Add user
               </Button>
-            </>
-          }
-          rowActions={renderRowActions}
-        />
+            </div>
+            <Alert variant="destructive">
+              <TriangleAlert className="size-4" />
+              <AlertTitle>Failed to load users</AlertTitle>
+              <AlertDescription className="flex items-center gap-2">
+                You may not have permission, or the backend is unreachable.
+                <Button variant="outline" size="sm" onClick={() => usersQuery.refetch()}>
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          </>
+        ) : (
+          <DataList<UserRead>
+            data={users}
+            getId={(u) => u.id}
+            columns={columns}
+            searchPlaceholder="Search or filter users…"
+            searchMatch={(u, q) => u.email.toLowerCase().includes(q)}
+            facets={facets}
+            sortOptions={sortOptions}
+            defaultSort="email-asc"
+            groupings={groupings}
+            defaultGroupId="role"
+            bulkActions={bulkActions}
+            unselectableIds={unselectableIds}
+            loading={usersQuery.isLoading}
+            emptyIcon={<UsersIcon />}
+            emptyTitle="No users yet"
+            emptyDescription="Invite or add a user to get started."
+            toolbarTrailing={
+              <>
+                <Button
+                  size="default"
+                  variant="outline"
+                  className="text-xs"
+                  onClick={() => setInviteOpen(true)}
+                >
+                  <Mail className="mr-1 h-4 w-4" />
+                  Invite
+                </Button>
+                <Button size="default" className="text-xs" onClick={() => setAddOpen(true)}>
+                  <Plus className="mr-1 h-4 w-4" />
+                  Add user
+                </Button>
+              </>
+            }
+            rowActions={renderRowActions}
+          />
+        )}
       </main>
 
       {/* Add user */}

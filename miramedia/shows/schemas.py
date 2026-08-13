@@ -1,6 +1,6 @@
 import typing
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import NamedTuple
 from uuid import UUID
 
@@ -29,6 +29,16 @@ class EpisodeIntegrityContext(NamedTuple):
     show_name: str
 
 
+class EpisodeAttributeChange(NamedTuple):
+    """Bulk metadata refresh input. ``None`` field values mean no change."""
+
+    episode_id: EpisodeId
+    title: str | None = None
+    overview: str | None = None
+    air_date: date | None = None
+    air_time: time | None = None
+
+
 class Episode(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -38,6 +48,7 @@ class Episode(BaseModel):
     overview: str | None = None
     skipped: bool = False
     air_date: date | None = None
+    air_time: time | None = None
     # Eager-loaded from ORM via Show repository so downstream services don't
     # have to round-trip per episode. Not exposed in PublicEpisode.
     episode_files: list["EpisodeFile"] = Field(default_factory=list)

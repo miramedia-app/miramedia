@@ -113,7 +113,9 @@ I use IntellijIdea with the Pycharm and Webstorm plugins to develop this, but th
 
 ### Recommended Development Workflow﻿
 
-The recommended way to develop MiraMedia is using the fully Dockerized setup with `docker-compose.dev.yaml`. This ensures you're working in the same environment as production and makes it easy for new contributors to get started without installing Python, Node.js, or other dependencies locally.
+The recommended way to **run** MiraMedia during development is the Dockerized setup with `docker-compose.dev.yaml`. It matches production closely and provisions PostgreSQL, hot-reload, and the dev servers without a local backend or frontend runtime.
+
+Quality gates (`make check`, `make check-ci`) are **not** containerized: they run on the host with `uv`, Python 3.13, and `pnpm`. You can develop entirely in Docker and still run the gates on the host once those tools are installed.
 
 The development environment includes:
 
@@ -236,9 +238,21 @@ breaks the install. CI pins `UV_PYTHON=3.13` for the same reason.
 
 </Callout>
 
+### Host prerequisites for quality gates
+
+Before running `make check` or `make check-ci` on the host:
+
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and sync the backend:
+   `uv python install 3.13 && uv sync`
+2. Install [pnpm](https://pnpm.io/installation) (the repo pins it via `web/package.json`).
+3. Bootstrap the frontend once per fresh clone:
+   `make frontend-bootstrap` (installs `web/` deps and generates Fumadocs collections + Next type declarations).
+
+`make up` starts the application stack in Docker; it does **not** install these host toolchains or run the quality gates for you.
+
 ### The quality gate
 
-`make check` is the **fast local gate** — run it often while developing. It chains:
+`make check` is the **fast local gate** — run it often while developing on the host (after the prerequisites above). It chains:
 
 | Step                    | Command                | Covers                                     |
 | ----------------------- | ---------------------- | ------------------------------------------ |
@@ -251,7 +265,7 @@ breaks the install. CI pins `UV_PYTHON=3.13` for the same reason.
 | `frontend-lint`         | oxlint + oxfmt format check | Frontend lint                          |
 | `migration-head-audit`  | Alembic head audit     | Divergent migration heads                  |
 
-`make check-ci` is the **slower pre-PR CI-parity gate**. Run it before opening a PR when you have a disposable PostgreSQL database and Playwright Chromium installed. It runs `make check`, then the CI jobs that `check` deliberately skips:
+`make check-ci` is the **slower pre-PR CI-parity gate**. Run it on the host before opening a PR when you have the prerequisites above **plus** a disposable PostgreSQL database (`MIRAMEDIA_TEST_DATABASE_URL`) and Playwright Chromium installed. It runs `make check`, then the CI jobs that `check` deliberately skips:
 
 | Step             | Command / target       | Covers                                              |
 | ---------------- | ---------------------- | --------------------------------------------------- |
@@ -259,6 +273,7 @@ breaks the install. CI pins `UV_PYTHON=3.13` for the same reason.
 | OpenAPI drift    | `make openapi` + diff  | Regenerates `web/public/openapi.json` and `web/src/lib/api/api.d.ts`; fails if either file drifts from the committed copy |
 | `integration-test` | `pytest -m integration` / `postgresql` | PostgreSQL-backed suites (requires `MIRAMEDIA_TEST_DATABASE_URL`) |
 | `frontend-e2e`   | `pnpm run test:e2e`    | Playwright browser smoke suite (install Chromium once: `cd web && pnpm exec playwright install --with-deps chromium`) |
+| `frontend-smoke-real` | `pnpm run test:smoke` | Real frontend→FastAPI→PostgreSQL smoke on port **43219** (`GET /api/v1/health` must report `db.ok`); needs `make frontend-build`, Chromium, and `MIRAMEDIA_TEST_DATABASE_URL` |
 
 Related targets:
 
@@ -271,6 +286,10 @@ Related targets:
   a disposable database.
 - `make frontend-e2e` — the Playwright browser smoke suite. Install Chromium
   once with `cd web && pnpm exec playwright install --with-deps chromium`.
+- `make frontend-smoke-real` — one real browser workflow against FastAPI serving
+  the static export plus disposable PostgreSQL (`scripts/smoke_stack.py` on port
+  **43219**, health at `/api/v1/health`). Requires `make frontend-build`,
+  Chromium, and `MIRAMEDIA_TEST_DATABASE_URL`.
 - `make migration-head-audit` — checks for divergent Alembic heads.
 - `make audit` — `pip-audit` over locked prod deps plus `pnpm audit`.
 
@@ -392,9 +411,9 @@ docker compose -f docker-compose.dev.yaml restart web
 - Check backend logs:
 
 ```bash
-make logs ARGS="--follow miramedia"
+make logs ARGS="--follow api"
 # or
-docker compose -f docker-compose.dev.yaml logs -f miramedia
+docker compose -f docker-compose.dev.yaml logs -f api
 ```
 
 - If dependencies changed, rebuild:
@@ -424,6 +443,25 @@ make app
 uv run alembic revision --autogenerate -m "description"
 ```
 
+- Downgrade floor: the squashed initial schema revision is the lowest supported
+  Alembic revision. `alembic downgrade base` (or `-1` from that revision) is
+  refused because reversing it would drop unrelated objects in `public`. Use a
+  disposable database or restore from backup instead.
+
+- Specials skip backfill (`c8d2e3f4a5b6`): that revision read live
+  `misc.download_specials` once and may have marked Season 0 rows skipped when
+  the setting was off. The destructive branch is irreversible and cannot be
+  distinguished from later user skip edits — do not mass-rewrite `skipped`
+  flags to “fix” historical databases. Revision `g5c6d7e8f9a0` adds the
+  read-only `specials_skip_audit` view for operator review instead:
+
+  ```sql
+  SELECT * FROM specials_skip_audit ORDER BY show_name, episode_number;
+  ```
+
+  `skip_category` is a reporting hint (`wanted_undownloaded`, `skipped_undownloaded`,
+  `downloaded`), not grounds for automatic correction.
+
 </details>
 
 <details>
@@ -432,7 +470,7 @@ uv run alembic revision --autogenerate -m "description"
 
 - All services: `make logs`
 - Follow logs in real-time: `make logs ARGS="--follow"`
-- Specific service: `make logs ARGS="miramedia --follow"`
+- Specific service: `make logs ARGS="api --follow"`
 
 </details>
 
@@ -445,7 +483,7 @@ uv run alembic revision --autogenerate -m "description"
 ```bash
 make app
 # or
-docker compose -f docker-compose.dev.yaml exec -it miramedia bash
+docker compose -f docker-compose.dev.yaml exec -it api bash
 ```
 
 - Shell into frontend:

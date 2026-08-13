@@ -23,6 +23,7 @@ SETTINGS_SECTIONS = (
     "indexers",
     "metadata",
     "requests",
+    "watchlists",
     "subtitles",
     "updates",
     "cloudflare",
@@ -97,9 +98,17 @@ REDACTED_FIELDS = {
 # managed elsewhere. Their dotted paths must match the singleton attribute path.
 DEPRECATED_FIELDS: set[tuple[str, ...]] = {
     ("auth", "admin_emails"),
-    ("updates", "allow_in_app_apply"),
-    ("updates", "container_name"),
 }
+
+
+def _strip_hidden_settings_fields(section: str, section_dict: dict) -> dict:
+    """Drop secrets and deprecated keys so GET payloads can round-trip as PUT."""
+    for field in REDACTED_FIELDS.get(section, set()):
+        section_dict.pop(field, None)
+    for path in DEPRECATED_FIELDS:
+        if len(path) == 2 and path[0] == section:
+            section_dict.pop(path[1], None)
+    return section_dict
 
 
 def get_effective_config(overrides: dict) -> dict:
@@ -108,9 +117,7 @@ def get_effective_config(overrides: dict) -> dict:
     result: dict = {}
     for section in SETTINGS_SECTIONS:
         section_dict = _config_to_dict(getattr(isolated, section))
-        for field in REDACTED_FIELDS.get(section, set()):
-            section_dict.pop(field, None)
-        result[section] = section_dict
+        result[section] = _strip_hidden_settings_fields(section, section_dict)
     return result
 
 
@@ -226,6 +233,7 @@ def get_settings_schema() -> list[dict]:
         "indexers",
         "metadata",
         "requests",
+        "watchlists",
         "subtitles",
         "updates",
         "cloudflare",
@@ -249,6 +257,7 @@ def get_toml_defaults() -> dict:
         "indexers",
         "metadata",
         "requests",
+        "watchlists",
         "subtitles",
         "updates",
         "cloudflare",
@@ -257,9 +266,7 @@ def get_toml_defaults() -> dict:
     result: dict = {}
     for section in sections:
         section_dict = _config_to_dict(getattr(fresh, section))
-        for field in REDACTED_FIELDS.get(section, set()):
-            section_dict.pop(field, None)
-        result[section] = section_dict
+        result[section] = _strip_hidden_settings_fields(section, section_dict)
     return result
 
 
@@ -331,6 +338,9 @@ def apply_live_config_from_overrides(overrides: dict) -> None:
     from miramedia.auth.users import apply_mutable_transport_settings
 
     apply_mutable_transport_settings()
+    from miramedia.torrents.manager import reset_download_manager
+
+    reset_download_manager()
 
 
 def revert_field_to_toml_default(path: list[str]) -> None:
@@ -360,6 +370,9 @@ def revert_field_to_toml_default(path: list[str]) -> None:
         log.exception(
             "Failed to revert config field %s to TOML default", ".".join(path)
         )
+    from miramedia.torrents.manager import reset_download_manager
+
+    reset_download_manager()
 
 
 def apply_overrides_to_config(config: MiraMediaConfig, overrides: dict) -> None:
@@ -375,6 +388,7 @@ def apply_overrides_to_config(config: MiraMediaConfig, overrides: dict) -> None:
         "indexers",
         "metadata",
         "requests",
+        "watchlists",
         "subtitles",
         "updates",
         "cloudflare",

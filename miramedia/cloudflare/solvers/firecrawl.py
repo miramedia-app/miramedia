@@ -63,6 +63,12 @@ class FirecrawlSolver:
         if not data.get("success", True):
             log.warning("firecrawl did not scrape %s: %s", url, data)
             return None
-        body = data.get("data") or {}
+        body = data.get("data")
+        if not body:
+            log.warning("firecrawl returned ok with empty data for %s", url)
+            return None
         html = body.get("rawHtml") or body.get("html")
+        if not html:
+            log.warning("firecrawl returned ok with no html for %s", url)
+            return None
         return SolveResult(html=html)

@@ -75,6 +75,12 @@ services:
       - "6891:6891"
       - "6891:6891/udp"
     environment:
+      # Container timezone — fallback for air-date parsing and the calendar window
+      # (upcoming.local_today, metadata.parse_iso_date) when the in-app Timezone
+      # setting (Settings → General) is blank. Cinemeta returns air times as UTC
+      # datetimes, so a US-evening episode is the next UTC day. Precedence:
+      # UI setting → TZ → UTC. Set TZ in your .env (e.g. TZ=America/Denver).
+      - TZ=${TZ:-UTC}
       - MIRAMEDIA_CONFIG_DIR=/app/config
       # Native torrent client listens on 6891 in dev (code default is 6881) so
       # it doesn't collide with the bundled qbittorrent's host 6881 mapping

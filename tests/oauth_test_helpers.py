@@ -71,6 +71,12 @@ def build_openid_client_mock(
     client.get_access_token = AsyncMock(
         return_value={"access_token": "access-token", "token_type": "bearer"}
     )
+    profile = {
+        "sub": "account-1",
+        "email": "user@example.com",
+        "email_verified": True,
+    }
+    client.get_profile = AsyncMock(return_value=profile)
     client.get_id_email = AsyncMock(return_value=("account-1", "user@example.com"))
     return client
 

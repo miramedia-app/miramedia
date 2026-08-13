@@ -57,9 +57,13 @@ const QUALITY_OPTIONS = [
 export function MediaActionsMenu({
   media,
   mediaType,
+  afterSubtitles,
+  children,
 }: {
   media: Media;
   mediaType: "show" | "movie";
+  afterSubtitles?: React.ReactNode;
+  children?: React.ReactNode;
 }) {
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -194,6 +198,14 @@ export function MediaActionsMenu({
                 onUpdate={() => void queryClient.invalidateQueries({ queryKey: ["subtitles"] })}
               />
             ))}
+        </>
+      )}
+
+      {afterSubtitles}
+
+      {isSuperuser && (
+        <>
+          {children}
 
           <AlertDialog
             open={deleteOpen}

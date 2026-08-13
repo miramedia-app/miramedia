@@ -19,6 +19,8 @@ from fastapi_users.authentication import (
     JWTStrategy,
 )
 from fastapi_users.db import SQLAlchemyUserDatabase
+from fastapi_users.exceptions import InvalidPasswordException
+from fastapi_users.jwt import generate_jwt
 from sqlalchemy import func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import make_transient
@@ -46,6 +48,20 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     verification_token_secret = SECRET
 
     @override
+    async def validate_password(
+        self, password: str, user: models.UP | UserCreate
+    ) -> None:
+        if len(password) < 8:
+            raise InvalidPasswordException(
+                reason="Password must be at least 8 characters"
+            )
+        email = getattr(user, "email", None)
+        if email and password.lower() == str(email).lower():
+            raise InvalidPasswordException(
+                reason="Password must not be the same as the email address"
+            )
+
+    @override
     async def on_after_update(
         self,
         user: models.UP,
@@ -58,9 +74,36 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         # Drop cached auth state so role/active/email changes take effect on the
         # next request instead of waiting out the TTL window.
         invalidate_auth_cache(user.id)
+        if "password" in update_dict:
+            await self._revoke_credentials(user, reason="has changed their password")
         if "email" in update_dict:
             updated_user = UserUpdate(is_verified=True)
             await self.update(user=user, user_update=updated_user)
+
+    async def _revoke_credentials(self, user: models.UP, *, reason: str) -> None:
+        """Stamp ``credentials_changed_at`` and delete all personal API tokens.
+
+        Invalidates every JWT minted more than ``_IAT_LEEWAY_S`` before now
+        (via ``_issued_before_credentials_change``) — including the user's own
+        current session, which is intentional: after a password change/reset
+        the user must log in again.
+        """
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from sqlalchemy import delete as sa_delete
+
+        from miramedia.auth.api_tokens import UserApiToken
+
+        now = _dt.now(UTC)
+        await self.user_db.update(user, {"credentials_changed_at": now})
+        session = self.user_db.session
+        await session.execute(
+            sa_delete(UserApiToken).where(UserApiToken.user_id == user.id)
+        )
+        await session.commit()
+        invalidate_auth_cache(user.id)
+        log.info(f"User {user.id} {reason}; sessions and API tokens revoked.")
 
     @override
     async def on_after_register(
@@ -109,7 +152,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_reset_password(
         self, user: User, request: Request | None = None
     ) -> None:
-        log.info(f"User {user.id} has reset their password.")
+        await self._revoke_credentials(user, reason="has reset their password")
 
     @override
     async def on_after_request_verify(
@@ -262,7 +305,8 @@ async def create_default_admin_user() -> None:
 # ---------------------------------------------------------------------------
 _AUTH_CACHE_TTL_S = int(os.getenv("MIRAMEDIA_AUTH_CACHE_TTL_SECONDS", "30"))
 _AUTH_CACHE_MAX = int(os.getenv("MIRAMEDIA_AUTH_CACHE_MAXSIZE", "2048"))
-_AuthCacheEntry = tuple[models.UP, float | None]
+_IAT_LEEWAY_S = 60
+_AuthCacheEntry = tuple[models.UP, float | None, float | None]
 _user_cache: TTLCache[bytes, _AuthCacheEntry] = TTLCache(
     maxsize=_AUTH_CACHE_MAX, ttl=_AUTH_CACHE_TTL_S
 )
@@ -291,6 +335,30 @@ def _token_exp_epoch(token: str) -> float | None:
         return None
     exp = payload.get("exp")
     return float(exp) if exp is not None else None
+
+
+def _token_iat_epoch(token: str) -> float | None:
+    """Return the JWT ``iat`` claim without verifying the signature."""
+    try:
+        payload = jwt.decode(
+            token,
+            options={"verify_signature": False},
+            algorithms=["HS256"],
+        )
+    except jwt.PyJWTError:
+        return None
+    iat = payload.get("iat")
+    return float(iat) if iat is not None else None
+
+
+def _issued_before_credentials_change(iat_epoch: float | None, user: models.UP) -> bool:
+    changed_at = getattr(user, "credentials_changed_at", None)
+    if changed_at is None:
+        return False
+    threshold = changed_at.timestamp() - _IAT_LEEWAY_S
+    if iat_epoch is None:
+        return True
+    return iat_epoch < threshold
 
 
 def _detached_user_copy(user: User) -> User:
@@ -330,7 +398,7 @@ def invalidate_auth_cache(user_id: uuid.UUID | None = None) -> None:
     if user_id is None:
         _user_cache.clear()
         return
-    for k, (cached_user, _exp) in list(_user_cache.items()):
+    for k, (cached_user, _exp, _iat) in list(_user_cache.items()):
         if getattr(cached_user, "id", None) == user_id:
             _user_cache.pop(k, None)
 
@@ -346,6 +414,17 @@ class CachedJWTStrategy(JWTStrategy[models.UP, models.ID]):
     """
 
     @override
+    async def write_token(self, user: models.UP) -> str:
+        data = {
+            "sub": str(user.id),
+            "aud": self.token_audience,
+            "iat": int(time.time()),
+        }
+        return generate_jwt(
+            data, self.encode_key, self.lifetime_seconds, algorithm=self.algorithm
+        )
+
+    @override
     async def read_token(
         self,
         token: str | None,
@@ -355,14 +434,23 @@ class CachedJWTStrategy(JWTStrategy[models.UP, models.ID]):
         if key is not None:
             cached = _user_cache.get(key)
             if cached is not None:
-                cached_user, exp_epoch = cached
+                cached_user, exp_epoch, iat_epoch = cached
                 if exp_epoch is not None and time.time() >= exp_epoch:
+                    _user_cache.pop(key, None)
+                elif _issued_before_credentials_change(iat_epoch, cached_user):
                     _user_cache.pop(key, None)
                 else:
                     return cached_user
         user = await super().read_token(token, user_manager)
         if user is not None and key is not None and token is not None:
-            _user_cache[key] = (_detached_user_copy(user), _token_exp_epoch(token))
+            iat = _token_iat_epoch(token)
+            if _issued_before_credentials_change(iat, user):
+                return None
+            _user_cache[key] = (
+                _detached_user_copy(user),
+                _token_exp_epoch(token),
+                iat,
+            )
         return user
 
 

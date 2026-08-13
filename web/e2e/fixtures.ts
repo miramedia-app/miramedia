@@ -36,6 +36,69 @@ export interface ApiMock {
   find: (key: string) => RecordedCall | undefined;
 }
 
+export interface SessionUser {
+  id: string;
+  email: string;
+  is_superuser?: boolean;
+}
+
+/** Mutable auth session for multi-user browser scenarios. */
+export interface AuthSessionState {
+  current: SessionUser;
+  usersByEmail: Record<string, SessionUser>;
+  loggedOut: boolean;
+}
+
+export function createAuthSessionState(
+  users: SessionUser[],
+  initialEmail: string,
+): AuthSessionState {
+  const usersByEmail = Object.fromEntries(users.map((user) => [user.email, user]));
+  const current = usersByEmail[initialEmail];
+  if (!current) {
+    throw new Error(`Unknown initial user email: ${initialEmail}`);
+  }
+  return { current, usersByEmail, loggedOut: false };
+}
+
+function sessionUserBody(user: SessionUser) {
+  return {
+    id: user.id,
+    email: user.email,
+    is_active: true,
+    is_superuser: user.is_superuser ?? true,
+    is_verified: true,
+    last_login_at: null,
+  };
+}
+
+/** Per-user `/users/me` and cookie login/logout handlers (merged over shell routes). */
+export function sessionAuthRoutes(state: AuthSessionState): Record<string, ApiHandler> {
+  return {
+    "GET /api/v1/users/me": () => {
+      if (state.loggedOut) {
+        return { status: 401, body: { detail: "Unauthorized" } };
+      }
+      return { body: sessionUserBody(state.current) };
+    },
+    "POST /api/v1/auth/cookie/login": (req) => {
+      const body = new URLSearchParams(req.postData() ?? "");
+      const username = body.get("username") ?? "";
+      const user = state.usersByEmail[username];
+      if (!user) {
+        return { status: 400, body: { detail: "LOGIN_BAD_CREDENTIALS" } };
+      }
+      state.current = user;
+      state.loggedOut = false;
+      return { status: 204 };
+    },
+    "POST /api/v1/auth/cookie/logout": () => {
+      state.loggedOut = true;
+      return { status: 204 };
+    },
+  };
+}
+
 export interface AuthEntryOptions {
   /** OIDC provider display names rendered on the login card. */
   oauthProviders?: string[];
@@ -93,8 +156,36 @@ function shellRoutes(): Record<string, ApiHandler> {
     }),
     "GET /api/v1/dashboard/summary": () => ({ body: {} }),
     "GET /api/v1/features": () => ({
-      body: { requests: false, subtitles: false, notifications: true },
+      body: {
+        requests: false,
+        subtitles: false,
+        notifications: true,
+        watchlists: true,
+        custom_lists: true,
+        watch_next: true,
+        watch_next_include_specials: false,
+        upcoming: true,
+        upcoming_default_past_days: 0,
+        upcoming_default_future_days: 30,
+        continue_watching: true,
+      },
     }),
+    // Dashboard home always mounts Continue Watching.
+    "GET /api/v1/playback/continue": () => ({ body: [] }),
+    "GET /api/v1/playback/watch-next": () => ({ body: [] }),
+    "GET /api/v1/watchlists": () => ({ body: [] }),
+    "GET /api/v1/playback/watched": (req) => {
+      const url = new URL(req.url());
+      return {
+        body: {
+          media_kind: url.searchParams.get("media_kind"),
+          media_id: url.searchParams.get("media_id"),
+          watched: false,
+          source: null,
+          watched_at: null,
+        },
+      };
+    },
     "GET /api/v1/system/version": () => ({ body: { version: "smoke-test" } }),
     "GET /api/v1/system/updates": () => ({ body: { enabled: false } }),
     // web-vitals beacon fired on load; accept and ignore.
@@ -106,6 +197,31 @@ function shellRoutes(): Record<string, ApiHandler> {
       body: "",
     }),
   };
+}
+
+/**
+ * Resolve an exact `METHOD /pathname` handler, or a safe prefix pattern
+ * `METHOD /prefix/*` when `pathname` is under that prefix (static images,
+ * stream byte ranges, etc.). Exact keys always win.
+ */
+export function resolveApiHandler(
+  table: Record<string, ApiHandler>,
+  method: string,
+  pathname: string,
+): ApiHandler | undefined {
+  const exact = table[`${method} ${pathname}`];
+  if (exact) return exact;
+
+  for (const [key, handler] of Object.entries(table)) {
+    const space = key.indexOf(" ");
+    if (space < 0) continue;
+    const keyMethod = key.slice(0, space);
+    const pattern = key.slice(space + 1);
+    if (keyMethod !== method || !pattern.endsWith("/*")) continue;
+    const prefix = pattern.slice(0, -1); // "/api/v1/static/image/"
+    if (pathname.startsWith(prefix)) return handler;
+  }
+  return undefined;
 }
 
 /**
@@ -135,7 +251,7 @@ export async function installApiMock(
       contentType: req.headers()["content-type"] ?? null,
     });
 
-    const handler = table[key];
+    const handler = resolveApiHandler(table, req.method(), pathname);
     if (!handler) {
       mock.unhandled.push(key);
       await route.fulfill({

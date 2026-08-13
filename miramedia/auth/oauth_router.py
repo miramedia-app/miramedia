@@ -46,6 +46,7 @@ from miramedia.auth.runtime import (
     bind_oauth_runtime_generation,
     current_oauth_runtime_generation,
     dynamic_oauth_client,
+    get_oauth_id_email_verified,
 )
 
 
@@ -255,8 +256,13 @@ def get_dynamic_oauth_router(
                         detail=ErrorCode.OAUTH_INVALID_STATE,
                     ) from exc
 
-                account_id, account_email = await generation.client.get_id_email(
-                    token["access_token"]
+                (
+                    account_id,
+                    account_email,
+                    email_verified,
+                ) = await get_oauth_id_email_verified(
+                    generation.client,
+                    token["access_token"],
                 )
 
                 if account_email is None:
@@ -264,6 +270,11 @@ def get_dynamic_oauth_router(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=ErrorCode.OAUTH_NOT_AVAILABLE_EMAIL,
                     )
+
+                effective_associate_by_email = associate_by_email and email_verified
+                effective_is_verified_by_default = (
+                    is_verified_by_default and email_verified
+                )
 
                 try:
                     await reconcile_legacy_oauth_account(
@@ -291,8 +302,8 @@ def get_dynamic_oauth_router(
                         token.get("expires_at"),
                         token.get("refresh_token"),
                         request,
-                        associate_by_email=associate_by_email,
-                        is_verified_by_default=is_verified_by_default,
+                        associate_by_email=effective_associate_by_email,
+                        is_verified_by_default=effective_is_verified_by_default,
                     )
                 except UserAlreadyExists:
                     raise HTTPException(

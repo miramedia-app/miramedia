@@ -11,7 +11,9 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 from miramedia.config import MiraMediaConfig
+from miramedia.settings.schemas import SystemSettingsUpdate
 from miramedia.settings.service import (
+    SETTINGS_SECTIONS,
     apply_live_config_from_overrides,
     build_isolated_config,
     get_effective_config,
@@ -117,3 +119,12 @@ def test_get_settings_returns_override_not_stale_live() -> None:
     body = response.json()
     assert body["overrides"]["misc"]["development"] is override_c
     assert body["misc"]["development"] is override_c
+
+
+def test_effective_config_is_a_valid_settings_update() -> None:
+    """GET must not include keys PUT forbids, or the settings editor 422s on save."""
+    effective = get_effective_config({})
+    payload = {section: effective[section] for section in SETTINGS_SECTIONS}
+    SystemSettingsUpdate.model_validate(payload)
+    assert "admin_emails" not in effective["auth"]
+    assert "token_secret" not in effective["auth"]

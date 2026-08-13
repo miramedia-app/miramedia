@@ -67,5 +67,7 @@ class BrowserRunSolver:
             log.warning("browser_run did not render %s: %s", url, data.get("errors"))
             return None
         result = data.get("result")
-        html = result if isinstance(result, str) else None
-        return SolveResult(html=html)
+        if not isinstance(result, str) or not result:
+            log.warning("browser_run returned ok with empty result for %s", url)
+            return None
+        return SolveResult(html=result)

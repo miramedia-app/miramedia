@@ -36,6 +36,7 @@ from miramedia.settings.mutation import (
 )
 from miramedia.settings.schemas import SystemSettingsRead, SystemSettingsUpdate
 from miramedia.settings.service import (
+    SETTINGS_SECTIONS,
     compute_clear_override_path,
     compute_mutation_overrides,
     get_effective_config,
@@ -163,19 +164,7 @@ def _rate_limit_test(user_key: str) -> None:
     _test_rate_limiter.check(user_key)
 
 
-_ALLOWED_SECTIONS = {
-    "misc",
-    "auth",
-    "notifications",
-    "torrents",
-    "indexers",
-    "metadata",
-    "requests",
-    "subtitles",
-    "updates",
-    "cloudflare",
-    "imports",
-}
+_ALLOWED_SECTIONS = frozenset(SETTINGS_SECTIONS)
 
 
 class SettingsSchemaEntry(BaseModel):

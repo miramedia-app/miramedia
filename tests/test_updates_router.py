@@ -33,7 +33,6 @@ def _update_info(
         published_at=None,
         last_checked_at=datetime(2026, 7, 13, 12, 0, tzinfo=UTC),
         repo="org/repo",
-        apply_supported=False,
     )
 
 

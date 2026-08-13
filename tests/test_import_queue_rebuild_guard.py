@@ -55,7 +55,7 @@ def _make_service() -> ImportsService:
 def test_concurrent_queue_populate_rebuilds_once() -> None:
     rebuild_count = 0
 
-    async def slow_rebuild(_db: object, _svc: ImportsService) -> None:
+    async def slow_rebuild(_db: object, _svc: ImportsService, **_: object) -> None:
         nonlocal rebuild_count
         rebuild_count += 1
         await asyncio.sleep(0.15)
@@ -170,7 +170,7 @@ def test_burst_schedule_during_sleep_coalesces_to_one_rebuild() -> None:
 def test_queue_ttl_fast_path_skips_rebuild() -> None:
     rebuild_count = 0
 
-    async def counting_rebuild(_db: object, _svc: ImportsService) -> None:
+    async def counting_rebuild(_db: object, _svc: ImportsService, **_: object) -> None:
         nonlocal rebuild_count
         rebuild_count += 1
 

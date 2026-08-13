@@ -13,9 +13,7 @@ Flow:
 
 from __future__ import annotations
 
-import io
 import logging
-import zipfile
 from difflib import SequenceMatcher
 from typing import Any, ClassVar
 
@@ -28,6 +26,7 @@ from subliminal.subtitle import Subtitle, fix_line_ending
 from subliminal.video import Episode, Movie, Video
 
 from miramedia.cloudflare import CloudflareSession
+from miramedia.subtitles.bounded_decode import decode_bounded_subtitle_content
 
 log = logging.getLogger(__name__)
 
@@ -102,9 +101,6 @@ def _name_to_language(name: str) -> Language | None:
 
 def _language_to_name(lang: Language) -> str | None:
     return _LANG_TO_NAME.get(lang)
-
-
-_ZIP_MAGIC = b"PK\x03\x04"
 
 
 class SubsourceSubtitle(Subtitle):
@@ -387,23 +383,19 @@ class SubsourceProvider(Provider):
             )
             return
 
-        content = response.content
-        if content.startswith(_ZIP_MAGIC):
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                    for name in zf.namelist():
-                        if name.lower().endswith(
-                            (".srt", ".sub", ".ass", ".ssa", ".vtt")
-                        ):
-                            subtitle.content = fix_line_ending(zf.read(name))
-                            return
-            except zipfile.BadZipFile:
-                log.warning("Subsource: corrupted zip for id=%s", subtitle.subsource_id)
-                return
-            log.warning(
-                "Subsource zip had no subtitle file for id=%s", subtitle.subsource_id
-            )
+        decoded = decode_bounded_subtitle_content(response.content)
+        if decoded.content is not None:
+            subtitle.content = fix_line_ending(decoded.content)
             return
-
-        # Some downloads return raw subtitle text directly
-        subtitle.content = fix_line_ending(content)
+        if decoded.kind == "zip":
+            if decoded.zip_failure == "bad":
+                log.warning("Subsource: corrupted zip for id=%s", subtitle.subsource_id)
+            elif decoded.zip_failure == "no_member":
+                log.warning(
+                    "Subsource zip had no subtitle file for id=%s",
+                    subtitle.subsource_id,
+                )
+            else:
+                log.warning(
+                    "Subsource: rejected unsafe zip for id=%s", subtitle.subsource_id
+                )

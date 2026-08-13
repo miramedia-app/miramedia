@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
-import { Ban, Check, Trash2 } from "lucide-react";
+import { Ban, Check, Eye, EyeOff, Trash2 } from "lucide-react";
 
 import { useRouteUuid } from "@/lib/use-route-id";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,8 @@ export default function ShowDetailClientPage() {
     loadSubtitles,
     seasonHasAllSubtitles,
     treeRows,
+    seasonFilesErrorIds,
+    invalidateSeasonFiles,
     toggleSeason,
     toggleEpisode,
     allSelectedTreeIds,
@@ -69,6 +71,7 @@ export default function ShowDetailClientPage() {
     bulkResumeTorrents,
     bulkWorking,
     bulkSkip,
+    bulkWatched,
     toggleEpisodeSkipped,
     toggleSeasonSkipped,
     deleteTarget,
@@ -184,11 +187,29 @@ export default function ShowDetailClientPage() {
                     <Button
                       size="sm"
                       variant="secondary"
+                      onClick={() => void bulkWatched(true)}
+                      disabled={bulkWorking || !hasEpisodeOrSeasonSelection}
+                    >
+                      <Eye className="h-4 w-4" />
+                      Watched
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void bulkWatched(false)}
+                      disabled={bulkWorking || !hasEpisodeOrSeasonSelection}
+                    >
+                      <EyeOff className="h-4 w-4" />
+                      Unwatched
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
                       onClick={() => bulkSkip(false)}
                       disabled={bulkWorking || !hasEpisodeOrSeasonSelection}
                     >
                       <Check className="h-4 w-4" />
-                      Mark Wanted
+                      Wanted
                     </Button>
                     <Button
                       size="sm"
@@ -197,7 +218,7 @@ export default function ShowDetailClientPage() {
                       disabled={bulkWorking || !hasEpisodeOrSeasonSelection}
                     >
                       <Ban className="h-4 w-4" />
-                      Skip
+                      Skipped
                     </Button>
                     <Button
                       size="sm"
@@ -213,6 +234,15 @@ export default function ShowDetailClientPage() {
               />
             </div>
           )}
+          {seasonFilesErrorIds.size > 0 ? (
+            <p role="alert" className="text-sm text-muted-foreground">
+              Files for {seasonFilesErrorIds.size} expanded season
+              {seasonFilesErrorIds.size === 1 ? "" : "s"} could not be loaded.{" "}
+              <Button variant="outline" size="sm" onClick={() => void invalidateSeasonFiles()}>
+                Retry
+              </Button>
+            </p>
+          ) : null}
           <ShowTreeSection
             show={show}
             isSuperuser={isSuperuser}

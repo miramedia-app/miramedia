@@ -644,13 +644,29 @@ class MovieRepository:
         error: str | None = None,
     ) -> None:
         """Persist a new import outcome for the given movie file row."""
+        await self.update_movie_file_import_status_bulk(
+            file_ids=[file_id],
+            status=status,
+            error=error,
+        )
+
+    async def update_movie_file_import_status_bulk(
+        self,
+        *,
+        file_ids: list[UUID],
+        status: ImportOutcome,
+        error: str | None = None,
+    ) -> None:
+        """Persist the same import outcome for many movie file rows."""
+        if not file_ids:
+            return
         from datetime import UTC, datetime
 
         now = datetime.now(UTC)
         try:
             stmt = (
                 update(MovieFile)
-                .where(MovieFile.id == file_id)
+                .where(MovieFile.id.in_(file_ids))
                 .values(
                     import_status=status,
                     import_error=error,
@@ -667,7 +683,10 @@ class MovieRepository:
             await self.db.flush()
         except SQLAlchemyError:
             await self.db.rollback()
-            log.exception("Failed to update import status for movie_file %s", file_id)
+            log.exception(
+                "Failed to bulk-update import status for %d movie files",
+                len(file_ids),
+            )
             raise
 
     async def get_orphaned_failed_movie_files(self) -> list[MovieFileSchema]:

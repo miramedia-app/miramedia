@@ -156,6 +156,23 @@ enabled = false
 url = ""        # e.g. http://overseerr:5055
 api_key = ""    # Seerr -> Settings -> General -> API Key
 
+# Watchlists — custom lists, Watch Next, and Upcoming.
+# Master switch enables the sidebar; Custom lists / Watch Next / Upcoming
+# can be toggled independently while the master remains on.
+[watchlists]
+auto_remove_watched = false
+max_lists_per_user = 0   # 0 = unlimited
+max_items_per_list = 0   # 0 = unlimited
+
+[watchlists.native]
+enabled = true
+custom_lists = true
+watch_next = true
+watch_next_include_specials = false
+upcoming = true
+upcoming_default_past_days = 0
+upcoming_default_future_days = 30
+
 [torrents]
 # qBittorrent settings
 [torrents.qbittorrent]
@@ -366,12 +383,6 @@ include_prereleases = false             # only stable releases
 cache_ttl_seconds = 3600
 request_timeout_seconds = 10            # GitHub releases API HTTP timeout
 notify_on_new_version = false           # send via configured notification providers
-
-# In-app update checks only — apply on the host with `docker compose pull && docker compose up -d`.
-# Legacy keys below are accepted but ignored.
-# allow_in_app_apply = false
-# docker_socket_path = "/var/run/docker.sock"
-# container_name = "miramedia"
 image_repository = "ghcr.io/miramedia-app/miramedia"
 image_tag = "latest"
 

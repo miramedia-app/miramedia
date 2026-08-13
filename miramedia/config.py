@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
 from typing import ClassVar, Self, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import AnyHttpUrl, model_validator
 from pydantic_settings import (
@@ -31,6 +33,7 @@ from miramedia.streams.config import StreamsConfig
 from miramedia.subtitles.config import SubtitleConfig
 from miramedia.torrents.config import TorrentConfig
 from miramedia.updates.config import UpdateConfig
+from miramedia.watchlists.config import WatchlistsConfig
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +85,11 @@ class BasicConfig(BaseSettings):
     trusted_proxy_hosts: list[str] | str = DEFAULT_TRUSTED_PROXY_HOSTS
     development: bool = False
 
+    # Server timezone (IANA name, e.g. "America/New_York") for date math: provider
+    # air-date parsing and the upcoming/calendar window. Blank = use the process /
+    # container zone (honors the TZ env). Editable in the UI; see configured_timezone.
+    timezone: str = ""
+
     show_libraries: list[LibraryItem] = []
     movie_libraries: list[LibraryItem] = []
     naming: NamingConfig = NamingConfig()
@@ -115,6 +123,13 @@ class BasicConfig(BaseSettings):
     # unauthenticated access (e.g. when your Prometheus scraper has no
     # credentials and the endpoint is firewalled from end-users).
     metrics_public: bool = False
+
+    # Content-Security-Policy rollout. Default: send the policy as
+    # Content-Security-Policy-Report-Only so violations surface in the browser
+    # console without breaking the SPA. Set csp_enforce = true to promote the
+    # same policy to an enforcing Content-Security-Policy header.
+    csp_enabled: bool = True
+    csp_enforce: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -182,6 +197,7 @@ class MiraMediaConfig(BaseSettings):
     database: DbConfig = DbConfig()
     auth: AuthConfig = AuthConfig()
     requests: RequestsConfig = RequestsConfig()
+    watchlists: WatchlistsConfig = WatchlistsConfig()
     subtitles: SubtitleConfig = SubtitleConfig()
     updates: UpdateConfig = UpdateConfig()
     cloudflare: CloudflareConfig = CloudflareConfig()
@@ -207,7 +223,7 @@ class MiraMediaConfig(BaseSettings):
         """Load TOML/env settings into a fresh instance without touching the singleton."""
         instance = object.__new__(cls)
         BaseSettings.__init__(instance)
-        return cast("Self", instance)
+        return instance
 
     @classmethod
     def settings_customise_sources(
@@ -225,3 +241,25 @@ class MiraMediaConfig(BaseSettings):
             TomlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )
+
+
+def configured_timezone() -> tzinfo:
+    """Effective server timezone for date math (air dates, upcoming/calendar window).
+
+    Resolution order:
+      1. The ``misc.timezone`` setting (IANA name, DB-overridable from the UI).
+      2. The process / container local zone (honors the ``TZ`` env) when blank.
+      3. UTC as a last resort.
+
+    An invalid persisted name falls back the same way with a warning rather than
+    raising, so a bad value can never break air-date handling.
+    """
+    name = (MiraMediaConfig().misc.timezone or "").strip()
+    if name:
+        try:
+            return ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            log.warning(
+                "Invalid misc.timezone %r; falling back to the server zone", name
+            )
+    return datetime.now().astimezone().tzinfo or UTC

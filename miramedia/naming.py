@@ -398,3 +398,21 @@ def extract_external_id_from_string(input_string: str) -> tuple[str | None, str 
         return match.group(1).lower(), match.group(2)
 
     return None, None
+
+
+def format_episode_label(
+    show_name: str,
+    season_number: int,
+    episode_number: int,
+    episode_title: str | None = None,
+    *,
+    separator: str = " - ",
+) -> str:
+    """Human-facing episode label: ``Show - S01E02 - Title`` (title omitted when blank/None).
+
+    On-disk filename templates live in ``miramedia.naming_defaults`` — this is for
+    display labels only.
+    """
+    label = f"{show_name}{separator}S{season_number:02d}E{episode_number:02d}"
+    title = (episode_title or "").strip()
+    return f"{label}{separator}{title}" if title else label

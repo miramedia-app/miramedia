@@ -7,9 +7,7 @@ Supports movies and TV episodes with excellent coverage.
 
 from __future__ import annotations
 
-import io
 import logging
-import zipfile
 from typing import ClassVar
 
 from babelfish import Language
@@ -21,10 +19,15 @@ from subliminal.providers import Provider
 from subliminal.subtitle import Subtitle, fix_line_ending
 from subliminal.video import Episode, Movie, Video
 
+from miramedia.subtitles.bounded_decode import decode_bounded_subtitle_content
+
 log = logging.getLogger(__name__)
 
 API_URL = "https://api.subdl.com/api/v1/subtitles"
 DOWNLOAD_BASE = "https://dl.subdl.com"
+
+# SubDL sends api_key as a query parameter — never log raw request URLs,
+# prepared URLs, or Requests exception text (they can echo the credential).
 
 # SubDL language code -> babelfish alpha3 mapping
 # SubDL uses its own language names in responses
@@ -203,10 +206,18 @@ class SubDLProvider(Provider):
         try:
             response = self.session.get(API_URL, params=params, timeout=30)
         except (RequestsConnectionError, Timeout) as e:
-            log.warning("SubDL unreachable: %s", e)
+            log.warning(
+                "SubDL unreachable at %s (%s)",
+                API_URL,
+                type(e).__name__,
+            )
             return []
-        except Exception:
-            log.exception("SubDL API request failed")
+        except Exception as e:
+            log.warning(
+                "SubDL API request failed at %s (%s)",
+                API_URL,
+                type(e).__name__,
+            )
             return []
 
         if response.status_code == 429:
@@ -282,10 +293,18 @@ class SubDLProvider(Provider):
         try:
             response = self.session.get(download_url, timeout=30)
         except (RequestsConnectionError, Timeout) as e:
-            log.warning("SubDL download unreachable: %s", e)
+            log.warning(
+                "SubDL download unreachable at %s (%s)",
+                DOWNLOAD_BASE,
+                type(e).__name__,
+            )
             return
-        except Exception:
-            log.exception("Failed to download SubDL subtitle")
+        except Exception as e:
+            log.warning(
+                "SubDL download failed at %s (%s)",
+                DOWNLOAD_BASE,
+                type(e).__name__,
+            )
             return
 
         if response.status_code == 429:
@@ -295,13 +314,6 @@ class SubDLProvider(Provider):
             log.warning("SubDL download returned status %d", response.status_code)
             return
 
-        archive_stream = io.BytesIO(response.content)
-        if zipfile.is_zipfile(archive_stream):
-            with zipfile.ZipFile(archive_stream) as zf:
-                for name in zf.namelist():
-                    if name.lower().endswith((".srt", ".sub", ".ass", ".ssa", ".vtt")):
-                        subtitle.content = fix_line_ending(zf.read(name))
-                        return
-        else:
-            # Try as raw subtitle content
-            subtitle.content = fix_line_ending(response.content)
+        decoded = decode_bounded_subtitle_content(response.content)
+        if decoded.content is not None:
+            subtitle.content = fix_line_ending(decoded.content)

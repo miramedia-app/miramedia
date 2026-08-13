@@ -183,6 +183,14 @@ class FeatureFlags(BaseModel):
     requests: bool
     subtitles: bool
     notifications: bool
+    watchlists: bool
+    custom_lists: bool
+    watch_next: bool
+    watch_next_include_specials: bool
+    upcoming: bool
+    upcoming_default_past_days: int
+    upcoming_default_future_days: int
+    continue_watching: bool
 
 
 @router.get("/features")
@@ -191,6 +199,14 @@ async def get_features() -> FeatureFlags:
         requests=config.requests.enabled,
         subtitles=config.subtitles.enabled,
         notifications=config.notifications.native.enabled,
+        watchlists=config.watchlists.enabled,
+        custom_lists=config.watchlists.custom_lists_enabled,
+        watch_next=config.watchlists.watch_next_enabled,
+        watch_next_include_specials=config.watchlists.native.watch_next_include_specials,
+        upcoming=config.watchlists.upcoming_enabled,
+        upcoming_default_past_days=config.watchlists.native.upcoming_default_past_days,
+        upcoming_default_future_days=config.watchlists.native.upcoming_default_future_days,
+        continue_watching=config.watchlists.continue_watching_enabled,
     )
 
 

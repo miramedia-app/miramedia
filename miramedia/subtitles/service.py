@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from miramedia.config import MiraMediaConfig
-from miramedia.file_status import ImportOutcome
-from miramedia.movies.schemas import MovieId
+from miramedia.imports.files import files_matching_stem
+from miramedia.movies.schemas import Movie, MovieId
+from miramedia.movies.schemas import MovieFile as MovieFileSchema
 from miramedia.movies.service import MovieService
 from miramedia.naming import (
     episode_file_stem_candidates,
@@ -35,6 +37,23 @@ if TYPE_CHECKING:
     from miramedia.subtitles.models import SubtitleRecord
 
 log = logging.getLogger(__name__)
+
+
+def _bulk_subtitle_scan_concurrency_limit() -> int:
+    """Read the bulk subtitle provider fan-out cap from env, default 4."""
+    raw = os.getenv("MIRAMEDIA_BULK_SUBTITLE_SCAN_CONCURRENCY", "4")
+    try:
+        parsed = int(raw)
+    except ValueError:
+        log.warning(
+            "Invalid MIRAMEDIA_BULK_SUBTITLE_SCAN_CONCURRENCY=%r, falling back to 4",
+            raw,
+        )
+        return 4
+    return max(1, parsed)
+
+
+_BULK_SUBTITLE_SCAN_CONCURRENCY = _bulk_subtitle_scan_concurrency_limit()
 
 SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".sub"}
 
@@ -66,6 +85,68 @@ CREDENTIALED_PROVIDERS = {"opensubtitlescom", "addic7ed"}
 
 # Providers that accept an api_key credential
 API_KEY_PROVIDERS = {"subdl", "subsource"}
+
+_VIDEO_EXTENSIONS = frozenset({".mkv", ".mp4", ".avi", ".mov"})
+
+
+def _downloaded_movie_ids_sync(
+    movies: dict[MovieId, Movie],
+    files_by_movie: dict[MovieId, list[MovieFileSchema]],
+    get_root: Callable[[Movie], Path],
+) -> list[MovieId]:
+    """Mirror ``MovieService.is_movie_downloaded`` for many movies in one pass."""
+    downloaded: list[MovieId] = []
+    for movie_id, movie in movies.items():
+        movie_files = files_by_movie.get(movie_id, [])
+        if not movie_files:
+            continue
+        movie_root = get_root(movie)
+        if not movie_root.exists():
+            continue
+        for movie_file in movie_files:
+            stems = movie_file_stem_candidates(
+                movie, movie_file.quality, NameParts.from_row(movie_file)
+            )
+            if any(
+                path.suffix.lower() in _VIDEO_EXTENSIONS
+                for stem in stems
+                for path in files_matching_stem(movie_root, stem)
+            ):
+                downloaded.append(movie_id)
+                break
+    return downloaded
+
+
+async def _filter_downloaded_movie_ids(
+    movie_service: MovieService,
+    movie_ids: list[MovieId],
+) -> list[MovieId]:
+    if not movie_ids:
+        return []
+    movies = await movie_service.movie_repository.get_movies_by_ids(movie_ids)
+    if not movies:
+        return []
+    files_by_movie = await movie_service.movie_repository.get_movie_files_for_movies(
+        list(movies.keys())
+    )
+    return await asyncio.to_thread(
+        _downloaded_movie_ids_sync,
+        movies,
+        files_by_movie,
+        movie_service.get_movie_root_path,
+    )
+
+
+async def _enumerate_subtitle_scan_targets(
+    show_service: ShowService,
+    movie_service: MovieService,
+) -> tuple[list[EpisodeId], list[MovieId]]:
+    episode_ids = (
+        await show_service.show_repository.get_episode_ids_with_imported_files()
+    )
+    movie_ids = await movie_service.get_all_movie_ids()
+    downloaded_movie_ids = await _filter_downloaded_movie_ids(movie_service, movie_ids)
+    return episode_ids, downloaded_movie_ids
 
 
 class SubtitleService:
@@ -823,44 +904,41 @@ class SubtitleService:
 
         log.info("Starting bulk subtitle scan")
 
-        # Snapshot work-list with a short-lived session (the SubtitleService
-        # instance we're called on may or may not carry a background session;
-        # we keep DB churn here to a single short session of our own).
         episode_targets: list[EpisodeId] = []
         movie_targets: list[MovieId] = []
         try:
             async with bg_subtitle_service() as svc:
-                shows = await svc.show_service.get_all_shows()
-                for show in shows:
-                    for season in show.seasons:
-                        for episode in season.episodes:
-                            if not any(
-                                f.import_status == ImportOutcome.imported
-                                for f in episode.episode_files
-                            ):
-                                continue
-                            episode_targets.append(episode.id)
-                movies = await svc.movie_service.get_all_movies()
-                for movie in movies:
-                    if await svc.movie_service.is_movie_downloaded(movie=movie):
-                        movie_targets.append(movie.id)  # noqa: PERF401 — async guard, not comprehensible
+                if svc.show_service is None or svc.movie_service is None:
+                    log.error("Bulk subtitle scan missing show/movie services")
+                    return
+                episode_targets, movie_targets = await _enumerate_subtitle_scan_targets(
+                    svc.show_service,
+                    svc.movie_service,
+                )
         except Exception:
             log.exception("Failed to enumerate subtitle scan targets")
             return
 
-        for episode_id in episode_targets:
+        sem = asyncio.Semaphore(_BULK_SUBTITLE_SCAN_CONCURRENCY)
+
+        async def _scan_episode(episode_id: EpisodeId) -> None:
             try:
-                async with bg_subtitle_service() as svc:
+                async with sem, bg_subtitle_service() as svc:
                     await svc.search_episode_subtitles(episode_id)
             except Exception:
                 log.exception("Failed to scan subtitles for episode %s", episode_id)
 
-        for movie_id in movie_targets:
+        async def _scan_movie(movie_id: MovieId) -> None:
             try:
-                async with bg_subtitle_service() as svc:
+                async with sem, bg_subtitle_service() as svc:
                     await svc.search_movie_subtitles(movie_id)
             except Exception:
                 log.exception("Failed to scan subtitles for movie %s", movie_id)
+
+        await asyncio.gather(
+            *(_scan_episode(episode_id) for episode_id in episode_targets),
+            *(_scan_movie(movie_id) for movie_id in movie_targets),
+        )
 
         log.info("Finished bulk subtitle scan")
 

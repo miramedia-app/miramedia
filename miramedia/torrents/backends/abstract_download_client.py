@@ -74,3 +74,9 @@ class AbstractDownloadClient(ABC):
         backends without a file-listing API stay backward-compatible.
         """
         return None
+
+    def close(self) -> None:  # noqa: B027 — optional override; default is no-op
+        """Release transport resources held by this client."""
+
+    def check_connection(self) -> None:  # noqa: B027 — optional override; default is no-op
+        """Probe backend reachability; raises on failure."""

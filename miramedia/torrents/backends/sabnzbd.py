@@ -1,12 +1,11 @@
 import logging
 
-import sabnzbd_api
-
 from miramedia.config import MiraMediaConfig
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
+from miramedia.torrents.backends.sabnzbd_http import SabnzbdHttpClient
 from miramedia.torrents.schemas import Torrent, TorrentStatus
 
 log = logging.getLogger(__name__)
@@ -29,18 +28,20 @@ class SabnzbdDownloadClient(AbstractDownloadClient):
 
     def __init__(self) -> None:
         self.config = MiraMediaConfig().torrents.sabnzbd
-        self.client = sabnzbd_api.SabnzbdClient(
+        self.client = SabnzbdHttpClient(
             host=self.config.host,
-            port=str(self.config.port),
+            port=self.config.port,
             api_key=self.config.api_key,
+            base_path=self.config.base_path,
+            verify_tls=self.config.verify_tls,
         )
-        self.client._base_url = f"{self.config.host.rstrip('/')}:{self.config.port}{self.config.base_path}"  # the library expects a /sabnzbd prefix for whatever reason
-        try:
-            # Test connection
-            self.client.version()
-        except Exception:
-            log.exception("Failed to connect to SABnzbd")
-            raise
+
+    def close(self) -> None:
+        self.client.close()
+
+    def check_connection(self) -> None:
+        """Probe SABnzbd; raises on failure. Closes nothing — client is reusable."""
+        self.client.version()
 
     def download_torrent(self, indexer_result: IndexerQueryResult) -> Torrent:
         """
@@ -131,25 +132,42 @@ class SabnzbdDownloadClient(AbstractDownloadClient):
         """
         response = self.client.get_downloads(nzo_ids=torrent.hash)
         queue = response["queue"]
-        status = queue["status"]
-        # SABnzbd reports percentage in individual slot entries
         slots = queue.get("slots", [])
-        progress = 0.0
-        if slots:
+        slot = next((s for s in slots if s.get("nzo_id") == torrent.hash), None)
+        if slot is None and slots:
+            slot = slots[0]
+
+        if slot is not None:
+            mapped_status = self._map_status(slot.get("status", "Unknown"))
             try:
-                progress = round(float(slots[0].get("percentage", 0)), 1)
+                progress = round(float(slot.get("percentage", 0)), 1)
             except (ValueError, TypeError):
                 progress = 0.0
-        # SABnzbd speed is in KB/s at the queue level
-        try:
-            dl_speed = int(float(queue.get("kbpersec", 0)) * 1024)
-        except (ValueError, TypeError):
+            try:
+                dl_speed = int(float(queue.get("kbpersec", 0)) * 1024)
+            except (ValueError, TypeError):
+                dl_speed = 0
+        else:
+            mapped_status = self._status_from_history(torrent.hash)
+            progress = 0.0
             dl_speed = 0
-        mapped_status = self._map_status(status)
+
         if mapped_status == TorrentStatus.finished:
             progress = 100.0
             dl_speed = 0
         return mapped_status, progress, 0, 0, dl_speed
+
+    def _status_from_history(self, nzo_id: str) -> TorrentStatus:
+        try:
+            response = self.client.history(nzo_ids=nzo_id)
+            slots = response.get("history", {}).get("slots", [])
+            slot = next((s for s in slots if s.get("nzo_id") == nzo_id), None)
+            if slot is None:
+                return TorrentStatus.unknown
+            return self._map_status(slot.get("status", "Unknown"))
+        except Exception:
+            log.exception("Failed to fetch SABnzbd history for %s", nzo_id)
+            return TorrentStatus.unknown
 
     def _map_status(self, sabnzbd_status: str) -> TorrentStatus:
         """

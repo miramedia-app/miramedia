@@ -28,6 +28,7 @@ class SabnzbdConfig(BaseSettings):
     api_key: str = ""
     enabled: bool = False
     base_path: str = "/api"
+    verify_tls: bool = True
 
 
 class NativeTorrentConfig(BaseSettings):

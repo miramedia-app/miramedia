@@ -53,6 +53,7 @@ from miramedia.auth.users import (
     fastapi_users,
 )
 from miramedia.config import MiraMediaConfig
+from miramedia.core.security_headers import SecurityHeadersMiddleware
 from miramedia.exceptions import register_exception_handlers
 from miramedia.filesystem_checks import run_filesystem_checks
 from miramedia.logging import LOGGING_CONFIG, setup_logging
@@ -235,19 +236,14 @@ async def api_trailing_slash_redirect_middleware(
     return await call_next(request)
 
 
-# Middleware order: Starlette evaluates the LAST `add_middleware` call as the
-# innermost layer (closest to the app), and the FIRST call as the outermost.
-# Effective request flow (outermost → innermost):
-#   1. ProxyHeadersMiddleware — needs the raw client IP from forwarded headers
-#      before anything else touches the scope; trust list is configurable via
-#      misc.trusted_proxy_hosts (defaults to private/loopback ranges).
-#   2. CORSMiddleware — answer preflight OPTIONS before correlation tagging,
-#      otherwise short-circuited preflights skip our id header anyway.
-#   3. GZipMiddleware — compress responses (HTML, JSON, JS, CSS, fonts). The
-#      ``minimum_size=1000`` threshold skips small payloads where compression
-#      adds CPU + framing overhead but no meaningful size win.
-#   4. CorrelationIdMiddleware — innermost so every response (including
-#      handler-raised errors) carries an X-Correlation-ID.
+# Middleware order: Starlette's add_middleware() inserts at position 0 and
+# build_middleware_stack() wraps in reverse, so the LAST add_middleware call
+# is the OUTERMOST layer. Registration order below therefore yields, outermost
+# → innermost:
+#   SecurityHeadersMiddleware → CorrelationIdMiddleware → GZipMiddleware →
+#   CORSMiddleware → ProxyHeadersMiddleware → app.
+# SecurityHeaders outermost is load-bearing: it stamps headers on responses
+# short-circuited by inner layers (CORS preflight, gzip'd errors).
 app.add_middleware(
     ProxyHeadersMiddleware,
     trusted_hosts=config.misc.trusted_proxy_hosts,
@@ -265,6 +261,7 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(CorrelationIdMiddleware, header_name="X-Correlation-ID")
+app.add_middleware(SecurityHeadersMiddleware)
 api_app = APIRouter(prefix="/api/v1")
 
 from miramedia.core.router import router as core_router  # noqa: E402
@@ -453,9 +450,13 @@ api_app.include_router(logs_router)
 api_app.include_router(settings_router)
 api_app.include_router(updates_router)
 
+from miramedia.playback.router import router as playback_router  # noqa: E402
 from miramedia.streams.router import router as streams_router  # noqa: E402
 from miramedia.subtitles.router import router as subtitles_router  # noqa: E402
+from miramedia.watchlists.router import router as watchlists_router  # noqa: E402
 
+api_app.include_router(playback_router)
+api_app.include_router(watchlists_router)
 api_app.include_router(streams_router)
 api_app.include_router(subtitles_router)
 
@@ -528,7 +529,7 @@ app.include_router(api_app)
 import re  # noqa: E402 — deferred to avoid circular import / startup ordering
 
 _UUID_RE = re.compile(
-    r"^/dashboard/(shows|movies)/[0-9a-fA-F-]{8,}(?:/[0-9a-fA-F-]{8,})?/?$"
+    r"^/dashboard/(shows|movies|watchlists)/[0-9a-fA-F-]{8,}(?:/[0-9a-fA-F-]{8,})?/?$"
 )
 
 

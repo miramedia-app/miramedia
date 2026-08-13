@@ -1,35 +1,410 @@
-"""1337x — Popular torrent site. Cloudflare-protected, requires HTML scraping."""
+"""1337x — Popular torrent site with mirror failover and optional CF bypass."""
+
+from __future__ import annotations
 
 import logging
 import re
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, ClassVar, cast
+from urllib.parse import quote_plus, urlparse
 
+import httpx
 from selectolax.parser import HTMLParser, Node
 
+from miramedia.indexers.http_retry import (
+    indexer_fanout_deadline_seconds,
+    indexer_get,
+)
+from miramedia.indexers.mirrors import MirrorPreference, is_allowed_mirror_origin
 from miramedia.indexers.schemas import IndexerQueryResult
-from miramedia.indexers.sites.base import BaseSite
+from miramedia.indexers.sites.base import BaseSite, _get_http_client
 from miramedia.indexers.utils import sanitize_search_query
 from miramedia.movies.schemas import Movie
 from miramedia.shows.schemas import Show
 
 log = logging.getLogger(__name__)
 
+UNKNOWN_AGE_DAYS = 36_500
+
+_MONTHS: dict[str, int] = {
+    "jan": 0,
+    "feb": 1,
+    "mar": 2,
+    "apr": 3,
+    "may": 4,
+    "jun": 5,
+    "jul": 6,
+    "aug": 7,
+    "sep": 8,
+    "oct": 9,
+    "nov": 10,
+    "dec": 11,
+}
+
+_UPLOAD_DATE_RE = re.compile(
+    r"Date uploaded</strong>.*?([A-Za-z]{3})\.?\s+(\d{1,2})[a-z]{2}\s*'(\d{2})",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+@dataclass(frozen=True)
+class _PageAttempt:
+    html: str | None
+    origin: str | None
+    hard_error: bool = False
+    challenge_confirmed: bool = False
+    no_results: bool = False
+
+    @property
+    def success(self) -> bool:
+        return self.html is not None and self.origin is not None
+
+
+def parse_upload_age_days(
+    html: str,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Return non-negative age in days from a 1337x detail page.
+
+    Missing or malformed upload dates return ``UNKNOWN_AGE_DAYS`` so they earn
+    no recency bonus. Small future clock skew is clamped to zero.
+    """
+    match = _UPLOAD_DATE_RE.search(html)
+    if not match:
+        return UNKNOWN_AGE_DAYS
+
+    month_name = match.group(1).lower()
+    month = _MONTHS.get(month_name)
+    if month is None:
+        return UNKNOWN_AGE_DAYS
+
+    try:
+        day = int(match.group(2))
+        year = 2000 + int(match.group(3))
+        uploaded = datetime(year, month + 1, day, tzinfo=UTC).date()
+    except ValueError:
+        return UNKNOWN_AGE_DAYS
+
+    reference = (now or datetime.now(UTC)).date()
+    age_days = (reference - uploaded).days
+    return max(0, age_days)
+
 
 class X1337Site(BaseSite):
     name = "1337x"
     url = "https://1337x.to"
+    available_urls: ClassVar[list[str]] = [
+        "https://1337x.to",
+        "https://1337x.st",
+        "https://x1337x.ws",
+        "https://1337xx.to",
+    ]
     supports_tv = True
     supports_movies = True
     cloudflare_protected = True
-    # Disabled by default: Cloudflare-walled and unreliable without a working
-    # bypass. Users can enable it from the indexer settings.
-    default_enabled = False
+    default_enabled = True
+    _mirror_pref: MirrorPreference | None = None
+
+    def _solver_deadline_seconds(self) -> float:
+        return indexer_fanout_deadline_seconds()
+
+    def _mirror_list(self) -> tuple[str, ...]:
+        seen: set[str] = set()
+        mirrors: list[str] = []
+        for candidate in (self.url, *self.available_urls):
+            normalized = candidate.rstrip("/")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                mirrors.append(normalized)
+        return tuple(mirrors)
+
+    def _get_mirror_pref(self) -> MirrorPreference:
+        if self._mirror_pref is None:
+            self._mirror_pref = MirrorPreference(self._mirror_list())
+        return self._mirror_pref
+
+    def _bypass_available(self) -> bool:
+        return self.bypass is not None and self.bypass.config.enabled
+
+    @staticmethod
+    def _origin_from_response(response: httpx.Response, fallback: str) -> str:
+        parsed = urlparse(str(response.url))
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+        return fallback.rstrip("/")
+
+    def _safe_origin_from_response(
+        self, response: httpx.Response, requested: str
+    ) -> str:
+        """Adopt the post-redirect origin only when it is an allowlisted mirror."""
+        candidate = self._origin_from_response(response, requested)
+        if is_allowed_mirror_origin(candidate, self._mirror_list()):
+            return candidate
+        if candidate.rstrip("/") != requested.rstrip("/"):
+            log.warning(
+                "1337x redirect landed on untrusted origin %s; keeping %s",
+                candidate,
+                requested,
+            )
+        return requested.rstrip("/")
+
+    def _classify_plain_response(
+        self, response: httpx.Response, origin: str
+    ) -> _PageAttempt:
+        from miramedia.cloudflare.bypass import is_cloudflare_challenge
+
+        if is_cloudflare_challenge(cast(Any, response)):
+            return _PageAttempt(
+                html=None,
+                origin=origin,
+                challenge_confirmed=True,
+            )
+
+        if response.status_code >= 400:
+            return _PageAttempt(
+                html=None,
+                origin=None,
+                hard_error=True,
+            )
+
+        html = response.text
+        tree = HTMLParser(html)
+        if tree.css("table.table-list tbody tr"):
+            final_origin = self._safe_origin_from_response(response, origin)
+            return _PageAttempt(html=html, origin=final_origin)
+
+        body = tree.body
+        page_text = (
+            body.text(separator=" ", strip=True) if body else (html or "")
+        ).lower()
+        if "no results" in page_text:
+            final_origin = self._safe_origin_from_response(response, origin)
+            return _PageAttempt(
+                html=html,
+                origin=final_origin,
+                no_results=True,
+            )
+        if "bad request" in page_text:
+            return _PageAttempt(html=None, origin=None, hard_error=True)
+
+        return _PageAttempt(html=None, origin=None, hard_error=True)
+
+    def _plain_get(self, url: str, *, deadline: float | None = None) -> httpx.Response:
+        client = _get_http_client()
+        return indexer_get(client, url, timeout=self.timeout, deadline=deadline)
+
+    def _try_search_paths_plain(
+        self,
+        origin: str,
+        search_paths: tuple[str, ...],
+        *,
+        deadline: float | None = None,
+    ) -> _PageAttempt:
+        hard_error = False
+        for path in search_paths:
+            url = f"{origin}{path}"
+            try:
+                response = self._plain_get(url, deadline=deadline)
+            except Exception as exc:
+                log.warning("1337x plain request failed for %s: %s", url, exc)
+                hard_error = True
+                continue
+
+            attempt = self._classify_plain_response(response, origin)
+            if attempt.success or attempt.no_results:
+                return attempt
+            if attempt.challenge_confirmed:
+                return attempt
+            hard_error = hard_error or attempt.hard_error
+        return _PageAttempt(html=None, origin=None, hard_error=hard_error)
+
+    def _fetch_via_bypass_session(self, url: str) -> str | None:
+        if not self._bypass_available():
+            return None
+
+        try:
+            from miramedia.cloudflare.bypass import is_cloudflare_challenge
+            from miramedia.cloudflare.session import CloudflareSession
+        except Exception:
+            log.debug("CloudflareSession unavailable", exc_info=True)
+            return None
+
+        session = getattr(self, "_cf_session", None)
+        if session is None:
+            try:
+                session = CloudflareSession(bypass=self.bypass)
+            except Exception:
+                log.debug("Failed to build CloudflareSession", exc_info=True)
+                return None
+            self._cf_session = session  # type: ignore[attr-defined]
+
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}/"
+        headers = {
+            "Referer": origin,
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+        }
+
+        try:
+            response = session.get(url, headers=headers, timeout=self.timeout)
+        except Exception as exc:
+            log.warning("1337x curl_cffi request failed for %s: %s", url, exc)
+            return None
+
+        if is_cloudflare_challenge(cast(Any, response)):
+            return None
+        if response.status_code >= 400:
+            return None
+
+        if self.bypass is not None:
+            try:
+                self.bypass.refresh_cache_from_cookies(
+                    parsed.netloc,
+                    dict(session.cookies.items()),
+                    session.headers.get("User-Agent"),
+                )
+            except Exception:
+                log.debug("CF cache refresh failed", exc_info=True)
+        return response.text
+
+    def _fetch_with_bypass(self, url: str, timeout: float) -> str | None:
+        if not self._bypass_available():
+            return None
+
+        html = self._fetch_via_bypass_session(url)
+        if html is not None:
+            return html
+
+        bypass = self.bypass
+        if bypass is None:
+            return None
+        return bypass.solve(url, timeout=timeout)
+
+    def _try_search_paths_bypass(
+        self,
+        origin: str,
+        search_paths: tuple[str, ...],
+        *,
+        timeout: float,
+    ) -> _PageAttempt:
+        hard_error = False
+        for path in search_paths:
+            url = f"{origin}{path}"
+            try:
+                html = self._fetch_with_bypass(url, timeout=timeout)
+            except Exception as exc:
+                log.warning("1337x bypass request failed for %s: %s", url, exc)
+                hard_error = True
+                continue
+
+            if not html:
+                hard_error = True
+                continue
+
+            tree = HTMLParser(html)
+            if tree.css("table.table-list tbody tr"):
+                return _PageAttempt(html=html, origin=origin)
+            body = tree.body
+            page_text = (
+                body.text(separator=" ", strip=True) if body else (html or "")
+            ).lower()
+            if "no results" in page_text:
+                return _PageAttempt(html=html, origin=origin, no_results=True)
+            hard_error = True
+        return _PageAttempt(html=None, origin=None, hard_error=hard_error)
+
+    def _search_paths(self, query: str, category: str) -> tuple[str, ...]:
+        encoded = quote_plus(query)
+        return (
+            f"/sort-category-search/{encoded}/{category}/seeders/desc/1/",
+            f"/search/{encoded}/1/",
+        )
+
+    def _fetch_search_page(
+        self,
+        query: str,
+        category: str,
+        *,
+        deadline: float,
+    ) -> tuple[_PageAttempt, list[str], list[str]]:
+        """Try every mirror with plain HTTP, then optional bypass for CF mirrors."""
+        search_paths = self._search_paths(query, category)
+        mirrors = self._get_mirror_pref().ordered()
+
+        challenge_mirrors: list[str] = []
+        plain_tried: list[str] = []
+        hard_error = False
+
+        for origin in mirrors:
+            plain_tried.append(origin)
+            attempt = self._try_search_paths_plain(
+                origin,
+                search_paths,
+                deadline=deadline,
+            )
+            if attempt.success:
+                self._get_mirror_pref().mark_success(origin)
+                return attempt, plain_tried, []
+            if attempt.no_results:
+                self._get_mirror_pref().mark_success(origin)
+                return attempt, plain_tried, []
+            if attempt.challenge_confirmed:
+                challenge_mirrors.append(origin)
+            hard_error = hard_error or attempt.hard_error
+
+        if not challenge_mirrors or not self._bypass_available():
+            if plain_tried or challenge_mirrors:
+                log.warning(
+                    "1337x: all mirrors failed (plain=%s, challenge=%s)",
+                    plain_tried,
+                    challenge_mirrors,
+                )
+            return (
+                _PageAttempt(html=None, origin=None, hard_error=True),
+                plain_tried,
+                [],
+            )
+
+        solver_tried: list[str] = []
+        for origin in challenge_mirrors:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            solver_tried.append(origin)
+            attempt = self._try_search_paths_bypass(
+                origin, search_paths, timeout=remaining
+            )
+            if attempt.success or attempt.no_results:
+                self._get_mirror_pref().mark_success(origin)
+                return attempt, plain_tried, solver_tried
+            hard_error = hard_error or attempt.hard_error
+
+        log.warning(
+            "1337x: all mirrors failed (plain=%s, solver=%s)",
+            plain_tried,
+            solver_tried,
+        )
+        return (
+            _PageAttempt(html=None, origin=None, hard_error=True),
+            plain_tried,
+            solver_tried,
+        )
 
     def search(self, query: str, category: str) -> list[IndexerQueryResult]:
         cat_path = "TV" if category == "tv" else "Movies"
         results, hard_error = self._search(query, cat_path)
-        # Trending is a noisy last resort — only worth it when the search
-        # actually FAILED (bad request / unparseable page), not when it
-        # legitimately returned 0 matches.
         if not results and hard_error:
             results = self._search_trending(cat_path, query)
         return results
@@ -37,12 +412,6 @@ class X1337Site(BaseSite):
     def search_show(
         self, query: str, show: Show, season_number: int
     ) -> list[IndexerQueryResult]:
-        # Use the caller-provided query as-is — the indexer service builds
-        # it with full episode context (``Show Name 2019 S05E08``) so a
-        # specific-episode search actually matches single-episode releases.
-        # Falls back to ``show + season`` if the full query returns nothing
-        # (catches season packs that don't carry SxxEyy in their title),
-        # and to the trending listing only when a search actually errored.
         results, hard_error = self._search(query, "TV")
         if results:
             return results
@@ -60,8 +429,6 @@ class X1337Site(BaseSite):
                 return broad_results
             hard_error = hard_error or broad_error
 
-        # Only reach for trending on a real failure — a genuine 0-hit search
-        # should return empty, not a list of unrelated trending torrents.
         if hard_error:
             log.info("1337x: search errored for %r, trying trending fallback", query)
             return self._search_trending("TV", short_query)
@@ -72,7 +439,6 @@ class X1337Site(BaseSite):
         query: str,
         movie: Movie,
     ) -> list[IndexerQueryResult]:
-        # 1337x can't handle long queries — use just the movie name + year
         clean_name = sanitize_search_query(movie.name)
         short_query = f"{clean_name} {movie.year}" if movie.year else clean_name
         results, hard_error = self._search(short_query, "Movies")
@@ -83,56 +449,63 @@ class X1337Site(BaseSite):
     def _search(
         self, query: str, category: str
     ) -> tuple[list[IndexerQueryResult], bool]:
-        # Try the category-filtered + seeder-sorted view first, then fall back
-        # to the plain /search/. URL scheme follows the py1337x project
-        # (github.com/hemantapkh/1337x): ``sort-category-search`` ranks
-        # high-seed releases up top and filters by media type, while plain
-        # ``/search/`` WITHOUT a category can come back empty (a known 1337x
-        # quirk). Trying sorted-category first then plain gets the best of both
-        # — and downstream scoring still filters by media type either way.
-        from urllib.parse import quote_plus
-
-        encoded = quote_plus(query)
-        search_urls = (
-            f"{self.url}/sort-category-search/{encoded}/{category}/seeders/desc/1/",
-            f"{self.url}/search/{encoded}/1/",
+        deadline = time.monotonic() + self._solver_deadline_seconds()
+        attempt, _plain_tried, _solver_tried = self._fetch_search_page(
+            query,
+            category,
+            deadline=deadline,
         )
-        hard_error = False
-        for search_url in search_urls:
-            try:
-                html = self._fetch(search_url)
-            except Exception as exc:
-                # A fetch-layer failure (CF couldn't be bypassed, HTTP error)
-                # IS a hard error — let the caller fall back to trending.
-                log.warning("1337x search request failed for %r: %s", search_url, exc)
-                hard_error = True
-                continue
-            results, err = self._parse_results(html, query)
-            if results:
-                return results, False
-            hard_error = hard_error or err
-        return [], hard_error
+        if attempt.no_results:
+            log.info("1337x: 0 results (no matches) for: %s", query)
+            return [], False
+        if not attempt.success or attempt.origin is None:
+            return [], attempt.hard_error
+
+        results, err = self._parse_results(
+            attempt.html or "",
+            query,
+            origin=attempt.origin,
+            deadline=deadline,
+        )
+        if results:
+            return results, False
+        return [], err
 
     def _search_trending(
         self, category: str, filter_query: str
     ) -> list[IndexerQueryResult]:
-        """Fallback: fetch the trending/top page and filter results locally."""
         cat_path = category.lower()
-        # 1337x trending uses "television" not "tv" in the URL slug
-        # (1337x.to/top-100-television, 1337x.to/top-100-movies).
         trending_slug = "television" if cat_path == "tv" else cat_path
-        trending_url = f"{self.url}/top-100-{trending_slug}"
-        try:
-            html = self._fetch(trending_url)
-        except Exception as exc:
-            log.warning("1337x trending fetch failed: %s", exc)
+        trending_path = f"/top-100-{trending_slug}"
+
+        mirrors = self._get_mirror_pref().ordered()
+        html: str | None = None
+        origin: str | None = None
+        deadline = time.monotonic() + self._solver_deadline_seconds()
+        for mirror in mirrors:
+            try:
+                response = self._plain_get(
+                    f"{mirror}{trending_path}", deadline=deadline
+                )
+            except Exception as exc:
+                log.warning("1337x trending fetch failed for %s: %s", mirror, exc)
+                continue
+            attempt = self._classify_plain_response(response, mirror)
+            if attempt.success and attempt.origin:
+                html = attempt.html
+                origin = attempt.origin
+                self._get_mirror_pref().mark_success(mirror)
+                break
+
+        if html is None or origin is None:
             return []
 
-        all_results, _ = self._parse_results(html, f"trending/{cat_path}")
+        all_results, _ = self._parse_results(
+            html, f"trending/{cat_path}", origin=origin
+        )
         if not all_results or not filter_query:
             return all_results
 
-        # Filter results that match any word from the query
         query_words = filter_query.lower().split()
         filtered = [
             r
@@ -141,36 +514,34 @@ class X1337Site(BaseSite):
         ]
         if filtered:
             log.info(
-                f"1337x trending fallback: {len(filtered)} results matching '{filter_query}'"
+                "1337x trending fallback: %d results matching %r",
+                len(filtered),
+                filter_query,
             )
         return filtered
 
     def _parse_results(
-        self, html: str, label: str
+        self,
+        html: str,
+        label: str,
+        *,
+        origin: str | None = None,
+        deadline: float | None = None,
     ) -> tuple[list[IndexerQueryResult], bool]:
-        """Parse search/trending HTML into ``(results, hard_error)``.
-
-        1337x sets the page ``<title>`` to "Error something went wrong." for
-        BOTH a legitimate 0-results search AND a real failure — so the title
-        is useless as a discriminator. The real status lives in the body copy
-        (roughly ``/html/body/main/.../p``, but that path moves), so we scan
-        the rendered body text instead:
-
-          * a result table present  → parse it (``hard_error=False``)
-          * "no results"            → genuine 0 hits (``hard_error=False``)
-          * "bad request"           → real failure (``hard_error=True``)
-          * anything else w/o rows  → unknown page, e.g. CF interstitial or a
-                                       DOM change (``hard_error=True``)
-
-        ``hard_error`` lets the caller decide whether the noisy trending
-        fallback is warranted — it is on a real failure, but not on a search
-        that simply matched nothing.
-        """
         tree = HTMLParser(html)
 
         rows = tree.css("table.table-list tbody tr")
         if rows:
-            return self._parse_rows(rows, label), False
+            active_origin = origin or self.url.rstrip("/")
+            return (
+                self._parse_rows(
+                    rows,
+                    label,
+                    origin=active_origin,
+                    deadline=deadline,
+                ),
+                False,
+            )
 
         body = tree.body
         page_text = (
@@ -184,8 +555,6 @@ class X1337Site(BaseSite):
             log.warning("1337x: bad request for: %s", label)
             return [], True
 
-        # Unknown page with no result table — surface context to tell apart a
-        # CF interstitial that slipped through vs a 1337x DOM change.
         title_el = tree.css_first("title")
         page_title = title_el.text(strip=True) if title_el else "N/A"
         snippet = (html or "")[:400].replace("\n", " ").strip()
@@ -198,11 +567,16 @@ class X1337Site(BaseSite):
         )
         return [], True
 
-    def _parse_rows(self, rows: list[Node], label: str) -> list[IndexerQueryResult]:
-        """Turn result-table rows into IndexerQueryResults (with magnets)."""
-        # Parse metadata from search page first (no network calls)
+    def _parse_rows(
+        self,
+        rows: list[Node],
+        label: str,
+        *,
+        origin: str,
+        deadline: float | None = None,
+    ) -> list[IndexerQueryResult]:
         parsed_rows = []
-        for row in rows[:10]:  # limit — each needs a detail page fetch for magnet link
+        for row in rows[:10]:
             try:
                 meta = self._parse_row_metadata(row)
                 if meta:
@@ -210,13 +584,14 @@ class X1337Site(BaseSite):
             except Exception:
                 log.debug("Failed to parse 1337x row", exc_info=True)
 
-        # Fetch detail pages sequentially to get magnet links
-        # (parallel fetching causes thread pool deadlocks when called from
-        # the native indexer's own ThreadPoolExecutor)
         results: list[IndexerQueryResult] = []
         for meta in parsed_rows:
             try:
-                magnet = self._fetch_magnet(meta)
+                magnet, age = self._fetch_magnet(
+                    meta,
+                    origin=origin,
+                    deadline=deadline,
+                )
                 if magnet:
                     results.append(
                         IndexerQueryResult(
@@ -226,22 +601,18 @@ class X1337Site(BaseSite):
                             flags=[],
                             size=meta["size"],
                             usenet=False,
-                            age=0,
+                            age=age,
                             indexer="1337x",
                         )
                     )
             except Exception:
                 log.debug("Failed to fetch magnet for %s", meta["title"], exc_info=True)
 
-        log.info(f"1337x returned {len(results)} results for: {label}")
+        log.info("1337x returned %d results for: %s", len(results), label)
         return results
 
     @staticmethod
     def _parse_row_metadata(row: Node) -> dict | None:
-        """Parse metadata from a search result row (no network calls)."""
-        # The torrent link is the anchor whose href contains ``/torrent/`` —
-        # more robust than positional nth-anchor (the name cell leads with a
-        # category-icon link). Mirrors py1337x's ``a[href*="/torrent/"]``.
         link = row.css_first('a[href*="/torrent/"]')
         if not link:
             return None
@@ -271,19 +642,27 @@ class X1337Site(BaseSite):
             "size": size_bytes,
         }
 
-    def _fetch_magnet(self, meta: dict) -> str | None:
-        """Fetch a detail page and extract the magnet link.
-
-        1337x detail pages render the magnet inside ``ul.dropdown-menu`` or
-        a direct ``<a class="magnet" href="magnet:?xt=urn:btih:...">``.
-        Either way ``a[href^='magnet:']`` finds the first hit.
-        """
-        detail_url = f"{self.url}{meta['detail_path']}"
+    def _fetch_magnet(
+        self,
+        meta: dict,
+        *,
+        origin: str,
+        deadline: float | None = None,
+    ) -> tuple[str | None, int]:
+        detail_url = f"{origin}{meta['detail_path']}"
         try:
-            detail_html = self._fetch(detail_url)
+            response = self._plain_get(detail_url, deadline=deadline)
+            if response.status_code >= 400:
+                log.warning(
+                    "Failed to fetch 1337x detail page %s: HTTP %s",
+                    detail_url,
+                    response.status_code,
+                )
+                return None, UNKNOWN_AGE_DAYS
+            detail_html = response.text
         except Exception as exc:
             log.warning("Failed to fetch 1337x detail page %s: %s", detail_url, exc)
-            return None
+            return None, UNKNOWN_AGE_DAYS
 
         detail_tree = HTMLParser(detail_html)
         magnet_link = detail_tree.css_first("a[href^='magnet:']")
@@ -292,14 +671,14 @@ class X1337Site(BaseSite):
                 "No magnet link on 1337x detail page %s (parser may need updating)",
                 detail_url,
             )
-            return None
+            return None, UNKNOWN_AGE_DAYS
 
         href = magnet_link.attributes.get("href") or ""
-        return href or None
+        age = parse_upload_age_days(detail_html)
+        return (href or None), age
 
     @staticmethod
     def _parse_size(size_str: str) -> int:
-        """Parse size strings like '1.5 GB' to bytes."""
         match = re.match(r"([\d.]+)\s*(GB|MB|KB|TB)", size_str, re.IGNORECASE)
         if not match:
             return 0

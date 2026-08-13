@@ -4,15 +4,24 @@
 
 from __future__ import annotations
 
+import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 from miramedia.file_status import ImportOutcome
+from miramedia.imports.service import ImportsService
 from miramedia.movies.schemas import MovieFile
 from miramedia.shows.schemas import EpisodeFile
-from miramedia.torrents.schemas import TorrentStatus
+from miramedia.torrents.schemas import (
+    ImportFileDetail,
+    ImportProgress,
+    ImportStatusEntry,
+    Quality,
+    TorrentId,
+    TorrentStatus,
+)
 from tests.fakes import (
     FakeMovieRepository,
     FakeShowRepository,
@@ -36,6 +45,36 @@ def _episode_file_row(*, episode_id, torrent_id) -> EpisodeFile:
     )
 
 
+def _import_entry(
+    *,
+    attempt_count: int,
+    last_attempt_at: datetime,
+    import_status: ImportOutcome = ImportOutcome.failed_io,
+) -> ImportStatusEntry:
+    return ImportStatusEntry(
+        torrent_id=TorrentId("11111111-1111-1111-1111-111111111111"),
+        torrent_title="Test Release",
+        torrent_status=TorrentStatus.finished,
+        progress=ImportProgress(total=1, failed=1),
+        files=[
+            ImportFileDetail(
+                media_label="S01E01",
+                quality=Quality.unknown,
+                import_status=import_status,
+                attempt_count=attempt_count,
+                last_attempt_at=last_attempt_at,
+            )
+        ],
+    )
+
+
+@contextmanager
+def _patch_now(fixed_now: datetime):
+    with patch("miramedia.imports.service.datetime", wraps=datetime) as mock_dt:
+        mock_dt.now.return_value = fixed_now
+        yield
+
+
 def _movie_file_row(*, movie_id, torrent_id) -> MovieFile:
     return MovieFile(
         id=uuid.uuid4(),
@@ -45,6 +84,94 @@ def _movie_file_row(*, movie_id, torrent_id) -> MovieFile:
         import_status=ImportOutcome.pending,
         attempt_count=0,
     )
+
+
+class TestBackoffSeconds:
+    def test_remaining_zero_when_backoff_elapsed(self) -> None:
+        latest = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        now = latest + timedelta(minutes=2)
+        entry = _import_entry(attempt_count=2, last_attempt_at=latest)
+
+        with _patch_now(now):
+            assert ImportsService._backoff_seconds(entry) == 0
+
+    def test_remaining_half_when_halfway_through_backoff(self) -> None:
+        latest = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        now = latest + timedelta(minutes=1)
+        entry = _import_entry(attempt_count=2, last_attempt_at=latest)
+
+        with _patch_now(now):
+            remaining = ImportsService._backoff_seconds(entry)
+
+        assert remaining is not None
+        assert 55 <= remaining <= 65
+
+    def test_remaining_never_negative(self) -> None:
+        latest = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        now = latest + timedelta(minutes=10)
+        entry = _import_entry(attempt_count=1, last_attempt_at=latest)
+
+        with _patch_now(now):
+            assert ImportsService._backoff_seconds(entry) == 0
+
+    def test_backoff_minutes_cap_at_120(self) -> None:
+        latest = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        now = latest + timedelta(minutes=30)
+        entry = _import_entry(attempt_count=20, last_attempt_at=latest)
+
+        with _patch_now(now):
+            remaining = ImportsService._backoff_seconds(entry)
+
+        assert remaining is not None
+        # attempt_count=20 -> uncapped would be 2^19 minutes; capped at 120.
+        assert 89 * 60 <= remaining <= 91 * 60
+
+    def test_countdown_independent_of_process_tz(self, monkeypatch) -> None:
+        latest = datetime(2026, 6, 1, 16, 0, 0, tzinfo=UTC)
+        now = latest + timedelta(seconds=15)
+        entry = _import_entry(attempt_count=1, last_attempt_at=latest)
+        expected = 45
+
+        for tz in ("UTC", "America/New_York"):
+            monkeypatch.setenv("TZ", tz)
+            try:
+                time.tzset()
+            except AttributeError:
+                pass
+
+            with _patch_now(now):
+                remaining = ImportsService._backoff_seconds(entry)
+
+            assert remaining == expected, f"TZ={tz} shifted countdown to {remaining}"
+
+    def test_skips_imported_files_when_picking_latest_attempt(self) -> None:
+        latest = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+        now = latest + timedelta(seconds=30)
+        entry = ImportStatusEntry(
+            torrent_id=TorrentId("11111111-1111-1111-1111-111111111111"),
+            torrent_title="Test Release",
+            torrent_status=TorrentStatus.finished,
+            progress=ImportProgress(total=2, failed=1, imported=1),
+            files=[
+                ImportFileDetail(
+                    media_label="S01E01",
+                    quality=Quality.unknown,
+                    import_status=ImportOutcome.imported,
+                    attempt_count=5,
+                    last_attempt_at=latest + timedelta(hours=1),
+                ),
+                ImportFileDetail(
+                    media_label="S01E02",
+                    quality=Quality.unknown,
+                    import_status=ImportOutcome.failed_io,
+                    attempt_count=1,
+                    last_attempt_at=latest,
+                ),
+            ],
+        )
+
+        with _patch_now(now):
+            assert ImportsService._backoff_seconds(entry) == 30
 
 
 class TestMarkTorrentImportFailed:

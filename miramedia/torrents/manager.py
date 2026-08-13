@@ -1,4 +1,5 @@
 import logging
+import threading
 from enum import Enum
 from typing import TYPE_CHECKING
 
@@ -77,6 +78,28 @@ class DownloadManager:
             active_clients.append(f"torrent ({self._torrent_client.name})")
         if self._usenet_client:
             active_clients.append(f"usenet ({self._usenet_client.name})")
+
+    def close(self) -> None:
+        for client in (self._torrent_client, self._usenet_client):
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    log.exception("Failed to close download client %s", client.name)
+
+    def check_connections(self) -> dict[str, bool]:
+        """Probe each configured client; True = reachable. Never raises."""
+        results: dict[str, bool] = {}
+        for client in (self._torrent_client, self._usenet_client):
+            if client is None:
+                continue
+            try:
+                client.check_connection()
+                results[client.name] = True
+            except Exception:
+                log.exception("Connectivity check failed for %s", client.name)
+                results[client.name] = False
+        return results
 
     def _get_appropriate_client(
         self, indexer_result: IndexerQueryResult | Torrent
@@ -161,3 +184,30 @@ class DownloadManager:
         """Return the file list known to the download client, or None."""
         client = self._get_appropriate_client(torrent)
         return client.get_torrent_files(torrent)
+
+
+_manager_lock = threading.Lock()
+_manager: DownloadManager | None = None
+
+
+def get_download_manager() -> DownloadManager:
+    """Process-level lazily-initialized DownloadManager (thread-safe)."""
+    global _manager
+    if _manager is None:
+        with _manager_lock:
+            if _manager is None:
+                _manager = DownloadManager()
+    return _manager
+
+
+def reset_download_manager() -> None:
+    """Close and drop the singleton; next access rebuilds from current config.
+
+    Called after runtime settings edits to the [torrents] section and from
+    test fixtures.
+    """
+    global _manager
+    with _manager_lock:
+        if _manager is not None:
+            _manager.close()
+            _manager = None

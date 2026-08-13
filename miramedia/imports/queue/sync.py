@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
-from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.imports.models import ImportQueueItem
+from miramedia.imports.queue.projector import project_queue_rows
 from miramedia.imports.schemas import (
     ImportTab,
     IntegrityImportItem,
@@ -22,7 +21,22 @@ from miramedia.imports.service import ImportsService
 
 log = logging.getLogger(__name__)
 
+# Transaction-scoped advisory lock for import-queue rebuilds and incremental
+# reference syncs. Distinct from the scheduler singleton lock (4871260042).
+IMPORT_QUEUE_REBUILD_ADVISORY_LOCK_KEY = 4871260043
+
 _rebuild_lock = asyncio.Lock()
+
+
+async def acquire_import_queue_advisory_lock(db: AsyncSession) -> None:
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(:key)"),
+        {"key": IMPORT_QUEUE_REBUILD_ADVISORY_LOCK_KEY},
+    )
+
+
+async def _acquire_import_queue_rebuild_advisory_lock(db: AsyncSession) -> None:
+    await acquire_import_queue_advisory_lock(db)
 
 
 async def import_queue_is_empty(db: AsyncSession) -> bool:
@@ -48,90 +62,63 @@ def _dedupe_import_items(
     return out
 
 
-def _bucket_rank(item: TorrentImportItem | ScanImportItem | IntegrityImportItem) -> int:
-    """Status bucket order (Review=0, Retry=1, Done=2).
-
-    Mirrors the frontend ``bucketOf`` grouping so the ``all`` tab lists every
-    action-needed row before Done rows — reviewable scan + torrent items stay
-    together on the first page instead of scattering behind chronologically
-    newer imports.
-    """
-    if item.kind == "scan":
-        return 2 if item.result.status == "imported" else 0
-    if item.kind == "media":
-        return 2
-    if item.kind == "integrity":
-        return 0
-    p = item.entry.progress
-    if p.failed > 0 or p.ambiguous > 0:
-        return 0
-    if p.all_imported:
-        return 2
-    if item.backoff_seconds is not None:
-        return 1
-    return 0
-
-
 def _queue_rows_for_item(
     service: ImportsService,
     item: TorrentImportItem | ScanImportItem | IntegrityImportItem,
 ) -> dict[tuple[str, str, str], dict]:
-    """Build at most one row per (kind, ref_id, tab)."""
-    row_by_key: dict[tuple[str, str, str], dict] = {}
-    tabs = (ImportTab.review, ImportTab.retry, ImportTab.done, ImportTab.all)
-    rank = _bucket_rank(item)
-    for tab in tabs:
-        if not service._tab_matches(item, tab):
-            continue
-        sort_at = datetime.now(UTC)
-        ref = item.id
-        if item.kind == "torrent":
-            ts = item.entry.progress.last_attempt_at
-            if ts is not None:
-                sort_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
-        elif item.kind == "media":
-            ts = item.imported_at
-            if ts is not None:
-                sort_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
-        elif item.kind == "integrity":
-            ts = item.mismatch.detected_at
-            if ts is not None:
-                sort_at = ts if ts.tzinfo else ts.replace(tzinfo=UTC)
-        row_by_key[(item.kind, ref, tab.value)] = {
-            "id": uuid.uuid4(),
-            "kind": item.kind,
-            "ref_id": ref,
-            "tab": tab.value,
-            "bucket_rank": rank,
-            "sort_at": sort_at,
-            "payload": item.model_dump(mode="json"),
-        }
-    return row_by_key
+    return project_queue_rows(service, item)
 
 
-async def rebuild_import_queue(db: AsyncSession, service: ImportsService) -> int:
-    """Rebuild the entire queue from current torrent + scan state."""
+async def rebuild_import_queue(
+    db: AsyncSession,
+    service: ImportsService,
+    *,
+    only_if_empty: bool = False,
+) -> int:
+    """Rebuild the entire queue from current torrent + scan state.
+
+    When ``only_if_empty`` is True (cold-start populate path), a post-lock
+    recheck skips redundant work if another worker already rebuilt while this
+    one waited. Full rebuilds always repopulate after acquiring the lock.
+    """
     async with _rebuild_lock:
+        if only_if_empty:
+            await _acquire_import_queue_rebuild_advisory_lock(db)
+            if not await import_queue_is_empty(db):
+                await db.rollback()
+                return 0
+            await db.rollback()
+
         items = _dedupe_import_items(await service._collect_items())
-        await db.execute(delete(ImportQueueItem))
-        row_by_key: dict[tuple[str, str, str], dict] = {}
-        for item in items:
-            row_by_key.update(_queue_rows_for_item(service, item))
-        rows = list(row_by_key.values())
-        if rows:
-            stmt = insert(ImportQueueItem.__table__)
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["kind", "ref_id", "tab"],
-                set_={
-                    "bucket_rank": stmt.excluded.bucket_rank,
-                    "sort_at": stmt.excluded.sort_at,
-                    "payload": stmt.excluded.payload,
-                },
-            )
-            await db.execute(stmt, rows)
-        await db.commit()
-        log.info("Rebuilt import queue with %d rows", len(rows))
-        return len(rows)
+
+        await _acquire_import_queue_rebuild_advisory_lock(db)
+        try:
+            if only_if_empty and not await import_queue_is_empty(db):
+                await db.rollback()
+                return 0
+
+            await db.execute(delete(ImportQueueItem))
+            row_by_key: dict[tuple[str, str, str], dict] = {}
+            for item in items:
+                row_by_key.update(_queue_rows_for_item(service, item))
+            rows = list(row_by_key.values())
+            if rows:
+                stmt = insert(ImportQueueItem.__table__)
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["kind", "ref_id", "tab"],
+                    set_={
+                        "bucket_rank": stmt.excluded.bucket_rank,
+                        "sort_at": stmt.excluded.sort_at,
+                        "payload": stmt.excluded.payload,
+                    },
+                )
+                await db.execute(stmt, rows)
+            await db.commit()
+            log.info("Rebuilt import queue with %d rows", len(rows))
+            return len(rows)
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def list_queue_page(
