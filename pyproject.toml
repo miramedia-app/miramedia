@@ -11,7 +11,7 @@ dependencies = [
     "httpx-oauth>=0.16.1",
     "psycopg[binary,pool]>=3.3.4",
     "asyncpg>=0.30.0",
-    "greenlet>=3.5.4",
+    "greenlet>=3.5.5",
     "pydantic>=2.11.5",
     "pydantic-settings[toml]>=2.14.2",
     "python-json-logger>=3.3.0",
@@ -28,7 +28,7 @@ dependencies = [
     "alembic>=1.16.1",
     "pillow>=11.3.0",
     "transmission-rpc>=7.0.11",
-    "libtorrent>=2.0.11",
+    "libtorrent>=2.1.1",
     "pathvalidate>=3.3.1",
     "asgi-correlation-id>=4.3.4",
     "beautifulsoup4>=4.12",
@@ -50,7 +50,7 @@ dev = [
     "anyio>=4.14.1",
     "pytest>=8.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.15.20,<0.16",
+    "ruff>=0.16.2,<0.17",
     "ty>=0.0.9",
 ]
 
