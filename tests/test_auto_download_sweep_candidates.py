@@ -58,7 +58,7 @@ class TestAutoDownloadShowCandidates:
         async def run() -> None:
             with (
                 patch(
-                    "miramedia.database.bg_show_service",
+                    "miramedia.background_services.bg_show_service",
                 ) as mock_bg,
                 patch(
                     "miramedia.shows.service._try_auto_download_show_id_impl",
@@ -95,7 +95,7 @@ class TestAutoDownloadShowCandidates:
         async def run() -> None:
             with (
                 patch(
-                    "miramedia.database.bg_show_service",
+                    "miramedia.background_services.bg_show_service",
                 ) as mock_bg,
                 patch(
                     "miramedia.shows.service._try_auto_download_show_id_impl",
@@ -133,7 +133,7 @@ class TestAutoDownloadMovieCandidates:
         async def run() -> None:
             with (
                 patch(
-                    "miramedia.database.bg_movie_service",
+                    "miramedia.background_services.bg_movie_service",
                 ) as mock_bg,
                 patch(
                     "miramedia.movies.service._try_auto_download_movie_id_impl",

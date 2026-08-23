@@ -9,15 +9,15 @@ from types import SimpleNamespace
 import pytest
 
 from miramedia.indexers.schemas import IndexerQueryResult
-from miramedia.torrents import utils
-from miramedia.torrents.utils import (
+from miramedia.torrents import fetch, inspection
+from miramedia.torrents.fetch import (
     _MAGNET_URL_REDACTED,
     _TORRENT_URL_REDACTED,
     _fetch_torrent_payload,
     _redact_torrent_url,
     follow_redirects_to_final_torrent_url,
-    get_torrent_hash,
 )
+from miramedia.torrents.inspection import get_torrent_hash
 
 _PASSKEY = "SECRET_PASSKEY_TOKEN"
 _INFO_HASH = "0123456789abcdef0123456789abcdef01234567"
@@ -80,12 +80,12 @@ def test_fetch_torrent_payload_logs_redacted_url_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        utils,
+        fetch,
         "_guarded_fetch_torrent_bytes",
         lambda *_a, **_k: (_ for _ in ()).throw(ValueError("blocked")),
     )
 
-    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.utils"):
+    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.fetch"):
         assert (
             _fetch_torrent_payload(
                 f"http://tracker.example/file.torrent?passkey={_PASSKEY}",
@@ -108,7 +108,7 @@ def test_get_torrent_hash_logs_redacted_magnet(
     completed.mkdir()
 
     monkeypatch.setattr(
-        utils,
+        inspection,
         "MiraMediaConfig",
         lambda: SimpleNamespace(
             misc=SimpleNamespace(
@@ -120,7 +120,7 @@ def test_get_torrent_hash_logs_redacted_magnet(
         ),
     )
 
-    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.utils"):
+    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.inspection"):
         get_torrent_hash(_indexer("Safe.Title", _MAGNET))
 
     combined = caplog.text
@@ -156,7 +156,7 @@ def test_get_torrent_hash_logs_redacted_http_url_on_invalid_schema_path(
             self.closed = True
 
     monkeypatch.setattr(
-        utils,
+        inspection,
         "MiraMediaConfig",
         lambda: SimpleNamespace(
             misc=SimpleNamespace(
@@ -168,19 +168,19 @@ def test_get_torrent_hash_logs_redacted_http_url_on_invalid_schema_path(
         ),
     )
     monkeypatch.setattr(
-        utils,
+        inspection,
         "follow_redirects_to_final_torrent_url",
         lambda **_k: f"http://tracker.example/final.torrent?passkey={_PASSKEY}",
     )
-    monkeypatch.setattr(utils.requests, "get", lambda *_a, **_k: FakeResponse())
+    monkeypatch.setattr(fetch.requests, "get", lambda *_a, **_k: FakeResponse())
     monkeypatch.setattr(
-        utils,
+        inspection,
         "_parse_torrent_bytes",
         lambda _content: ("a" * 40, title, []),
     )
 
     download_url = f"custom://tracker.example/start?passkey={_PASSKEY}"
-    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.utils"):
+    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.inspection"):
         get_torrent_hash(_indexer(title, download_url))
 
     combined = caplog.text
@@ -219,10 +219,10 @@ def test_follow_redirects_logs_redacted_target(
         final.status_code = 200
         return final
 
-    session = utils.requests.Session()
+    session = fetch.requests.Session()
     monkeypatch.setattr(session, "get", fake_get)
 
-    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.utils"):
+    with caplog.at_level(logging.DEBUG, logger="miramedia.torrents.fetch"):
         follow_redirects_to_final_torrent_url(
             f"http://tracker.example/start?passkey={_PASSKEY}",
             session=session,

@@ -434,7 +434,7 @@ class NativeMetadataProvider(AbstractMetadataProvider):
             if show_data:
                 return self._build_show_from_tvmaze(show_data["id"], imdb_id, language)
         except Exception:
-            log.warning(f"TVmaze IMDb lookup failed for {imdb_id}")
+            log.warning("TVmaze IMDb lookup failed for %s", imdb_id)
         return None
 
     @override
@@ -462,7 +462,7 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                 cast=_parse_cinemeta_cast(meta.get("cast")),
             )
         except Exception:
-            log.warning(f"Cinemeta IMDb lookup failed for {imdb_id}")
+            log.warning("Cinemeta IMDb lookup failed for %s", imdb_id)
         return None
 
     @override
@@ -507,7 +507,7 @@ class NativeMetadataProvider(AbstractMetadataProvider):
         try:
             data = self._cinemeta_get(f"/meta/series/{imdb_id}.json")
         except Exception:
-            log.warning(f"Cinemeta series lookup failed for {imdb_id}", exc_info=True)
+            log.warning("Cinemeta series lookup failed for %s", imdb_id, exc_info=True)
             return None
 
         meta = data.get("meta") or {}
@@ -612,7 +612,9 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                 )
             except Exception:
                 log.warning(
-                    f"Error processing TVmaze season {s.get('number')} for show {imdb_id}",
+                    "Error processing TVmaze season %s for show %s",
+                    s.get("number"),
+                    imdb_id,
                     exc_info=True,
                 )
 
@@ -655,7 +657,8 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                 )
         except Exception:
             log.warning(
-                f"Error processing TVmaze specials for show {imdb_id}",
+                "Error processing TVmaze specials for show %s",
+                imdb_id,
                 exc_info=True,
             )
 
@@ -707,7 +710,8 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                     imdb_id = (tvmaze_data.get("externals") or {}).get("imdb") or ""
                 if not imdb_id.startswith("tt"):
                     log.warning(
-                        f"No IMDb ID for show {show.name}, cannot download poster"
+                        "No IMDb ID for show %s, cannot download poster",
+                        show.name,
                     )
                     return False
 
@@ -718,12 +722,14 @@ class NativeMetadataProvider(AbstractMetadataProvider):
                 poster_url=poster_url,
                 uuid=show.id,
             ):
-                log.info(f"Successfully downloaded poster image for show {show.name}")
+                log.info("Successfully downloaded poster image for show %s", show.name)
                 return True
-            log.warning(f"Download for image of show {show.name} failed")
+            log.warning("Download for image of show %s failed", show.name)
             return False  # noqa: TRY300 — must stay in try; preceding download call is what we guard
         except Exception:
-            log.warning(f"Error downloading poster for show {show.name}", exc_info=True)
+            log.warning(
+                "Error downloading poster for show %s", show.name, exc_info=True
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -856,26 +862,31 @@ class NativeMetadataProvider(AbstractMetadataProvider):
             imdb_id = movie.imdb_id or movie.external_id
             if not imdb_id.startswith("tt"):
                 log.warning(
-                    f"No IMDb ID for movie {movie.name}, cannot download poster"
+                    "No IMDb ID for movie %s, cannot download poster",
+                    movie.name,
                 )
                 return False
             data = self._cinemeta_get(f"/meta/movie/{imdb_id}.json")
             meta = data.get("meta") or {}
             poster_url = meta.get("poster")
             if not poster_url:
-                log.warning(f"No poster available for movie {movie.name}")
+                log.warning("No poster available for movie %s", movie.name)
                 return False
             if miramedia.metadata.utils.download_poster_image(
                 storage_path=self.storage_path,
                 poster_url=poster_url,
                 uuid=movie.id,
             ):
-                log.info(f"Successfully downloaded poster image for movie {movie.name}")
+                log.info(
+                    "Successfully downloaded poster image for movie %s", movie.name
+                )
                 return True
-            log.warning(f"Download for image of movie {movie.name} failed")
+            log.warning("Download for image of movie %s failed", movie.name)
             return False  # noqa: TRY300 — must stay in try; preceding download call is what we guard
         except Exception:
             log.warning(
-                f"Error downloading poster for movie {movie.name}", exc_info=True
+                "Error downloading poster for movie %s",
+                movie.name,
+                exc_info=True,
             )
             return False

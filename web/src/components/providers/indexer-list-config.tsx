@@ -363,15 +363,15 @@ export function IndexerRowActions({
         />
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => onManageUrls(site)}>
-            <LinkIcon className="mr-2 h-4 w-4" />
-            Manage URLs
+            <LinkIcon className="h-4 w-4" />
+            Manage Mirrors
           </DropdownMenuItem>
           {!site.is_preloaded && (
             <DropdownMenuItem
               className="text-destructive"
               onClick={() => onDelete(site.id, site.name)}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
+              <Trash2 className="h-4 w-4" />
               Delete
             </DropdownMenuItem>
           )}

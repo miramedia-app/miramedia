@@ -126,9 +126,9 @@ export function ApiTokens() {
               </code>
             </CardDescription>
           </div>
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1 h-4 w-4" />
-            New Token
+          <Button size="sm" className="gap-1" onClick={() => setCreateOpen(true)}>
+            <Plus className="h-4 w-4" />
+            Add Token
           </Button>
         </CardHeader>
         <CardContent>

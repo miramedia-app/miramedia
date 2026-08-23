@@ -10,7 +10,7 @@ import { DataList, DataListEmpty } from "@/components/data-list";
 import type { BulkAction, ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
 import { useFeatures, useFeaturesStatus } from "@/components/providers/features-provider";
 import apiClient from "@/lib/api/client";
-import { pLimit } from "@/lib/p-limit";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import type { components } from "@/lib/api/api";
 
 type Notification = components["schemas"]["Notification"];
@@ -57,9 +57,10 @@ export default function NotificationsPage() {
     async (items: Notification[], read: boolean) => {
       const targets = items.filter((n) => !!n.read !== read);
       if (targets.length === 0) return;
+      const verbLabel = read ? "marked as read" : "marked as unread";
       // Cap concurrency so "mark all read" with 100+ items doesn't flood
       // the backend.
-      await pLimit(8, targets, (n) =>
+      const { ok, failed } = await bulkMutate(targets, (n) =>
         apiClient.PATCH(
           `/api/v1/notifications/{notification_id}/${read ? "read" : "unread"}` as
             | "/api/v1/notifications/{notification_id}/read"
@@ -67,7 +68,12 @@ export default function NotificationsPage() {
           { params: { path: { notification_id: n.id! } } },
         ),
       );
-      toast.success(`${targets.length} marked as ${read ? "read" : "unread"}`);
+      if (ok > 0) {
+        toast.success(`${ok} marked as ${read ? "read" : "unread"}`);
+      }
+      if (failed > 0) {
+        toast.error(`${failed} notification(s) could not be ${verbLabel}`);
+      }
       refresh();
     },
     [refresh],

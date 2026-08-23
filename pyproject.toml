@@ -1,39 +1,41 @@
 [project]
 name = "miramedia"
-version = "1.1.0"
+version = "1.1.1"
 description = "Self-hosted media manager for movies and TV shows"
-requires-python = ">=3.13"
+# Cap at 3.13 until libtorrent publishes cp314+ wheels and CI adds that interpreter.
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "cachetools>=7.1.7",
     "fastapi[standard]>=0.141.1",
     "fastapi-users[sqlalchemy]>=15.0.5",
     "httpx>=0.28.1",
-    "httpx-oauth>=0.16.1",
+    "httpx-oauth>=0.17.0",
     "psycopg[binary,pool]>=3.3.4",
     "asyncpg>=0.30.0",
+    # SQLAlchemy asyncio bridge — no direct import; pinned so async engine support never silently disappears.
     "greenlet>=3.5.4",
     "pydantic>=2.11.5",
     "pydantic-settings[toml]>=2.14.2",
-    "python-json-logger>=3.3.0",
+    "python-json-logger>=4.1.0",
     "qbittorrent-api>=2026.8.0",
     "requests>=2.32.3",
     "sqlalchemy>=2.0.41",
-    "starlette>=0.49.1",
+    "starlette>=1.6.0",
     "tmdbsimple>=2.9.8",
     "tvdb-v4-official>=1.1.0",
     "uvicorn>=0.52.1",
     "taskiq>=0.12.0",
-    "taskiq-fastapi>=0.4.0",
+    "taskiq-fastapi>=0.5.0",
     "taskiq-postgresql[psycopg]>=0.4.0",
-    "alembic>=1.16.1",
-    "pillow>=11.3.0",
+    "alembic>=1.19.1",
+    "pillow>=12.3.0",
     "transmission-rpc>=7.0.11",
     "libtorrent>=2.0.11",
     "pathvalidate>=3.3.1",
-    "asgi-correlation-id>=4.3.4",
+    "asgi-correlation-id>=5.0.1",
     "beautifulsoup4>=4.12",
     "selectolax>=0.4.11",
-    "nodriver>=0.38",
+    "nodriver>=0.50.3",
     "subliminal>=2.7.1",
     "babelfish>=0.6",
     "guessit>=4,<5",
@@ -48,10 +50,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "anyio>=4.14.1",
-    "pytest>=8.4.0",
+    "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.20,<0.16",
-    "ty>=0.0.9",
+    "ty>=0.0.69",
 ]
 
 [tool.setuptools.packages.find]
@@ -77,6 +79,7 @@ extend-select = [
     "DTZ",
     "E", "EM", "EXE",
     "F", "FA", "FAST", "FIX", "FLY", "FURB",
+    "G",
     "I", "ICN", "INP", "INT", "ISC",
     "LOG",
     "N",
@@ -159,11 +162,14 @@ invalid-parameter-default = "ignore"
 # Also: NativeDownloadClient singleton __new__ emits call-non-callable once
 # for the `cls._instance` path that ty can't narrow past None.
 # apply_settings(dict) and torrent_info(bdecode(...)) are valid at runtime but
-# stricter than the libtorrent stub overloads.
+# stricter than the libtorrent stub overloads; fetch DNS-pin wrapper uses
+# object-typed *args for socket.getaddrinfo monkeypatching.
 [[tool.ty.overrides]]
 include = [
     "miramedia/torrents/backends/native.py",
-    "miramedia/torrents/utils.py",
+    "miramedia/torrents/fetch.py",
+    "miramedia/torrents/inspection.py",
+    "miramedia/torrents/paths.py",
 ]
 
 [tool.ty.overrides.rules]
@@ -281,7 +287,10 @@ invalid-argument-type = "ignore"
 # in lifespan; scheduler calls them before they are set per ty's flow analysis
 # but the runtime init order ensures they are never None at call time.
 [[tool.ty.overrides]]
-include = ["miramedia/scheduler.py"]
+include = [
+    "miramedia/scheduler.py",
+    "miramedia/scheduler_tasks/maintenance.py",
+]
 
 [tool.ty.overrides.rules]
 call-non-callable = "ignore"
@@ -312,6 +321,7 @@ include = [
     "miramedia/torrents/repository.py",
     "miramedia/torrents/service.py",
     "miramedia/scheduler.py",
+    "miramedia/scheduler_tasks/maintenance.py",
     "miramedia/auth/router.py",
     "miramedia/imports/repository.py",
     "miramedia/requests/repository.py",
@@ -354,8 +364,9 @@ invalid-argument-type = "ignore"
 # auth/users.py: SQLAlchemy mapped attribute accessed as str (UserModel.email.in_())
 # ty sees the annotated type str, not the Column[str] descriptor with .in_().
 # call-non-callable: SessionLocal init guard checked at startup.
+# auth/startup_migrations.py: same SQLAlchemy mapped-attribute pattern.
 [[tool.ty.overrides]]
-include = ["miramedia/auth/users.py"]
+include = ["miramedia/auth/users.py", "miramedia/auth/startup_migrations.py"]
 
 [tool.ty.overrides.rules]
 unresolved-attribute = "ignore"
@@ -573,7 +584,11 @@ no-matching-overload = "ignore"
 # get_metadata_provider is typed for Literal["native","tmdb","tvdb"].
 # movies/repository.py: setdefault with non-None default not in stdlib stubs.
 [[tool.ty.overrides]]
-include = ["miramedia/scheduler.py", "miramedia/movies/repository.py"]
+include = [
+    "miramedia/scheduler.py",
+    "miramedia/scheduler_tasks/media.py",
+    "miramedia/movies/repository.py",
+]
 
 [tool.ty.overrides.rules]
 invalid-argument-type = "ignore"

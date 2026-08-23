@@ -576,7 +576,7 @@ class TorrentRepository:
         if orphan_ids:
             await self.db.execute(delete(Torrent).where(Torrent.id.in_(orphan_ids)))
             await self.db.commit()
-            log.info(f"Deleted {len(orphan_ids)} orphaned torrents")
+            log.info("Deleted %s orphaned torrents", len(orphan_ids))
         return len(orphan_ids)
 
     async def get_show_contexts_for_torrents(

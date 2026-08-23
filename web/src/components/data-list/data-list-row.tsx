@@ -37,6 +37,8 @@ export interface DataListRowProps<T> {
   expanded?: boolean;
   /** Free-form content rendered below the row when expanded. */
   expandedContent?: React.ReactNode;
+  /** 1-based ARIA row index when this row sits inside a grid. */
+  rowIndex?: number;
   className?: string;
 }
 
@@ -67,6 +69,7 @@ function DataListRowImpl<T>({
   expandable,
   expanded,
   expandedContent,
+  rowIndex,
   className,
 }: DataListRowProps<T>) {
   const minH =
@@ -91,6 +94,7 @@ function DataListRowImpl<T>({
       <div
         role="row"
         tabIndex={-1}
+        aria-rowindex={rowIndex}
         data-selected={selected ? "" : undefined}
         data-focused={focused ? "" : undefined}
         onClick={() => onClickId?.(id)}
@@ -210,6 +214,7 @@ export function DataListHeaderRow<T>({
   return (
     <div
       role="row"
+      aria-rowindex={1}
       className="sticky top-0 z-10 grid h-9 items-center gap-x-2 border-b bg-background/95 px-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase backdrop-blur"
       style={{ gridTemplateColumns: gridTemplate }}
     >

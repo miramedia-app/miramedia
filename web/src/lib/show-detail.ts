@@ -48,6 +48,61 @@ export type DeleteTarget =
   | { type: "bulk-files" }
   | { type: "bulk-torrents" };
 
+/** One season's shape needed to classify a watched-state bulk selection. */
+export type ClassifiableSeason = {
+  number: number;
+  episodes: readonly { id: string }[];
+};
+
+export type WatchedSelectionClassification =
+  | { kind: "season"; seasonNumber: number }
+  | { kind: "show" }
+  | { kind: "episodes" };
+
+function sameIdSet(selected: ReadonlySet<string>, ids: readonly string[]): boolean {
+  return selected.size === ids.length && ids.every((id) => selected.has(id));
+}
+
+/**
+ * Decide whether a bulk watched toggle can use the coarse season/show endpoints.
+ * Selections that include specials (season 0) always stay per-episode because
+ * those endpoints hardcode `include_specials: false`.
+ */
+export function classifyWatchedSelection(
+  selection: readonly string[],
+  seasons: readonly ClassifiableSeason[],
+): WatchedSelectionClassification {
+  const selected = new Set(selection);
+  if (selected.size === 0) return { kind: "episodes" };
+
+  const includesSpecial = seasons.some(
+    (season) => season.number === 0 && season.episodes.some((episode) => selected.has(episode.id)),
+  );
+  if (includesSpecial) return { kind: "episodes" };
+
+  const nonSpecialSeasons = seasons.filter((season) => season.number !== 0);
+  const allNonSpecialIds = nonSpecialSeasons.flatMap((season) =>
+    season.episodes.map((episode) => episode.id),
+  );
+  if (allNonSpecialIds.length > 0 && sameIdSet(selected, allNonSpecialIds)) {
+    return { kind: "show" };
+  }
+
+  const matchingSeason = nonSpecialSeasons.find(
+    (season) =>
+      season.episodes.length > 0 &&
+      sameIdSet(
+        selected,
+        season.episodes.map((episode) => episode.id),
+      ),
+  );
+  if (matchingSeason) {
+    return { kind: "season", seasonNumber: matchingSeason.number };
+  }
+
+  return { kind: "episodes" };
+}
+
 export function fileKey(fileId: string) {
   return `file:${fileId}`;
 }

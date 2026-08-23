@@ -30,9 +30,25 @@ default; OpenID Connect can be enabled alongside it.
   TLS-terminating proxy in front of an `http` URL).
 - `email_password_resets` — enable emailed password-reset links. Default
   `false`. Requires SMTP (see [Notifications](notifications)).
-- `admin_emails` — _deprecated._ A list of emails that are auto-promoted to
-  superuser on startup. Optional and no longer the recommended path —
-  manage superusers from the UI instead.
+- `admin_emails` — _deprecated._ A list of emails that were auto-promoted to
+  superuser **once** on the first startup after upgrade. Optional and no longer
+  the recommended path — manage superusers from the UI instead. After that
+  one-time migration, leaving addresses here only logs a warning; demotions from
+  **System → Users** persist across restarts.
+
+## Upgrading from legacy `admin_emails`
+
+If you still have `admin_emails` in `config.toml` from an older install:
+
+1. Start MiraMedia once so matching accounts are promoted and the one-time
+   migration is recorded.
+2. Confirm at least one intended superuser exists at **System → Users**.
+3. Remove `admin_emails` from your config to silence deprecation warnings.
+
+If no superuser remains, recover access through your existing supported path
+(bootstrap credentials on a fresh database, OIDC admin assignment, or direct
+database access) — do not rely on `admin_emails` to re-grant privileges after
+the one-time migration has completed.
 
 ## Bootstrap admin
 

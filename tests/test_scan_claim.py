@@ -487,7 +487,7 @@ def test_stale_terminal_cas_not_logged_as_completed_import(
         repo.fail_manual_scan_import.assert_awaited_once_with(
             directory,
             claim_token="token-a",
-            error="409: scan entry not eligible",
+            error="scan entry not eligible",
         )
 
     asyncio.run(_run())

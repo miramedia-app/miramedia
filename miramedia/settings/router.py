@@ -221,8 +221,9 @@ async def update_system_settings(
     """
     try:
         raw_patch = data.model_dump(mode="json", exclude_unset=True)
+        prior_overrides = await repo.get_overrides()
         incoming_patch = validate_incoming_settings_update(
-            strip_masked_values(raw_patch)
+            strip_masked_values(raw_patch, existing=prior_overrides)
         )
     except ValidationError as exc:
         log.exception("Settings update validation failed")
@@ -325,7 +326,8 @@ async def import_settings(
     the existing overrides (incoming values win on conflicts). Section names are validated
     against the known set so a malformed file can't poison the singleton.
     """
-    incoming = strip_masked_values(body.overrides or {})
+    existing_overrides = await repo.get_overrides()
+    incoming = strip_masked_values(body.overrides or {}, existing=existing_overrides)
     try:
         reject_restart_only_incoming(incoming)
     except SettingsValidationError as exc:

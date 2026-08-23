@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import apiClient from "@/lib/api/client";
 import type { AnyObj, SetPath } from "./_shared";
@@ -46,6 +46,8 @@ export type SettingsEditorSections = {
   updates: AnyObj;
   cloudflare: AnyObj;
   watchlists: AnyObj;
+  streams: AnyObj;
+  playback: AnyObj;
 };
 
 export type SettingsSnapshot = Partial<SettingsEditorSections> & {
@@ -160,6 +162,12 @@ export function computeDirtyTabs(
   if (isSectionDirty(local.metadata, server.metadata)) dirty.add("metadata");
   if (isSectionDirty(local.requests, server.requests)) dirty.add("requests");
   if (isSectionDirty(local.watchlists, server.watchlists)) dirty.add("watchlists");
+  if (
+    isSectionDirty(local.streams, server.streams) ||
+    isSectionDirty(local.playback, server.playback)
+  ) {
+    dirty.add("playback");
+  }
   if (isSectionDirty(local.subtitles, server.subtitles)) dirty.add("subtitles");
   if (isSectionDirty(local.imports, server.imports)) dirty.add("imports");
   if (isSectionDirty(local.updates, server.updates)) dirty.add("updates");
@@ -190,6 +198,10 @@ export function composeSavePayload(
   if (dirtyTabs.has("metadata")) payload.metadata = local.metadata;
   if (dirtyTabs.has("requests")) payload.requests = local.requests;
   if (dirtyTabs.has("watchlists")) payload.watchlists = local.watchlists;
+  if (dirtyTabs.has("playback")) {
+    payload.streams = local.streams;
+    payload.playback = local.playback;
+  }
   if (dirtyTabs.has("subtitles")) payload.subtitles = local.subtitles;
   if (dirtyTabs.has("imports")) payload.imports = local.imports;
   if (dirtyTabs.has("updates")) payload.updates = local.updates;
@@ -210,6 +222,28 @@ export function parseImportOverrides(text: string): ParseImportResult {
     return { ok: false, error: 'File missing "overrides" object' };
   }
   return { ok: true, overrides: incoming as AnyObj };
+}
+
+/** Bodyless DELETE of all settings overrides. */
+export async function resetAllSettings(
+  qc: QueryClient,
+  setResetting: (value: boolean) => void,
+): Promise<void> {
+  setResetting(true);
+  try {
+    const { error } = await apiClient.DELETE("/api/v1/system/settings");
+    if (error) {
+      toast.error("Failed to reset settings");
+      return;
+    }
+    toast.success("All settings reset to defaults");
+    await qc.invalidateQueries({ queryKey: ["system", "settings"] });
+    await qc.invalidateQueries({ queryKey: ["features"] });
+  } catch {
+    toast.error("Failed to reset settings");
+  } finally {
+    setResetting(false);
+  }
 }
 
 function makeNested<T extends AnyObj>(setter: React.Dispatch<React.SetStateAction<T>>): SetPath {
@@ -264,6 +298,8 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
   });
   const [requests, setRequests] = React.useState<AnyObj>({ seerr: {} });
   const [watchlists, setWatchlists] = React.useState<AnyObj>({ native: {} });
+  const [streams, setStreams] = React.useState<AnyObj>({});
+  const [playback, setPlayback] = React.useState<AnyObj>({});
   const [subtitles, setSubtitles] = React.useState<AnyObj>({
     native: {
       gestdown: {},
@@ -312,6 +348,12 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
     if (settings.watchlists) setWatchlists(structuredClone(settings.watchlists));
   }, [settings.watchlists]);
   React.useEffect(() => {
+    if (settings.streams) setStreams(structuredClone(settings.streams));
+  }, [settings.streams]);
+  React.useEffect(() => {
+    if (settings.playback) setPlayback(structuredClone(settings.playback));
+  }, [settings.playback]);
+  React.useEffect(() => {
     if (settings.subtitles) setSubtitles(structuredClone(settings.subtitles));
   }, [settings.subtitles]);
   React.useEffect(() => {
@@ -337,6 +379,8 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
           metadata,
           requests,
           watchlists,
+          streams,
+          playback,
           subtitles,
           imports,
           updates,
@@ -351,6 +395,8 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
           metadata: settings.metadata,
           requests: settings.requests,
           watchlists: settings.watchlists,
+          streams: settings.streams,
+          playback: settings.playback,
           subtitles: settings.subtitles,
           imports: settings.imports,
           updates: settings.updates,
@@ -367,6 +413,8 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
       metadata,
       requests,
       watchlists,
+      streams,
+      playback,
       subtitles,
       imports,
       updates,
@@ -379,6 +427,8 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
       settings.metadata,
       settings.requests,
       settings.watchlists,
+      settings.streams,
+      settings.playback,
       settings.subtitles,
       settings.imports,
       settings.updates,
@@ -448,6 +498,8 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
             metadata,
             requests,
             watchlists,
+            streams,
+            playback,
             subtitles,
             imports,
             updates,
@@ -471,21 +523,7 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
   }
 
   async function resetAll() {
-    setResetting(true);
-    try {
-      const { error } = await apiClient.DELETE("/api/v1/system/settings");
-      if (error) {
-        toast.error("Failed to reset settings");
-        return;
-      }
-      toast.success("All settings reset to defaults");
-      await qc.invalidateQueries({ queryKey: ["system", "settings"] });
-      await qc.invalidateQueries({ queryKey: ["features"] });
-    } catch {
-      toast.error("Failed to reset settings");
-    } finally {
-      setResetting(false);
-    }
+    await resetAllSettings(qc, setResetting);
   }
 
   async function exportSettings() {
@@ -569,6 +607,10 @@ export function useSettingsEditor(args: { settings: SettingsSnapshot; loaded: bo
     setRequestsPath: makeNested(setRequests),
     watchlists,
     setWatchlistsPath: makeNested(setWatchlists),
+    streams,
+    setStreamsPath: makeNested(setStreams),
+    playback,
+    setPlaybackPath: makeNested(setPlayback),
     subtitles,
     setSubtitlesPath: makeNested(setSubtitles),
     imports,

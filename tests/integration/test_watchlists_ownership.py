@@ -5,10 +5,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy import select
 
 from miramedia.config import MiraMediaConfig
+from miramedia.exceptions import NotFoundError
 from miramedia.watchlists.auto_remove import auto_remove_watched_from_lists
 from miramedia.watchlists.models import WatchlistItem
 from miramedia.watchlists.repository import WatchlistRepository
@@ -89,13 +89,12 @@ def test_cross_user_item_operations_are_denied(db, run_async) -> None:
         service = await _service(db)
         repo = WatchlistRepository(db)
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(NotFoundError):
             await service.add_item(
                 user_id=user_b,
                 watchlist_id=watchlist_id,
                 data=WatchlistItemCreate(media_kind="movie", media_id=movie.id),
             )
-        assert exc_info.value.status_code == 404
 
         owner_detail = await service.get_watchlist(
             user_id=user_a, watchlist_id=watchlist_id
@@ -103,14 +102,12 @@ def test_cross_user_item_operations_are_denied(db, run_async) -> None:
         assert owner_detail is not None
         assert len(owner_detail.items) == 1
 
-        with pytest.raises(HTTPException) as reorder_exc:
+        with pytest.raises(NotFoundError):
             await service.reorder_items(
                 user_id=user_b,
                 watchlist_id=watchlist_id,
                 data=WatchlistReorder(item_ids=[item.id]),
             )
-        assert reorder_exc.value.status_code == 404
-
         removed = await service.remove_item(
             user_id=user_b,
             watchlist_id=watchlist_id,

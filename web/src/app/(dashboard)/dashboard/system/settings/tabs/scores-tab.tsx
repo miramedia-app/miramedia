@@ -318,6 +318,7 @@ export function ScoresTab({
                   <Button
                     variant="outline"
                     size="sm"
+                    className="gap-1"
                     onClick={() =>
                       setIndexersPath(
                         [key],
@@ -334,7 +335,7 @@ export function ScoresTab({
                       )
                     }
                   >
-                    <Plus className="mr-1 h-4 w-4" />
+                    <Plus className="h-4 w-4" />
                     {addLabel}
                   </Button>
                 </CardContent>
@@ -422,6 +423,7 @@ export function ScoresTab({
                   <Button
                     variant="outline"
                     size="sm"
+                    className="gap-1"
                     onClick={() =>
                       setIndexersPath(
                         [key],
@@ -438,7 +440,7 @@ export function ScoresTab({
                       )
                     }
                   >
-                    <Plus className="mr-1 h-4 w-4" />
+                    <Plus className="h-4 w-4" />
                     {addLabel}
                   </Button>
                 </CardContent>
@@ -520,6 +522,7 @@ export function ScoresTab({
               <Button
                 variant="outline"
                 size="sm"
+                className="gap-1"
                 onClick={() =>
                   setIndexersPath(
                     ["scoring_rule_sets"],
@@ -530,7 +533,7 @@ export function ScoresTab({
                   )
                 }
               >
-                <Plus className="mr-1 h-4 w-4" />
+                <Plus className="h-4 w-4" />
                 Add Ruleset
               </Button>
             </CardContent>

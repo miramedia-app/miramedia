@@ -7,8 +7,8 @@ import { toast } from "sonner";
 import {
   Download,
   LoaderCircle,
+  Check,
   RotateCcw,
-  Save,
   Search as SearchIcon,
   TriangleAlert,
   Upload,
@@ -87,6 +87,8 @@ type Settings = AnyObj & {
   imports?: AnyObj;
   cloudflare?: AnyObj;
   watchlists?: AnyObj;
+  streams?: AnyObj;
+  playback?: AnyObj;
 };
 type SchemaEntry = {
   path: string[];
@@ -106,6 +108,7 @@ const TAB_DEFS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "scores", label: "Scores" },
   { value: "subtitles", label: "Subtitles" },
   { value: "imports", label: "Imports" },
+  { value: "playback", label: "Playback" },
   { value: "watchlists", label: "Watchlists" },
   { value: "requests", label: "Requests" },
   { value: "notifications", label: "Notifications" },
@@ -120,6 +123,9 @@ const RequestsTab = React.lazy(() =>
 );
 const WatchlistsTab = React.lazy(() =>
   import("./tabs/watchlists-tab").then((m) => ({ default: m.WatchlistsTab })),
+);
+const PlaybackTab = React.lazy(() =>
+  import("./tabs/playback-tab").then((m) => ({ default: m.PlaybackTab })),
 );
 const IndexersTab = React.lazy(() =>
   import("./tabs/indexers-tab").then((m) => ({ default: m.IndexersTab })),
@@ -219,6 +225,7 @@ export default function SystemSettingsPage() {
     const [section, ...rest] = entry.path;
     let tab = section ?? "general";
     if (section === "misc") tab = "general";
+    if (section === "streams") tab = "playback";
     if (section === "indexers" && INDEXER_SCORING_KEYS.has(rest[0] ?? "")) tab = "scores";
     setActiveTab(tab);
     setSearchQuery("");
@@ -370,14 +377,14 @@ export default function SystemSettingsPage() {
                 onClick={() => void editor.saveAllSettings()}
                 disabled={editor.saving || !editor.isDirty}
                 size="default"
-                className="text-xs"
+                className="gap-1 text-xs"
               >
                 {editor.saving ? (
-                  <LoaderCircle className="mr-1 h-4 w-4 animate-spin" />
+                  <LoaderCircle className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Save className="mr-1 h-4 w-4" />
+                  <Check className="h-4 w-4" />
                 )}
-                Save Settings{editor.isDirty ? ` (${editor.dirtyTabs.size})` : ""}
+                Save
               </Button>
             </div>
 
@@ -455,6 +462,15 @@ export default function SystemSettingsPage() {
                       <WatchlistsTab
                         watchlists={editor.watchlists}
                         setWatchlistsPath={editor.setWatchlistsPath}
+                      />
+                    </TabsContent>
+
+                    <TabsContent value="playback">
+                      <PlaybackTab
+                        streams={editor.streams}
+                        setStreamsPath={editor.setStreamsPath}
+                        playback={editor.playback}
+                        setPlaybackPath={editor.setPlaybackPath}
                       />
                     </TabsContent>
 

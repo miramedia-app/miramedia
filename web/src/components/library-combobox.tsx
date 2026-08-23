@@ -36,6 +36,7 @@ export function LibraryCombobox({
   );
 
   const librariesQuery = useLibraries(mediaType);
+  const loadError = librariesQuery.isError ? "Failed to load libraries" : null;
   const libraries = React.useMemo(() => {
     const list = librariesQuery.data ?? [];
     const others = list.filter((l) => l.name !== "Default");
@@ -94,21 +95,27 @@ export function LibraryCombobox({
         <Command id={listboxId}>
           <CommandInput placeholder="Search library..." />
           <CommandList>
-            <CommandEmpty>No library found.</CommandEmpty>
-            <CommandGroup>
-              {libraries.map((item) => (
-                <CommandItem
-                  key={item.name}
-                  value={item.name}
-                  onSelect={() => handleSelect(item.name)}
-                >
-                  <CheckIcon
-                    className={cn("mr-2", value === item.name ? "opacity-100" : "opacity-0")}
-                  />
-                  {item.name}
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            {loadError ? (
+              <p className="p-2 text-sm text-muted-foreground">{loadError}</p>
+            ) : (
+              <>
+                <CommandEmpty>No library found.</CommandEmpty>
+                <CommandGroup>
+                  {libraries.map((item) => (
+                    <CommandItem
+                      key={item.name}
+                      value={item.name}
+                      onSelect={() => handleSelect(item.name)}
+                    >
+                      <CheckIcon
+                        className={cn("mr-2", value === item.name ? "opacity-100" : "opacity-0")}
+                      />
+                      {item.name}
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
           </CommandList>
         </Command>
       </PopoverContent>

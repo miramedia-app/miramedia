@@ -9,11 +9,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.sql.elements import TextClause
 
+from miramedia.exceptions import BadRequestError
 from miramedia.imports.repository import (
     BEGIN_MANUAL_SCAN_WORKER_SQL,
     CLAIM_SCAN_CACHE_ROW_SQL,
@@ -426,9 +426,8 @@ def _scan_body(**overrides: object) -> dict[str, object]:
 
 def test_validate_scan_resolve_target_rejects_missing_target() -> None:
     body = ResolveRequest.model_validate(_scan_body(media_id=None))
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(BadRequestError):
         validate_scan_resolve_target(body)
-    assert exc_info.value.status_code == 400
 
 
 def test_validate_scan_resolve_target_rejects_ambiguous_both() -> None:
@@ -438,9 +437,8 @@ def test_validate_scan_resolve_target_rejects_ambiguous_both() -> None:
             metadata_provider="tvmaze",
         )
     )
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(BadRequestError):
         validate_scan_resolve_target(body)
-    assert exc_info.value.status_code == 400
 
 
 def test_invalid_scan_target_returns_400_without_claim_or_dispatch() -> None:

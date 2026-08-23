@@ -140,7 +140,9 @@ def test_features_reflects_config_flags() -> None:
             "upcoming": config.watchlists.upcoming_enabled,
             "upcoming_default_past_days": config.watchlists.native.upcoming_default_past_days,
             "upcoming_default_future_days": config.watchlists.native.upcoming_default_future_days,
-            "continue_watching": config.watchlists.continue_watching_enabled,
+            "continue_watching": config.playback.continue_watching,
+            "streaming": config.streams.enabled,
+            "downloads": config.streams.downloads,
         }
     finally:
         app.dependency_overrides.clear()

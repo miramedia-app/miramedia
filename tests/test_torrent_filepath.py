@@ -10,14 +10,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from miramedia.torrents import utils
-from miramedia.torrents.utils import _dir_discriminators, get_torrent_filepath
+from miramedia.torrents import paths
+from miramedia.torrents.paths import _dir_discriminators, get_torrent_filepath
 
 
 @pytest.fixture
 def completed(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        utils,
+        paths,
         "MiraMediaConfig",
         lambda: SimpleNamespace(
             misc=SimpleNamespace(effective_completed_path=tmp_path)

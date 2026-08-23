@@ -46,6 +46,7 @@ export function FilePathSuffixSelector({
 
   const librariesQuery = useLibraries(inferredType);
   const libraries = librariesQuery.data ?? [];
+  const loadError = librariesQuery.isError ? "Failed to load libraries" : null;
 
   // Memoize so the (cheap but allocating) string builds don't re-run for
   // every other state change in the parent dialog.
@@ -115,23 +116,28 @@ export function FilePathSuffixSelector({
         </p>
       </div>
 
-      {libraries.length > 0 && onLibraryChange && (
-        <div className="grid w-full items-center gap-1.5">
-          <Label htmlFor="library-select">Library</Label>
-          <Select value={library ?? "Default"} onValueChange={onLibraryChange}>
-            <SelectTrigger id="library-select" className="w-[240px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Default">Default</SelectItem>
-              {libraries.map((lib) => (
-                <SelectItem key={lib.name} value={lib.name}>
-                  {lib.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      {loadError ? (
+        <p className="text-sm text-muted-foreground">{loadError}</p>
+      ) : (
+        libraries.length > 0 &&
+        onLibraryChange && (
+          <div className="grid w-full items-center gap-1.5">
+            <Label htmlFor="library-select">Library</Label>
+            <Select value={library ?? "Default"} onValueChange={onLibraryChange}>
+              <SelectTrigger id="library-select" className="w-[240px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="Default">Default</SelectItem>
+                {libraries.map((lib) => (
+                  <SelectItem key={lib.name} value={lib.name}>
+                    {lib.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )
       )}
 
       <div>

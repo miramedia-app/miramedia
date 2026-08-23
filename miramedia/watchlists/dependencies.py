@@ -53,15 +53,6 @@ def require_watch_next_enabled() -> None:
         )
 
 
-def require_continue_watching_enabled() -> None:
-    """Gate the dashboard Continue Watching endpoint on its config flag."""
-    if not MiraMediaConfig().watchlists.continue_watching_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Continue Watching feature is disabled",
-        )
-
-
 def get_watchlist_repository(db_session: DbSessionDependency) -> WatchlistRepository:
     return WatchlistRepository(db_session)
 

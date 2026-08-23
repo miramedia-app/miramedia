@@ -13,9 +13,10 @@ harness (Step 1 of plan 014).
 
 import hashlib
 
-from miramedia.torrents.utils import (
+from miramedia.torrents.inspection import (
     TorrentInspection,
     _parse_torrent_bytes,
+    inspect_torrent,
 )
 
 # ---------------------------------------------------------------------------
@@ -193,10 +194,9 @@ class TestInspectTorrentIntegration:
 
     def test_inspect_torrent_returns_correct_hash_and_files(self, monkeypatch):
         from miramedia.indexers.schemas import IndexerQueryResult
-        from miramedia.torrents.utils import inspect_torrent
 
         monkeypatch.setattr(
-            "miramedia.torrents.utils._fetch_torrent_payload",
+            "miramedia.torrents.inspection._fetch_torrent_payload",
             lambda *_args: MULTI_TORRENT_BYTES,
         )
 
@@ -225,10 +225,9 @@ class TestInspectTorrentIntegration:
 
     def test_inspect_torrent_malformed_returns_none_fields(self, monkeypatch):
         from miramedia.indexers.schemas import IndexerQueryResult
-        from miramedia.torrents.utils import inspect_torrent
 
         monkeypatch.setattr(
-            "miramedia.torrents.utils._fetch_torrent_payload",
+            "miramedia.torrents.inspection._fetch_torrent_payload",
             lambda *_args: b"garbage",
         )
 

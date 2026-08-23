@@ -14,7 +14,6 @@ class NativeWatchlistsConfig(BaseSettings):
 class WatchlistsConfig(BaseSettings):
     # Shared / cross-backend policies
     auto_remove_watched: bool = False
-    continue_watching: bool = True  # Dashboard Continue Watching row
     max_lists_per_user: int = 0  # 0 = unlimited
     max_items_per_list: int = 0  # 0 = unlimited
 
@@ -36,7 +35,3 @@ class WatchlistsConfig(BaseSettings):
     @property
     def upcoming_enabled(self) -> bool:
         return bool(self.native.enabled and self.native.upcoming)
-
-    @property
-    def continue_watching_enabled(self) -> bool:
-        return bool(self.continue_watching)

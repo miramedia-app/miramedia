@@ -40,6 +40,7 @@ export function MoveLibraryButton({
 
   const librariesQuery = useLibraries(mediaType);
   const libraries = librariesQuery.data ?? [];
+  const loadError = librariesQuery.isError ? "Failed to load libraries" : null;
 
   function move() {
     startBusy(async () => {
@@ -103,19 +104,23 @@ export function MoveLibraryButton({
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1 text-sm">
             Target library
-            <Select value={target} onValueChange={setTarget}>
-              <SelectTrigger className="w-[240px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="Default">Default</SelectItem>
-                {libraries.map((lib) => (
-                  <SelectItem key={lib.name} value={lib.name}>
-                    {lib.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {loadError ? (
+              <p className="text-sm text-muted-foreground">{loadError}</p>
+            ) : (
+              <Select value={target} onValueChange={setTarget}>
+                <SelectTrigger className="w-[240px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="Default">Default</SelectItem>
+                  {libraries.map((lib) => (
+                    <SelectItem key={lib.name} value={lib.name}>
+                      {lib.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </label>
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -130,7 +135,7 @@ export function MoveLibraryButton({
           <Button variant="secondary" onClick={() => setOpen(false)}>
             Cancel
           </Button>
-          <Button onClick={move} disabled={busy || target === currentLibrary}>
+          <Button onClick={move} disabled={busy || !!loadError || target === currentLibrary}>
             {busy && <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Move
           </Button>

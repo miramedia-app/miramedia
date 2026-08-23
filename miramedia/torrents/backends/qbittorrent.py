@@ -10,11 +10,12 @@ from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
+from miramedia.torrents.inspection import get_torrent_hash
+from miramedia.torrents.paths import torrent_title_path_component
 from miramedia.torrents.schemas import Torrent, TorrentStatus
-from miramedia.torrents.utils import get_torrent_hash, torrent_title_path_component
 
 if TYPE_CHECKING:
-    from miramedia.torrents.utils import TorrentFile
+    from miramedia.torrents.inspection import TorrentFile
 
 log = logging.getLogger(__name__)
 
@@ -65,16 +66,18 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
 
     def _ensure_category(self) -> None:
         categories = self.api_client.torrents_categories()
-        log.debug(f"Found following categories in qBittorrent: {categories}")
+        log.debug("Found following categories in qBittorrent: %s", categories)
         if self.config.category_name in categories:
             category = categories.get(self.config.category_name)
             if category.get("savePath") == self.config.category_save_path:
                 log.debug(
-                    f"Category '{self.config.category_name}' already exists in qBittorrent with the correct save path."
+                    "Category '%s' already exists in qBittorrent with the correct save path.",
+                    self.config.category_name,
                 )
                 return
             log.debug(
-                f"Category '{self.config.category_name}' already exists in qBittorrent but with a different save path. Attempting to update it."
+                "Category '%s' already exists in qBittorrent but with a different save path. Attempting to update it.",
+                self.config.category_name,
             )
             try:
                 self.api_client.torrents_edit_category(
@@ -83,14 +86,13 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
                 )
             except Conflict409Error:
                 log.exception(
-                    f"Attempt to update category '{self.config.category_name}' in qBittorrent with a different save"
-                    f" path failed. The configured save path and the save path saved in Qbittorrent differ,"
-                    f" manually update it in the qBittorrent WebUI or change the save path in the MiraMedia"
-                    f" config to match the one in qBittorrent."
+                    "Attempt to update category '%s' in qBittorrent with a different save path failed. The configured save path and the save path saved in Qbittorrent differ, manually update it in the qBittorrent WebUI or change the save path in the MiraMedia config to match the one in qBittorrent.",
+                    self.config.category_name,
                 )
         else:
             log.debug(
-                f"Category '{self.config.category_name}' does not exist in qBittorrent. Attempting to create it."
+                "Category '%s' does not exist in qBittorrent. Attempting to create it.",
+                self.config.category_name,
             )
             try:
                 self.api_client.torrents_create_category(
@@ -99,7 +101,8 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
                 )
             except Conflict409Error:
                 log.exception(
-                    f"Attempt to create category '{self.config.category_name}' in qBittorrent failed. The category already exists but was not found in the initial category list, manually check if the category exists in the qBittorrent WebUI or change the category name in the MiraMedia config."
+                    "Attempt to create category '%s' in qBittorrent failed. The category already exists but was not found in the initial category list, manually check if the category exists in the qBittorrent WebUI or change the category name in the MiraMedia config.",
+                    self.config.category_name,
                 )
 
     def download_torrent(self, indexer_result: IndexerQueryResult) -> Torrent:
@@ -126,12 +129,13 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
 
         if answer != "Ok.":
             log.error(
-                f"Failed to download torrent, API-Answer isn't 'Ok.'; API Answer: {answer}"
+                "Failed to download torrent, API-Answer isn't 'Ok.'; API Answer: %s",
+                answer,
             )
             msg = f"Failed to download torrent, API-Answer isn't 'Ok.'; API Answer: {answer}"
             raise RuntimeError(msg)
 
-        log.info(f"Successfully processed torrent: {indexer_result.title}")
+        log.info("Successfully processed torrent: %s", indexer_result.title)
 
         # Create and return torrent object
         torrent = Torrent(
@@ -159,7 +163,7 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
         :param torrent: The torrent to remove.
         :param delete_data: Whether to delete the downloaded data.
         """
-        log.info(f"Removing torrent: {torrent.title}")
+        log.info("Removing torrent: %s", torrent.title)
         try:
             self.api_client.auth_log_in()
             self.api_client.torrents_delete(
@@ -184,7 +188,7 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
             self.api_client.auth_log_out()
 
         if not info:
-            log.warning(f"No information found for torrent: {torrent.id}")
+            log.warning("No information found for torrent: %s", torrent.id)
             return TorrentStatus.unknown, 0.0, 0, 0, 0
 
         torrent_info = info[0]
@@ -234,7 +238,7 @@ class QbittorrentDownloadClient(AbstractDownloadClient):
         Pre-metadata torrents return an empty list from ``torrents_files`` —
         treat that as "not yet known" so the post-add verifier keeps polling.
         """
-        from miramedia.torrents.utils import TorrentFile
+        from miramedia.torrents.inspection import TorrentFile
 
         try:
             self.api_client.auth_log_in()

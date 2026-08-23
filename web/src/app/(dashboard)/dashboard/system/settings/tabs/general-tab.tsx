@@ -809,11 +809,12 @@ export function GeneralTab({
                   <Button
                     variant="outline"
                     size="sm"
+                    className="gap-1"
                     onClick={() =>
                       setMiscPath([libKey], [...libs, { _key: newRowKey(), name: "", path: "" }])
                     }
                   >
-                    <Plus className="mr-1 h-4 w-4" />
+                    <Plus className="h-4 w-4" />
                     Add {kind === "show" ? "Show" : "Movie"} Library
                   </Button>
                 </div>

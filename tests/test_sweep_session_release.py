@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from miramedia.movies.schemas import MovieId
+from miramedia.torrents.manager import DownloadManager
 from miramedia.torrents.schemas import Quality, TorrentStatus
 from miramedia.torrents.schemas import Torrent as TorrentSchema
 from miramedia.torrents.service import TorrentService
@@ -31,7 +32,9 @@ def test_get_all_torrents_releases_session_before_rpc(monkeypatch) -> None:
     repo = FakeTorrentRepository()
     repo.torrents[torrent.id] = torrent
     repo.db = MagicMock()
-    svc = TorrentService(torrent_repository=repo)  # type: ignore[arg-type]
+    dm = MagicMock(spec=DownloadManager)
+    dm._torrent_client = MagicMock()
+    svc = TorrentService(torrent_repository=repo, download_manager=dm)  # type: ignore[arg-type]
 
     order: list[str] = []
 
@@ -83,7 +86,7 @@ def test_import_all_torrents_releases_session_before_import_loop() -> None:
         order.append("import")
 
     with (
-        patch("miramedia.database.bg_show_service", fake_bg),
+        patch("miramedia.background_services.bg_show_service", fake_bg),
         patch(
             "miramedia.database.release_session_before_external_io",
             side_effect=_release,
@@ -161,7 +164,7 @@ def test_auto_download_movie_releases_session_before_indexer_fan_out(
     async def fake_bg():
         yield fake_svc
 
-    monkeypatch.setattr("miramedia.database.bg_movie_service", fake_bg)
+    monkeypatch.setattr("miramedia.background_services.bg_movie_service", fake_bg)
     monkeypatch.setattr(
         "miramedia.database.release_session_before_external_io",
         _release,

@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from miramedia.torrents.inspection import TorrentFile
 from miramedia.torrents.service import TorrentService
-from miramedia.torrents.utils import TorrentFile
 from tests.fakes.repositories import FakeTorrentRepository, make_torrent
 
 _MIN_MEANINGFUL_BYTES = 50 * 1024 * 1024

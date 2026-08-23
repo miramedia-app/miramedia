@@ -54,8 +54,8 @@ def _scan_patches(
     return [
         patch("miramedia.config.MiraMediaConfig", return_value=mock_config),
         patch("miramedia.database.background_session", mock_bg_session),
-        patch("miramedia.database.bg_show_service", mock_service),
-        patch("miramedia.database.bg_movie_service", mock_service),
+        patch("miramedia.background_services.bg_show_service", mock_service),
+        patch("miramedia.background_services.bg_movie_service", mock_service),
         patch("miramedia.imports.repository.ImportsRepository", return_value=mock_repo),
         patch("miramedia.imports.scan.scan_libraries", slow_scan_libraries),
     ]

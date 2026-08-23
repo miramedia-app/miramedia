@@ -22,23 +22,23 @@ from miramedia.exceptions import (
     unsafe_torrent_title_error_handler,
 )
 from miramedia.indexers.schemas import IndexerQueryResult
-from miramedia.torrents import utils
+from miramedia.torrents import fetch, inspection, paths
 from miramedia.torrents.backends.native import NativeDownloadClient
 from miramedia.torrents.backends.qbittorrent import QbittorrentDownloadClient
 from miramedia.torrents.backends.transmission import TransmissionDownloadClient
+from miramedia.torrents.inspection import get_torrent_hash
 from miramedia.torrents.models import Quality
-from miramedia.torrents.schemas import MediaType, Torrent, TorrentStatus
-from miramedia.torrents.utils import (
+from miramedia.torrents.paths import (
     _is_safe_deletion_target,
     exact_save_dirs_for_title,
     get_torrent_filepath,
-    get_torrent_hash,
     resolve_within,
     torrent_deletion_dir_under_root,
     torrent_dir_under_root,
     torrent_sidecar_under_root,
     torrent_title_path_component,
 )
+from miramedia.torrents.schemas import MediaType, Torrent, TorrentStatus
 
 DOWNLOAD_ROUTE = "/api/v1/torrents/download"
 
@@ -188,7 +188,7 @@ def test_native_cleanup_never_rmtrees_payload_dirs(
     import miramedia.torrents.backends.native as native_backend
 
     monkeypatch.setattr(native_backend, "MiraMediaConfig", config)
-    monkeypatch.setattr(utils, "MiraMediaConfig", config)
+    monkeypatch.setattr(paths, "MiraMediaConfig", config)
 
     rmdirs: list[Path] = []
 
@@ -256,7 +256,8 @@ def torrent_roots(tmp_path, monkeypatch):
     import miramedia.torrents.backends.transmission as transmission_backend
 
     for module in (
-        utils,
+        paths,
+        inspection,
         native_backend,
         transmission_backend,
         qbittorrent_backend,
@@ -291,7 +292,7 @@ def test_get_torrent_filepath_rejects_symlink_primary_sanitized_and_fuzzy(
     outside.mkdir()
     (outside / "secret.mkv").touch()
     monkeypatch.setattr(
-        utils,
+        paths,
         "MiraMediaConfig",
         lambda: SimpleNamespace(
             misc=SimpleNamespace(effective_completed_path=completed)
@@ -547,9 +548,9 @@ def test_get_torrent_hash_writes_sidecar_under_completed(
         def close(self) -> None:
             self.closed = True
 
-    monkeypatch.setattr(utils.requests, "get", lambda *_a, **_k: FakeResponse())
+    monkeypatch.setattr(fetch.requests, "get", lambda *_a, **_k: FakeResponse())
     monkeypatch.setattr(
-        utils,
+        inspection,
         "_parse_torrent_bytes",
         lambda _content: ("a" * 40, title, []),
     )

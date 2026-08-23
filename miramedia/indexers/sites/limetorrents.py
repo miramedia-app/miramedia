@@ -61,7 +61,7 @@ class LimeTorrentsSite(BaseSite):
             except Exception:
                 log.debug("Failed to parse LimeTorrents row", exc_info=True)
 
-        log.info(f"LimeTorrents returned {len(results)} results for: {query}")
+        log.info("LimeTorrents returned %s results for: %s", len(results), query)
         return results
 
     _HASH_RE = re.compile(r"/torrent/([A-Fa-f0-9]{40})\.torrent")

@@ -84,7 +84,8 @@ class NativeIndexer(GenericIndexer):
         for site_record in db_sites:
             if not site_record.enabled:
                 log.debug(
-                    f"Native indexer: skipping disabled site '{site_record.name}'"
+                    "Native indexer: skipping disabled site '%s'",
+                    site_record.name,
                 )
                 continue
 
@@ -98,11 +99,14 @@ class NativeIndexer(GenericIndexer):
                     instance.site_id = site_record.id  # type: ignore[attr-defined]
                     self.sites.append(instance)
                     log.debug(
-                        f"Native indexer: loaded site '{site_record.name}' ({site_record.url})"
+                        "Native indexer: loaded site '%s' (%s)",
+                        site_record.name,
+                        site_record.url,
                     )
                 else:
                     log.warning(
-                        f"Native indexer: unknown preloaded site '{site_record.name}', skipping"
+                        "Native indexer: unknown preloaded site '%s', skipping",
+                        site_record.name,
                     )
             elif site_record.site_type == "torznab":
                 site = TorznabSite(
@@ -122,12 +126,15 @@ class NativeIndexer(GenericIndexer):
                 site.site_id = site_record.id  # type: ignore[attr-defined]
                 self.sites.append(site)
                 log.debug(
-                    f"Native indexer: loaded custom Torznab site '{site_record.name}'"
+                    "Native indexer: loaded custom Torznab site '%s'",
+                    site_record.name,
                 )
 
         site_names = [s.name for s in self.sites]
         log.info(
-            f"Native indexer initialized with {len(self.sites)} sites: {site_names}"
+            "Native indexer initialized with %s sites: %s",
+            len(self.sites),
+            site_names,
         )
 
     def _search_parallel(
@@ -184,7 +191,8 @@ class NativeIndexer(GenericIndexer):
                                 )
                     except Exception:
                         log.exception(
-                            f"Native indexer: search failed for site '{site_name}'"
+                            "Native indexer: search failed for site '%s'",
+                            site_name,
                         )
                         if on_site_result is not None:
                             try:

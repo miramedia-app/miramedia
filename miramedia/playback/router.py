@@ -7,7 +7,10 @@ from fastapi import APIRouter, Depends, Query, status
 
 from miramedia.auth.users import CurrentUserDep, current_active_user
 from miramedia.config import MiraMediaConfig
-from miramedia.playback.dependencies import playback_service_dep
+from miramedia.playback.dependencies import (
+    playback_service_dep,
+    require_continue_watching_enabled,
+)
 from miramedia.playback.schemas import (
     ContinueWatchingItem,
     MediaKind,
@@ -19,10 +22,7 @@ from miramedia.playback.schemas import (
     WatchState,
     WatchStateUpdate,
 )
-from miramedia.watchlists.dependencies import (
-    require_continue_watching_enabled,
-    require_watch_next_enabled,
-)
+from miramedia.watchlists.dependencies import require_watch_next_enabled
 
 router = APIRouter(
     prefix="/playback",

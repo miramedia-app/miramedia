@@ -29,6 +29,11 @@ from miramedia.naming import (
 from miramedia.shows.dependencies import show_service_dep
 from miramedia.shows.schemas import EpisodeId
 from miramedia.shows.service import ShowService
+from miramedia.streams.dependencies import (
+    require_stream_or_download_access,
+    require_stream_or_download_enabled,
+    require_streaming_enabled,
+)
 from miramedia.streams.transcode import (
     HlsTranscodeError,
     _touch_last_read,
@@ -40,8 +45,8 @@ from miramedia.streams.transcode import (
     schedule_hls_warm,
     segment_dir,
 )
+from miramedia.torrents.paths import resolve_within
 from miramedia.torrents.quality_naming import NameParts
-from miramedia.torrents.utils import resolve_within
 
 if TYPE_CHECKING:
     from miramedia.movies.schemas import Movie, MovieFile
@@ -220,7 +225,9 @@ def _probe_hls_playlist_url(
     return None
 
 
-@router.get("/movies/{movie_id}/probe")
+@router.get(
+    "/movies/{movie_id}/probe", dependencies=[Depends(require_streaming_enabled)]
+)
 async def probe_movie_stream(
     movie: movie_dep,
     movie_service: movie_service_dep,
@@ -251,7 +258,9 @@ async def probe_movie_stream(
     )
 
 
-@router.get("/episodes/{episode_id}/probe")
+@router.get(
+    "/episodes/{episode_id}/probe", dependencies=[Depends(require_streaming_enabled)]
+)
 async def probe_episode_stream(
     episode_id: EpisodeId,
     show_service: show_service_dep,
@@ -412,7 +421,10 @@ async def _resolve_movie_video_file(
     )
 
 
-@router.get("/episodes/{episode_id}/hls/index.m3u8")
+@router.get(
+    "/episodes/{episode_id}/hls/index.m3u8",
+    dependencies=[Depends(require_streaming_enabled)],
+)
 async def episode_hls_playlist(
     episode_id: EpisodeId,
     show_service: show_service_dep,
@@ -445,7 +457,10 @@ async def episode_hls_playlist(
     )
 
 
-@router.get("/episodes/{episode_id}/hls/{segment_name}")
+@router.get(
+    "/episodes/{episode_id}/hls/{segment_name}",
+    dependencies=[Depends(require_streaming_enabled)],
+)
 async def episode_hls_segment(
     episode_id: EpisodeId,
     show_service: show_service_dep,
@@ -474,7 +489,10 @@ async def episode_hls_segment(
     return FileResponse(seg, media_type="video/mp2t")
 
 
-@router.get("/movies/{movie_id}/hls/index.m3u8")
+@router.get(
+    "/movies/{movie_id}/hls/index.m3u8",
+    dependencies=[Depends(require_streaming_enabled)],
+)
 async def movie_hls_playlist(
     movie: movie_dep,
     movie_service: movie_service_dep,
@@ -508,7 +526,10 @@ async def movie_hls_playlist(
     )
 
 
-@router.get("/movies/{movie_id}/hls/{segment_name}")
+@router.get(
+    "/movies/{movie_id}/hls/{segment_name}",
+    dependencies=[Depends(require_streaming_enabled)],
+)
 async def movie_hls_segment(
     movie: movie_dep,
     movie_service: movie_service_dep,
@@ -547,6 +568,7 @@ async def stream_movie(
     download: DownloadQuery = False,
 ) -> FileResponse:
     """Stream or download a movie file."""
+    require_stream_or_download_enabled(download)
     movie_file = await _load_movie_file(
         movie_service=movie_service, movie_id=movie.id, file_id=file_id
     )
@@ -564,7 +586,7 @@ async def stream_movie(
     # finalizer commit dies on a closed connection. We need no DB while serving.
     await release_session_before_external_io(db)
 
-    log.debug(f"Streaming movie file: {video_file.name}")
+    log.debug("Streaming movie file: %s", video_file.name)
     return _serve_file(video_file, download=download)
 
 
@@ -577,6 +599,7 @@ async def stream_episode(
     download: DownloadQuery = False,
 ) -> FileResponse:
     """Stream or download a TV episode file."""
+    require_stream_or_download_enabled(download)
     episode_file = await _load_episode_file(
         show_service=show_service, episode_id=episode_id, file_id=file_id
     )
@@ -590,7 +613,7 @@ async def stream_episode(
     # so it isn't held idle-in-transaction for the transfer's lifetime.
     await release_session_before_external_io(db)
 
-    log.debug(f"Streaming episode file: {video_file.name}")
+    log.debug("Streaming episode file: %s", video_file.name)
     return _serve_file(video_file, download=download)
 
 
@@ -694,7 +717,10 @@ def _convert_srt_to_vtt(srt_path: Path) -> str:
     return vtt
 
 
-@router.get("/subtitles/movies/{movie_id}/{language}")
+@router.get(
+    "/subtitles/movies/{movie_id}/{language}",
+    dependencies=[Depends(require_stream_or_download_access)],
+)
 async def stream_movie_subtitle(
     movie: movie_dep,
     movie_service: movie_service_dep,
@@ -730,7 +756,10 @@ async def stream_movie_subtitle(
     return _serve_file(sub_file)
 
 
-@router.get("/subtitles/episodes/{episode_id}/{language}")
+@router.get(
+    "/subtitles/episodes/{episode_id}/{language}",
+    dependencies=[Depends(require_stream_or_download_access)],
+)
 async def stream_episode_subtitle(
     episode_id: EpisodeId,
     show_service: show_service_dep,

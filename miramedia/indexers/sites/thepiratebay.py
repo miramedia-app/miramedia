@@ -94,5 +94,5 @@ class ThePirateBaySite(BaseSite):
                 )
             )
 
-        log.info(f"TPB returned {len(results)} results for: {query}")
+        log.info("TPB returned %s results for: %s", len(results), query)
         return results

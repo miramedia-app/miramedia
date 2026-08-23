@@ -39,8 +39,12 @@ class TorznabSite(BaseSite, TorznabMixin):
 
         try:
             xml = self._fetch(self.url, params=params)
-        except Exception:
-            log.exception(f"Torznab search failed for {self.name}")
+        except Exception as exc:
+            log.error(  # noqa: TRY400 — exception text embeds apikey URL
+                "Torznab search failed for %s (%s)",
+                self.name,
+                type(exc).__name__,
+            )
             return []
 
         results = self.process_search_result(xml=xml)
@@ -48,7 +52,7 @@ class TorznabSite(BaseSite, TorznabMixin):
         for r in results:
             r.indexer = self.name
 
-        log.info(f"Torznab site {self.name} returned {len(results)} results")
+        log.info("Torznab site %s returned %s results", self.name, len(results))
         return results
 
     def search(self, query: str, category: str) -> list[IndexerQueryResult]:

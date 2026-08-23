@@ -149,12 +149,12 @@ class NotificationManager:
             try:
                 success = provider.send_notification(notification)
                 if success:
-                    logger.info(f"Notification sent successfully via {provider_name}")
+                    logger.info("Notification sent successfully via %s", provider_name)
                 else:
-                    logger.warning(f"Failed to send notification via {provider_name}")
+                    logger.warning("Failed to send notification via %s", provider_name)
 
             except Exception:
-                logger.exception(f"Error sending notification via {provider_name}")
+                logger.exception("Error sending notification via %s", provider_name)
 
     def get_configured_providers(self) -> list[str]:
         return [provider.__class__.__name__ for provider in self._build_providers()]

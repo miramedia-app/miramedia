@@ -29,28 +29,28 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
         try:
             return self.client.get_series_extended(show_id)
         except Exception:
-            log.exception(f"TVDB API error getting show metadata for ID {show_id}")
+            log.exception("TVDB API error getting show metadata for ID %s", show_id)
             raise
 
     def __get_season(self, season_id: int) -> dict:
         try:
             return self.client.get_season_extended(season_id)
         except Exception:
-            log.exception(f"TVDB API error getting season metadata for ID {season_id}")
+            log.exception("TVDB API error getting season metadata for ID %s", season_id)
             raise
 
     def __search(self, query: str) -> list[dict]:
         try:
             return self.client.search(query)
         except Exception:
-            log.exception(f"TVDB API error searching with query '{query}'")
+            log.exception("TVDB API error searching with query '%s'", query)
             raise
 
     def __get_movie(self, movie_id: int) -> dict:
         try:
             return self.client.get_movie_extended(movie_id)
         except Exception:
-            log.exception(f"TVDB API error getting movie metadata for ID {movie_id}")
+            log.exception("TVDB API error getting movie metadata for ID %s", movie_id)
             raise
 
     def __get_trending_tv(self) -> list[dict]:
@@ -105,9 +105,9 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
                 poster_url=show_metadata["image"],
                 uuid=show.id,
             )
-            log.debug("Successfully downloaded poster image for show " + show.name)
+            log.debug("Successfully downloaded poster image for show %s", show.name)
             return True
-        log.warning(f"image for show {show.name} could not be downloaded")
+        log.warning("image for show %s could not be downloaded", show.name)
         return False
 
     @override
@@ -123,7 +123,7 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
                 if tvdb_id:
                     return self.get_show_metadata(str(tvdb_id), language=language)
         except Exception:
-            log.warning(f"TVDB IMDb lookup failed for show {imdb_id}")
+            log.warning("TVDB IMDb lookup failed for show %s", imdb_id)
         return None
 
     @override
@@ -139,7 +139,7 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
                 if tvdb_id:
                     return self.get_movie_metadata(str(tvdb_id), language=language)
         except Exception:
-            log.warning(f"TVDB IMDb lookup failed for movie {imdb_id}")
+            log.warning("TVDB IMDb lookup failed for movie %s", imdb_id)
         return None
 
     @override
@@ -168,7 +168,8 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
             # which causes duplicate season number + show ids which in turn violates a unique constraint of the season table
             if s["type"]["id"] != 1:
                 log.info(
-                    f"Season {s['type']['id']} will not be downloaded because it is not a 'aired order' season"
+                    "Season %s will not be downloaded because it is not a 'aired order' season",
+                    s["type"]["id"],
                 )
                 continue
 
@@ -278,22 +279,18 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
                 if result["type"] != "movie":
                     continue
 
-                movie_data = self.__get_movie(result["tvdb_id"])
-
                 try:
                     try:
-                        year = movie_data["year"]
+                        year = result["year"]
                     except KeyError:
                         year = None
 
                     formatted_results.append(
                         MetaDataProviderSearchResult(
-                            poster_path=movie_data.get("image_url"),
-                            overview=movie_data.get("overview"),
-                            name=movie_data["name"],
-                            external_id=str(
-                                movie_data.get("tvdb_id", movie_data.get("id"))
-                            ),
+                            poster_path=result.get("image_url"),
+                            overview=result.get("overview"),
+                            name=result["name"],
+                            external_id=str(result["tvdb_id"]),
                             year=year,
                             metadata_provider=self.name,
                             added=False,
@@ -307,26 +304,20 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
         log.debug("got %d results from TVDB trending", len(results))
         formatted_results = []
         for result in results:
-            movie_data = self.__get_movie(result["id"])
             try:
                 try:
-                    year = movie_data["year"]
+                    year = result["year"]
                 except KeyError:
                     year = None
 
-                if movie_data.get("image"):
-                    poster_path = "https://artworks.thetvdb.com" + str(
-                        movie_data.get("image")
-                    )
-                else:
-                    poster_path = None
-
                 formatted_results.append(
                     MetaDataProviderSearchResult(
-                        poster_path=poster_path if movie_data.get("image") else None,
-                        overview=movie_data.get("overview"),
-                        name=movie_data["name"],
-                        external_id=str(movie_data["id"]),
+                        poster_path="https://artworks.thetvdb.com" + result.get("image")
+                        if result.get("image")
+                        else None,
+                        overview=result.get("overview"),
+                        name=result["name"],
+                        external_id=str(result["id"]),
                         year=year,
                         metadata_provider=self.name,
                         added=False,
@@ -347,9 +338,9 @@ class TvdbMetadataProvider(AbstractMetadataProvider):
                 poster_url=movie_metadata["image"],
                 uuid=movie.id,
             )
-            log.info("Successfully downloaded poster image for movie " + movie.name)
+            log.info("Successfully downloaded poster image for movie %s", movie.name)
             return True
-        log.warning(f"image for movie {movie.name} could not be downloaded")
+        log.warning("image for movie %s could not be downloaded", movie.name)
         return False
 
     @override

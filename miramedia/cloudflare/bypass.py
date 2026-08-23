@@ -341,7 +341,7 @@ class CloudflareBypass:
         if domain_lock.acquire(blocking=False):
             domain_lock.release()
             return
-        log.debug(f"Waiting for in-progress Cloudflare solve for {domain}")
+        log.debug("Waiting for in-progress Cloudflare solve for %s", domain)
         if domain_lock.acquire(timeout=timeout):
             domain_lock.release()
 
@@ -358,7 +358,7 @@ class CloudflareBypass:
             for part in out.split():
                 if part.startswith(":"):
                     os.environ["DISPLAY"] = part
-                    log.info(f"Set DISPLAY={part} from running Xvfb process")
+                    log.info("Set DISPLAY=%s from running Xvfb process", part)
                     return
         except (subprocess.SubprocessError, FileNotFoundError):
             pass
@@ -872,8 +872,10 @@ class CloudflareBypass:
                 break
             await asyncio.sleep(0.5)
         log.info(
-            f"Extracted {len(cookie_dict)} cookies for {domain} via CDP "
-            f"(out of {total} total in browser)"
+            "Extracted %s cookies for %s via CDP (out of %s total in browser)",
+            len(cookie_dict),
+            domain,
+            total,
         )
 
         if not cookie_dict:
@@ -919,8 +921,10 @@ class CloudflareBypass:
         with self._lock:
             self._cache[domain] = session
         log.info(
-            f"Cached Cloudflare session for {domain} "
-            f"({len(cookie_dict)} cookies, TTL {self.config.cookie_ttl_seconds}s)"
+            "Cached Cloudflare session for %s (%s cookies, TTL %ss)",
+            domain,
+            len(cookie_dict),
+            self.config.cookie_ttl_seconds,
         )
         return session
 
@@ -981,7 +985,7 @@ class CloudflareBypass:
 
         try:
             os.kill(pid, signal.SIGKILL)
-            log.debug(f"Killed Chrome process {pid}")
+            log.debug("Killed Chrome process %s", pid)
         except (ProcessLookupError, PermissionError):
             pass
 
@@ -1033,7 +1037,10 @@ class CloudflareBypass:
             except (OSError, ValueError):
                 roots.append(pid)
         log.info(
-            f"Killing {len(roots)} chromium tree(s) bound to profile {profile_dir}: {roots}"
+            "Killing %s chromium tree(s) bound to profile %s: %s",
+            len(roots),
+            profile_dir,
+            roots,
         )
         for root in roots:
             try:
@@ -1057,7 +1064,7 @@ class CloudflareBypass:
         if not pids:
             CloudflareBypass._reap_zombies()
             return
-        log.info(f"Killing {len(pids)} tracked Chrome process tree(s): {pids}")
+        log.info("Killing %s tracked Chrome process tree(s): %s", len(pids), pids)
         for pid in pids:
             try:
                 CloudflareBypass._kill_chrome_tree(pid)
@@ -1086,7 +1093,9 @@ class CloudflareBypass:
         live_pids = CloudflareBypass._filter_live_pids(pids)
         if live_pids:
             log.warning(
-                f"MIRAMEDIA_CHROMIUM_NUKE=1: blanket-killing {len(live_pids)} chrome PID(s): {live_pids}"
+                "MIRAMEDIA_CHROMIUM_NUKE=1: blanket-killing %s chrome PID(s): %s",
+                len(live_pids),
+                live_pids,
             )
             for pid in live_pids:
                 try:
@@ -1132,7 +1141,7 @@ class CloudflareBypass:
             return
         domain_lock = self._get_domain_lock(domain)
         if not domain_lock.acquire(blocking=False):
-            log.debug(f"Cloudflare bypass already in progress for {domain}")
+            log.debug("Cloudflare bypass already in progress for %s", domain)
             return
         domain_lock.release()
 
@@ -2270,7 +2279,7 @@ class CloudflareBypass:
             except Exception as err:
                 _cleanup_partial(profile_dir)
                 if attempt == 0:
-                    log.warning(f"Browser launch failed ({err!r}), retrying once...")
+                    log.warning("Browser launch failed (%r), retrying once...", err)
                     profile_dir = tempfile.mkdtemp(prefix="nodriver-", dir="/tmp")
                     self._track_chromium(pid=None, profile_dir=profile_dir)
                     args["user_data_dir"] = profile_dir

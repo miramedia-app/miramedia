@@ -440,7 +440,6 @@ export function DataList<T>({
     const expandable = expandedContent != null && (isExpandable ? isExpandable(item) : true);
     const isExpanded = expandable && isRowExpanded(expandedRows, id, defaultExpanded);
     const content = isExpanded && expandedContent ? expandedContent(item) : null;
-    void indexHint;
     return (
       <DataListRow
         key={id}
@@ -463,12 +462,27 @@ export function DataList<T>({
         expanded={isExpanded}
         onToggleExpandId={handleToggleExpandId}
         expandedContent={isExpanded ? content : null}
+        rowIndex={indexHint}
       />
     );
   }
 
   const isEmpty = !loading && sorted.length === 0;
   const filtersActive = filters.length > 0 || search.length > 0;
+  const visibleBodyCount = grouped
+    ? grouped.reduce((n, g) => n + (collapsed.has(g.key) ? 0 : g.items.length), 0)
+    : paged.length;
+  const ariaRowCount = (showHeader ? 1 : 0) + visibleBodyCount;
+  const groupRowStart = React.useMemo(() => {
+    if (!grouped) return null;
+    const starts = new Map<string, number>();
+    let next = showHeader ? 2 : 1;
+    for (const g of grouped) {
+      starts.set(g.key, next);
+      if (!collapsed.has(g.key)) next += g.items.length;
+    }
+    return starts;
+  }, [grouped, collapsed, showHeader]);
 
   return (
     <div className={cn("flex w-full flex-col gap-4", className)}>
@@ -547,22 +561,29 @@ export function DataList<T>({
           }
         />
       ) : (
-        <div className="overflow-hidden rounded-lg border bg-card">
+        <div
+          className="overflow-hidden rounded-lg border bg-card"
+          role="grid"
+          aria-label="Results"
+          aria-rowcount={ariaRowCount}
+        >
           {showHeader && (
-            <DataListHeaderRow
-              columns={columns}
-              gridTemplate={gridTemplate}
-              selectable={selectable}
-              hasExpandColumn={hasExpandColumn}
-              allSelected={allSelected}
-              someSelected={someSelected}
-              onToggleAll={toggleAll}
-              hasRowActions={!!rowActions}
-            />
+            <div role="rowgroup">
+              <DataListHeaderRow
+                columns={columns}
+                gridTemplate={gridTemplate}
+                selectable={selectable}
+                hasExpandColumn={hasExpandColumn}
+                allSelected={allSelected}
+                someSelected={someSelected}
+                onToggleAll={toggleAll}
+                hasRowActions={!!rowActions}
+              />
+            </div>
           )}
 
           {grouped ? (
-            <div className="flex flex-col">
+            <div role="rowgroup" className="flex flex-col">
               {grouped.map((g) => {
                 const isCollapsed = collapsed.has(g.key);
                 return (
@@ -574,13 +595,18 @@ export function DataList<T>({
                       collapsed={isCollapsed}
                       onToggle={() => toggleGroup(g.key)}
                     />
-                    {!isCollapsed && g.items.map((it) => renderRow(it))}
+                    {!isCollapsed &&
+                      g.items.map((it, idx) =>
+                        renderRow(it, (groupRowStart?.get(g.key) ?? 1) + idx),
+                      )}
                   </React.Fragment>
                 );
               })}
             </div>
           ) : (
-            <div className="flex flex-col">{paged.map((it, idx) => renderRow(it, idx))}</div>
+            <div role="rowgroup" className="flex flex-col">
+              {paged.map((it, idx) => renderRow(it, (showHeader ? 2 : 1) + idx))}
+            </div>
           )}
         </div>
       )}

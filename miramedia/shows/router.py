@@ -11,9 +11,11 @@ from miramedia.auth.users import (
     require_can_add_media,
 )
 from miramedia.config import LibraryItem, MiraMediaConfig
+from miramedia.database import release_session_before_external_io
 from miramedia.exceptions import NotFoundError
 from miramedia.metadata.dependencies import metadata_provider_dep
 from miramedia.metadata.schemas import MetaDataProviderSearchResult
+from miramedia.recommended_discovery_cache import _RECOMMENDED_SHOWS_CACHE
 from miramedia.shows.dependencies import (
     season_dep,
     show_dep,
@@ -101,10 +103,6 @@ async def search_metadata_providers_for_a_show(
     return await show_service.discover_shows(query=query)
 
 
-_RECOMMENDED_CACHE: dict[tuple[str, int], tuple[float, list]] = {}
-_RECOMMENDED_TTL = 3600.0  # 1h — trending shifts daily, not by the page-refresh
-
-
 @router.get("/recommended")
 async def get_recommended_shows(
     response: Response,
@@ -118,21 +116,13 @@ async def get_recommended_shows(
     (no-store) because the added/id library flags are per-request state and a
     browser cache would otherwise show a stale "Add" after an import.
     """
-    import time
-
-    key = ("shows", skip)
-    now = time.monotonic()
-    cached = _RECOMMENDED_CACHE.get(key)
-    if cached and now - cached[0] < _RECOMMENDED_TTL:
-        response.headers["Cache-Control"] = "private, no-store"
-        # Only the provider search is cached (expensive HTTP fan-out); the
-        # added/id flags are per-library state, so re-annotate every hit or a
-        # title imported after the cache was filled keeps showing "Add".
-        return await show_service.annotate_search_results(cached[1])
-    results = await show_service.discover_shows(skip=skip)
-    _RECOMMENDED_CACHE[key] = (now, results)
     response.headers["Cache-Control"] = "private, no-store"
-    return results
+    await release_session_before_external_io(show_service.show_repository.db)
+    return await _RECOMMENDED_SHOWS_CACHE.get(
+        skip,
+        lambda: show_service.discover_shows(skip=skip),
+        show_service.annotate_search_results,
+    )
 
 
 # -----------------------------------------------------------------------------

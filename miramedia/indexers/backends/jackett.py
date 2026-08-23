@@ -47,7 +47,7 @@ class Jackett(GenericIndexer, TorznabMixin):
         self.timeout_seconds = indexers_cfg.timeout_seconds
 
     def search(self, query: str, is_tv: bool) -> list[IndexerQueryResult]:
-        log.debug("Searching for " + query)
+        log.debug("Searching for %s", query)
 
         params = {"q": query, "t": "tvsearch" if is_tv else "movie"}
 
@@ -69,8 +69,13 @@ class Jackett(GenericIndexer, TorznabMixin):
                     result = future.result()
                     if result is not None:
                         responses.extend(result)
-                except Exception:
-                    log.exception("Searching failed")
+                except Exception as exc:
+                    # Never log the exception itself: requests errors embed the
+                    # full URL including the ``apikey`` query parameter.
+                    log.error(  # noqa: TRY400 — exception text embeds apikey URL
+                        "Searching failed (%s)",
+                        type(exc).__name__,
+                    )
 
         return responses
 
@@ -170,17 +175,24 @@ class Jackett(GenericIndexer, TorznabMixin):
             indexer=indexer, session=session, params=params
         )
         response = session.get(url, timeout=self.timeout_seconds, params=query_params)
-        log.debug("Indexer %s url: %s", indexer, response.url)
+        log.debug(
+            "Indexer %s request: %s/api/v2.0/indexers/%s/results/torznab/api",
+            indexer,
+            self.url.rstrip("/"),
+            indexer,
+        )
 
         if response.status_code != 200:
             log.error(
-                f"Jacket error with indexer {indexer}, error: {response.status_code}"
+                "Jacket error with indexer %s, error: %s",
+                indexer,
+                response.status_code,
             )
             return []
 
         results = self.process_search_result(response.content)
 
-        log.info(f"Indexer {indexer} returned {len(results)} results")
+        log.info("Indexer %s returned %s results", indexer, len(results))
         return results
 
     def search_season(

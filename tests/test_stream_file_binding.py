@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -14,6 +15,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from miramedia.config import MiraMediaConfig
 from miramedia.file_status import ImportOutcome
 from miramedia.movies.schemas import MovieFile, MovieId
 from miramedia.shows.schemas import EpisodeFile, EpisodeId
@@ -456,3 +458,201 @@ def test_cross_media_type_file_id_is_not_found(
     assert movie_response.status_code == episode_response.status_code == 404
     assert movie_response.text == episode_response.text == SAFE_NOT_FOUND
     _assert_no_downstream_resolution(spies)
+
+
+STREAM_FLAG_MATRIX = (
+    pytest.param(False, False, id="both-off"),
+    pytest.param(True, False, id="streaming-only"),
+    pytest.param(False, True, id="downloads-only"),
+    pytest.param(True, True, id="both-on"),
+)
+
+
+def _set_stream_flags(*, enabled: bool, downloads: bool) -> None:
+    streams = MiraMediaConfig().streams
+    streams.enabled = enabled
+    streams.downloads = downloads
+
+
+def _media_stream_expects_503(enabled: bool) -> bool:
+    return not enabled
+
+
+def _media_download_expects_503(*, downloads: bool) -> bool:
+    return not downloads
+
+
+def _subtitle_expects_503(*, enabled: bool, downloads: bool) -> bool:
+    return not enabled and not downloads
+
+
+@contextmanager
+def gated_stream_client(
+    override_dependency: Callable[[Callable[..., object], object], None],
+    *,
+    show_repo: FakeShowRepository | None = None,
+    movie_repo: FakeMovieRepository | None = None,
+) -> Generator[TestClient]:
+    from miramedia.auth.users import current_active_user
+    from miramedia.database import get_session
+    from miramedia.main import app
+    from miramedia.movies.dependencies import get_movie_repository, get_movie_service
+    from miramedia.movies.service import MovieService
+    from miramedia.shows.dependencies import get_show_repository, get_show_service
+    from miramedia.shows.service import ShowService
+
+    fake_show_repo = show_repo or FakeShowRepository()
+    fake_movie_repo = movie_repo or FakeMovieRepository()
+
+    async def _stub_session() -> Any:
+        yield None
+
+    async def _active_user() -> Any:
+        user = MagicMock()
+        user.id = uuid.uuid4()
+        return user
+
+    def _show_repo_dep() -> FakeShowRepository:
+        return fake_show_repo
+
+    def _movie_repo_dep() -> FakeMovieRepository:
+        return fake_movie_repo
+
+    def _show_service_dep() -> ShowService:
+        return ShowService(
+            show_repository=fake_show_repo,  # type: ignore[arg-type]
+            torrent_service=MagicMock(),
+            indexer_service=MagicMock(),
+            notification_service=MagicMock(),
+        )
+
+    def _movie_service_dep() -> MovieService:
+        return MovieService(
+            movie_repository=fake_movie_repo,  # type: ignore[arg-type]
+            torrent_service=MagicMock(),
+            indexer_service=MagicMock(),
+            notification_service=MagicMock(),
+        )
+
+    override_dependency(get_session, _stub_session)
+    override_dependency(current_active_user, _active_user)
+    override_dependency(get_show_repository, _show_repo_dep)
+    override_dependency(get_movie_repository, _movie_repo_dep)
+    override_dependency(get_show_service, _show_service_dep)
+    override_dependency(get_movie_service, _movie_service_dep)
+    yield TestClient(app, raise_server_exceptions=False)
+
+
+@pytest.mark.parametrize(("enabled", "downloads"), STREAM_FLAG_MATRIX)
+def test_stream_access_gate_matrix_movie(
+    enabled: bool,
+    downloads: bool,
+    movie_binding: tuple[MovieId, MovieId, MovieFile],
+    override_dependency: Callable[[Callable[..., object], object], None],
+) -> None:
+    _set_stream_flags(enabled=enabled, downloads=downloads)
+    movie_id, other_movie_id, mov_file = movie_binding
+    movie_repo = _seed_movie_repo(movie_id, other_movie_id, mov_file)
+    stream_url = f"{PREFIX}/movies/{movie_id}?file_id={mov_file.id}"
+    download_url = f"{stream_url}&download=true"
+    subtitle_url = f"{PREFIX}/subtitles/movies/{movie_id}/en?file_id={mov_file.id}"
+
+    cases = (
+        (stream_url, _media_stream_expects_503(enabled)),
+        (download_url, _media_download_expects_503(downloads=downloads)),
+        (subtitle_url, _subtitle_expects_503(enabled=enabled, downloads=downloads)),
+    )
+    for url, expects_503 in cases:
+        with (
+            gated_stream_client(override_dependency, movie_repo=movie_repo) as client,
+            stream_resolution_spies() as spies,
+        ):
+            response = client.get(url)
+        if expects_503:
+            assert response.status_code == 503, url
+            _assert_no_downstream_resolution(spies)
+        else:
+            assert response.status_code != 503, url
+
+
+def test_media_stream_gate_requires_in_body_enabled_check(
+    movie_binding: tuple[MovieId, MovieId, MovieFile],
+    override_dependency: Callable[[Callable[..., object], object], None],
+    tmp_path: Path,
+) -> None:
+    """Fails if the movie handler drops require_stream_or_download_enabled(False)."""
+    _set_stream_flags(enabled=False, downloads=True)
+    movie_id, other_movie_id, mov_file = movie_binding
+    movie_repo = _seed_movie_repo(movie_id, other_movie_id, mov_file)
+    video_file = tmp_path / "movie.mkv"
+    video_file.write_bytes(b"video")
+    stream_url = f"{PREFIX}/movies/{movie_id}?file_id={mov_file.id}"
+
+    with (
+        gated_stream_client(override_dependency, movie_repo=movie_repo) as client,
+        patch(
+            "miramedia.streams.router._resolve_movie_video_file",
+            new_callable=AsyncMock,
+            return_value=video_file,
+        ),
+        patch("miramedia.streams.router._serve_file") as serve_file,
+    ):
+        response = client.get(stream_url)
+
+    assert response.status_code == 503
+    serve_file.assert_not_called()
+
+
+def test_movie_download_sets_attachment_disposition(
+    movie_binding: tuple[MovieId, MovieId, MovieFile],
+    override_dependency: Callable[[Callable[..., object], object], None],
+    tmp_path: Path,
+) -> None:
+    _set_stream_flags(enabled=False, downloads=True)
+    movie_id, other_movie_id, mov_file = movie_binding
+    movie_repo = _seed_movie_repo(movie_id, other_movie_id, mov_file)
+    video_file = tmp_path / "movie.mkv"
+    video_file.write_bytes(b"video")
+    download_url = f"{PREFIX}/movies/{movie_id}?file_id={mov_file.id}&download=true"
+
+    with (
+        gated_stream_client(override_dependency, movie_repo=movie_repo) as client,
+        patch(
+            "miramedia.streams.router._resolve_movie_video_file",
+            new_callable=AsyncMock,
+            return_value=video_file,
+        ),
+    ):
+        response = client.get(download_url)
+
+    assert response.status_code == 200
+    disposition = response.headers.get("content-disposition", "")
+    assert disposition.startswith('attachment; filename="')
+    assert disposition.endswith('movie.mkv"')
+
+
+def test_movie_stream_has_no_attachment_disposition(
+    movie_binding: tuple[MovieId, MovieId, MovieFile],
+    override_dependency: Callable[[Callable[..., object], object], None],
+    tmp_path: Path,
+) -> None:
+    _set_stream_flags(enabled=True, downloads=False)
+    movie_id, other_movie_id, mov_file = movie_binding
+    movie_repo = _seed_movie_repo(movie_id, other_movie_id, mov_file)
+    video_file = tmp_path / "movie.mkv"
+    video_file.write_bytes(b"video")
+    stream_url = f"{PREFIX}/movies/{movie_id}?file_id={mov_file.id}"
+
+    with (
+        gated_stream_client(override_dependency, movie_repo=movie_repo) as client,
+        patch(
+            "miramedia.streams.router._resolve_movie_video_file",
+            new_callable=AsyncMock,
+            return_value=video_file,
+        ),
+    ):
+        response = client.get(stream_url)
+
+    assert response.status_code == 200
+    disposition = response.headers.get("content-disposition", "")
+    assert not disposition.startswith("attachment; filename=")

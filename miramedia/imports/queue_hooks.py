@@ -147,12 +147,7 @@ async def _flush_incremental_queue() -> None:
     if not refs and not completions:
         return
     try:
-        from miramedia.database import (
-            SessionLocalBackground,
-            bg_movie_service,
-            bg_show_service,
-            bg_torrent_service,
-        )
+        from miramedia.background_services import bg_imports_service
         from miramedia.imports.queue.refresh import (
             sync_import_completion_queue,
             sync_integrity_import_queue,
@@ -160,75 +155,44 @@ async def _flush_incremental_queue() -> None:
             sync_scan_import_queue,
             sync_torrent_import_queue,
         )
-        from miramedia.imports.repository import ImportsRepository
-        from miramedia.imports.service import ImportsService
 
-        async with SessionLocalBackground() as db:
-            async with bg_torrent_service() as torrent_service:
-                async with bg_show_service() as show_service:
-                    async with bg_movie_service() as movie_service:
-                        service = ImportsService(
-                            repository=ImportsRepository(db),
-                            torrent_service=torrent_service,
-                            show_service=show_service,
-                            movie_service=movie_service,
-                        )
-                        for torrent_id in completions:
-                            await sync_import_completion_queue(
-                                db, service, UUID(torrent_id)
-                            )
-                        for kind, ref_id in refs:
-                            if kind == "torrent":
-                                await sync_torrent_import_queue(
-                                    db, service, UUID(ref_id)
-                                )
-                            elif kind == "scan":
-                                await sync_scan_import_queue(db, service, ref_id)
-                            elif kind == "media":
-                                await sync_media_import_queue(db, service, UUID(ref_id))
-                            elif kind == "integrity":
-                                prefix = "integrity:"
-                                body = ref_id.removeprefix(prefix)
-                                media_type, _, file_id_str = body.partition(":")
-                                await sync_integrity_import_queue(
-                                    db,
-                                    service,
-                                    media_type=media_type,
-                                    file_id=UUID(file_id_str),
-                                )
-                            else:
-                                log.warning(
-                                    "Unknown import queue reference %s/%s",
-                                    kind,
-                                    ref_id,
-                                )
+        async with bg_imports_service() as (db, service):
+            for torrent_id in completions:
+                await sync_import_completion_queue(db, service, UUID(torrent_id))
+            for kind, ref_id in refs:
+                if kind == "torrent":
+                    await sync_torrent_import_queue(db, service, UUID(ref_id))
+                elif kind == "scan":
+                    await sync_scan_import_queue(db, service, ref_id)
+                elif kind == "media":
+                    await sync_media_import_queue(db, service, UUID(ref_id))
+                elif kind == "integrity":
+                    prefix = "integrity:"
+                    body = ref_id.removeprefix(prefix)
+                    media_type, _, file_id_str = body.partition(":")
+                    await sync_integrity_import_queue(
+                        db,
+                        service,
+                        media_type=media_type,
+                        file_id=UUID(file_id_str),
+                    )
+                else:
+                    log.warning(
+                        "Unknown import queue reference %s/%s",
+                        kind,
+                        ref_id,
+                    )
     except Exception:
         log.exception("Incremental import queue sync failed")
 
 
 async def _rebuild_queue() -> None:
     try:
-        from miramedia.database import (
-            SessionLocalBackground,
-            bg_movie_service,
-            bg_show_service,
-            bg_torrent_service,
-        )
+        from miramedia.background_services import bg_imports_service
         from miramedia.imports.queue.sync import rebuild_import_queue
-        from miramedia.imports.repository import ImportsRepository
-        from miramedia.imports.service import ImportsService
 
-        async with SessionLocalBackground() as db:
-            async with bg_torrent_service() as torrent_service:
-                async with bg_show_service() as show_service:
-                    async with bg_movie_service() as movie_service:
-                        service = ImportsService(
-                            repository=ImportsRepository(db),
-                            torrent_service=torrent_service,
-                            show_service=show_service,
-                            movie_service=movie_service,
-                        )
-                        await rebuild_import_queue(db, service)
+        async with bg_imports_service() as (db, service):
+            await rebuild_import_queue(db, service)
         # Scan/bulk import has no per-torrent SSE event of its own; push a
         # refresh so the imports dashboard refetches the rebuilt queue live
         # instead of waiting for a manual reload or the 5-min scheduler tick.

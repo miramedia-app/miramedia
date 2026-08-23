@@ -10,15 +10,15 @@ from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
-from miramedia.torrents.schemas import Torrent, TorrentStatus
-from miramedia.torrents.utils import (
-    get_torrent_hash,
+from miramedia.torrents.inspection import get_torrent_hash
+from miramedia.torrents.paths import (
     torrent_dir_under_root,
     torrent_title_path_component,
 )
+from miramedia.torrents.schemas import Torrent, TorrentStatus
 
 if TYPE_CHECKING:
-    from miramedia.torrents.utils import TorrentFile
+    from miramedia.torrents.inspection import TorrentFile
 
 log = logging.getLogger(__name__)
 
@@ -72,7 +72,8 @@ class TransmissionDownloadClient(AbstractDownloadClient):
             )
 
             log.info(
-                f"Successfully added torrent to Transmission: {indexer_result.title}"
+                "Successfully added torrent to Transmission: %s",
+                indexer_result.title,
             )
 
         except Exception:
@@ -125,7 +126,7 @@ class TransmissionDownloadClient(AbstractDownloadClient):
             transmission_torrent = self._client.get_torrent(torrent.hash)
 
             if transmission_torrent is None:
-                log.warning(f"Torrent not found in Transmission: {torrent.hash}")
+                log.warning("Torrent not found in Transmission: %s", torrent.hash)
                 return TorrentStatus.unknown, 0.0, 0, 0, 0
 
             status = self.STATUS_MAPPING.get(
@@ -139,7 +140,9 @@ class TransmissionDownloadClient(AbstractDownloadClient):
             if transmission_torrent.error != 0:
                 status = TorrentStatus.error
                 log.warning(
-                    f"Torrent {torrent.title} has error status: {transmission_torrent.error_string}"
+                    "Torrent %s has error status: %s",
+                    torrent.title,
+                    transmission_torrent.error_string,
                 )
         except Exception:
             log.exception("Failed to get torrent status")
@@ -155,7 +158,7 @@ class TransmissionDownloadClient(AbstractDownloadClient):
         """
         try:
             self._client.stop_torrent(torrent.hash)
-            log.debug(f"Successfully paused torrent: {torrent.title}")
+            log.debug("Successfully paused torrent: %s", torrent.title)
 
         except Exception:
             log.exception("Failed to pause torrent")
@@ -169,14 +172,14 @@ class TransmissionDownloadClient(AbstractDownloadClient):
         """
         try:
             self._client.start_torrent(torrent.hash)
-            log.debug(f"Successfully resumed torrent: {torrent.title}")
+            log.debug("Successfully resumed torrent: %s", torrent.title)
 
         except Exception:
             log.exception("Failed to resume torrent")
             raise
 
     def get_torrent_files(self, torrent: Torrent) -> "list[TorrentFile] | None":
-        from miramedia.torrents.utils import TorrentFile
+        from miramedia.torrents.inspection import TorrentFile
 
         try:
             transmission_torrent = self._client.get_torrent(torrent.hash)

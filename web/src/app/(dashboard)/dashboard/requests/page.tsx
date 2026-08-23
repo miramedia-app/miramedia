@@ -24,7 +24,7 @@ import type {
 } from "@/components/data-list";
 import { useUser } from "@/components/providers/user-provider";
 import apiClient from "@/lib/api/client";
-import { pLimit } from "@/lib/p-limit";
+import { bulkMutate } from "@/lib/bulk-mutate";
 import type { components } from "@/lib/api/api";
 
 type MediaRequest = components["schemas"]["MediaRequest"];
@@ -115,10 +115,12 @@ export default function RequestsPage() {
     async (items: MediaRequest[], action: "approve" | "reject" | "delete") => {
       const ids = items.map((r) => r.id!).filter(Boolean);
       if (!ids.length) return;
+      const verbLabel =
+        action === "approve" ? "approved" : action === "reject" ? "rejected" : "deleted";
       try {
         // Cap concurrency so "select all" doesn't flood the backend with
         // hundreds of in-flight mutations.
-        await pLimit<string, unknown>(8, ids, (id) => {
+        const { ok, failed } = await bulkMutate(ids, (id) => {
           if (action === "approve") {
             return apiClient.PATCH("/api/v1/requests/{request_id}/approve", {
               params: { path: { request_id: id } },
@@ -133,13 +135,12 @@ export default function RequestsPage() {
             params: { path: { request_id: id } },
           });
         });
-        toast.success(
-          action === "approve"
-            ? `${ids.length} request${ids.length !== 1 ? "s" : ""} approved`
-            : action === "reject"
-              ? `${ids.length} request${ids.length !== 1 ? "s" : ""} rejected`
-              : `${ids.length} request${ids.length !== 1 ? "s" : ""} deleted`,
-        );
+        if (ok > 0) {
+          toast.success(`${ok} request${ok !== 1 ? "s" : ""} ${verbLabel}`);
+        }
+        if (failed > 0) {
+          toast.error(`${failed} request(s) could not be ${verbLabel}`);
+        }
         await qc.invalidateQueries({ queryKey: ["requests"] });
       } catch {
         toast.error("Failed to apply bulk action.");

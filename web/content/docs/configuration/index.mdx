@@ -66,7 +66,8 @@ the effective order is: **DB overrides → environment → `.env` → `config.to
 
 Saving applies immediately — no restart. Every editable section (`misc`,
 `auth`, `notifications`, `torrents`, `indexers`, `metadata`, `requests`,
-`subtitles`, `updates`, `cloudflare`, `imports`) is swapped on the live config,
+`subtitles`, `updates`, `cloudflare`, `imports`, `streams`, `playback`) is
+swapped on the live config,
 schedule intervals are rescheduled, and auth transport settings (cookie flags,
 session lifetime, OIDC client) are rebuilt in place. Other workers pick the
 change up over the event bus. The one exception is `auth.token_secret`, which
@@ -99,6 +100,8 @@ if editing the file appears to do nothing.
 | `[metadata]`                                 | [Metadata](metadata)                 |
 | `[subtitles]`                                | [Subtitles](subtitles)               |
 | `[requests]`                                 | [Requests](requests)                 |
+| `[streams]`                                  | [Streaming](streams)                 |
+| `[playback]`                                 | [Playback](playback)                 |
 | `[notifications]`                            | [Notifications](notifications)       |
 | `[[misc.*_libraries]]`                       | [Libraries](libraries)               |
 | `[imports]`                                  | [Imports](imports)                   |

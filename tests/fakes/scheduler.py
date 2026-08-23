@@ -120,6 +120,24 @@ class FakeShowService:
         self.add_show_calls.append((external_id, metadata_provider))
         return self.show
 
+    def get_root_season_directory(self, show: Show, season_number: Any) -> Any:  # noqa: ARG002
+        from pathlib import Path
+
+        return Path("/fake/season")
+
+    @staticmethod
+    def _scan_season_video_files(season_dir: Any) -> set[str]:  # noqa: ARG004
+        return set()
+
+    def _episode_downloaded_from_cache(
+        self,
+        *,
+        episode: Episode,
+        season_number: Any,  # noqa: ARG002
+        season_files: set[str],  # noqa: ARG002
+    ) -> bool:
+        return episode.id in self.downloaded_episodes
+
     async def is_episode_downloaded(
         self,
         *,

@@ -56,7 +56,7 @@ async def _auto_import_item(
     """
     from pathlib import Path
 
-    from miramedia.database import bg_movie_service, bg_show_service
+    from miramedia.background_services import bg_movie_service, bg_show_service
     from miramedia.metadata.dependencies import get_metadata_provider
     from miramedia.torrents.schemas import MediaType
 
@@ -174,12 +174,12 @@ async def _scan_and_cache() -> None:
 
 
 async def _scan_and_cache_body() -> None:
-    from miramedia.config import MiraMediaConfig
-    from miramedia.database import (
-        background_session,
+    from miramedia.background_services import (
         bg_movie_service,
         bg_show_service,
     )
+    from miramedia.config import MiraMediaConfig
+    from miramedia.database import background_session
     from miramedia.imports.repository import ImportsRepository
 
     imports_cfg = MiraMediaConfig().imports

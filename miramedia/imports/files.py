@@ -355,9 +355,9 @@ def delete_files_matching_stems(directory: Path, stems: Iterable[str]) -> None:
         for f in files_matching_stem(directory, stem):
             try:
                 f.unlink(missing_ok=True)
-                log.info(f"Deleted file: {f}")
+                log.info("Deleted file: %s", f)
             except OSError:
-                log.warning(f"Failed to delete file: {f}", exc_info=True)
+                log.warning("Failed to delete file: %s", f, exc_info=True)
 
 
 def link_subtitles(
@@ -416,7 +416,7 @@ def get_files_for_import(
     in the torrents domain (``get_torrent_filepath``) and hand the resulting
     path here.
     """
-    log.info(f"Importing files from directory {directory}")
+    log.info("Importing files from directory %s", directory)
     search_directory = directory
 
     all_files: list[Path] = list_importable_files(search_directory)
@@ -443,7 +443,10 @@ def get_files_for_import(
             )
 
     log.info(
-        f"Found {len(all_files)} files ({len(video_files)} video files, {len(subtitle_files)} subtitle files) for further processing."
+        "Found %s files (%s video files, %s subtitle files) for further processing.",
+        len(all_files),
+        len(video_files),
+        len(subtitle_files),
     )
     return video_files, subtitle_files, all_files
 

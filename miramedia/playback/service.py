@@ -4,8 +4,6 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from fastapi import HTTPException, status
-
 from miramedia.exceptions import NotFoundError
 from miramedia.movies.repository import MovieRepository
 from miramedia.movies.schemas import MovieId
@@ -50,17 +48,13 @@ class PlaybackService:
         if media_kind == MediaKind.movie:
             row = await self.movie_repository.get_movie_file_by_id(file_id)
             if row is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Movie file not found",
-                )
+                msg = "Movie file not found"
+                raise NotFoundError(msg)
             return
         row = await self.show_repository.get_episode_file_by_id(file_id)
         if row is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Episode file not found",
-            )
+            msg = "Episode file not found"
+            raise NotFoundError(msg)
 
     async def get_progress(
         self,
@@ -80,10 +74,8 @@ class PlaybackService:
             return None
         if progress is not None and media_kind is not None:
             if progress.media_kind != media_kind:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Playback progress not found",
-                )
+                msg = "Playback progress not found"
+                raise NotFoundError(msg)
         return progress
 
     def _should_coalesce_write(
@@ -188,18 +180,14 @@ class PlaybackService:
             try:
                 await self.movie_repository.get_movie_by_id(MovieId(media_id))
             except NotFoundError:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Movie not found",
-                ) from None
+                msg = "Movie not found"
+                raise NotFoundError(msg) from None
             return
         try:
             await self.show_repository.get_episode(EpisodeId(media_id))
         except NotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Episode not found",
-            ) from None
+            msg = "Episode not found"
+            raise NotFoundError(msg) from None
 
     async def get_watched(
         self,
@@ -263,10 +251,8 @@ class PlaybackService:
                 data.season_number, ShowId(data.show_id)
             )
         except NotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Season not found",
-            ) from None
+            msg = "Season not found"
+            raise NotFoundError(msg) from None
         if data.season_number == 0 and not data.include_specials:
             return
         episode_ids = [UUID(str(episode.id)) for episode in season.episodes]
@@ -292,10 +278,8 @@ class PlaybackService:
         try:
             show = await self.show_repository.get_show_by_id(ShowId(data.show_id))
         except NotFoundError:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Show not found",
-            ) from None
+            msg = "Show not found"
+            raise NotFoundError(msg) from None
         episode_ids: list[UUID] = []
         for season in show.seasons:
             if season.number == 0 and not data.include_specials:

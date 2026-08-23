@@ -1,4 +1,25 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+
+const mocks = vi.hoisted(() => ({
+  delete: vi.fn(),
+  error: vi.fn(),
+  success: vi.fn(),
+}));
+
+vi.mock("@/lib/api/client", () => ({
+  default: {
+    DELETE: mocks.delete,
+  },
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: mocks.error,
+    success: mocks.success,
+  },
+}));
+
 import {
   composeSavePayload,
   computeDirtyTabs,
@@ -7,6 +28,7 @@ import {
   isSectionDirty,
   keyRows,
   parseImportOverrides,
+  resetAllSettings,
   splitIndexer,
   stableStringify,
   stripRowKeys,
@@ -122,6 +144,8 @@ describe("isSectionDirty / computeDirtyTabs", () => {
     metadata: {},
     requests: {},
     watchlists: {},
+    streams: {},
+    playback: {},
     subtitles: {},
     imports: {},
     updates: {},
@@ -238,6 +262,8 @@ describe("composeSavePayload", () => {
     metadata: { tmdb: {} },
     requests: { seerr: {} },
     watchlists: { native: { enabled: false } },
+    streams: { enabled: true },
+    playback: { continue_watching: true },
     subtitles: { bazarr: {} },
     imports: {},
     updates: {},
@@ -289,29 +315,63 @@ describe("parseImportOverrides", () => {
   });
 });
 
-describe("reset behavior", () => {
-  it("reset does not compose a save payload from local editor state", () => {
-    // DELETE /api/v1/system/settings has no body; local dirty slices must not
-    // be sent. composeSavePayload remains the save-only path.
-    const dirty = composeSavePayload(
-      {
-        misc: { naming: { series: "dirty" } },
-        auth: {},
-        notifications: {},
-        torrents: {},
-        indexers: {},
-        metadata: {},
-        requests: {},
-        watchlists: {},
-        subtitles: {},
-        imports: {},
-        updates: {},
-        cloudflare: {},
-      },
-      new Set(["general"]),
-    );
-    expect(dirty).toHaveProperty("misc");
-    // Reset contract: callers must not reuse composeSavePayload for reset.
-    expect(typeof dirty).toBe("object");
+describe("resetAllSettings", () => {
+  function createQueryClient() {
+    return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sends a bodyless DELETE, notifies once, invalidates settings and features, and clears resetting", async () => {
+    mocks.delete.mockResolvedValueOnce({ error: undefined });
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const setResetting = vi.fn();
+
+    await resetAllSettings(queryClient, setResetting);
+
+    expect(mocks.delete).toHaveBeenCalledTimes(1);
+    expect(mocks.delete).toHaveBeenCalledWith("/api/v1/system/settings");
+    expect(mocks.success).toHaveBeenCalledTimes(1);
+    expect(mocks.success).toHaveBeenCalledWith("All settings reset to defaults");
+    expect(mocks.error).not.toHaveBeenCalled();
+    expect(invalidateSpy).toHaveBeenCalledTimes(2);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["system", "settings"] });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["features"] });
+    expect(setResetting.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("shows error feedback without success or invalidation when the API returns an error", async () => {
+    mocks.delete.mockResolvedValueOnce({ error: { message: "nope" } });
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const setResetting = vi.fn();
+
+    await resetAllSettings(queryClient, setResetting);
+
+    expect(mocks.delete).toHaveBeenCalledWith("/api/v1/system/settings");
+    expect(mocks.error).toHaveBeenCalledTimes(1);
+    expect(mocks.error).toHaveBeenCalledWith("Failed to reset settings");
+    expect(mocks.success).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(setResetting.mock.calls).toEqual([[true], [false]]);
+  });
+
+  it("shows error feedback without success or invalidation when the request throws", async () => {
+    mocks.delete.mockRejectedValueOnce(new Error("network"));
+    const queryClient = createQueryClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+    const setResetting = vi.fn();
+
+    await resetAllSettings(queryClient, setResetting);
+
+    expect(mocks.delete).toHaveBeenCalledWith("/api/v1/system/settings");
+    expect(mocks.error).toHaveBeenCalledTimes(1);
+    expect(mocks.error).toHaveBeenCalledWith("Failed to reset settings");
+    expect(mocks.success).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(setResetting.mock.calls).toEqual([[true], [false]]);
   });
 });

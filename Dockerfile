@@ -1,4 +1,4 @@
-FROM node:24-alpine AS frontend-build
+FROM node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43 AS frontend-build
 WORKDIR /frontend
 
 RUN corepack enable
@@ -39,7 +39,7 @@ function walk(dir) {
 walk(root);
 NODE
 
-FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim AS base
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:d1e005e6f5aac724b7554db95f1c128a77d8d35b59ebe70e188852b4bdad3a3d AS base
 
 # BuildKit cache mounts keep apt's download cache + package list across rebuilds
 # without bloating the image layer. ``rm -f /etc/apt/apt.conf.d/docker-clean``

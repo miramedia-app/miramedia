@@ -54,6 +54,7 @@ def _bulk_subtitle_scan_concurrency_limit() -> int:
 
 
 _BULK_SUBTITLE_SCAN_CONCURRENCY = _bulk_subtitle_scan_concurrency_limit()
+_BULK_SUBTITLE_SCAN_CHUNK_SIZE = 200
 
 SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa", ".sub"}
 
@@ -505,7 +506,9 @@ class SubtitleService:
                 season_id=season.id
             )
         except Exception:
-            log.warning(f"Could not resolve episode {episode_id} for subtitle deletion")
+            log.warning(
+                "Could not resolve episode %s for subtitle deletion", episode_id
+            )
             return
         if Path(file_name).name != file_name:
             # file_name is a user-supplied query param joined to the media dir
@@ -526,9 +529,9 @@ class SubtitleService:
             return False
 
         if await asyncio.to_thread(_unlink):
-            log.info(f"Deleted subtitle file: {target}")
+            log.info("Deleted subtitle file: %s", target)
         else:
-            log.warning(f"Subtitle file not found: {target}")
+            log.warning("Subtitle file not found: %s", target)
 
     async def get_movie_subtitle_files(self, movie_id: MovieId) -> list[SubtitleFile]:
         """List all subtitle files for a movie."""
@@ -550,7 +553,7 @@ class SubtitleService:
         try:
             movie = await self.movie_service.get_movie_by_id(movie_id=movie_id)
         except Exception:
-            log.warning(f"Could not resolve movie {movie_id} for subtitle deletion")
+            log.warning("Could not resolve movie %s for subtitle deletion", movie_id)
             return
         if Path(file_name).name != file_name:
             # Reject non-basename input — see delete_episode_subtitle_file.
@@ -566,9 +569,9 @@ class SubtitleService:
             return False
 
         if await asyncio.to_thread(_unlink):
-            log.info(f"Deleted subtitle file: {target}")
+            log.info("Deleted subtitle file: %s", target)
         else:
-            log.warning(f"Subtitle file not found: {target}")
+            log.warning("Subtitle file not found: %s", target)
 
     # --- Native subtitle search (subliminal) ---
 
@@ -593,7 +596,7 @@ class SubtitleService:
 
         status = await self.get_episode_subtitle_status(episode_id)
         if not status.missing_languages:
-            log.debug(f"No missing subtitles for episode {episode_id}")
+            log.debug("No missing subtitles for episode %s", episode_id)
             return []
 
         try:
@@ -605,7 +608,7 @@ class SubtitleService:
                 season_id=season.id
             )
         except Exception:
-            log.exception(f"Failed to resolve episode {episode_id}")
+            log.exception("Failed to resolve episode %s", episode_id)
             return []
 
         season_dir = self.show_service.get_root_season_directory(
@@ -624,7 +627,7 @@ class SubtitleService:
             self._find_first_video_file, season_dir, file_stems
         )
         if not video_path:
-            log.warning(f"No video file found for episode {episode_id}")
+            log.warning("No video file found for episode %s", episode_id)
             return []
 
         # Commit + release the connection before the slow subliminal call so
@@ -664,13 +667,13 @@ class SubtitleService:
 
         status = await self.get_movie_subtitle_status(movie_id)
         if not status.missing_languages:
-            log.debug(f"No missing subtitles for movie {movie_id}")
+            log.debug("No missing subtitles for movie %s", movie_id)
             return []
 
         try:
             movie = await self.movie_service.get_movie_by_id(movie_id=movie_id)
         except Exception:
-            log.exception(f"Failed to resolve movie {movie_id}")
+            log.exception("Failed to resolve movie %s", movie_id)
             return []
 
         movie_root = self.movie_service.get_movie_root_path(movie=movie)
@@ -680,7 +683,7 @@ class SubtitleService:
             self._find_first_video_file, movie_root, file_stems
         )
         if not video_path:
-            log.warning(f"No video file found for movie {movie_id}")
+            log.warning("No video file found for movie %s", movie_id)
             return []
 
         # See ``search_episode_subtitles`` for the rationale: release the
@@ -751,7 +754,7 @@ class SubtitleService:
                 try:
                     lang_set.add(Language(lang_code))
                 except Exception:
-                    log.warning(f"Invalid language code: {lang_code}")
+                    log.warning("Invalid language code: %s", lang_code)
 
         if not lang_set:
             return []
@@ -759,7 +762,7 @@ class SubtitleService:
         try:
             video = subliminal.scan_video(str(video_path))
         except Exception:
-            log.exception(f"Failed to scan video: {video_path}")
+            log.exception("Failed to scan video: %s", video_path)
             return []
 
         # Enrich video with database metadata for better provider matching
@@ -803,7 +806,7 @@ class SubtitleService:
             log.warning("No subtitle providers enabled")
             return []
 
-        log.info(f"Searching subtitles with providers: {providers}")
+        log.info("Searching subtitles with providers: %s", providers)
 
         try:
             subtitles = subliminal.download_best_subtitles(
@@ -819,7 +822,8 @@ class SubtitleService:
         if not subtitles.get(video):
             # Retry with relaxed metadata (no year) for broader results
             log.info(
-                f"No subtitles found for {video_path.name} with full metadata, retrying without year"
+                "No subtitles found for %s with full metadata, retrying without year",
+                video_path.name,
             )
             original_year = video.year
             video.year = None
@@ -837,7 +841,7 @@ class SubtitleService:
                 video.year = original_year
 
         if not subtitles.get(video):
-            log.info(f"No subtitles found for {video_path.name}")
+            log.info("No subtitles found for %s", video_path.name)
             return []
 
         try:
@@ -848,7 +852,10 @@ class SubtitleService:
 
         downloaded = [str(sub.language) for sub in subtitles[video]]
         log.info(
-            f"Downloaded {len(downloaded)} subtitle(s) for {video_path.name}: {downloaded}"
+            "Downloaded %s subtitle(s) for %s: %s",
+            len(downloaded),
+            video_path.name,
+            downloaded,
         )
         return downloaded
 
@@ -896,7 +903,7 @@ class SubtitleService:
         EACH item open a fresh ``bg_subtitle_service()`` so the DB connection
         is released for the duration of the subliminal call.
         """
-        from miramedia.database import bg_subtitle_service
+        from miramedia.background_services import bg_subtitle_service
 
         config = self._get_config()
         if not config.subtitles.enabled or not config.subtitles.native.enabled:
@@ -935,10 +942,12 @@ class SubtitleService:
             except Exception:
                 log.exception("Failed to scan subtitles for movie %s", movie_id)
 
-        await asyncio.gather(
-            *(_scan_episode(episode_id) for episode_id in episode_targets),
-            *(_scan_movie(movie_id) for movie_id in movie_targets),
-        )
+        for offset in range(0, len(episode_targets), _BULK_SUBTITLE_SCAN_CHUNK_SIZE):
+            chunk = episode_targets[offset : offset + _BULK_SUBTITLE_SCAN_CHUNK_SIZE]
+            await asyncio.gather(*(_scan_episode(episode_id) for episode_id in chunk))
+        for offset in range(0, len(movie_targets), _BULK_SUBTITLE_SCAN_CHUNK_SIZE):
+            chunk = movie_targets[offset : offset + _BULK_SUBTITLE_SCAN_CHUNK_SIZE]
+            await asyncio.gather(*(_scan_movie(movie_id) for movie_id in chunk))
 
         log.info("Finished bulk subtitle scan")
 

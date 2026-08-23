@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import type { Site } from "@/lib/indexers";
@@ -25,9 +26,10 @@ export interface EditIndexerDialogProps {
   setEditSite: React.Dispatch<React.SetStateAction<Site | null>>;
   loading: boolean;
   onSave: () => void;
+  cfEnabled: boolean;
 }
 
-/** Dialog for editing an existing indexer site's settings. */
+/** Dialog for editing an existing indexer's settings. */
 export function EditIndexerDialog({
   open,
   onOpenChange,
@@ -35,31 +37,33 @@ export function EditIndexerDialog({
   setEditSite,
   loading,
   onSave,
+  cfEnabled,
 }: EditIndexerDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
-          <DialogTitle>Edit Indexer Site</DialogTitle>
-          <DialogDescription>Modify settings for this indexer site.</DialogDescription>
+          <DialogTitle>Edit Indexer</DialogTitle>
+          <DialogDescription>Modify settings for this indexer.</DialogDescription>
         </DialogHeader>
         {editSite && (
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label>Name</Label>
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="edit-indexer-name">Name</Label>
               <Input
+                id="edit-indexer-name"
                 value={editSite.name}
                 onChange={(e) => setEditSite((s) => (s ? { ...s, name: e.target.value } : s))}
               />
             </div>
-            <div className="grid gap-2">
-              <Label>Active URL</Label>
+            <div className="space-y-2">
+              <Label htmlFor="edit-indexer-url">Active URL</Label>
               {(editSite.available_urls ?? []).length > 1 ? (
                 <Select
                   value={editSite.url}
                   onValueChange={(v) => setEditSite((s) => (s ? { ...s, url: v } : s))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger id="edit-indexer-url" className="w-full">
                     <span className="truncate">{editSite.url}</span>
                   </SelectTrigger>
                   <SelectContent>
@@ -72,14 +76,16 @@ export function EditIndexerDialog({
                 </Select>
               ) : (
                 <Input
+                  id="edit-indexer-url"
                   value={editSite.url}
                   onChange={(e) => setEditSite((s) => (s ? { ...s, url: e.target.value } : s))}
                 />
               )}
             </div>
-            <div className="grid gap-2">
-              <Label>Priority</Label>
+            <div className="space-y-2">
+              <Label htmlFor="edit-indexer-priority">Priority</Label>
               <Input
+                id="edit-indexer-priority"
                 type="number"
                 min={0}
                 value={editSite.priority ?? 100}
@@ -90,48 +96,91 @@ export function EditIndexerDialog({
               <span className="text-xs text-muted-foreground">Lower = searched first.</span>
             </div>
             {editSite.site_type === "torznab" && (
-              <div className="grid gap-2">
-                <Label>API Key</Label>
+              <div className="space-y-2">
+                <Label htmlFor="edit-indexer-key">API Key</Label>
                 <Input
+                  id="edit-indexer-key"
                   value={editSite.api_key ?? ""}
                   onChange={(e) => setEditSite((s) => (s ? { ...s, api_key: e.target.value } : s))}
                   type="password"
                 />
               </div>
             )}
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={editSite.supports_tv}
-                  onCheckedChange={(v) => setEditSite((s) => (s ? { ...s, supports_tv: v } : s))}
-                />
-                <Label>Shows</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={editSite.supports_movies}
-                  onCheckedChange={(v) =>
-                    setEditSite((s) => (s ? { ...s, supports_movies: v } : s))
-                  }
-                />
-                <Label>Movies</Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={editSite.cloudflare_protected}
-                  onCheckedChange={(v) =>
-                    setEditSite((s) => (s ? { ...s, cloudflare_protected: v } : s))
-                  }
-                />
-                <Label>CF Protected</Label>
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edit-indexer-enabled">Enabled</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Include this indexer in searches.
+                    </p>
+                  </div>
+                  <Switch
+                    id="edit-indexer-enabled"
+                    checked={editSite.enabled}
+                    onCheckedChange={(v) => setEditSite((s) => (s ? { ...s, enabled: v } : s))}
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edit-indexer-tv">Shows</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Search this indexer for TV shows.
+                    </p>
+                  </div>
+                  <Switch
+                    id="edit-indexer-tv"
+                    checked={editSite.supports_tv}
+                    onCheckedChange={(v) => setEditSite((s) => (s ? { ...s, supports_tv: v } : s))}
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edit-indexer-movies">Movies</Label>
+                    <p className="text-xs text-muted-foreground">Search this indexer for movies.</p>
+                  </div>
+                  <Switch
+                    id="edit-indexer-movies"
+                    checked={editSite.supports_movies}
+                    onCheckedChange={(v) =>
+                      setEditSite((s) => (s ? { ...s, supports_movies: v } : s))
+                    }
+                  />
+                </div>
+                {cfEnabled && (
+                  <>
+                    <Separator />
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="edit-indexer-cf">Cloudflare</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Bypass Cloudflare when searching.
+                        </p>
+                      </div>
+                      <Switch
+                        id="edit-indexer-cf"
+                        checked={editSite.cloudflare_protected}
+                        onCheckedChange={(v) =>
+                          setEditSite((s) => (s ? { ...s, cloudflare_protected: v } : s))
+                        }
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
           </div>
         )}
         <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
+            Cancel
+          </Button>
           <Button
             onClick={() => void onSave()}
             disabled={loading || !editSite?.name || !editSite?.url}
+            className="border border-white bg-white text-black hover:bg-white/90"
           >
             {loading ? (
               <>

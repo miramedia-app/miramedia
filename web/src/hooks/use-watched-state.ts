@@ -13,12 +13,13 @@ type WatchStateUpdate = components["schemas"]["WatchStateUpdate"];
 type SeasonWatchStateUpdate = components["schemas"]["SeasonWatchStateUpdate"];
 type ShowWatchStateUpdate = components["schemas"]["ShowWatchStateUpdate"];
 
-export const WATCHED_CACHE_KEYS = [
-  ["playback", "watched"],
+const WATCHED_AGGREGATE_KEYS = [
   ["playback", "watch-next"],
   ["playback", "continue"],
   ["watchlists"],
 ] as const;
+
+export const WATCHED_CACHE_KEYS = [["playback", "watched"], ...WATCHED_AGGREGATE_KEYS] as const;
 
 export function watchedQueryKey(mediaKind: MediaKind, mediaId: string) {
   return ["playback", "watched", mediaKind, mediaId] as const;
@@ -27,6 +28,18 @@ export function watchedQueryKey(mediaKind: MediaKind, mediaId: string) {
 export async function invalidateWatchedCaches(queryClient: QueryClient) {
   await Promise.all(
     WATCHED_CACHE_KEYS.map((queryKey) => queryClient.invalidateQueries({ queryKey })),
+  );
+}
+
+export async function invalidateWatchedItem(
+  queryClient: QueryClient,
+  mediaKind: MediaKind,
+  mediaId: string,
+) {
+  await Promise.all(
+    [watchedQueryKey(mediaKind, mediaId), ...WATCHED_AGGREGATE_KEYS].map((queryKey) =>
+      queryClient.invalidateQueries({ queryKey }),
+    ),
   );
 }
 
@@ -100,8 +113,13 @@ export function buildSetWatchedMutationOptions(queryClient: QueryClient) {
     onSuccess: (_data: WatchState, variables: WatchStateUpdate) => {
       toast.success(variables.watched ? "Marked as watched" : "Marked as unwatched");
     },
-    onSettled: async () => {
-      await invalidateWatchedCaches(queryClient);
+    onSettled: async (
+      _data: WatchState | undefined,
+      _error: unknown,
+      variables: WatchStateUpdate,
+      _context: { previous?: WatchState; key: ReturnType<typeof watchedQueryKey> } | undefined,
+    ) => {
+      await invalidateWatchedItem(queryClient, variables.media_kind, variables.media_id);
     },
   };
 }

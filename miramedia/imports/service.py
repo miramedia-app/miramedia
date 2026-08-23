@@ -24,9 +24,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from fastapi.exceptions import HTTPException
 from pydantic import TypeAdapter
 
+from miramedia.exceptions import (
+    BadRequestError,
+    ConflictError,
+    NotFoundError,
+    UnprocessableEntityError,
+)
 from miramedia.file_status import ImportOutcome
 from miramedia.imports.repository import ImportsRepository
 from miramedia.imports.schemas import (
@@ -70,6 +75,10 @@ if TYPE_CHECKING:
     from miramedia.torrents.models import TorrentHistory
 
 log = logging.getLogger(__name__)
+
+_SCAN_ENTRY_NOT_FOUND = "scan entry not found"
+_SCAN_ENTRY_NOT_ELIGIBLE = "scan entry not eligible"
+_TORRENT_ID_MUST_BE_UUID = "torrent id must be a uuid"
 
 _RETRY_CAP_ATTEMPTS = 5  # past this many file-level attempts we call it "stuck"
 _IMPORT_ITEM_ADAPTER = TypeAdapter(ImportItem)
@@ -432,27 +441,30 @@ class ImportsService:
     async def resolve(self, body: ResolveRequest) -> ResolveResult:
         if body.kind == "torrent":
             return await self._resolve_torrent(body)
-        raise HTTPException(400, "scan resolve requires claim token via worker payload")
+        msg = "scan resolve requires claim token via worker payload"
+        raise BadRequestError(msg)
 
     async def resolve_manual_scan(
         self, body: ResolveRequest, *, claim_token: str
     ) -> ResolveResult:
         if body.kind != "scan":
-            raise HTTPException(400, "manual scan resolve payload mismatch")
+            msg = "manual scan resolve payload mismatch"
+            raise BadRequestError(msg)
         return await self._resolve_scan(body, claim_token=claim_token)
 
     async def _resolve_torrent(self, body: ResolveRequest) -> ResolveResult:
         try:
             torrent_id = uuid.UUID(body.id)
         except ValueError:
-            raise HTTPException(400, "torrent id must be a uuid") from None
+            raise BadRequestError(_TORRENT_ID_MUST_BE_UUID) from None
         torrent = await self.torrent_service.torrent_repository.get_torrent_by_id(
             torrent_id=torrent_id
         )
         show = await self.torrent_service.get_show_of_torrent(torrent=torrent)
         movie = await self.torrent_service.get_movie_of_torrent(torrent=torrent)
         if show is None and movie is None:
-            raise HTTPException(400, "torrent not linked to any media")
+            msg = "torrent not linked to any media"
+            raise BadRequestError(msg)
 
         action = body.action or TorrentResolveAction.retry
         if action == TorrentResolveAction.retry:
@@ -474,25 +486,27 @@ class ImportsService:
                 ok=False,
                 detail="map action must use /torrents/{id}/map dialog",
             )
-        raise HTTPException(400, f"Unknown action: {action}")
+        msg = f"Unknown action: {action}"
+        raise BadRequestError(msg)
 
     async def _resolve_scan(
         self, body: ResolveRequest, *, claim_token: str
     ) -> ResolveResult:
         if body.media_type is None:
-            raise HTTPException(400, "media_type required for scan resolve")
+            msg = "media_type required for scan resolve"
+            raise BadRequestError(msg)
         directory = body.id
         cache_row = await self.repository.get_scan_cache_entry(directory)
         if cache_row is None:
-            raise HTTPException(404, "scan entry not found")
+            raise NotFoundError(_SCAN_ENTRY_NOT_FOUND)
         if cache_row.get("status") != "queued":
-            raise HTTPException(409, "scan entry not eligible")
+            raise ConflictError(_SCAN_ENTRY_NOT_ELIGIBLE)
         if cache_row.get("media_type_hint") != body.media_type.value:
-            raise HTTPException(409, "scan entry not eligible")
+            raise ConflictError(_SCAN_ENTRY_NOT_ELIGIBLE)
         if cache_row.get("claim_token") != claim_token:
-            raise HTTPException(409, "scan entry not eligible")
+            raise ConflictError(_SCAN_ENTRY_NOT_ELIGIBLE)
         if not cache_row.get("worker_started_at"):
-            raise HTTPException(409, "scan entry not eligible")
+            raise ConflictError(_SCAN_ENTRY_NOT_ELIGIBLE)
 
         # Snapshot request scalars before releasing the session — the import
         # path below performs filesystem and metadata-provider I/O.
@@ -514,9 +528,9 @@ class ImportsService:
                 require_directory=True,
             )
         except (PathNotFoundError, PathNotDirectoryError) as exc:
-            raise HTTPException(404, "scan entry not found") from exc
+            raise NotFoundError(_SCAN_ENTRY_NOT_FOUND) from exc
         except PathOutsideRootsError as exc:
-            raise HTTPException(404, "scan entry not found") from exc
+            raise NotFoundError(_SCAN_ENTRY_NOT_FOUND) from exc
 
         imported_media = None
         if media_id is not None:
@@ -568,19 +582,21 @@ class ImportsService:
                 await self.repository.fail_manual_scan_import(
                     directory, claim_token=claim_token, error=str(exc)
                 )
-                raise HTTPException(422, str(exc)) from exc
+                msg = str(exc)
+                raise UnprocessableEntityError(msg) from exc
         else:
-            raise HTTPException(
-                400,
-                "scan resolve needs either media_id or external_id + metadata_provider",
+            msg = (
+                "scan resolve needs either media_id or external_id + metadata_provider"
             )
+            raise BadRequestError(msg)
 
         if not ok:
             # Keep the row visible as a needs-attention entry, never finished.
             await self.repository.fail_manual_scan_import(
                 directory, claim_token=claim_token, error="import failed"
             )
-            raise HTTPException(400, "import failed")
+            msg = "import failed"
+            raise BadRequestError(msg)
 
         imported_media_id = (
             str(imported_media.id) if imported_media is not None else None
@@ -594,7 +610,7 @@ class ImportsService:
             imported_media_type=media_type.value,
         )
         if not completed:
-            raise HTTPException(409, "scan entry not eligible")
+            raise ConflictError(_SCAN_ENTRY_NOT_ELIGIBLE)
 
         # Re-apply global-default behaviour so a partial import is completed
         # (missing episodes / movie) and subtitles are fetched.
@@ -620,8 +636,7 @@ class ImportsService:
             try:
                 torrent_id = uuid.UUID(body.id)
             except ValueError:
-                raise HTTPException(400, "torrent id must be a uuid") from None
-            from miramedia.exceptions import NotFoundError
+                raise BadRequestError(_TORRENT_ID_MUST_BE_UUID) from None
 
             try:
                 torrent = (
@@ -675,7 +690,8 @@ class ImportsService:
             await self.repository.add_ignored_path(body.id)
             await self.repository.delete_scan_cache_entry(body.id)
             return ResolveResult(ok=True, detail="path ignored")
-        raise HTTPException(400, f"Unknown kind: {body.kind}")
+        msg = f"Unknown kind: {body.kind}"
+        raise BadRequestError(msg)
 
     # ---- scan trigger -----------------------------------------------------
 

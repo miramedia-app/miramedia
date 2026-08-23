@@ -27,4 +27,4 @@ def send_email(subject: str, html: str, addressee: str) -> None:
         server.login(email_conf.smtp_user, email_conf.smtp_password)
         server.sendmail(email_conf.from_email, addressee, message.as_string())
 
-    log.info(f"Successfully sent email to {addressee} with subject: {subject}")
+    log.info("Successfully sent email to %s with subject: %s", addressee, subject)

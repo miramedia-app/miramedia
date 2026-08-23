@@ -14,7 +14,7 @@ from collections.abc import Callable
 
 import pytest
 
-from miramedia.torrents.utils import _dns_pin
+from miramedia.torrents.fetch import _dns_pin
 
 _HOST_A = "host-a.pin.test"
 _HOST_B = "host-b.pin.test"

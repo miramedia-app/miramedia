@@ -202,10 +202,13 @@ class IndexerService:
                     len(indexer_results or []),
                     query,
                 )
-            except Exception:
+            except Exception as exc:
                 self._record_indexer_failure(name)
-                log.exception(
-                    f"Indexer {indexer.__class__.__name__} failed for query '{query}'"
+                log.error(  # noqa: TRY400 — exception text may embed credentials
+                    "Indexer %s failed for query '%s' (%s)",
+                    indexer.__class__.__name__,
+                    query,
+                    type(exc).__name__,
                 )
                 return []
             else:
@@ -249,10 +252,13 @@ class IndexerService:
                         name,
                     )
                 self._record_indexer_success(name)
-            except Exception:
+            except Exception as exc:
                 self._record_indexer_failure(name)
-                log.exception(
-                    f"Indexer {indexer.__class__.__name__} failed for movie search '{query}'"
+                log.error(  # noqa: TRY400 — exception text may embed credentials
+                    "Indexer %s failed for movie search '%s' (%s)",
+                    indexer.__class__.__name__,
+                    query,
+                    type(exc).__name__,
                 )
                 return []
             else:
@@ -300,10 +306,13 @@ class IndexerService:
                         name,
                     )
                 self._record_indexer_success(name)
-            except Exception:
+            except Exception as exc:
                 self._record_indexer_failure(name)
-                log.exception(
-                    f"Indexer {indexer.__class__.__name__} failed for season search '{query}'"
+                log.error(  # noqa: TRY400 — exception text may embed credentials
+                    "Indexer %s failed for season search '%s' (%s)",
+                    indexer.__class__.__name__,
+                    query,
+                    type(exc).__name__,
                 )
                 return []
             else:
@@ -359,10 +368,13 @@ class IndexerService:
                         name,
                     )
                 self._record_indexer_success(name)
-            except Exception:
+            except Exception as exc:
                 self._record_indexer_failure(name)
-                log.exception(
-                    f"Indexer {indexer.__class__.__name__} failed for episode search '{query}'"
+                log.error(  # noqa: TRY400 — exception text may embed credentials
+                    "Indexer %s failed for episode search '%s' (%s)",
+                    indexer.__class__.__name__,
+                    query,
+                    type(exc).__name__,
                 )
                 return []
             else:

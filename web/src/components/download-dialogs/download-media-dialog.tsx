@@ -496,21 +496,27 @@ export function DownloadMediaDialog({
             </div>
 
             {/* Filters */}
-            {(qualityOptionNames.length > 0 || codecOptionNames.length > 0) && (
-              <div className="grid gap-4 sm:grid-cols-2">
-                <FilterChips
-                  label="Quality"
-                  options={qualityOptionNames}
-                  selected={searchQualities}
-                  onToggle={(v) => setSearchQualities((s) => toggleIn(s, v))}
-                />
-                <FilterChips
-                  label="Codec"
-                  options={codecOptionNames}
-                  selected={searchCodecs}
-                  onToggle={(v) => setSearchCodecs((s) => toggleIn(s, v))}
-                />
-              </div>
+            {optionsQuery.isError ? (
+              <p className="text-sm text-muted-foreground">
+                Failed to load quality and codec options
+              </p>
+            ) : (
+              (qualityOptionNames.length > 0 || codecOptionNames.length > 0) && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FilterChips
+                    label="Quality"
+                    options={qualityOptionNames}
+                    selected={searchQualities}
+                    onToggle={(v) => setSearchQualities((s) => toggleIn(s, v))}
+                  />
+                  <FilterChips
+                    label="Codec"
+                    options={codecOptionNames}
+                    selected={searchCodecs}
+                    onToggle={(v) => setSearchCodecs((s) => toggleIn(s, v))}
+                  />
+                </div>
+              )
             )}
 
             {/* Custom query */}

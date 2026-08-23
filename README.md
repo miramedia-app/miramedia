@@ -102,18 +102,27 @@ them from inside the container.
 | `miramedia/movies/` | Movie management | `/api/v1/movies/` |
 | `miramedia/torrents/` | Torrent lifecycle, unified download system, manual add, scoring | `/api/v1/torrents/` |
 | `miramedia/indexers/` | Torrent search (native sites, Prowlarr, Jackett, custom Torznab) | `/api/v1/indexers/` |
-| `miramedia/imports/` | Import pipeline, recovery dashboard, library scan | `/api/v1/torrents/` |
+| `miramedia/imports/` | Import pipeline, recovery dashboard, library scan | `/api/v1/imports/` |
 | `miramedia/metadata/` | Metadata providers (native TVmaze+Cinemeta, TMDB, TVDB) | - |
 | `miramedia/notifications/` | Notification system | `/api/v1/notifications/` |
 | `miramedia/streams/` | Media streaming & subtitle delivery | `/api/v1/streams/` |
 | `miramedia/subtitles/` | Subtitle management (subliminal; subdl/subsource/yifysubtitles; vendored keyless plugins; optional Bazarr) | `/api/v1/subtitles/` |
+| `miramedia/playback/` | Playback progress, continue watching, watch state | `/api/v1/playback/` |
+| `miramedia/watchlists/` | Watchlists, watch next, custom lists, upcoming library view | `/api/v1/watchlists/` |
+| `miramedia/events/` | Server-sent events for live dashboard updates | `/api/v1/events/` |
 | `miramedia/requests/` | Media request system (native + Seerr composite, optional) | `/api/v1/requests/` |
+| `miramedia/ops/` | Operational endpoints (superuser metrics-adjacent summary) | `/api/v1/ops/` |
 | `miramedia/cloudflare/` | Shared Cloudflare bypass (nodriver + curl_cffi) | - |
+| `miramedia/core/` | Health, features, dashboard summary, static poster images | - |
+| `miramedia/upcoming/` | Upcoming library list (windowed air/release dates) | - |
+| `miramedia/observability/` | Analytics event sink (excluded from OpenAPI) | - |
+| `miramedia/scheduler_tasks/` | Scheduled task implementations (extracted from scheduler) | - |
+| `miramedia/background_services.py` | Background service composition for scheduler tasks | - |
 | `miramedia/updates/` | GitHub release checks | `/api/v1/system/` |
 | `miramedia/logs/` | Database-backed system logs | `/api/v1/system/` |
 | `miramedia/settings/` | System configuration | `/api/v1/system/` |
 | `miramedia/auth/` | Authentication (JWT, cookies, OAuth/OIDC) | `/api/v1/auth/` |
-| `miramedia/database/` | SQLAlchemy + Alembic setup | - |
+| `miramedia/database/` | SQLAlchemy + Alembic setup; background sessions in `background_services.py` | - |
 
 ### Unified Torrent System
 
@@ -171,7 +180,7 @@ Common commands:
 | `make up` / `make down` | start / stop the dev stack |
 | `make logs ARGS="--follow api"` | tail backend logs |
 | `make app` / `make frontend` | shell into the backend / frontend container |
-| `make check` | fast local gate on the host: lint, format-check, ty, test, frontend typecheck, and migration audit (needs `uv`, Python 3.13, `pnpm`, and `make frontend-bootstrap`) |
+| `make check` | fast local gate on the host: lint, format-check, ty, test, tsc, frontend-test, frontend-lint, migration-head-audit (needs `uv`, Python 3.13, `pnpm`, and `make frontend-bootstrap`) |
 | `make check-ci` | pre-PR CI parity: `check` + production frontend build + OpenAPI drift check + PostgreSQL integration tests + Playwright e2e + real frontend smoke (`MIRAMEDIA_TEST_DATABASE_URL` and Chromium required) |
 | `make frontend-e2e` | Playwright browser smoke tests (`cd web && pnpm exec playwright install --with-deps chromium` once) |
 | `make frontend-smoke-real` | one real browser workflow against FastAPI + disposable PostgreSQL (`make frontend-build` first; needs `MIRAMEDIA_TEST_DATABASE_URL`) |

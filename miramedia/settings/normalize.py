@@ -30,6 +30,23 @@ def migrate_native_metadata_enabled(data: dict) -> dict:
     return result
 
 
+def migrate_playback_overrides(overrides: dict) -> dict:
+    """Legacy ``watchlists.continue_watching`` → ``playback.continue_watching``.
+
+    Existing ``playback`` values win over migrated legacy ones.
+    """
+    result = copy.deepcopy(overrides)
+    watchlists = result.get("watchlists")
+    if not isinstance(watchlists, dict) or "continue_watching" not in watchlists:
+        return result
+    legacy = watchlists.pop("continue_watching")
+    if legacy is not None:
+        result.setdefault("playback", {}).setdefault("continue_watching", legacy)
+    if not watchlists:
+        result.pop("watchlists")
+    return result
+
+
 def migrate_requests_section(data: dict) -> dict:
     """Strip removed fields and map legacy master ``enabled`` → ``native.enabled``."""
     result = copy.deepcopy(data)
@@ -147,7 +164,7 @@ def normalize_legacy_overrides(overrides: dict) -> dict:
     if isinstance(subtitles, dict):
         result["subtitles"] = migrate_subtitles_section(subtitles)
 
-    return result
+    return migrate_playback_overrides(result)
 
 
 def normalize_stored_overrides(overrides: dict | None) -> dict:

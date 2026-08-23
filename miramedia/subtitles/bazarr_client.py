@@ -39,10 +39,10 @@ class BazarrClient:
             resp.raise_for_status()
             return resp.json()
         except (RequestsConnectionError, Timeout) as e:
-            log.warning(f"Bazarr unreachable for GET {path}: {e}")
+            log.warning("Bazarr unreachable for GET %s: %s", path, e)
             return None
         except Exception:
-            log.exception(f"Bazarr API GET {path} failed")
+            log.exception("Bazarr API GET %s failed", path)
             return None
 
     def _post(self, path: str, json: dict | None = None) -> bool:
@@ -52,10 +52,10 @@ class BazarrClient:
             )
             resp.raise_for_status()
         except (RequestsConnectionError, Timeout) as e:
-            log.warning(f"Bazarr unreachable for POST {path}: {e}")
+            log.warning("Bazarr unreachable for POST %s: %s", path, e)
             return False
         except Exception:
-            log.exception(f"Bazarr API POST {path} failed")
+            log.exception("Bazarr API POST %s failed", path)
             return False
         else:
             return True

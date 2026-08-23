@@ -30,6 +30,8 @@ const sampleFeatures: Features = {
   upcoming_default_past_days: 3,
   upcoming_default_future_days: 14,
   continue_watching: true,
+  streaming: true,
+  downloads: true,
 };
 
 const FAIL_CLOSED_FLAGS = [
@@ -41,6 +43,8 @@ const FAIL_CLOSED_FLAGS = [
   "watch_next",
   "upcoming",
   "continue_watching",
+  "streaming",
+  "downloads",
 ] as const;
 
 describe("fetchFeatures", () => {

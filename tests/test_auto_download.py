@@ -50,7 +50,7 @@ class TestAutoDownloadGates:
             yield svc
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(
                 svc.torrent_service,
@@ -95,7 +95,7 @@ class TestAutoDownloadGates:
             return []
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
             patch.object(
@@ -130,7 +130,7 @@ class TestAutoDownloadGates:
             return []
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
             patch.object(
@@ -178,14 +178,14 @@ class TestAutoDownloadGates:
             searched.append((kwargs.get("season_number"), kwargs.get("episode_number")))
             return []
 
-        async def is_downloaded(*, episode, **_kwargs):
+        def is_downloaded(*, episode, season_number, season_files):  # noqa: ARG001
             return episode.air_date is not None
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
-            patch.object(svc, "is_episode_downloaded", is_downloaded),
+            patch.object(svc, "_episode_downloaded_from_cache", is_downloaded),
             patch.object(
                 svc.torrent_service,
                 "bulk_check_torrents_imported",
@@ -217,7 +217,7 @@ class TestAutoDownloadGates:
             return []
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
             patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
@@ -266,7 +266,7 @@ class TestAutoDownloadGates:
             return []
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
             patch.object(svc, "is_episode_downloaded", AsyncMock(return_value=False)),
@@ -323,14 +323,14 @@ class TestAutoDownloadGates:
             searched.append((kwargs.get("season_number"), kwargs.get("episode_number")))
             return []
 
-        async def is_downloaded(*, episode, **_kwargs):
+        def is_downloaded(*, episode, season_number, season_files):  # noqa: ARG001
             return episode.air_date == yesterday
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
             patch.object(svc, "get_all_available_torrents_for_an_episode", fake_search),
-            patch.object(svc, "is_episode_downloaded", is_downloaded),
+            patch.object(svc, "_episode_downloaded_from_cache", is_downloaded),
             patch.object(
                 svc.torrent_service,
                 "bulk_check_torrents_imported",
@@ -362,7 +362,7 @@ class TestAutoDownloadGates:
             return []
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(svc, "get_all_available_torrents_for_a_season", fake_search),
         ):
             from miramedia.shows.service import _auto_download_for_show_impl

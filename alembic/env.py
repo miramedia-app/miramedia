@@ -23,6 +23,7 @@ if config.config_file_name is not None:
 
 from miramedia.auth.api_tokens import UserApiToken  # noqa: E402, F401
 from miramedia.auth.db import OAuthAccount, User  # noqa: E402
+from miramedia.auth.startup_migrations import AuthStartupMigration  # noqa: E402, F401
 from miramedia.database import Base  # noqa: E402
 from miramedia.imports.models import (  # noqa: E402, F401
     IgnoredImportPath,

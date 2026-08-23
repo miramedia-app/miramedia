@@ -322,7 +322,7 @@ def manual_map_client(
     app.dependency_overrides[get_movie_service] = lambda: movie_service
     try:
         with patch(
-            "miramedia.torrents.utils.get_torrent_filepath",
+            "miramedia.torrents.paths.get_torrent_filepath",
             return_value=tmp_path,
         ):
             client = TestClient(app, raise_server_exceptions=False)

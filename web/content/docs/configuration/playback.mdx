@@ -1,0 +1,42 @@
+---
+title: Playback
+description: "The [playback] section: dashboard Continue Watching."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `[playback]` section gates the dashboard **Continue Watching** row.
+Resume, watched-state toggles, and Watch Next are separate — see
+[Playing Media](/docs/user-guide/playing-media) and
+[Watchlists](/docs/user-guide/watchlists).
+
+These keys are editable from **System → Settings → Playback**. Saving applies
+immediately; no restart.
+
+## Settings (`[playback]`)
+
+| Key                 | Default | Purpose |
+| ------------------- | ------- | ------- |
+| `continue_watching` | `true`  | Dashboard Continue Watching row |
+
+When `continue_watching` is `false`, `GET /api/v1/playback/continue` returns
+**503** (`Continue Watching feature is disabled`) and the dashboard hides the
+row. Progress upserts, watched overrides, and Watch Next keep working.
+
+The dashboard row also requires [streaming](streams) (`streams.enabled`) to
+be on, because each item is a play/resume action. Turning streaming off hides
+the row even if `continue_watching` stays `true`.
+
+<Callout type="info">
+
+Older configs stored this flag as `watchlists.continue_watching`. On load it
+is migrated into `[playback]`; an explicit `[playback]` value wins.
+
+</Callout>
+
+## Example
+
+```toml title="config.toml"
+[playback]
+continue_watching = true
+```

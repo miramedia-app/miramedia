@@ -30,6 +30,7 @@ import {
   buildSetWatchedMutationOptions,
   clearViewingActivity,
   invalidateWatchedCaches,
+  invalidateWatchedItem,
   setSeasonWatched,
   setShowWatched,
   setWatchedState,
@@ -108,18 +109,23 @@ describe("buildSetWatchedMutationOptions", () => {
     expect(mocks.error).toHaveBeenCalledWith("Failed to update watched status");
   });
 
-  it("shows success toast and invalidates watched-related caches on settle", async () => {
+  it("shows success toast and invalidates the item plus aggregates on settle", async () => {
     const queryClient = createClient();
     const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
 
     const options = buildSetWatchedMutationOptions(queryClient);
     options.onSuccess!(baseState({ watched: true }), body);
-    await options.onSettled!();
+    await options.onSettled!(baseState({ watched: true }), null, body, undefined);
 
     expect(mocks.success).toHaveBeenCalledWith("Marked as watched");
-    for (const queryKey of WATCHED_CACHE_KEYS) {
-      expect(invalidateSpy).toHaveBeenCalledWith({ queryKey });
-    }
+    const keys = invalidateSpy.mock.calls.map((c) => c[0]?.queryKey);
+    expect(keys).toEqual([
+      ["playback", "watched", "movie", "movie-1"],
+      ["playback", "watch-next"],
+      ["playback", "continue"],
+      ["watchlists"],
+    ]);
+    expect(keys).not.toContainEqual(["playback", "watched"]);
   });
 });
 
@@ -132,6 +138,24 @@ describe("invalidateWatchedCaches", () => {
 
     expect(invalidateSpy).toHaveBeenCalledTimes(WATCHED_CACHE_KEYS.length);
     expect(invalidateSpy.mock.calls.map((c) => c[0]?.queryKey)).toEqual([...WATCHED_CACHE_KEYS]);
+  });
+});
+
+describe("invalidateWatchedItem", () => {
+  it("invalidates the per-item key and aggregates but not the bare watched prefix", async () => {
+    const queryClient = createClient();
+    const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
+
+    await invalidateWatchedItem(queryClient, "episode", "ep-1");
+
+    const keys = invalidateSpy.mock.calls.map((c) => c[0]?.queryKey);
+    expect(keys).toEqual([
+      ["playback", "watched", "episode", "ep-1"],
+      ["playback", "watch-next"],
+      ["playback", "continue"],
+      ["watchlists"],
+    ]);
+    expect(keys).not.toContainEqual(["playback", "watched"]);
   });
 });
 

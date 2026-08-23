@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, cast
+from uuid import UUID
 
 import libtorrent
 
@@ -13,21 +15,49 @@ from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.torrents.backends.abstract_download_client import (
     AbstractDownloadClient,
 )
-from miramedia.torrents.schemas import Torrent, TorrentStatus
-from miramedia.torrents.utils import (
+from miramedia.torrents.inspection import get_torrent_hash
+from miramedia.torrents.paths import (
     _application_control_dir_paths,
     _configured_torrent_roots,
     _is_safe_deletion_target,
     exact_save_dirs_for_title,
-    get_torrent_hash,
     torrent_dir_under_root,
     torrent_sidecar_under_root,
 )
+from miramedia.torrents.schemas import Torrent, TorrentStatus
 
 if TYPE_CHECKING:
-    from miramedia.torrents.utils import TorrentFile
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from miramedia.torrents.inspection import TorrentFile
 
 log = logging.getLogger(__name__)
+
+_RESUME_RECONCILE_IN_CHUNK = 500
+
+
+def _chunked[T](items: list[T], size: int) -> list[list[T]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _resume_hashes_to_drop(
+    resume_hashes: list[str],
+    torrent_id_by_hash: dict[str, UUID],
+    states_by_torrent_id: dict[UUID, list],
+) -> set[str]:
+    """Return resume info-hashes that should be removed from libtorrent + disk."""
+    from miramedia.file_status import ImportOutcome
+
+    to_drop: set[str] = set()
+    for hash_str in resume_hashes:
+        torrent_id = torrent_id_by_hash.get(hash_str)
+        if torrent_id is None:
+            to_drop.add(hash_str)
+            continue
+        states = states_by_torrent_id.get(torrent_id, [])
+        if states and all(s == ImportOutcome.imported for s in states):
+            to_drop.add(hash_str)
+    return to_drop
 
 
 class NativeDownloadClient(AbstractDownloadClient):
@@ -83,7 +113,8 @@ class NativeDownloadClient(AbstractDownloadClient):
         self._load_resume_data()
 
         log.info(
-            f"Native torrent client initialized, listening on port {self.config.listen_port_start}"
+            "Native torrent client initialized, listening on port %s",
+            self.config.listen_port_start,
         )
 
     def _resolve_paths(self, title: str) -> tuple[Path, Path]:
@@ -100,6 +131,71 @@ class NativeDownloadClient(AbstractDownloadClient):
             return torrent_dir_under_root(Path(incomplete_root), title), completed
         return completed, completed
 
+    async def _load_resume_reconcile_context(
+        self,
+        db: AsyncSession,
+        resume_hashes: list[str],
+    ) -> tuple[dict[str, UUID], dict[UUID, list]]:
+        """Batch-load torrent rows and linked import states for resume hashes."""
+        from sqlalchemy import select
+
+        from miramedia.movies.models import MovieFile
+        from miramedia.shows.models import EpisodeFile
+        from miramedia.torrents.models import Torrent as TorrentModel
+
+        torrent_id_by_hash: dict[str, UUID] = {}
+        states_by_torrent_id: dict[UUID, list] = defaultdict(list)
+
+        if not resume_hashes:
+            return torrent_id_by_hash, dict(states_by_torrent_id)
+
+        unique_hashes = list(dict.fromkeys(resume_hashes))
+        for chunk in _chunked(unique_hashes, _RESUME_RECONCILE_IN_CHUNK):
+            rows = (
+                await db.execute(
+                    select(TorrentModel.id, TorrentModel.hash).where(
+                        TorrentModel.hash.in_(chunk)
+                    )
+                )
+            ).all()
+            torrent_id_by_hash.update(
+                {hash_str: torrent_id for torrent_id, hash_str in rows}
+            )
+
+        torrent_ids = list(torrent_id_by_hash.values())
+        if not torrent_ids:
+            return torrent_id_by_hash, dict(states_by_torrent_id)
+
+        for chunk in _chunked(torrent_ids, _RESUME_RECONCILE_IN_CHUNK):
+            ep_rows = (
+                await db.execute(
+                    select(EpisodeFile.torrent_id, EpisodeFile.import_status).where(
+                        EpisodeFile.torrent_id.in_(chunk)
+                    )
+                )
+            ).all()
+            for torrent_id, status in ep_rows:
+                states_by_torrent_id[torrent_id].append(status)
+
+        for chunk in _chunked(torrent_ids, _RESUME_RECONCILE_IN_CHUNK):
+            mv_rows = (
+                await db.execute(
+                    select(MovieFile.torrent_id, MovieFile.import_status).where(
+                        MovieFile.torrent_id.in_(chunk)
+                    )
+                )
+            ).all()
+            for torrent_id, status in mv_rows:
+                states_by_torrent_id[torrent_id].append(status)
+
+        return torrent_id_by_hash, dict(states_by_torrent_id)
+
+    def _snapshot_handle_map(self) -> dict[str, libtorrent.torrent_handle]:
+        """Build a single info-hash → handle map from one session enumeration."""
+        return {
+            str(handle.info_hash()): handle for handle in self._session.get_torrents()
+        }
+
     async def reconcile_resume_data(self) -> int:
         """Drop fastresume + libtorrent state for finished/missing torrents.
 
@@ -111,89 +207,61 @@ class NativeDownloadClient(AbstractDownloadClient):
         media files on disk — they were imported via hardlink/move) and
         delete the resume file.
         """
-        from sqlalchemy import select
-
-        from miramedia.database import SessionLocal
-        from miramedia.file_status import ImportOutcome
-        from miramedia.movies.models import MovieFile
-        from miramedia.shows.models import EpisodeFile
-        from miramedia.torrents.models import Torrent as TorrentModel
+        from miramedia.database import SessionLocal, release_session_before_external_io
 
         reclaimed = 0
         files = list(self._resume_data_dir.glob("*.fastresume"))
         if not files:
             return 0
 
-        async with SessionLocal() as db:
-            for resume_file in files:
-                hash_str = resume_file.stem
-                try:
-                    torrent_row = (
-                        await db.execute(
-                            select(TorrentModel).where(TorrentModel.hash == hash_str)
-                        )
-                    ).scalar_one_or_none()
+        resume_by_hash = {resume_file.stem: resume_file for resume_file in files}
+        resume_hashes = list(resume_by_hash.keys())
 
-                    drop = False
-                    if torrent_row is None:
-                        drop = True
-                    else:
-                        ep_states = list(
-                            (
-                                await db.execute(
-                                    select(EpisodeFile.import_status).where(
-                                        EpisodeFile.torrent_id == torrent_row.id
-                                    )
-                                )
-                            )
-                            .scalars()
-                            .all()
-                        )
-                        mv_states = list(
-                            (
-                                await db.execute(
-                                    select(MovieFile.import_status).where(
-                                        MovieFile.torrent_id == torrent_row.id
-                                    )
-                                )
-                            )
-                            .scalars()
-                            .all()
-                        )
-                        all_states = ep_states + mv_states
-                        if all_states and all(
-                            s == ImportOutcome.imported for s in all_states
-                        ):
-                            drop = True
+        try:
+            async with SessionLocal() as db:
+                (
+                    torrent_id_by_hash,
+                    states_by_torrent_id,
+                ) = await self._load_resume_reconcile_context(db, resume_hashes)
+                to_drop = _resume_hashes_to_drop(
+                    resume_hashes,
+                    torrent_id_by_hash,
+                    states_by_torrent_id,
+                )
+                await release_session_before_external_io(db)
+        except Exception:
+            log.exception("Resume reconcile: failed to load DB context; skipping sweep")
+            return 0
 
-                    if not drop:
-                        continue
+        handle_map = self._snapshot_handle_map()
 
-                    # Drop from libtorrent if loaded; tolerate missing handle.
-                    handle = self._get_handle_by_hash(hash_str)
-                    if handle is not None:
-                        try:
-                            self._session.remove_torrent(handle)
-                        except Exception:
-                            log.debug(
-                                "Could not remove %s from libtorrent session",
-                                hash_str,
-                                exc_info=True,
-                            )
-
+        for hash_str in to_drop:
+            resume_file = resume_by_hash[hash_str]
+            try:
+                handle = handle_map.get(hash_str)
+                if handle is not None:
                     try:
-                        resume_file.unlink()
+                        self._session.remove_torrent(handle)
                     except Exception:
                         log.debug(
-                            "Could not delete resume file %s",
-                            resume_file,
+                            "Could not remove %s from libtorrent session",
+                            hash_str,
                             exc_info=True,
                         )
-                        continue
 
-                    reclaimed += 1
+                try:
+                    resume_file.unlink()
                 except Exception:
-                    log.exception("Failed to reconcile resume data for %s", hash_str)
+                    log.debug(
+                        "Could not delete resume file %s",
+                        resume_file,
+                        exc_info=True,
+                    )
+                    continue
+
+                reclaimed += 1
+            except Exception:
+                log.exception("Failed to reconcile resume data for %s", hash_str)
 
         log.debug(
             "Native torrent client: resume-data reconcile checked %d "
@@ -227,7 +295,7 @@ class NativeDownloadClient(AbstractDownloadClient):
                 loaded += 1
             except Exception:
                 failed += 1
-                log.exception(f"Failed to load resume data from {resume_file}")
+                log.exception("Failed to load resume data from %s", resume_file)
         if loaded or failed:
             log.info(
                 "Native torrent client: loaded %d resume file(s)%s",
@@ -277,7 +345,7 @@ class NativeDownloadClient(AbstractDownloadClient):
                     )
                     pending.discard(info_hash)
                     saved += 1
-                    log.debug(f"Saved resume data for {info_hash}")
+                    log.debug("Saved resume data for %s", info_hash)
                 elif isinstance(alert, libtorrent.save_resume_data_failed_alert):
                     # Torrents without metadata yet can't produce resume data;
                     # drop them from the wait set so we don't block the full
@@ -348,7 +416,7 @@ class NativeDownloadClient(AbstractDownloadClient):
             )
         else:
             self._session.add_torrent(params)
-            log.info(f"Added torrent to native client: {indexer_result.title}")
+            log.info("Added torrent to native client: %s", indexer_result.title)
 
         torrent = Torrent(
             status=TorrentStatus.downloading,
@@ -370,7 +438,7 @@ class NativeDownloadClient(AbstractDownloadClient):
     def remove_torrent(self, torrent: Torrent, delete_data: bool = False) -> None:
         handle = self._get_handle_by_hash(torrent.hash)
         if handle is None:
-            log.warning(f"Torrent not found in native client: {torrent.hash}")
+            log.warning("Torrent not found in native client: %s", torrent.hash)
             resume_file = self._resume_data_dir / f"{torrent.hash}.fastresume"
             if resume_file.exists():
                 resume_file.unlink()
@@ -387,7 +455,7 @@ class NativeDownloadClient(AbstractDownloadClient):
         if delete_data:
             self._try_rmdir_empty_save_dirs(torrent)
 
-        log.info(f"Removed torrent from native client: {torrent.title}")
+        log.info("Removed torrent from native client: %s", torrent.title)
 
     def _try_rmdir_empty_save_dirs(self, torrent: Torrent) -> None:
         """Remove only empty exact save dirs after libtorrent deleted payload files.
@@ -421,13 +489,12 @@ class NativeDownloadClient(AbstractDownloadClient):
                     exc_info=True,
                 )
 
-    def get_torrent_status(
-        self, torrent: Torrent
-    ) -> tuple[TorrentStatus, float, int, int, int]:
-        handle = self._get_handle_by_hash(torrent.hash)
-        if handle is None:
-            return TorrentStatus.unknown, 0.0, 0, 0, 0
+    def _status_not_found(self) -> tuple[TorrentStatus, float, int, int, int]:
+        return TorrentStatus.unknown, 0.0, 0, 0, 0
 
+    def _status_from_handle(
+        self, handle: libtorrent.torrent_handle, torrent: Torrent
+    ) -> tuple[TorrentStatus, float, int, int, int]:
         status = handle.status()
         state = status.state
         progress = round(status.progress * 100, 1)
@@ -456,6 +523,31 @@ class NativeDownloadClient(AbstractDownloadClient):
 
         return TorrentStatus.unknown, progress, num_peers, num_seeds, 0
 
+    def get_torrent_status(
+        self, torrent: Torrent
+    ) -> tuple[TorrentStatus, float, int, int, int]:
+        handle = self._get_handle_by_hash(torrent.hash)
+        if handle is None:
+            return self._status_not_found()
+        return self._status_from_handle(handle, torrent)
+
+    def get_torrent_statuses_bulk(
+        self, torrents: list[Torrent]
+    ) -> dict[str, tuple[TorrentStatus, float, int, int, int]]:
+        """One session enumeration, then status per requested info hash."""
+        if not torrents:
+            return {}
+        handle_map = self._snapshot_handle_map()
+        not_found = self._status_not_found()
+        return {
+            torrent.hash: (
+                self._status_from_handle(handle_map[torrent.hash], torrent)
+                if torrent.hash in handle_map
+                else not_found
+            )
+            for torrent in torrents
+        }
+
     def _maybe_move_to_completed(
         self, handle: libtorrent.torrent_handle, torrent: Torrent
     ) -> None:
@@ -478,30 +570,32 @@ class NativeDownloadClient(AbstractDownloadClient):
             )
             self._moved_hashes.add(torrent.hash)
             log.info(
-                f"Native client: moving '{torrent.title}' from "
-                f"'{initial_path}' to '{completed_path}'"
+                "Native client: moving '%s' from '%s' to '%s'",
+                torrent.title,
+                initial_path,
+                completed_path,
             )
         except Exception:
-            log.exception(f"Failed to move torrent '{torrent.title}' to completed dir")
+            log.exception("Failed to move torrent '%s' to completed dir", torrent.title)
 
     def pause_torrent(self, torrent: Torrent) -> None:
         handle = self._get_handle_by_hash(torrent.hash)
         if handle is None:
-            log.warning(f"Torrent not found for pause: {torrent.hash}")
+            log.warning("Torrent not found for pause: %s", torrent.hash)
             return
         handle.pause()
-        log.debug(f"Paused torrent: {torrent.title}")
+        log.debug("Paused torrent: %s", torrent.title)
 
     def resume_torrent(self, torrent: Torrent) -> None:
         handle = self._get_handle_by_hash(torrent.hash)
         if handle is None:
-            log.warning(f"Torrent not found for resume: {torrent.hash}")
+            log.warning("Torrent not found for resume: %s", torrent.hash)
             return
         handle.resume()
-        log.debug(f"Resumed torrent: {torrent.title}")
+        log.debug("Resumed torrent: %s", torrent.title)
 
     def get_torrent_files(self, torrent: Torrent) -> list[TorrentFile] | None:
-        from miramedia.torrents.utils import TorrentFile
+        from miramedia.torrents.inspection import TorrentFile
 
         handle = self._get_handle_by_hash(torrent.hash)
         if handle is None:

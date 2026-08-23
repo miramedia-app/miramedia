@@ -3686,6 +3686,10 @@ export interface components {
             upcoming_default_future_days: number;
             /** Continue Watching */
             continue_watching: boolean;
+            /** Streaming */
+            streaming: boolean;
+            /** Downloads */
+            downloads: boolean;
         };
         /**
          * FileStatus
@@ -4916,6 +4920,11 @@ export interface components {
             /** Duration Ms */
             duration_ms: number;
         };
+        /** PlaybackSettingsSchema */
+        PlaybackSettingsSchema: {
+            /** Continue Watching */
+            continue_watching?: boolean | null;
+        };
         /** PreferredCodecBody */
         PreferredCodecBody: {
             /** Preferred Codec */
@@ -5891,6 +5900,17 @@ export interface components {
             /** Hls Playlist Url */
             hls_playlist_url?: string | null;
         };
+        /** StreamsSettingsSchema */
+        StreamsSettingsSchema: {
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Downloads */
+            downloads?: boolean | null;
+            /** Hls Cache Max Gb */
+            hls_cache_max_gb?: number | null;
+            /** Hls Cache Max Age Days */
+            hls_cache_max_age_days?: number | null;
+        };
         /** SubtitleFile */
         SubtitleFile: {
             /** Language */
@@ -5992,6 +6012,14 @@ export interface components {
             imports: {
                 [key: string]: unknown;
             };
+            /** Streams */
+            streams: {
+                [key: string]: unknown;
+            };
+            /** Playback */
+            playback: {
+                [key: string]: unknown;
+            };
             /** Overrides */
             overrides: {
                 [key: string]: unknown;
@@ -6018,6 +6046,8 @@ export interface components {
             updates?: components["schemas"]["UpdateSettingsSchema"] | null;
             cloudflare?: components["schemas"]["CloudflareSettingsSchema"] | null;
             imports?: components["schemas"]["ImportsSettingsSchema"] | null;
+            streams?: components["schemas"]["StreamsSettingsSchema"] | null;
+            playback?: components["schemas"]["PlaybackSettingsSchema"] | null;
         };
         /** TitleScoringRuleSchema */
         TitleScoringRuleSchema: {
@@ -6714,8 +6744,6 @@ export interface components {
         WatchlistsSettingsSchema: {
             /** Auto Remove Watched */
             auto_remove_watched?: boolean | null;
-            /** Continue Watching */
-            continue_watching?: boolean | null;
             /** Max Lists Per User */
             max_lists_per_user?: number | null;
             /** Max Items Per List */

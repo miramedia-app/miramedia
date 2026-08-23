@@ -26,15 +26,17 @@ def _run(coro) -> None:
 
 
 def _patch_fulfill_common(monkeypatch, *, requests_enabled: bool = True) -> None:
+    cfg = fake_scheduler_config(requests_enabled=requests_enabled)
     monkeypatch.setattr(
-        scheduler,
-        "MiraMediaConfig",
-        lambda: fake_scheduler_config(requests_enabled=requests_enabled),
+        "miramedia.scheduler_tasks.media.MiraMediaConfig",
+        lambda: cfg,
     )
-    monkeypatch.setattr(scheduler, "build_seerr_client", lambda: None)
     monkeypatch.setattr(
-        scheduler,
-        "resolve_metadata_provider",
+        "miramedia.scheduler_tasks.media.build_seerr_client",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.media.resolve_metadata_provider",
         lambda _name: native_provider(),
     )
 
@@ -50,7 +52,7 @@ def test_requests_disabled_returns_without_opening_services(monkeypatch) -> None
 
     _patch_fulfill_common(monkeypatch, requests_enabled=False)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service", _fail_bg_request_service
+        "miramedia.background_services.bg_request_service", _fail_bg_request_service
     )
 
     _run(scheduler.fulfill_approved_requests_task())
@@ -65,11 +67,11 @@ def test_no_approved_requests_skips_downloads(monkeypatch) -> None:
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -96,11 +98,11 @@ def test_fresh_approved_movie_marks_downloading_then_downloaded(monkeypatch) -> 
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -131,11 +133,11 @@ def test_downloading_movie_skips_redispatch_but_still_marks_downloaded(
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -165,11 +167,11 @@ def test_native_non_tt_without_imdb_skips_request(monkeypatch) -> None:
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -214,11 +216,11 @@ def test_add_movie_exception_isolated_second_request_still_processed(
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -247,11 +249,11 @@ def test_show_with_downloaded_episode_marks_downloaded(monkeypatch) -> None:
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
+        "miramedia.background_services.bg_show_service",
         bg_show_service_factory(show_service),
     )
     monkeypatch.setattr(

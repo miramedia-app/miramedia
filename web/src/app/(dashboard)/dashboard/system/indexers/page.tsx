@@ -1,11 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Network, Plus } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Network, Plus, TriangleAlert } from "lucide-react";
 
 import { DashboardHeader } from "@/components/dashboard-header";
 import { Button } from "@/components/ui/button";
-import { DataList } from "@/components/data-list";
+import { DataList, DataListEmpty } from "@/components/data-list";
+import apiClient from "@/lib/api/client";
 import { useIndexerSites } from "@/hooks/use-indexer-sites";
 import { useIndexerSiteTest } from "@/hooks/use-indexer-site-test";
 import {
@@ -57,6 +59,20 @@ export default function IndexersPage() {
 
   const { testingId, testSite } = useIndexerSiteTest(invalidateSites);
 
+  // Whether Cloudflare bypass is enabled in system settings. When disabled, the
+  // per-indexer Cloudflare toggle is hidden. Defaults to shown until loaded.
+  const settingsQuery = useQuery({
+    queryKey: ["system", "settings"],
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.GET("/api/v1/system/settings", { signal });
+      if (error) throw error;
+      return (data ?? {}) as { cloudflare?: { enabled?: boolean } };
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  const cfEnabled = settingsQuery.data?.cloudflare?.enabled ?? true;
+  const loadError = sitesQuery.isError ? "Failed to load indexers" : null;
+
   const columns = React.useMemo(
     () => buildIndexerColumns({ updateSite, openUrls }),
     [updateSite, openUrls],
@@ -90,31 +106,44 @@ export default function IndexersPage() {
         ]}
       />
       <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <DataList<Site>
-          data={sites}
-          getId={(s) => s.id}
-          searchPlaceholder="Search or filter indexers…"
-          searchMatch={indexerSearchMatch}
-          facets={INDEXER_FACETS}
-          sortOptions={INDEXER_SORT_OPTIONS}
-          defaultSort="name-asc"
-          groupings={INDEXER_GROUPINGS}
-          defaultGroupId="type"
-          bulkActions={bulkActions}
-          loading={sitesQuery.isLoading}
-          density="rich"
-          emptyIcon={<Network />}
-          emptyTitle="No indexers configured"
-          emptyDescription="Add a Torznab-compatible site to start searching."
-          toolbarTrailing={
-            <Button size="default" className="text-xs" onClick={() => setAddOpen(true)}>
-              <Plus className="mr-1 h-4 w-4" />
-              Add site
-            </Button>
-          }
-          columns={columns}
-          rowActions={renderRowActions}
-        />
+        {loadError ? (
+          <DataListEmpty
+            icon={<TriangleAlert />}
+            title={loadError}
+            description="Check that the backend is reachable, then retry."
+            action={
+              <Button variant="outline" size="sm" onClick={() => sitesQuery.refetch()}>
+                Retry
+              </Button>
+            }
+          />
+        ) : (
+          <DataList<Site>
+            data={sites}
+            getId={(s) => s.id}
+            searchPlaceholder="Search or filter indexers…"
+            searchMatch={indexerSearchMatch}
+            facets={INDEXER_FACETS}
+            sortOptions={INDEXER_SORT_OPTIONS}
+            defaultSort="name-asc"
+            groupings={INDEXER_GROUPINGS}
+            defaultGroupId="type"
+            bulkActions={bulkActions}
+            loading={sitesQuery.isLoading}
+            density="rich"
+            emptyIcon={<Network />}
+            emptyTitle="No indexers configured"
+            emptyDescription="Add a Torznab-compatible site to start searching."
+            toolbarTrailing={
+              <Button size="default" className="gap-1 text-xs" onClick={() => setAddOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Add Indexer
+              </Button>
+            }
+            columns={columns}
+            rowActions={renderRowActions}
+          />
+        )}
       </main>
 
       <AddIndexerDialog
@@ -124,6 +153,7 @@ export default function IndexersPage() {
         setNewSite={setNewSite}
         loading={addLoading}
         onAdd={addSite}
+        cfEnabled={cfEnabled}
       />
 
       <EditIndexerDialog
@@ -133,6 +163,7 @@ export default function IndexersPage() {
         setEditSite={setEditSite}
         loading={editLoading}
         onSave={saveEdit}
+        cfEnabled={cfEnabled}
       />
 
       <ManageUrlsDialog

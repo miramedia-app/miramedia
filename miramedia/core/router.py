@@ -191,6 +191,8 @@ class FeatureFlags(BaseModel):
     upcoming_default_past_days: int
     upcoming_default_future_days: int
     continue_watching: bool
+    streaming: bool
+    downloads: bool
 
 
 @router.get("/features")
@@ -206,7 +208,9 @@ async def get_features() -> FeatureFlags:
         upcoming=config.watchlists.upcoming_enabled,
         upcoming_default_past_days=config.watchlists.native.upcoming_default_past_days,
         upcoming_default_future_days=config.watchlists.native.upcoming_default_future_days,
-        continue_watching=config.watchlists.continue_watching_enabled,
+        continue_watching=config.playback.continue_watching,
+        streaming=config.streams.enabled,
+        downloads=config.streams.downloads,
     )
 
 

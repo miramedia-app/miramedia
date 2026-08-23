@@ -54,15 +54,19 @@ export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   } = useFeatures();
   const publicVersion = process.env.NEXT_PUBLIC_VERSION || "dev";
 
-  const { data: runtimeVersionData } = useQuery({
+  const { data: runtimeVersionData, isError: versionError } = useQuery({
     queryKey: ["system", "version"],
     queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/system/version", { signal });
+      const { data, error } = await apiClient.GET("/api/v1/system/version", { signal });
+      if (error) throw error;
       return data ?? null;
     },
+    retry: 1,
     staleTime: 60 * 60 * 1000,
   });
-  const displayVersion = runtimeVersionData?.version ?? publicVersion;
+  const displayVersion = versionError
+    ? publicVersion
+    : (runtimeVersionData?.version ?? publicVersion);
 
   const navMain = React.useMemo<NavItem[]>(() => {
     const items: NavItem[] = [

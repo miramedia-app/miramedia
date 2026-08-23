@@ -6,6 +6,7 @@ import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock
 
+from miramedia.torrents.manager import DownloadManager
 from miramedia.torrents.schemas import Quality, TorrentStatus
 from miramedia.torrents.schemas import Torrent as TorrentSchema
 from miramedia.torrents.service import TorrentService
@@ -30,7 +31,9 @@ def test_fetch_live_torrent_statuses_releases_session_before_rpc(
     repo = FakeTorrentRepository()
     repo.torrents[torrent.id] = torrent
     repo.db = MagicMock()
-    svc = TorrentService(torrent_repository=repo)  # type: ignore[arg-type]
+    dm = MagicMock(spec=DownloadManager)
+    dm._torrent_client = MagicMock()
+    svc = TorrentService(torrent_repository=repo, download_manager=dm)  # type: ignore[arg-type]
 
     order: list[str] = []
 

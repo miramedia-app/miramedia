@@ -233,7 +233,7 @@ class TestImportEpisodeBazarrHook:
                 "miramedia.naming.MiraMediaConfig",
                 "miramedia.shows.service.MiraMediaConfig",
                 "miramedia.movies.service.MiraMediaConfig",
-                "miramedia.torrents.utils.MiraMediaConfig",
+                "miramedia.torrents.paths.MiraMediaConfig",
             )
         ]
 

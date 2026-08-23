@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import HTTPException, status
-
 from miramedia.config import MiraMediaConfig
 from miramedia.exceptions import ConflictError, NotFoundError, UnprocessableEntityError
 from miramedia.movies.repository import MovieRepository
@@ -163,10 +161,8 @@ class WatchlistService:
                 return
             await self.show_repository.get_episode(EpisodeId(media_id))
         except NotFoundError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"{media_kind.title()} not found",
-            ) from exc
+            msg = f"{media_kind.title()} not found"
+            raise NotFoundError(msg) from exc
 
     async def add_item(
         self,
@@ -186,10 +182,8 @@ class WatchlistService:
             media_id=data.media_id,
         )
         if result is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Watchlist not found",
-            )
+            msg = "Watchlist not found"
+            raise NotFoundError(msg)
         return result
 
     async def remove_watched_media_from_lists(
@@ -230,10 +224,8 @@ class WatchlistService:
                 watchlist_id=watchlist_id,
             )
             if owned is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Watchlist not found",
-                )
+                msg = "Watchlist not found"
+                raise NotFoundError(msg)
             msg = "item_ids must be an exact permutation of the current watchlist items"
             raise UnprocessableEntityError(msg)
         return detail

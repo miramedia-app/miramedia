@@ -43,9 +43,9 @@ export function ManageUrlsDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
-          <DialogTitle>Manage URLs — {urlSite?.name}</DialogTitle>
+          <DialogTitle>Manage Mirrors — {urlSite?.name}</DialogTitle>
           <DialogDescription>
-            Select the active URL or add custom mirrors. The active URL is used for searches.
+            Select the active mirror or add custom ones. The active mirror is used for searches.
           </DialogDescription>
         </DialogHeader>
         {urlSite && (
@@ -89,11 +89,11 @@ export function ManageUrlsDialog({
               />
               <Button
                 variant="outline"
-                size="sm"
+                className="gap-1"
                 onClick={() => void onAddUrl()}
                 disabled={loading || !newUrl.trim()}
               >
-                <Plus className="mr-1 h-3 w-3" />
+                <Plus className="h-3 w-3" />
                 Add
               </Button>
             </div>

@@ -87,7 +87,7 @@ class TorrentGalaxySite(BaseSite):
                     exc_info=True,
                 )
 
-        log.info(f"TorrentGalaxy returned {len(results)} results for: {query}")
+        log.info("TorrentGalaxy returned %s results for: %s", len(results), query)
         return results
 
     _HEALTH_RE = re.compile(r"\[\s*(\d+)\s*/\s*(\d+)\s*\]")

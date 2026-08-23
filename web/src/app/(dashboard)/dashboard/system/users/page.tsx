@@ -50,7 +50,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { DataList } from "@/components/data-list";
 import type {
   BulkAction,
@@ -495,9 +494,9 @@ export default function UsersPage() {
                 <Mail className="mr-1 h-4 w-4" />
                 Invite
               </Button>
-              <Button size="default" className="text-xs" onClick={() => setAddOpen(true)}>
-                <Plus className="mr-1 h-4 w-4" />
-                Add user
+              <Button size="default" className="gap-1 text-xs" onClick={() => setAddOpen(true)}>
+                <Plus className="h-4 w-4" />
+                Add User
               </Button>
             </div>
             <Alert variant="destructive">
@@ -540,9 +539,9 @@ export default function UsersPage() {
                   <Mail className="mr-1 h-4 w-4" />
                   Invite
                 </Button>
-                <Button size="default" className="text-xs" onClick={() => setAddOpen(true)}>
-                  <Plus className="mr-1 h-4 w-4" />
-                  Add user
+                <Button size="default" className="gap-1 text-xs" onClick={() => setAddOpen(true)}>
+                  <Plus className="h-4 w-4" />
+                  Add User
                 </Button>
               </>
             }
@@ -559,12 +558,12 @@ export default function UsersPage() {
           setAddOpen(o);
         }}
       >
-        <DialogContent>
+        <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>Add User</DialogTitle>
-            <DialogDescription>Create a new user account</DialogDescription>
+            <DialogDescription>Create a new user account.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="space-y-5">
             <div className="space-y-2">
               <Label htmlFor="new-email">Email</Label>
               <Input
@@ -585,27 +584,39 @@ export default function UsersPage() {
                 placeholder="Password"
               />
             </div>
-            <Separator />
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="new-active">Active</Label>
-                <Switch id="new-active" checked={newIsActive} onCheckedChange={setNewIsActive} />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label htmlFor="new-verified">Verified</Label>
-                <Switch
-                  id="new-verified"
-                  checked={newIsVerified}
-                  onCheckedChange={setNewIsVerified}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label htmlFor="new-superuser">Admin</Label>
-                <Switch
-                  id="new-superuser"
-                  checked={newIsSuperuser}
-                  onCheckedChange={setNewIsSuperuser}
-                />
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="new-active">Active</Label>
+                    <p className="text-xs text-muted-foreground">Account can sign in.</p>
+                  </div>
+                  <Switch id="new-active" checked={newIsActive} onCheckedChange={setNewIsActive} />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="new-verified">Verified</Label>
+                    <p className="text-xs text-muted-foreground">Email address confirmed.</p>
+                  </div>
+                  <Switch
+                    id="new-verified"
+                    checked={newIsVerified}
+                    onCheckedChange={setNewIsVerified}
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="new-superuser">Admin</Label>
+                    <p className="text-xs text-muted-foreground">Full administrative access.</p>
+                  </div>
+                  <Switch
+                    id="new-superuser"
+                    checked={newIsSuperuser}
+                    onCheckedChange={setNewIsSuperuser}
+                  />
+                </div>
               </div>
             </div>
           </div>
@@ -619,8 +630,12 @@ export default function UsersPage() {
             >
               Cancel
             </Button>
-            <Button onClick={() => void createUser()} disabled={saving}>
-              {saving ? "Creating..." : "Create User"}
+            <Button
+              onClick={() => void createUser()}
+              disabled={saving}
+              className="border border-white bg-white text-black hover:bg-white/90"
+            >
+              {saving ? "Saving..." : "Save"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -628,89 +643,16 @@ export default function UsersPage() {
 
       {/* Edit user */}
       <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
-        <DialogContent className="w-full max-w-[600px] rounded-lg p-6 shadow-lg">
+        <DialogContent className="sm:max-w-[520px]">
           <DialogHeader>
-            <DialogTitle className="mb-1 text-xl font-semibold">Edit user</DialogTitle>
-            <DialogDescription className="mb-4 text-sm">
-              Edit {selectedUser?.email}
+            <DialogTitle>Edit User</DialogTitle>
+            <DialogDescription>
+              Update this user&apos;s credentials and permissions.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-6">
-            <div>
-              <Label className="mb-1 block text-sm font-medium">Verified</Label>
-              <RadioGroup
-                className="flex gap-4"
-                value={selectedUser?.is_verified ? "true" : "false"}
-                onValueChange={(v) =>
-                  setSelectedUser((s) => (s ? { ...s, is_verified: v === "true" } : s))
-                }
-              >
-                <div className="flex items-center gap-1">
-                  <RadioGroupItem id="verified-true" value="true" />
-                  <Label htmlFor="verified-true" className="text-sm">
-                    True
-                  </Label>
-                </div>
-                <div className="flex items-center gap-1">
-                  <RadioGroupItem id="verified-false" value="false" />
-                  <Label htmlFor="verified-false" className="text-sm">
-                    False
-                  </Label>
-                </div>
-              </RadioGroup>
-            </div>
-            <hr />
-            <div>
-              <Label className="mb-1 block text-sm font-medium">Active</Label>
-              <RadioGroup
-                className="flex gap-4"
-                value={selectedUser?.is_active ? "true" : "false"}
-                onValueChange={(v) =>
-                  setSelectedUser((s) => (s ? { ...s, is_active: v === "true" } : s))
-                }
-              >
-                <div className="flex items-center gap-1">
-                  <RadioGroupItem id="active-true" value="true" />
-                  <Label htmlFor="active-true" className="text-sm">
-                    True
-                  </Label>
-                </div>
-                <div className="flex items-center gap-1">
-                  <RadioGroupItem id="active-false" value="false" />
-                  <Label htmlFor="active-false" className="text-sm">
-                    False
-                  </Label>
-                </div>
-              </RadioGroup>
-            </div>
-            <hr />
-            <div>
-              <Label className="mb-1 block text-sm font-medium">Admin</Label>
-              <RadioGroup
-                className="flex gap-4"
-                value={selectedUser?.is_superuser ? "true" : "false"}
-                onValueChange={(v) =>
-                  setSelectedUser((s) => (s ? { ...s, is_superuser: v === "true" } : s))
-                }
-              >
-                <div className="flex items-center gap-1">
-                  <RadioGroupItem id="superuser-true" value="true" />
-                  <Label htmlFor="superuser-true" className="text-sm">
-                    True
-                  </Label>
-                </div>
-                <div className="flex items-center gap-1">
-                  <RadioGroupItem id="superuser-false" value="false" />
-                  <Label htmlFor="superuser-false" className="text-sm">
-                    False
-                  </Label>
-                </div>
-              </RadioGroup>
-            </div>
-            <div>
-              <Label htmlFor="edit-email" className="mb-1 block text-sm font-medium">
-                Email
-              </Label>
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <Label htmlFor="edit-email">Email</Label>
               <Input
                 id="edit-email"
                 value={editEmail}
@@ -719,10 +661,8 @@ export default function UsersPage() {
                 type="text"
               />
             </div>
-            <div>
-              <Label htmlFor="edit-password" className="mb-1 block text-sm font-medium">
-                Password
-              </Label>
+            <div className="space-y-2">
+              <Label htmlFor="edit-password">Password</Label>
               <Input
                 id="edit-password"
                 value={editPassword}
@@ -731,15 +671,63 @@ export default function UsersPage() {
                 type="password"
               />
             </div>
+            <div className="rounded-lg border bg-muted/30 p-4">
+              <div className="flex flex-col gap-4">
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edit-active">Active</Label>
+                    <p className="text-xs text-muted-foreground">Account can sign in.</p>
+                  </div>
+                  <Switch
+                    id="edit-active"
+                    checked={selectedUser?.is_active ?? false}
+                    onCheckedChange={(v) =>
+                      setSelectedUser((s) => (s ? { ...s, is_active: v } : s))
+                    }
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edit-verified">Verified</Label>
+                    <p className="text-xs text-muted-foreground">Email address confirmed.</p>
+                  </div>
+                  <Switch
+                    id="edit-verified"
+                    checked={selectedUser?.is_verified ?? false}
+                    onCheckedChange={(v) =>
+                      setSelectedUser((s) => (s ? { ...s, is_verified: v } : s))
+                    }
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="edit-superuser">Admin</Label>
+                    <p className="text-xs text-muted-foreground">Full administrative access.</p>
+                  </div>
+                  <Switch
+                    id="edit-superuser"
+                    checked={selectedUser?.is_superuser ?? false}
+                    onCheckedChange={(v) =>
+                      setSelectedUser((s) => (s ? { ...s, is_superuser: v } : s))
+                    }
+                  />
+                </div>
+              </div>
+            </div>
           </div>
-          <div className="mt-8 flex justify-end gap-2">
+          <DialogFooter>
             <Button onClick={() => setEditDialogOpen(false)} variant="outline">
               Cancel
             </Button>
-            <Button onClick={() => void saveUser()} variant="destructive">
+            <Button
+              onClick={() => void saveUser()}
+              className="border border-white bg-white text-black hover:bg-white/90"
+            >
               Save
             </Button>
-          </div>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

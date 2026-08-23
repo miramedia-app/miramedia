@@ -66,7 +66,7 @@ async def scan_libraries(
     if show_service is not None:
         existing_shows = await show_service.get_all_shows()
     else:
-        from miramedia.database import bg_show_service
+        from miramedia.background_services import bg_show_service
 
         async with bg_show_service() as _svc:
             existing_shows = await _svc.get_all_shows()
@@ -77,7 +77,7 @@ async def scan_libraries(
             await movie_service.movie_repository.get_movie_files_for_movies(movie_ids)
         )
     else:
-        from miramedia.database import bg_movie_service
+        from miramedia.background_services import bg_movie_service
 
         async with bg_movie_service() as _svc:
             existing_movies = await _svc.get_all_movies()

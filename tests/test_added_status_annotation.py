@@ -57,6 +57,21 @@ class _StubMovieRepo(_StubShowRepo):
         return await self.shows_existing_by_identifiers(imdb_ids, provider_keys)
 
 
+def test_annotate_does_not_mutate_input_results():
+    repo = _StubShowRepo([(None, "tt1234567", "native", "show-id-1")])
+    svc = ShowService(repo, None, None, None)
+    original = _result(external_id="tt1234567", imdb_id="tt1234567", provider="native")
+    results = [original]
+
+    [annotated] = asyncio.run(svc._annotate_added_status(results))
+
+    assert annotated is not original
+    assert annotated.added is True
+    assert annotated.id == "show-id-1"
+    assert original.added is False
+    assert original.id is None
+
+
 def test_native_show_imdb_in_external_id_marks_added():
     # Library row: native/scan import — IMDb id lives in external_id, imdb_id NULL.
     repo = _StubShowRepo([(None, "tt1234567", "native", "show-id-1")])

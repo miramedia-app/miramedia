@@ -68,7 +68,7 @@ function showDownloadProgress(show: Show): Progress {
 }
 
 export default function ShowsPage() {
-  const prefetchShow = useShowPrefetch();
+  const { prefetch: prefetchShow, cancel: cancelShowPrefetch } = useShowPrefetch();
   const [searchQuery, setSearchQuery] = React.useState("");
   const deferredSearchQuery = React.useDeferredValue(searchQuery);
   const [sortBy, setSortBy] = React.useState("name-asc");
@@ -294,6 +294,8 @@ export default function ShowsPage() {
                       className="flex flex-col"
                       onMouseEnter={() => prefetchShow(show)}
                       onFocus={() => prefetchShow(show)}
+                      onMouseLeave={cancelShowPrefetch}
+                      onBlur={cancelShowPrefetch}
                     >
                       <Link href={`/dashboard/shows/${show.id}`} className="group">
                         <div className="relative aspect-[2/3] overflow-hidden rounded-lg">

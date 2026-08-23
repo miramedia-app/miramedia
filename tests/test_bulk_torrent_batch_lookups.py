@@ -466,7 +466,7 @@ def test_manual_map_batches_episode_and_show_lookups(tmp_path) -> None:
     ]
 
     with patch(
-        "miramedia.torrents.utils.get_torrent_filepath",
+        "miramedia.torrents.paths.get_torrent_filepath",
         return_value=tmp_path,
     ):
         with torrent_bulk_client(
@@ -523,7 +523,7 @@ def test_manual_map_batches_duplicate_movie_ids_once(tmp_path) -> None:
     ]
 
     with patch(
-        "miramedia.torrents.utils.get_torrent_filepath",
+        "miramedia.torrents.paths.get_torrent_filepath",
         return_value=tmp_path,
     ):
         with torrent_bulk_client(
@@ -587,7 +587,7 @@ def test_manual_map_missing_episode_isolates_other_items(tmp_path) -> None:
     ]
 
     with patch(
-        "miramedia.torrents.utils.get_torrent_filepath",
+        "miramedia.torrents.paths.get_torrent_filepath",
         return_value=tmp_path,
     ):
         with torrent_bulk_client(
@@ -651,7 +651,7 @@ def test_manual_map_preserves_item_order_with_skip(tmp_path) -> None:
     ]
 
     with patch(
-        "miramedia.torrents.utils.get_torrent_filepath",
+        "miramedia.torrents.paths.get_torrent_filepath",
         return_value=tmp_path,
     ):
         with torrent_bulk_client(

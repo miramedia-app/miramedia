@@ -5,7 +5,7 @@ from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.torrents.schemas import Torrent, TorrentStatus
 
 if TYPE_CHECKING:
-    from miramedia.torrents.utils import TorrentFile
+    from miramedia.torrents.inspection import TorrentFile
 
 
 class AbstractDownloadClient(ABC):
@@ -47,6 +47,16 @@ class AbstractDownloadClient(ABC):
         :param torrent: The torrent to get the status of.
         :return: A tuple of (status, progress, num_peers, num_seeds, download_speed_bytes).
         """
+
+    def get_torrent_statuses_bulk(
+        self, torrents: list[Torrent]
+    ) -> dict[str, tuple[TorrentStatus, float, int, int, int]]:
+        """Return live status tuples keyed by info hash.
+
+        Backends with a cheap batch path override this; the default loops
+        ``get_torrent_status`` per torrent.
+        """
+        return {torrent.hash: self.get_torrent_status(torrent) for torrent in torrents}
 
     @abstractmethod
     def pause_torrent(self, torrent: Torrent) -> None:

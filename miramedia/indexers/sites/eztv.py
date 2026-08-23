@@ -136,5 +136,5 @@ class EztvSite(BaseSite):
                 )
             )
 
-        log.info(f"EZTV returned {len(results)} results")
+        log.info("EZTV returned %s results", len(results))
         return results

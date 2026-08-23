@@ -858,3 +858,397 @@ async def _auto_download_missing_media_impl(
 
     for media_id in candidate_ids:
         await try_auto_download_id(media_id, max_downloads_per_item)
+
+
+class AutoDownloadMediaProtocol(Protocol):
+    """Structural type for shared auto-download gate helpers."""
+
+    name: str
+    skipped: bool
+    continuous_download: bool | None
+    auto_download_backoff_until: datetime | None
+
+
+def _auto_download_backoff_hours() -> int:
+    return max(MiraMediaConfig().misc.auto_download_interval_hours * 2, 12)
+
+
+def _auto_download_in_active_backoff(media: Show | Movie, now_utc: datetime) -> bool:
+    return (
+        media.auto_download_backoff_until is not None
+        and media.auto_download_backoff_until > now_utc
+    )
+
+
+def _log_auto_download_backoff_skip(media: Show | Movie) -> None:
+    until = media.auto_download_backoff_until
+    if until is None:
+        return
+    log.debug(
+        "Auto-download: skipping %s (backoff until %s)",
+        media.name,
+        until.isoformat(),
+    )
+
+
+@dataclass(frozen=True)
+class AutoDownloadIdHooks(Generic[TMediaId_inv, TMedia_inv]):
+    bg_service: Callable[[], AbstractAsyncContextManager[Any]]
+    media_noun: Literal["show", "movie"]
+    lock_key_prefix: Literal["auto_dl_show", "auto_dl_movie"]
+    get_media: Callable[[Any, TMediaId_inv], Awaitable[TMedia_inv | None]]
+    run_for_media: Callable[[TMedia_inv, int], Awaitable[None]]
+
+
+async def _try_auto_download_media_id_impl(
+    media_id: TMediaId_inv,
+    *,
+    hooks: AutoDownloadIdHooks[TMediaId_inv, TMedia_inv],
+    max_downloads: int = 5,
+) -> None:
+    """Run one continuous-download iteration for a single title."""
+    from miramedia.scheduler_tasks.locks import import_sweep_lock
+
+    lock = import_sweep_lock(f"{hooks.lock_key_prefix}:{media_id}")
+    if lock.locked():
+        log.debug(
+            "Auto-download: %s id=%s already in progress; skipping overlapping run",
+            hooks.media_noun,
+            media_id,
+        )
+        return
+    async with lock:
+        try:
+            async with hooks.bg_service() as svc:
+                fresh = await hooks.get_media(svc, media_id)
+            if fresh is None:
+                return
+            await hooks.run_for_media(fresh, max_downloads)
+        except Exception:
+            log.exception(
+                "Auto-download: error processing %s id=%s",
+                hooks.media_noun,
+                media_id,
+            )
+
+
+async def _auto_download_for_show_impl(show: Show, max_downloads: int) -> None:
+    """Self-contained auto-download for a single show."""
+    from miramedia.background_services import bg_show_service
+
+    if show.skipped:
+        log.debug("Auto-download: skipping %s (show marked as skipped)", show.name)
+        return
+    global_cd = MiraMediaConfig().misc.continuous_download
+    if show.continuous_download is False:
+        log.debug(
+            "Auto-download: skipping %s (continuous_download disabled)", show.name
+        )
+        return
+    if show.continuous_download is None and not global_cd:
+        log.debug(
+            "Auto-download: skipping %s (no per-show override, global disabled)",
+            show.name,
+        )
+        return
+
+    now_utc = datetime.now(UTC)
+    if _auto_download_in_active_backoff(show, now_utc):
+        _log_auto_download_backoff_skip(show)
+        return
+
+    today = now_utc.astimezone().date()
+    missing_by_season: dict[int, list[int]] = {}
+    first_regular_season = min(
+        (
+            int(season.number)
+            for season in show.seasons
+            if season.number > 0 and season.episodes
+        ),
+        default=0,
+    )
+    latest_aired_season = max(
+        (
+            int(season.number)
+            for season in show.seasons
+            if season.number > 0
+            and any(
+                episode.air_date is not None and episode.air_date <= today
+                for episode in season.episodes
+            )
+        ),
+        default=0,
+    )
+    auto_download_through_season = max(first_regular_season, latest_aired_season)
+
+    async with bg_show_service() as snap:
+        active_torrents = await snap.show_repository.get_torrents_by_show_id(
+            show_id=show.id
+        )
+        active_count = 0
+        if active_torrents:
+            imported_map = await snap.torrent_service.bulk_check_torrents_imported(
+                [t.id for t in active_torrents]
+            )
+            active_count = sum(1 for imported in imported_map.values() if not imported)
+        if active_count > 0:
+            log.debug(
+                "Auto-download: show %s has %s active downloads, skipping",
+                show.name,
+                active_count,
+            )
+            return
+
+        for season in show.seasons:
+            if season.skipped:
+                continue
+            if season.number > auto_download_through_season > 0:
+                log.debug(
+                    "Auto-download: skipping %s S%02d (no episode has aired)",
+                    show.name,
+                    season.number,
+                )
+                continue
+            season_dir = snap.get_root_season_directory(show, season.number)
+            season_files = await asyncio.to_thread(
+                snap._scan_season_video_files, season_dir
+            )
+            for episode in season.episodes:
+                if episode.skipped:
+                    continue
+                if episode.air_date is not None and episode.air_date > today:
+                    continue
+                if not snap._episode_downloaded_from_cache(
+                    episode=episode,
+                    season_number=season.number,
+                    season_files=season_files,
+                ):
+                    if episode.episode_files:
+                        continue
+                    missing_by_season.setdefault(season.number, []).append(
+                        episode.number
+                    )
+
+    if not missing_by_season:
+        log.debug("Auto-download: no missing episodes for %s", show.name)
+        return
+
+    log.info(
+        "Auto-download: %s has missing episodes in %s season(s)",
+        show.name,
+        len(missing_by_season),
+    )
+
+    downloads_started = 0
+    had_blocked_only = False
+    had_unblocked = False
+
+    for season_number in sorted(missing_by_season.keys()):
+        missing_episodes = sorted(missing_by_season[season_number])
+        if downloads_started >= max_downloads:
+            break
+
+        season = next((s for s in show.seasons if s.number == season_number), None)
+        if season is None:
+            continue
+
+        total_episodes = len(season.episodes)
+        missing_count = len(missing_episodes)
+
+        if season_number != 0 and missing_count > total_episodes / 2:
+            try:
+                async with bg_show_service() as iter_svc:
+                    results = await iter_svc.get_all_available_torrents_for_a_season(
+                        season_number=season_number, show_id=show.id
+                    )
+                    season_packs = [r for r in results if not r.episode]
+                    raw_count = len(season_packs)
+                    season_packs = await iter_svc.torrent_service.filter_deny_listed(
+                        season_packs
+                    )
+                    if season_packs:
+                        had_unblocked = True
+                    elif raw_count:
+                        had_blocked_only = True
+                    if season_packs:
+                        picked = await iter_svc._auto_download_first_valid(
+                            results=season_packs,
+                            show=show,
+                            label=f"season pack S{season_number:02d}",
+                        )
+                        if picked is not None:
+                            downloads_started += 1
+                            if iter_svc.notification_service:
+                                await iter_svc.notification_service.send_notification_to_all_providers(
+                                    title="Auto-download started",
+                                    message=(
+                                        f"Downloading season pack S{season_number:02d} "
+                                        f"of {show.name} ({show.year}): {picked.title}"
+                                    ),
+                                )
+                            continue
+            except Exception:
+                log.exception(
+                    "Auto-download: failed to find season pack for %s S%02d",
+                    show.name,
+                    season_number,
+                )
+
+        for ep_number in missing_episodes:
+            if downloads_started >= max_downloads:
+                break
+            try:
+                async with bg_show_service() as iter_svc:
+                    results = await iter_svc.get_all_available_torrents_for_an_episode(
+                        season_number=season_number,
+                        episode_number=ep_number,
+                        show_id=show.id,
+                    )
+                    raw_count = len(results)
+                    results = await iter_svc.torrent_service.filter_deny_listed(results)
+                    if results:
+                        had_unblocked = True
+                    elif raw_count:
+                        had_blocked_only = True
+                    if not results:
+                        log.debug(
+                            "Auto-download: no results for %s S%02dE%02d",
+                            show.name,
+                            season_number,
+                            ep_number,
+                        )
+                        continue
+
+                    picked = await iter_svc._auto_download_first_valid(
+                        results=results,
+                        show=show,
+                        label=f"S{season_number:02d}E{ep_number:02d}",
+                        episode_target=(
+                            (season_number, ep_number) if season_number == 0 else None
+                        ),
+                    )
+                    if picked is None:
+                        continue
+                    downloads_started += 1
+
+                    if iter_svc.notification_service:
+                        await iter_svc.notification_service.send_notification_to_all_providers(
+                            title="Auto-download started",
+                            message=(
+                                f"Downloading {show.name} ({show.year}) "
+                                f"S{season_number:02d}E{ep_number:02d}: {picked.title}"
+                            ),
+                        )
+            except Exception:
+                log.exception(
+                    "Auto-download: failed to download %s S%02dE%02d",
+                    show.name,
+                    season_number,
+                    ep_number,
+                )
+
+    try:
+        if downloads_started > 0:
+            if show.auto_download_backoff_until is not None:
+                async with bg_show_service() as backoff_svc:
+                    await backoff_svc.show_repository.set_auto_download_backoff(
+                        show.id,
+                        cast(Any, None),
+                    )
+        elif had_blocked_only and not had_unblocked:
+            until = now_utc + timedelta(hours=_auto_download_backoff_hours())
+            async with bg_show_service() as backoff_svc:
+                await backoff_svc.show_repository.set_auto_download_backoff(
+                    show.id, until
+                )
+            log.info(
+                "Auto-download: %s — all candidate(s) deny-listed across sweeps, backing off until %s",
+                show.name,
+                until.isoformat(),
+            )
+    except Exception:
+        log.exception("Auto-download: failed to update backoff state for %s", show.name)
+
+
+async def _auto_download_for_movie_impl(movie: Movie, max_downloads: int) -> None:
+    """Self-contained auto-download for a single movie."""
+    _ = max_downloads
+    from miramedia.background_services import bg_movie_service
+    from miramedia.database import release_session_before_external_io
+
+    today = datetime.now(UTC).astimezone().date()
+    async with bg_movie_service() as svc:
+        fresh = await svc.movie_repository.get_movie_by_id(movie_id=movie.id)
+        if fresh is None:
+            return
+        if fresh.skipped:
+            return
+        if fresh.continuous_download is False:
+            log.debug(
+                "Auto-download: skipping %s (continuous_download disabled)",
+                fresh.name,
+            )
+            return
+        if fresh.release_date is not None and fresh.release_date > today:
+            log.debug(
+                "Auto-download: skipping %s (release date %s in the future)",
+                fresh.name,
+                fresh.release_date,
+            )
+            return
+
+        now_utc = datetime.now(UTC)
+        if _auto_download_in_active_backoff(fresh, now_utc):
+            _log_auto_download_backoff_skip(fresh)
+            return
+
+        if await svc.is_movie_downloaded(movie=fresh):
+            return
+
+        movie_files = await svc.movie_repository.get_movie_files_by_movie_id(
+            movie_id=fresh.id
+        )
+        active_torrents = [mf for mf in movie_files if mf.torrent_id is not None]
+        if active_torrents:
+            log.debug(
+                "Auto-download: movie %s has active downloads, skipping",
+                fresh.name,
+            )
+            return
+
+        await release_session_before_external_io(svc.movie_repository.db)
+
+        raw_results = await svc.get_all_available_torrents_for_movie(movie=fresh)
+        results = await svc.torrent_service.filter_deny_listed(raw_results)
+        if not results:
+            if raw_results:
+                until = now_utc + timedelta(hours=_auto_download_backoff_hours())
+                await svc.movie_repository.set_auto_download_backoff(fresh.id, until)
+                log.info(
+                    "Auto-download: %s — all %d candidate(s) deny-listed, backing off until %s",
+                    fresh.name,
+                    len(raw_results),
+                    until.isoformat(),
+                )
+            else:
+                log.debug("Auto-download: no results for %s", fresh.name)
+            return
+
+        if fresh.auto_download_backoff_until is not None:
+            await svc.movie_repository.set_auto_download_backoff(
+                fresh.id, cast(Any, None)
+            )
+
+        picked = await svc._try_download_first_valid(results=results, movie=fresh)
+        if picked is None:
+            log.info(
+                "Auto-download: no usable candidates for %s after deny-list/no-video filtering",
+                fresh.name,
+            )
+            return
+
+        if svc.notification_service:
+            await svc.notification_service.send_notification_to_all_providers(
+                title="Auto-download started",
+                message=f"Downloading {fresh.name} ({fresh.year}): {picked.title}",
+            )

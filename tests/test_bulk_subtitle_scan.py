@@ -180,7 +180,7 @@ class TestScanAllMissingSubtitles:
         with (
             patch("miramedia.subtitles.service.MiraMediaConfig", return_value=cfg),
             patch(
-                "miramedia.database.bg_subtitle_service",
+                "miramedia.background_services.bg_subtitle_service",
             ) as bg_factory,
         ):
             await service.scan_all_missing_subtitles()
@@ -225,7 +225,7 @@ class TestScanAllMissingSubtitles:
         with (
             patch("miramedia.subtitles.service.MiraMediaConfig", return_value=cfg),
             patch(
-                "miramedia.database.bg_subtitle_service",
+                "miramedia.background_services.bg_subtitle_service",
                 _bg_subtitle_service,
             ),
             patch(
@@ -280,7 +280,7 @@ class TestScanAllMissingSubtitles:
         with (
             patch("miramedia.subtitles.service.MiraMediaConfig", return_value=cfg),
             patch(
-                "miramedia.database.bg_subtitle_service",
+                "miramedia.background_services.bg_subtitle_service",
                 _bg_subtitle_service,
             ),
             patch(

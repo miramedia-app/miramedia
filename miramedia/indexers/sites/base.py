@@ -5,7 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from functools import lru_cache
 from typing import TYPE_CHECKING
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -179,8 +179,12 @@ class BaseSite(ABC):
                 if html:
                     return html
 
+            parsed = urlparse(full_url)
+            safe_url = urlunparse(
+                (parsed.scheme, parsed.netloc, parsed.path, "", "", "")
+            )
             msg = (
-                f"Cloudflare fetch returned no usable HTML for {full_url} "
+                f"Cloudflare fetch returned no usable HTML for {safe_url} "
                 "(curl_cffi challenged and bypass browser empty)"
             )
             raise RuntimeError(msg)

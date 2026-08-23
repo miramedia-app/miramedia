@@ -3,7 +3,7 @@ import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import Depends, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -19,10 +19,6 @@ from sqlalchemy.orm import declarative_base
 
 from miramedia.database.config import DbConfig
 from miramedia.exceptions import MiraMediaError
-
-if TYPE_CHECKING:
-    from miramedia.requests.repository import RequestRepository
-    from miramedia.requests.service import RequestService
 
 log = logging.getLogger(__name__)
 
@@ -353,37 +349,6 @@ db_session: ContextVar[AsyncSession] = ContextVar("db_session")
 DbSessionDependency = Annotated[AsyncSession, Depends(get_session)]
 
 
-# ---------------------------------------------------------------------------
-# Background service factories
-# ---------------------------------------------------------------------------
-# Production bug (2026-05-26): scheduler tasks declared services via
-# ``TaskiqDepends(get_<svc>)``. The dep chain ultimately resolves the
-# request-scoped ``get_session`` generator, which taskiq opens once at task
-# start and tears down at task end — pinning a connection from the request
-# pool in ``idle in transaction`` for the entire task duration.
-#
-# For tasks like ``scan_missing_subtitles_task`` that fan out to subliminal
-# HTTP per-episode (multi-minute walls when providers are slow / timing out),
-# this drains the pool until subsequent requests stall on ``pool_timeout``.
-#
-# Use these helpers from task bodies (or any long-running background coroutine
-# that pauses on external I/O) to scope DB work tightly:
-#
-#     async def my_task() -> None:
-#         async with bg_show_service() as show_service:
-#             rows = await show_service.show_repository.get_shows()
-#         # connection released here — slow loop holds nothing
-#         for row in rows:
-#             await slow_external_call(row)
-#             async with bg_show_service() as show_service:
-#                 await show_service.show_repository.stamp_metadata_check(row.id)
-#                 await show_service.show_repository.db.commit()
-#
-# Each ``async with`` opens a short-lived ``SessionLocalBackground`` session,
-# constructs the relevant service stack against it, and closes the session
-# (returning the connection to the background pool) on exit.
-
-
 def _require_background_sessionmaker() -> async_sessionmaker[AsyncSession]:
     if SessionLocalBackground is None:
         msg = "Background session factory not initialized. Call init_engine(...) first."
@@ -456,8 +421,8 @@ async def background_session() -> AsyncGenerator[AsyncSession]:
     """Yield a fresh ``SessionLocalBackground`` session.
 
     Auto-commits on clean exit, rolls back on exception. Use this directly
-    when you only need raw repository access — for services with cross-cutting
-    deps, use the ``bg_<svc>`` helpers below.
+    when you only need raw repository access — for composed service graphs,
+    use ``miramedia.background_services``.
     """
     sessionmaker = _require_background_sessionmaker()
     async with sessionmaker() as db:
@@ -467,132 +432,3 @@ async def background_session() -> AsyncGenerator[AsyncSession]:
         except Exception:
             await db.rollback()
             raise
-
-
-@asynccontextmanager
-async def bg_show_service() -> AsyncGenerator["ShowService"]:  # noqa: F821
-    """Construct a ``ShowService`` backed by a short-lived background session."""
-    from miramedia.indexers.repository import IndexerRepository
-    from miramedia.indexers.service import IndexerService
-    from miramedia.notifications.repository import NotificationRepository
-    from miramedia.notifications.service import NotificationService
-    from miramedia.shows.repository import ShowRepository
-    from miramedia.shows.service import ShowService
-    from miramedia.torrents.repository import TorrentRepository
-    from miramedia.torrents.service import TorrentService
-
-    async with background_session() as db:
-        svc = ShowService(
-            show_repository=ShowRepository(db),
-            torrent_service=TorrentService(torrent_repository=TorrentRepository(db)),
-            indexer_service=IndexerService(IndexerRepository(db)),
-            notification_service=NotificationService(NotificationRepository(db)),
-        )
-        yield svc
-
-
-@asynccontextmanager
-async def bg_movie_service() -> AsyncGenerator["MovieService"]:  # noqa: F821
-    """Construct a ``MovieService`` backed by a short-lived background session."""
-    from miramedia.indexers.repository import IndexerRepository
-    from miramedia.indexers.service import IndexerService
-    from miramedia.movies.repository import MovieRepository
-    from miramedia.movies.service import MovieService
-    from miramedia.notifications.repository import NotificationRepository
-    from miramedia.notifications.service import NotificationService
-    from miramedia.torrents.repository import TorrentRepository
-    from miramedia.torrents.service import TorrentService
-
-    async with background_session() as db:
-        svc = MovieService(
-            movie_repository=MovieRepository(db),
-            torrent_service=TorrentService(torrent_repository=TorrentRepository(db)),
-            indexer_service=IndexerService(IndexerRepository(db)),
-            notification_service=NotificationService(NotificationRepository(db)),
-        )
-        yield svc
-
-
-@asynccontextmanager
-async def bg_torrent_service() -> AsyncGenerator["TorrentService"]:  # noqa: F821
-    """Construct a ``TorrentService`` backed by a short-lived background session."""
-    from miramedia.torrents.repository import TorrentRepository
-    from miramedia.torrents.service import TorrentService
-
-    async with background_session() as db:
-        yield TorrentService(torrent_repository=TorrentRepository(db))
-
-
-@asynccontextmanager
-async def bg_request_service() -> AsyncGenerator[
-    tuple["RequestService", "RequestRepository"]
-]:
-    """Construct a (RequestService, RequestRepository) pair backed by a
-    short-lived background session.
-
-    Returns a tuple because the fulfill_approved_requests_task uses both —
-    the repository directly for Seerr reconcile, the service for the rest.
-    """
-    from miramedia.requests.backends.composite import CompositeRequestProvider
-    from miramedia.requests.backends.native import NativeRequestProvider
-    from miramedia.requests.dependencies import build_seerr_client
-    from miramedia.requests.repository import RequestRepository
-    from miramedia.requests.service import RequestService
-
-    async with background_session() as db:
-        repo = RequestRepository(db)
-        native = NativeRequestProvider(repo)
-        client = build_seerr_client()
-        try:
-            provider = CompositeRequestProvider(native, repo, client)
-            yield RequestService(provider), repo
-        finally:
-            if client is not None:
-                try:
-                    await client.aclose()
-                except Exception:
-                    log.exception("Failed to close Seerr client in bg_request_service")
-
-
-@asynccontextmanager
-async def bg_subtitle_service() -> AsyncGenerator["SubtitleService"]:  # noqa: F821
-    """Construct a ``SubtitleService`` backed by a short-lived background session.
-
-    NOTE: the ``ShowService`` / ``MovieService`` it carries also share the same
-    short-lived session. Callers must NOT hold the yielded service across slow
-    external I/O — open a fresh ``bg_subtitle_service()`` for each unit of work.
-    """
-    from miramedia.indexers.repository import IndexerRepository
-    from miramedia.indexers.service import IndexerService
-    from miramedia.movies.repository import MovieRepository
-    from miramedia.movies.service import MovieService
-    from miramedia.notifications.repository import NotificationRepository
-    from miramedia.notifications.service import NotificationService
-    from miramedia.shows.repository import ShowRepository
-    from miramedia.shows.service import ShowService
-    from miramedia.subtitles.repository import SubtitleRepository
-    from miramedia.subtitles.service import SubtitleService
-    from miramedia.torrents.repository import TorrentRepository
-    from miramedia.torrents.service import TorrentService
-
-    async with background_session() as db:
-        notif = NotificationService(NotificationRepository(db))
-        torrent = TorrentService(torrent_repository=TorrentRepository(db))
-        indexer = IndexerService(IndexerRepository(db))
-        show_svc = ShowService(
-            show_repository=ShowRepository(db),
-            torrent_service=torrent,
-            indexer_service=indexer,
-            notification_service=notif,
-        )
-        movie_svc = MovieService(
-            movie_repository=MovieRepository(db),
-            torrent_service=torrent,
-            indexer_service=indexer,
-            notification_service=notif,
-        )
-        yield SubtitleService(
-            subtitle_repository=SubtitleRepository(db),
-            show_service=show_svc,
-            movie_service=movie_svc,
-        )

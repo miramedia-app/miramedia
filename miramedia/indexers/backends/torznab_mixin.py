@@ -67,12 +67,12 @@ class TorznabMixin:
                 title = item.find("title").text
                 size_str = item.find("size")
                 if size_str is None or size_str.text is None:
-                    log.warning(f"Torznab item {title} has no size, skipping.")
+                    log.warning("Torznab item %s has no size, skipping.", title)
                     continue
                 try:
                     size = int(size_str.text or "0")
                 except ValueError:
-                    log.warning(f"Torznab item {title} has invalid size, skipping.")
+                    log.warning("Torznab item %s has invalid size, skipping.", title)
                     continue
 
                 result = IndexerQueryResult(

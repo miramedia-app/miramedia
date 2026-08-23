@@ -26,16 +26,20 @@ CI uses `UV_PYTHON=3.13` for all backend steps (see `.github/workflows/ci.yml`).
 ## Architecture
 
 FastAPI backend in `miramedia/` — per-domain modules: `shows`, `movies`, `torrents`, `indexers`,
-`imports`, `streams`, `subtitles`, `metadata`, `auth`, `notifications`, `requests`, `logs`,
-`settings`, `updates`. Each module follows a router / service / repository split.
-API prefix: `/api/v1/{domain}/`.
+`imports`, `streams`, `subtitles`, `playback`, `watchlists`, `events`, `metadata`, `auth`,
+`notifications`, `requests`, `ops`, `logs`, `settings`, `updates`, plus non-routed `core`,
+`upcoming`, `observability`, `scheduler_tasks/`, and `background_services.py`. Each routed module
+follows a router / service / repository split. API prefix: `/api/v1/{domain}/` (exceptions: `core`
+routes at `/api/v1/health`, `/api/v1/features`, etc.; `observability` at `/api/v1/analytics`).
 
 Next.js 16 static-export SPA in `web/` — React 19, Tailwind v4, shadcn/ui.
 See `web/CLAUDE.md` (→ `web/AGENTS.md`): read `node_modules/next/dist/docs/` before writing
 any Next code — this version has breaking changes from training data.
 
 Persistence: PostgreSQL 17 + SQLAlchemy ORM + Alembic migrations.
-Background jobs: taskiq scheduler with taskiq-postgresql broker (`miramedia/scheduler.py`).
+Background jobs: taskiq scheduler with taskiq-postgresql broker — registration in
+`miramedia/scheduler.py`, task implementations in `miramedia/scheduler_tasks/`, background service
+composition in `miramedia/background_services.py`.
 Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/config.py`).
 
 ## Hard rules

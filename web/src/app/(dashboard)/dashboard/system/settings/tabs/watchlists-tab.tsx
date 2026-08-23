@@ -22,23 +22,11 @@ export function WatchlistsTab({
         <CardHeader>
           <CardTitle>Watchlist Settings</CardTitle>
           <CardDescription>
-            Shared options for custom lists, Watch Next, Upcoming, and Continue Watching. Watchlists
-            are active whenever Native Watchlists below is enabled.
+            Shared options for custom lists, Watch Next, and Upcoming. Watchlists are active
+            whenever Native Watchlists below is enabled.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex items-center justify-between rounded-md border px-4 py-3">
-            <div className="space-y-0.5">
-              <Label className="text-sm font-medium">Continue Watching</Label>
-              <p className="text-xs text-muted-foreground">
-                In-progress movies and episodes on the dashboard. Disabling hides the row.
-              </p>
-            </div>
-            <Switch
-              checked={Boolean(wl.continue_watching ?? true)}
-              onCheckedChange={(v) => setWatchlistsPath(["continue_watching"], v)}
-            />
-          </div>
           <div className="flex items-center justify-between rounded-md border px-4 py-3">
             <div className="space-y-0.5">
               <Label className="text-sm font-medium">Auto-remove watched items</Label>
@@ -127,9 +115,13 @@ export function WatchlistsTab({
                 onCheckedChange={(v) => setWatchlistsPath(["native", "watch_next"], v)}
               />
             </div>
-            <div className="flex items-center justify-between gap-4 border-t pt-3">
+            <div
+              className={`flex items-center justify-between gap-4 border-t pt-3 ${
+                (native.watch_next ?? true) ? "" : "opacity-50"
+              }`}
+            >
               <div className="space-y-0.5">
-                <Label className="text-sm font-medium">Include specials by default</Label>
+                <Label className="text-sm font-medium">Include Specials</Label>
                 <p className="text-xs text-muted-foreground">
                   When on, Watch Next includes season 0 / specials unless a request overrides it.
                 </p>
@@ -139,6 +131,7 @@ export function WatchlistsTab({
                 onCheckedChange={(v) =>
                   setWatchlistsPath(["native", "watch_next_include_specials"], v)
                 }
+                disabled={!(native.watch_next ?? true)}
               />
             </div>
           </div>

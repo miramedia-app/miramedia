@@ -58,10 +58,11 @@ async function loadEpisodeStatus(
   episodeId: string,
   signal?: AbortSignal,
 ): Promise<SubtitleStatus | null> {
-  const { data } = await apiClient.GET("/api/v1/subtitles/episodes/{episode_id}/status", {
+  const { data, error } = await apiClient.GET("/api/v1/subtitles/episodes/{episode_id}/status", {
     params: { path: { episode_id: episodeId } },
     signal,
   });
+  if (error) throw error;
   return data ?? null;
 }
 
@@ -69,10 +70,11 @@ async function loadMovieStatus(
   movieId: string,
   signal?: AbortSignal,
 ): Promise<SubtitleStatus | null> {
-  const { data } = await apiClient.GET("/api/v1/subtitles/movies/{movie_id}/status", {
+  const { data, error } = await apiClient.GET("/api/v1/subtitles/movies/{movie_id}/status", {
     params: { path: { movie_id: movieId } },
     signal,
   });
+  if (error) throw error;
   return data ?? null;
 }
 
@@ -81,13 +83,14 @@ async function loadShowStatus(
   seasonNumber?: number,
   signal?: AbortSignal,
 ): Promise<EpisodeSubtitleStatus[]> {
-  const { data } = await apiClient.GET("/api/v1/subtitles/shows/{show_id}/status", {
+  const { data, error } = await apiClient.GET("/api/v1/subtitles/shows/{show_id}/status", {
     params: {
       path: { show_id: showId },
       query: seasonNumber !== undefined ? { season_number: seasonNumber } : {},
     },
     signal,
   });
+  if (error) throw error;
   return data?.episodes ?? [];
 }
 
@@ -156,6 +159,9 @@ export function SubtitleSearchDialog(props: Props) {
   });
 
   const isLoadingStatus = props.mode === "show" ? showQuery.isLoading : itemQuery.isLoading;
+  const loadError = (props.mode === "show" ? showQuery.isError : itemQuery.isError)
+    ? "Failed to load subtitle status"
+    : null;
   const status = itemQuery.data ?? null;
   // Stable empty-array fallback so dependent useMemos don't see fresh
   // identity per render while the query is loading.
@@ -301,6 +307,8 @@ export function SubtitleSearchDialog(props: Props) {
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
           </div>
+        ) : loadError ? (
+          <p className="text-sm text-muted-foreground">{loadError}</p>
         ) : props.mode !== "show" ? (
           status ? (
             <>

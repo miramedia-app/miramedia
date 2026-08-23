@@ -48,9 +48,9 @@ class TestShowAutoDownloadOverlapGuard:
 
         async def run() -> None:
             with (
-                patch("miramedia.database.bg_show_service") as mock_bg,
+                patch("miramedia.background_services.bg_show_service") as mock_bg,
                 patch(
-                    "miramedia.shows.service._auto_download_for_show_impl",
+                    "miramedia.media_service._auto_download_for_show_impl",
                     slow_download,
                 ),
             ):
@@ -84,9 +84,9 @@ class TestShowAutoDownloadOverlapGuard:
 
         async def run() -> None:
             with (
-                patch("miramedia.database.bg_show_service") as mock_bg,
+                patch("miramedia.background_services.bg_show_service") as mock_bg,
                 patch(
-                    "miramedia.shows.service._auto_download_for_show_impl",
+                    "miramedia.media_service._auto_download_for_show_impl",
                     track,
                 ),
             ):
@@ -113,27 +113,23 @@ class TestMovieAutoDownloadOverlapGuard:
             entered = asyncio.Event()
             release = asyncio.Event()
 
-            async def slow_search(*, movie):
+            async def slow_body(movie, _max_downloads):
                 entries.append(movie.id)
                 entered.set()
                 await release.wait()
-                return []
 
             fake_repo = types.SimpleNamespace(
                 get_movie_by_id=AsyncMock(return_value=_fake_movie(movie_id)),
-                get_movie_files_by_movie_id=AsyncMock(return_value=[]),
-                db=AsyncMock(),
             )
-            fake_svc = types.SimpleNamespace(
-                movie_repository=fake_repo,
-                is_movie_downloaded=AsyncMock(return_value=False),
-                get_all_available_torrents_for_movie=slow_search,
-                torrent_service=types.SimpleNamespace(
-                    filter_deny_listed=AsyncMock(return_value=[]),
-                ),
-            )
+            fake_svc = types.SimpleNamespace(movie_repository=fake_repo)
 
-            with patch("miramedia.database.bg_movie_service") as mock_bg:
+            with (
+                patch("miramedia.background_services.bg_movie_service") as mock_bg,
+                patch(
+                    "miramedia.media_service._auto_download_for_movie_impl",
+                    slow_body,
+                ),
+            ):
                 mock_bg.return_value.__aenter__ = AsyncMock(return_value=fake_svc)
                 mock_bg.return_value.__aexit__ = AsyncMock(return_value=False)
                 from miramedia.movies.service import _try_auto_download_movie_id_impl
@@ -154,26 +150,22 @@ class TestMovieAutoDownloadOverlapGuard:
             movie_b = MovieId(uuid.uuid4())
             entries: list[MovieId] = []
 
-            async def track(*, movie):
+            async def track(movie, _max_downloads):
                 entries.append(movie.id)
-                return []
 
             def make_svc(mid: MovieId):
                 fake_repo = types.SimpleNamespace(
                     get_movie_by_id=AsyncMock(return_value=_fake_movie(mid)),
-                    get_movie_files_by_movie_id=AsyncMock(return_value=[]),
-                    db=AsyncMock(),
                 )
-                return types.SimpleNamespace(
-                    movie_repository=fake_repo,
-                    is_movie_downloaded=AsyncMock(return_value=False),
-                    get_all_available_torrents_for_movie=track,
-                    torrent_service=types.SimpleNamespace(
-                        filter_deny_listed=AsyncMock(return_value=[]),
-                    ),
-                )
+                return types.SimpleNamespace(movie_repository=fake_repo)
 
-            with patch("miramedia.database.bg_movie_service") as mock_bg:
+            with (
+                patch("miramedia.background_services.bg_movie_service") as mock_bg,
+                patch(
+                    "miramedia.media_service._auto_download_for_movie_impl",
+                    track,
+                ),
+            ):
                 mock_bg.return_value.__aenter__ = AsyncMock(
                     side_effect=[make_svc(movie_a), make_svc(movie_b)]
                 )

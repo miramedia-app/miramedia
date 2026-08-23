@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from miramedia.torrents.utils import resolve_within
+from miramedia.torrents.paths import resolve_within
 
 
 def test_plain_relative_path_ok(tmp_path: Path) -> None:

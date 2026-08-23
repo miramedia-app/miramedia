@@ -28,6 +28,7 @@ from miramedia.naming_defaults import (
     DEFAULT_SHOW_FOLDER_FORMAT,
 )
 from miramedia.notifications.config import NotificationConfig
+from miramedia.playback.config import PlaybackConfig
 from miramedia.requests.config import RequestsConfig
 from miramedia.streams.config import StreamsConfig
 from miramedia.subtitles.config import SubtitleConfig
@@ -52,7 +53,7 @@ if config_path is None:
     config_path = Path(config_dir) / "config.toml"
 else:
     config_path = Path(config_path)
-log.info(f"Using config file {config_path}")
+log.info("Using config file %s", config_path)
 
 
 class LibraryItem(BaseSettings):
@@ -203,6 +204,7 @@ class MiraMediaConfig(BaseSettings):
     cloudflare: CloudflareConfig = CloudflareConfig()
     imports: ImportsConfig = ImportsConfig()
     streams: StreamsConfig = StreamsConfig()
+    playback: PlaybackConfig = PlaybackConfig()
 
     _instance: ClassVar[MiraMediaConfig | None] = None
     _initialized: ClassVar[bool] = False

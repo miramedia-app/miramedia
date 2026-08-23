@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
 from typing import cast as typing_cast
@@ -37,6 +38,14 @@ from miramedia.torrents.integrity import (
 from miramedia.torrents.models import Torrent
 from miramedia.torrents.schemas import Quality, TorrentId
 from miramedia.torrents.schemas import Torrent as TorrentSchema
+
+
+@dataclass(frozen=True, slots=True)
+class ShowMatchCandidate:
+    id: ShowId
+    name: str
+    year: int | None
+
 
 _SHOW_INTEGRITY_COLUMNS = (
     Show.id,
@@ -202,7 +211,7 @@ class ShowRepository:
                 raise NotFoundError(msg)
             return ShowSchema.model_validate(result)
         except SQLAlchemyError:
-            log.exception(f"Database error while retrieving show {show_id}")
+            log.exception("Database error while retrieving show %s", show_id)
             raise
 
     async def get_show_by_external_id(
@@ -225,7 +234,8 @@ class ShowRepository:
             return ShowSchema.model_validate(result)
         except SQLAlchemyError:
             log.exception(
-                f"Database error while retrieving show by external_id {external_id}",
+                "Database error while retrieving show by external_id %s",
+                external_id,
             )
             raise
 
@@ -239,7 +249,7 @@ class ShowRepository:
             )
             result = (await self.db.execute(stmt)).scalars().first()
         except SQLAlchemyError:
-            log.exception(f"Error checking show existence for imdb_id {imdb_id}")
+            log.exception("Error checking show existence for imdb_id %s", imdb_id)
             return None
         else:
             if result:
@@ -317,6 +327,19 @@ class ShowRepository:
             return [ShowSchema.model_validate(show) for show in results]
         except SQLAlchemyError:
             log.exception("Database error while retrieving all shows")
+            raise
+
+    async def get_show_match_candidates(self) -> list[ShowMatchCandidate]:
+        """Return (id, name, year) rows for fuzzy title matching without seasons."""
+        try:
+            stmt = select(Show.id, Show.name, Show.year)
+            rows = (await self.db.execute(stmt)).all()
+            return [
+                ShowMatchCandidate(id=ShowId(show_id), name=name, year=year)
+                for show_id, name, year in rows
+            ]
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving show match candidates")
             raise
 
     async def get_all_shows_with_tree(self) -> list[Show]:
@@ -641,7 +664,7 @@ class ShowRepository:
             raise ConflictError(msg) from e
         except SQLAlchemyError:
             await self.db.rollback()
-            log.exception(f"Database error while saving show {show.name}")
+            log.exception("Database error while saving show %s", show.name)
             raise
 
     async def delete_show(self, show_id: ShowId) -> None:
@@ -661,7 +684,7 @@ class ShowRepository:
             await self.db.commit()
         except SQLAlchemyError:
             await self.db.rollback()
-            log.exception(f"Database error while deleting show {show_id}")
+            log.exception("Database error while deleting show %s", show_id)
             raise
 
     async def get_season(self, season_id: SeasonId) -> SeasonSchema:
@@ -688,7 +711,7 @@ class ShowRepository:
                 raise NotFoundError(msg)
             return SeasonSchema.model_validate(season)
         except SQLAlchemyError:
-            log.exception(f"Database error while retrieving season {season_id}")
+            log.exception("Database error while retrieving season %s", season_id)
             raise
 
     async def get_episode(self, episode_id: EpisodeId) -> EpisodeSchema:
@@ -712,7 +735,7 @@ class ShowRepository:
                 raise NotFoundError(msg)
             return EpisodeSchema.model_validate(episode)
         except SQLAlchemyError as e:
-            log.error(f"Database error while retrieving episode {episode_id}: {e}")
+            log.error("Database error while retrieving episode %s: %s", episode_id, e)
             raise
 
     async def get_season_by_episode(self, episode_id: EpisodeId) -> SeasonSchema:
@@ -737,7 +760,9 @@ class ShowRepository:
 
         except SQLAlchemyError as e:
             log.error(
-                f"Database error while retrieving season for episode {episode_id}: {e}"
+                "Database error while retrieving season for episode %s: %s",
+                episode_id,
+                e,
             )
             raise
 
@@ -805,7 +830,9 @@ class ShowRepository:
             return SeasonSchema.model_validate(result)
         except SQLAlchemyError:
             log.exception(
-                f"Database error retrieving season {season_number} for show {show_id}"
+                "Database error retrieving season %s for show %s",
+                season_number,
+                show_id,
             )
             raise
 
@@ -827,7 +854,7 @@ class ShowRepository:
             raise
         except SQLAlchemyError as e:
             await self.db.rollback()
-            log.error(f"Database error while adding episode files: {e}")
+            log.error("Database error while adding episode files: %s", e)
             raise
         return [EpisodeFileSchema.model_validate(model) for model in db_models]
 
@@ -1222,7 +1249,8 @@ class ShowRepository:
         except SQLAlchemyError:
             await self.db.rollback()
             log.exception(
-                f"Database error removing episode files for torrent_id {torrent_id}"
+                "Database error removing episode files for torrent_id %s",
+                torrent_id,
             )
             raise
         return result.rowcount
@@ -1245,7 +1273,7 @@ class ShowRepository:
             await self.db.commit()
         except SQLAlchemyError:
             await self.db.rollback()
-            log.exception(f"Database error setting library for show {show_id}")
+            log.exception("Database error setting library for show %s", show_id)
             raise
 
     async def get_episode_files_by_season_id(
@@ -1266,7 +1294,8 @@ class ShowRepository:
             return [EpisodeFileSchema.model_validate(ef) for ef in results]
         except SQLAlchemyError:
             log.exception(
-                f"Database error retrieving episode files for season_id {season_id}"
+                "Database error retrieving episode files for season_id %s",
+                season_id,
             )
             raise
 
@@ -1321,7 +1350,9 @@ class ShowRepository:
             return [EpisodeFileSchema.model_validate(sf) for sf in results]
         except SQLAlchemyError as e:
             log.error(
-                f"Database error retrieving episode files for episode_id {episode_id}: {e}"
+                "Database error retrieving episode files for episode_id %s: %s",
+                episode_id,
+                e,
             )
             raise
 
@@ -1345,7 +1376,7 @@ class ShowRepository:
             results = (await self.db.execute(stmt)).scalars().unique().all()
             return [TorrentSchema.model_validate(torrent) for torrent in results]
         except SQLAlchemyError:
-            log.exception(f"Database error retrieving torrents for show_id {show_id}")
+            log.exception("Database error retrieving torrents for show_id %s", show_id)
             raise
 
     async def get_seasons_by_torrent_id(
@@ -1370,7 +1401,8 @@ class ShowRepository:
             return [SeasonNumber(x) for x in results]
         except SQLAlchemyError:
             log.exception(
-                f"Database error retrieving season numbers for torrent_id {torrent_id}"
+                "Database error retrieving season numbers for torrent_id %s",
+                torrent_id,
             )
             raise
 
@@ -1398,7 +1430,9 @@ class ShowRepository:
 
         except SQLAlchemyError as e:
             log.error(
-                f"Database error retrieving episodes for torrent_id {torrent_id}: {e}"
+                "Database error retrieving episodes for torrent_id %s: %s",
+                torrent_id,
+                e,
             )
             raise
 
@@ -1424,7 +1458,7 @@ class ShowRepository:
                 raise NotFoundError(msg)
             return ShowSchema.model_validate(result)
         except SQLAlchemyError:
-            log.exception(f"Database error retrieving show by season_id {season_id}")
+            log.exception("Database error retrieving show by season_id %s", season_id)
             raise
 
     async def add_season_to_show(
@@ -1897,7 +1931,9 @@ class ShowRepository:
             )
             db_episode = (await self.db.execute(stmt)).unique().scalar_one()
             log.debug(
-                f"Updated episode S{db_episode.season.number:02d}E{db_episode.number:02d} "
-                f"for show {db_episode.season.show.name}"
+                "Updated episode S%02dE%02d for show %s",
+                db_episode.season.number,
+                db_episode.number,
+                db_episode.season.show.name,
             )
         return EpisodeSchema.model_validate(db_episode)

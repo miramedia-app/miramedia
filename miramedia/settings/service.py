@@ -28,6 +28,8 @@ SETTINGS_SECTIONS = (
     "updates",
     "cloudflare",
     "imports",
+    "streams",
+    "playback",
 )
 
 
@@ -82,8 +84,11 @@ def _materialize_explicit_nulls_inplace(patch: dict, baseline: dict) -> None:
 
 def compute_mutation_overrides(prior_db_overrides: dict, incoming_patch: dict) -> dict:
     """Derive persisted overrides from true TOML baseline plus authoritative DB state."""
+    from miramedia.settings.normalize import migrate_playback_overrides
+
     toml_defaults = get_toml_defaults()
-    resolved_patch = copy.deepcopy(incoming_patch)
+    prior_db_overrides = migrate_playback_overrides(prior_db_overrides)
+    resolved_patch = migrate_playback_overrides(copy.deepcopy(incoming_patch))
     _materialize_explicit_nulls_inplace(resolved_patch, toml_defaults)
     authoritative_prior = deep_merge(copy.deepcopy(toml_defaults), prior_db_overrides)
     desired = deep_merge(copy.deepcopy(authoritative_prior), resolved_patch)
@@ -225,22 +230,8 @@ def _walk_schema(model: Any, path: list[str], out: list[dict]) -> None:  # noqa:
 def get_settings_schema() -> list[dict]:
     """Return a flat searchable index of every settings leaf field for the UI search box."""
     config = MiraMediaConfig()
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "watchlists",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
     out: list[dict] = []
-    for section in sections:
+    for section in SETTINGS_SECTIONS:
         _walk_schema(getattr(config, section), [section], out)
     return out
 
@@ -249,22 +240,8 @@ def get_toml_defaults() -> dict:
     """Return TOML-only defaults (no DB overrides applied) for the UI to show 'Default: ...' tooltips."""
     fresh = MiraMediaConfig.load_isolated()
 
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "watchlists",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
     result: dict = {}
-    for section in sections:
+    for section in SETTINGS_SECTIONS:
         section_dict = _config_to_dict(getattr(fresh, section))
         result[section] = _strip_hidden_settings_fields(section, section_dict)
     return result
@@ -380,28 +357,14 @@ def apply_overrides_to_config(config: MiraMediaConfig, overrides: dict) -> None:
 
     Uses setattr to apply individual field overrides, preserving type coercion.
     """
-    sections = [
-        "misc",
-        "auth",
-        "notifications",
-        "torrents",
-        "indexers",
-        "metadata",
-        "requests",
-        "watchlists",
-        "subtitles",
-        "updates",
-        "cloudflare",
-        "imports",
-    ]
-    for section in sections:
+    for section in SETTINGS_SECTIONS:
         if section not in overrides:
             continue
         section_config = getattr(config, section)
         try:
             _apply_nested_overrides(section_config, overrides[section])
         except Exception:
-            log.exception(f"Failed to apply overrides for section '{section}'")
+            log.exception("Failed to apply overrides for section '%s'", section)
 
 
 def _apply_nested_overrides(obj: Any, overrides: dict) -> None:  # noqa: ANN401 — arbitrary nested pydantic model

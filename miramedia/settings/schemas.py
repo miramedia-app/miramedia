@@ -407,10 +407,32 @@ class NativeWatchlistsSettingsSchema(SettingsSectionSchema):
 
 class WatchlistsSettingsSchema(SettingsSectionSchema):
     auto_remove_watched: bool | None = None
-    continue_watching: bool | None = None
     max_lists_per_user: int | None = None
     max_items_per_list: int | None = None
     native: NativeWatchlistsSettingsSchema | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def strip_legacy_continue_watching(cls, data: dict) -> dict:
+        """``continue_watching`` moved to the ``playback`` section."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        data.pop("continue_watching", None)
+        return data
+
+
+# --- Streams ---
+class StreamsSettingsSchema(SettingsSectionSchema):
+    enabled: bool | None = None
+    downloads: bool | None = None
+    hls_cache_max_gb: float | None = None
+    hls_cache_max_age_days: int | None = None
+
+
+# --- Playback ---
+class PlaybackSettingsSchema(SettingsSectionSchema):
+    continue_watching: bool | None = None
 
 
 # --- Subtitles ---
@@ -501,6 +523,8 @@ class SystemSettingsUpdate(SettingsSectionSchema):
     updates: UpdateSettingsSchema | None = None
     cloudflare: CloudflareSettingsSchema | None = None
     imports: ImportsSettingsSchema | None = None
+    streams: StreamsSettingsSchema | None = None
+    playback: PlaybackSettingsSchema | None = None
 
 
 class SystemSettingsRead(BaseModel):
@@ -518,6 +542,8 @@ class SystemSettingsRead(BaseModel):
     updates: dict
     cloudflare: dict
     imports: dict
+    streams: dict
+    playback: dict
     overrides: dict  # The raw DB overrides, so the UI can show what's been changed
     defaults: dict | None = (
         None  # TOML-only defaults, used for "Reset to default" tooltips

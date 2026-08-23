@@ -46,6 +46,9 @@ def _format_validation_error(exc: ValidationError) -> str:
     return f"Invalid settings{': ' + loc if loc else ''}: {msg}"
 
 
+LIST_PATH_WILDCARD = "*"
+
+
 def _nested_model_type(field_annotation: Any) -> type[BaseModel] | None:  # noqa: ANN401
     from typing import Union, get_args, get_origin
 
@@ -61,6 +64,23 @@ def _nested_model_type(field_annotation: Any) -> type[BaseModel] | None:  # noqa
     return None
 
 
+def _list_element_model_type(field_annotation: Any) -> type[BaseModel] | None:  # noqa: ANN401
+    from typing import Union, get_args, get_origin
+
+    origin = get_origin(field_annotation)
+    if origin in (Union, types.UnionType):
+        for arg in get_args(field_annotation):
+            nested = _list_element_model_type(arg)
+            if nested is not None:
+                return nested
+        return None
+    if origin is list:
+        args = get_args(field_annotation)
+        if args and isinstance(args[0], type) and issubclass(args[0], BaseModel):
+            return args[0]
+    return None
+
+
 import types  # noqa: E402 — used by _nested_model_type
 
 
@@ -71,6 +91,10 @@ def _derive_secret_override_paths() -> frozenset[tuple[str, ...]]:
     def walk(model: type[BaseModel], prefix: tuple[str, ...]) -> None:
         for name, field in model.model_fields.items():
             path = (*prefix, name)
+            list_element = _list_element_model_type(field.annotation)
+            if list_element is not None:
+                walk(list_element, (*path, LIST_PATH_WILDCARD))
+                continue
             nested = _nested_model_type(field.annotation)
             if nested is not None:
                 walk(nested, path)
@@ -143,20 +167,41 @@ def _reject_unknown_override_keys(
                 _reject_unknown_override_keys(value, nested, (*path, key))
 
 
+def _iter_secret_leaf_targets(
+    root: Any,  # noqa: ANN401
+    path: tuple[str, ...],
+) -> list[tuple[dict[str, Any], str]]:
+    targets: list[tuple[dict[str, Any], str]] = []
+
+    def walk(node: Any, remaining: tuple[str, ...]) -> None:  # noqa: ANN401
+        if not remaining:
+            return
+        if len(remaining) == 1:
+            key = remaining[0]
+            if key != LIST_PATH_WILDCARD and isinstance(node, dict) and key in node:
+                targets.append((node, key))
+            return
+        head, tail = remaining[0], remaining[1:]
+        if head == LIST_PATH_WILDCARD:
+            if isinstance(node, list):
+                for item in node:
+                    walk(item, tail)
+            return
+        if isinstance(node, dict) and head in node:
+            walk(node[head], tail)
+
+    walk(root, path)
+    return targets
+
+
 def mask_secret_values(tree: dict) -> dict:
     """Deep-copy *tree* and replace stored credential leaves with ``SECRET_MASK``."""
     result = copy.deepcopy(tree)
     for path in SECRET_OVERRIDE_PATHS:
-        node: Any = result
-        for key in path[:-1]:
-            if not isinstance(node, dict) or key not in node:
-                break
-            node = node[key]
-        else:
-            if isinstance(node, dict) and path[-1] in node:
-                value = node[path[-1]]
-                if isinstance(value, str) and value:
-                    node[path[-1]] = SECRET_MASK
+        for parent, key in _iter_secret_leaf_targets(result, path):
+            value = parent[key]
+            if isinstance(value, str) and value:
+                parent[key] = SECRET_MASK
     return result
 
 
@@ -200,7 +245,7 @@ def resolve_masked_config(
         effective: dict[str, Any],
         path_prefix: tuple[str, ...],
     ) -> None:
-        for key, value in node.items():
+        for key, value in list(node.items()):
             full_path = (*path_prefix, key)
             if value == SECRET_MASK:
                 if full_path in SECRET_OVERRIDE_PATHS:
@@ -210,16 +255,82 @@ def resolve_masked_config(
                 nested = effective.get(key)
                 if isinstance(nested, dict):
                     _resolve(value, nested, full_path)
+            elif isinstance(value, list):
+                effective_list = effective.get(key)
+                if isinstance(effective_list, list):
+                    for index, item in enumerate(value):
+                        if not isinstance(item, dict):
+                            continue
+                        effective_item = (
+                            effective_list[index]
+                            if index < len(effective_list)
+                            and isinstance(effective_list[index], dict)
+                            else {}
+                        )
+                        _resolve(item, effective_item, full_path)
 
     if isinstance(result, dict) and isinstance(effective_section, dict):
         _resolve(result, effective_section, prefix)
     return result
 
 
-def strip_masked_values(patch: dict) -> dict:
+def _restore_masked_list_secrets(
+    existing: dict,
+    patch: dict,
+    path: tuple[str, ...],
+) -> None:
+    """Restore stored list-item secrets when *patch* still carries the mask sentinel."""
+    if LIST_PATH_WILDCARD not in path:
+        return
+    wildcard_index = path.index(LIST_PATH_WILDCARD)
+    prefix = path[:wildcard_index]
+    suffix = path[wildcard_index + 1 :]
+    if not suffix or suffix[0] == LIST_PATH_WILDCARD:
+        return
+
+    existing_node: Any = existing
+    patch_node: Any = patch
+    for key in prefix:
+        if not isinstance(existing_node, dict) or not isinstance(patch_node, dict):
+            return
+        existing_node = existing_node.get(key)
+        if key not in patch_node:
+            return
+        patch_node = patch_node[key]
+
+    if not isinstance(existing_node, list) or not isinstance(patch_node, list):
+        return
+
+    # List reorder/resize matches by index; stored secrets restore per index.
+    leaf_key = suffix[-1]
+    for index, patch_item in enumerate(patch_node):
+        if not isinstance(patch_item, dict):
+            continue
+        if patch_item.get(leaf_key) != SECRET_MASK:
+            continue
+        if index >= len(existing_node):
+            continue
+        existing_item = existing_node[index]
+        if not isinstance(existing_item, dict):
+            continue
+        stored = existing_item.get(leaf_key)
+        if isinstance(stored, str) and stored:
+            patch_item[leaf_key] = copy.deepcopy(stored)
+
+
+def strip_masked_values(patch: dict, *, existing: dict | None = None) -> dict:
     """Remove credential leaves set to the mask sentinel (unchanged on write)."""
     result = copy.deepcopy(patch)
+    if existing is not None:
+        for path in SECRET_OVERRIDE_PATHS:
+            if LIST_PATH_WILDCARD in path:
+                _restore_masked_list_secrets(existing, result, path)
     for path in SECRET_OVERRIDE_PATHS:
+        if LIST_PATH_WILDCARD in path:
+            for parent, key in _iter_secret_leaf_targets(result, path):
+                if parent.get(key) == SECRET_MASK:
+                    del parent[key]
+            continue
         node: Any = result
         stack: list[tuple[dict[str, Any], str]] = []
         for key in path[:-1]:
@@ -248,6 +359,11 @@ def strip_restart_only_overrides(overrides: dict) -> dict:
 
 
 def _delete_path(root: dict, path: tuple[str, ...]) -> None:
+    for parent, key in _iter_secret_leaf_targets(root, path):
+        if key in parent:
+            del parent[key]
+    if LIST_PATH_WILDCARD in path:
+        return
     node: Any = root
     stack: list[tuple[dict, str]] = []
     for key in path[:-1]:
@@ -255,11 +371,11 @@ def _delete_path(root: dict, path: tuple[str, ...]) -> None:
             return
         stack.append((node, key))
         node = node[key]
-    if isinstance(node, dict) and path[-1] in node:
-        del node[path[-1]]
     for parent, key in reversed(stack):
         if isinstance(parent[key], dict) and not parent[key]:
             del parent[key]
+        else:
+            break
 
 
 def _get_path(root: dict, path: tuple[str, ...]) -> Any:  # noqa: ANN401
@@ -280,10 +396,56 @@ def _set_path(root: dict, path: tuple[str, ...], value: Any) -> None:  # noqa: A
     node[path[-1]] = copy.deepcopy(value)
 
 
+def _carry_forward_list_secrets(
+    existing: dict,
+    merged: dict,
+    path: tuple[str, ...],
+) -> None:
+    if LIST_PATH_WILDCARD not in path:
+        return
+    wildcard_index = path.index(LIST_PATH_WILDCARD)
+    prefix = path[:wildcard_index]
+    suffix = path[wildcard_index + 1 :]
+    if not suffix or suffix[0] == LIST_PATH_WILDCARD:
+        return
+
+    existing_node: Any = existing
+    merged_node: Any = merged
+    for key in prefix:
+        if not isinstance(existing_node, dict) or not isinstance(merged_node, dict):
+            return
+        existing_node = existing_node.get(key)
+        if key not in merged_node:
+            return
+        merged_node = merged_node[key]
+
+    if not isinstance(existing_node, list) or not isinstance(merged_node, list):
+        return
+
+    # List reorder/resize matches by index; stored secrets restore per index.
+    leaf_key = suffix[-1]
+    for index, merged_item in enumerate(merged_node):
+        if not isinstance(merged_item, dict):
+            continue
+        if merged_item.get(leaf_key):
+            continue
+        if index >= len(existing_node):
+            continue
+        existing_item = existing_node[index]
+        if not isinstance(existing_item, dict):
+            continue
+        stored = existing_item.get(leaf_key)
+        if stored:
+            merged_item[leaf_key] = copy.deepcopy(stored)
+
+
 def carry_forward_secrets(existing: dict, merged: dict) -> dict:
     """Copy stored secret overrides into *merged* when absent from an import."""
     result = copy.deepcopy(merged)
     for path in SECRET_OVERRIDE_PATHS:
+        if LIST_PATH_WILDCARD in path:
+            _carry_forward_list_secrets(existing, result, path)
+            continue
         existing_value = _get_path(existing, path)
         if not existing_value:
             continue
@@ -328,7 +490,9 @@ def build_merged_validated_config(overrides: dict | None = None) -> MiraMediaCon
     if not overrides:
         return preserve_live_token_secret(baseline)
 
-    sanitized = strip_restart_only_overrides(overrides)
+    from miramedia.settings.normalize import migrate_playback_overrides
+
+    sanitized = strip_restart_only_overrides(migrate_playback_overrides(overrides))
     isolated = MiraMediaConfig.load_isolated()
     for section in SETTINGS_SECTIONS:
         section_model_type = type(getattr(isolated, section))

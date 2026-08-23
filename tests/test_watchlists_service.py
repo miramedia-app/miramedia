@@ -6,9 +6,8 @@ import uuid
 from unittest.mock import AsyncMock
 
 import pytest
-from fastapi import HTTPException
 
-from miramedia.exceptions import ConflictError, UnprocessableEntityError
+from miramedia.exceptions import ConflictError, NotFoundError, UnprocessableEntityError
 from miramedia.watchlists.schemas import (
     WatchlistCreate,
     WatchlistItemCreate,
@@ -151,7 +150,6 @@ async def test_add_item_returns_existing_on_duplicate() -> None:
 
 
 async def test_add_item_unknown_movie_raises_404() -> None:
-    from miramedia.exceptions import NotFoundError
 
     user_id = uuid.uuid4()
     service, _repo, movie_repo, _show_repo = _service()
@@ -160,13 +158,13 @@ async def test_add_item_unknown_movie_raises_404() -> None:
         user_id=user_id,
         data=WatchlistCreate(name="List"),
     )
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(NotFoundError) as exc:
         await service.add_item(
             user_id=user_id,
             watchlist_id=created.id,
             data=WatchlistItemCreate(media_kind="movie", media_id=uuid.uuid4()),
         )
-    assert exc.value.status_code == 404
+    assert str(exc.value) == "Movie not found"
 
 
 async def test_reorder_requires_exact_permutation() -> None:

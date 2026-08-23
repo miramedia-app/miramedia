@@ -249,7 +249,7 @@ app.add_middleware(
     trusted_hosts=config.misc.trusted_proxy_hosts,
 )
 origins = config.misc.cors_urls
-log.info(f"CORS URLs activated for following origins: {origins}")
+log.info("CORS URLs activated for following origins: %s", origins)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -642,7 +642,7 @@ if not DISABLE_FRONTEND_MOUNT:
         ),
         name="frontend",
     )
-    log.debug(f"Mounted frontend at / from {FRONTEND_FILES_DIR}")
+    log.debug("Mounted frontend at / from %s", FRONTEND_FILES_DIR)
 else:
     log.info("Frontend mounting disabled (DISABLE_FRONTEND_MOUNT is set)")
 

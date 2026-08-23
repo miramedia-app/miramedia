@@ -90,10 +90,20 @@ movie_file_format = "{title} ({year}){suffix}"
 episode_file_format = "{show_title} S{season_number:02d}E{episode_number:02d}{suffix}"
 
 [streams]
+# Master switch for in-app playback/streaming. When false, all /streams
+# endpoints return 503 and the frontend hides play buttons.
+enabled = true
+# Allow downloading media files (?download=true on the direct-file stream
+# endpoints). Independent of the streaming switch.
+downloads = true
 # On-disk HLS transcode cache (see MIRAMEDIA_HLS_CACHE). Nightly sweep deletes
 # complete entries past max_age_days and oldest dirs when total size exceeds max_gb.
 hls_cache_max_gb = 20.0
 hls_cache_max_age_days = 30
+
+# Playback state features.
+[playback]
+continue_watching = true   # dashboard Continue Watching row
 
 [database]
 host = "db"
@@ -172,13 +182,11 @@ enabled = false
 url = ""        # e.g. http://overseerr:5055
 api_key = ""    # Seerr -> Settings -> General -> API Key
 
-# Watchlists — custom lists, Watch Next, Upcoming, and Continue Watching.
-# Master switch enables the sidebar; Custom lists / Watch Next / Upcoming
-# can be toggled independently while the master remains on. Continue Watching
-# is the dashboard row and can be toggled independently of Native Watchlists.
+# Watchlists — custom lists, Watch Next, and Upcoming. Master switch enables
+# the sidebar; Custom lists / Watch Next / Upcoming can be toggled independently
+# while the master remains on. Continue Watching now lives under [playback].
 [watchlists]
 auto_remove_watched = false
-continue_watching = true   # dashboard Continue Watching row
 max_lists_per_user = 0   # 0 = unlimited
 max_items_per_list = 0   # 0 = unlimited
 

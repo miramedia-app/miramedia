@@ -16,6 +16,7 @@ export interface NewSiteForm {
   supports_tv: boolean;
   supports_movies: boolean;
   cloudflare_protected: boolean;
+  enabled: boolean;
 }
 
 const EMPTY_NEW_SITE: NewSiteForm = {
@@ -25,6 +26,7 @@ const EMPTY_NEW_SITE: NewSiteForm = {
   supports_tv: true,
   supports_movies: true,
   cloudflare_protected: false,
+  enabled: true,
 };
 
 /**
@@ -39,7 +41,8 @@ export function useIndexerSites() {
   const sitesQuery = useQuery({
     queryKey: SITES_KEY,
     queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/indexers/sites", { signal });
+      const { data, error } = await apiClient.GET("/api/v1/indexers/sites", { signal });
+      if (error) throw error;
       return (data ?? []) as unknown as Site[];
     },
   });
@@ -77,7 +80,7 @@ export function useIndexerSites() {
         supports_movies: newSite.supports_movies,
         cloudflare_protected: newSite.cloudflare_protected,
         site_type: "torznab",
-        enabled: true,
+        enabled: newSite.enabled,
         categories_tv: "5000",
         categories_movies: "2000",
         priority: 100,
@@ -131,6 +134,7 @@ export function useIndexerSites() {
         supports_tv: editSite.supports_tv,
         supports_movies: editSite.supports_movies,
         cloudflare_protected: editSite.cloudflare_protected,
+        enabled: editSite.enabled,
         priority: Number.isFinite(editSite.priority) ? editSite.priority : 100,
       } as never,
     });

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { Save, Trash2 } from "lucide-react";
+import { Check, Trash2 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,9 +64,9 @@ export function UserSettings() {
           <CardTitle>Account</CardTitle>
           <CardDescription>Update your account email and password</CardDescription>
         </div>
-        <Button onClick={saveUser} disabled={!canSave} size="sm">
-          <Save className="mr-1.5 h-4 w-4" />
-          Save Changes
+        <Button onClick={saveUser} disabled={!canSave} size="sm" className="gap-1">
+          <Check className="h-4 w-4" />
+          Save
         </Button>
       </CardHeader>
       <CardContent className="space-y-8">
@@ -133,7 +133,7 @@ export function UserSettings() {
           <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
             <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
               <Trash2 className="mr-1.5 h-4 w-4" />
-              Clear viewing activity
+              Delete
             </Button>
             <AlertDialogContent>
               <AlertDialogHeader>
@@ -147,6 +147,7 @@ export function UserSettings() {
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                 <Button
                   variant="destructive"
+                  className="border border-destructive/30"
                   disabled={clearViewingActivity.isPending}
                   onClick={() => {
                     clearViewingActivity.mutate(undefined, {
@@ -154,7 +155,7 @@ export function UserSettings() {
                     });
                   }}
                 >
-                  Clear activity
+                  Delete
                 </Button>
               </AlertDialogFooter>
             </AlertDialogContent>

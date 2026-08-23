@@ -53,6 +53,14 @@ badges on season/movie pages show what's available.
 The player footer also has a **Download** button for the raw file — useful
 for files your browser can't decode, or just for offline copies.
 
+## Downloading without playback
+
+Download buttons on movie and show detail pages, the show tree, and watchlist
+views work even when in-browser playback is disabled (`streams.enabled =
+false`) as long as file downloads are enabled (`streams.downloads = true`).
+See [Streaming configuration](/docs/configuration/streams) for the `[streams]`
+section.
+
 <Callout type="info">
 
 Playback depends on your browser, container, and codecs. For files that still

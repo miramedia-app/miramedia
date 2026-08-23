@@ -53,22 +53,27 @@ def _update_table(stmt: Update) -> str:
 
 
 def _patch_fulfill_common(monkeypatch, *, requests_enabled: bool = True) -> None:
+    cfg = fake_scheduler_config(requests_enabled=requests_enabled)
     monkeypatch.setattr(
-        scheduler,
-        "MiraMediaConfig",
-        lambda: fake_scheduler_config(requests_enabled=requests_enabled),
+        "miramedia.scheduler_tasks.media.MiraMediaConfig",
+        lambda: cfg,
     )
-    monkeypatch.setattr(scheduler, "build_seerr_client", lambda: None)
     monkeypatch.setattr(
-        scheduler,
-        "resolve_metadata_provider",
+        "miramedia.scheduler_tasks.media.build_seerr_client",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.media.resolve_metadata_provider",
         lambda _name: native_provider(),
     )
 
 
 def _patch_integrity_config(monkeypatch, *, enabled: bool = True) -> None:
     cfg = fake_scheduler_config(integrity_check_enabled=enabled)
-    monkeypatch.setattr("miramedia.scheduler.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.MiraMediaConfig",
+        lambda: cfg,
+    )
     monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
     patch_audit_repository_lookups(monkeypatch)
 
@@ -107,11 +112,11 @@ def test_fresh_movie_request_marks_downloading_and_downloaded(monkeypatch) -> No
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -140,11 +145,11 @@ def test_show_with_downloaded_episode_marks_downloaded(monkeypatch) -> None:
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_show_service",
+        "miramedia.background_services.bg_show_service",
         bg_show_service_factory(show_service),
     )
     monkeypatch.setattr(
@@ -186,11 +191,11 @@ def test_fulfill_request_exception_logged_without_crashing_loop(
 
     _patch_fulfill_common(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.database.bg_request_service",
+        "miramedia.background_services.bg_request_service",
         bg_request_service_factory(request_service),
     )
     monkeypatch.setattr(
-        "miramedia.database.bg_movie_service",
+        "miramedia.background_services.bg_movie_service",
         bg_movie_service_factory(movie_service),
     )
     monkeypatch.setattr(
@@ -248,12 +253,18 @@ def test_verify_chunk_matching_and_mismatching_rows_accounted(
         return None
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session",
+        bg_session,
+    )
     patch_batch_resolve_paths(
         monkeypatch,
         {matching_id: matching_path, mismatch_id: mismatch_path},
     )
-    monkeypatch.setattr(scheduler, "_compute_sha1_async", _compute_sha1_async)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
+        _compute_sha1_async,
+    )
 
     _run(scheduler.verify_imported_files_task())
 
@@ -312,9 +323,15 @@ def test_integrity_audit_hashes_with_bounded_concurrency(
     bg_session, sessions = _high_water_background_session_factory(movie_rows=rows)
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr(scheduler, "_SHA1_CONCURRENCY", concurrency)
-    monkeypatch.setattr(scheduler, "_SHA1_SEM", None)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity._SHA1_CONCURRENCY",
+        concurrency,
+    )
+    monkeypatch.setattr("miramedia.scheduler_tasks.integrity._SHA1_SEM", None)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session",
+        bg_session,
+    )
     monkeypatch.setattr(
         "miramedia.torrents.integrity.compute_sha1",
         _slow_compute_sha1,
@@ -367,7 +384,10 @@ def test_integrity_audit_hash_exception_propagates(
         return "good-sha"
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session",
+        bg_session,
+    )
     monkeypatch.setattr(
         "miramedia.torrents.integrity.compute_sha1",
         _raising_compute_sha1,
@@ -409,9 +429,12 @@ def test_integrity_audit_hash_cancellation_propagates(
     bg_session, _sessions = _high_water_background_session_factory(movie_rows=rows)
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr(scheduler, "_SHA1_CONCURRENCY", 4)
-    monkeypatch.setattr(scheduler, "_SHA1_SEM", None)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr("miramedia.scheduler_tasks.integrity._SHA1_CONCURRENCY", 4)
+    monkeypatch.setattr("miramedia.scheduler_tasks.integrity._SHA1_SEM", None)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session",
+        bg_session,
+    )
     monkeypatch.setattr(
         "miramedia.torrents.integrity.compute_sha1",
         _slow_compute_sha1,
@@ -453,8 +476,7 @@ def test_cleanup_old_logs_deletes_with_configured_retention(monkeypatch) -> None
     mock_repo.delete_older_than = _capture_delete
 
     monkeypatch.setattr(
-        scheduler,
-        "MiraMediaConfig",
+        "miramedia.scheduler_tasks.maintenance.MiraMediaConfig",
         lambda: fake_scheduler_config(log_retention_days=retention_days),
     )
     monkeypatch.setattr(
@@ -489,8 +511,7 @@ def test_cleanup_old_notifications_skips_when_native_disabled(monkeypatch) -> No
         raise AssertionError(msg)
 
     monkeypatch.setattr(
-        scheduler,
-        "MiraMediaConfig",
+        "miramedia.scheduler_tasks.maintenance.MiraMediaConfig",
         lambda: fake_scheduler_config(notifications_enabled=False),
     )
     monkeypatch.setattr(
@@ -530,8 +551,7 @@ def test_cleanup_old_notifications_deletes_read_with_configured_retention(
     mock_repo.delete_read_older_than = _capture_delete
 
     monkeypatch.setattr(
-        scheduler,
-        "MiraMediaConfig",
+        "miramedia.scheduler_tasks.maintenance.MiraMediaConfig",
         lambda: fake_scheduler_config(
             notifications_enabled=True,
             notification_retention_days=retention_days,

@@ -20,6 +20,8 @@ export const DEFAULT_FEATURES: Features = {
   upcoming_default_past_days: 0,
   upcoming_default_future_days: 30,
   continue_watching: false,
+  streaming: true,
+  downloads: true,
 };
 
 const FEATURES_UNAVAILABLE: Features = {
@@ -34,6 +36,8 @@ const FEATURES_UNAVAILABLE: Features = {
   upcoming_default_past_days: 0,
   upcoming_default_future_days: 30,
   continue_watching: false,
+  streaming: false,
+  downloads: false,
 };
 
 type FeaturesStatusValue = {

@@ -92,4 +92,4 @@ async def clear_all_logs(repo: log_repository_dep) -> None:
             handler.drain()
 
     deleted = await repo.delete_all()
-    log.info(f"Cleared all activity logs ({deleted} entries)")
+    log.info("Cleared all activity logs (%s entries)", deleted)

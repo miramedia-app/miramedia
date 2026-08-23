@@ -19,7 +19,10 @@ from miramedia.metadata.backends.native import (
     _parse_cinemeta_cast,
 )
 from miramedia.metadata.backends.tmdb import (
+    TMDB_DISCOVERY_POSTER_SIZE,
+    TMDB_IMAGE_BASE,
     TmdbMetadataProvider,
+    _discovery_poster_url,
     _extract_movie_content_rating,
     _extract_show_content_rating,
 )
@@ -117,6 +120,39 @@ def _tmdb_provider() -> TmdbMetadataProvider:
     provider.primary_languages = []
     provider.default_language = "en"
     return provider
+
+
+def _tmdb_tv_search_result(*, poster_path: str | None = "/poster.jpg") -> dict:
+    return {
+        "id": 1396,
+        "name": "Breaking Bad",
+        "original_name": "Breaking Bad",
+        "overview": "Chemistry teacher.",
+        "poster_path": poster_path,
+        "first_air_date": "2008-01-20",
+        "vote_average": 8.9,
+        "original_language": "en",
+    }
+
+
+def _tmdb_movie_search_result(*, poster_path: str | None = "/poster.jpg") -> dict:
+    return {
+        "id": 550,
+        "title": "Fight Club",
+        "original_title": "Fight Club",
+        "overview": "An insomniac office worker.",
+        "poster_path": poster_path,
+        "release_date": "1999-10-15",
+        "vote_average": 8.4,
+        "original_language": "en",
+    }
+
+
+def test_discovery_poster_url_uses_configured_size() -> None:
+    assert _discovery_poster_url("/poster.jpg") == (
+        f"{TMDB_IMAGE_BASE}/{TMDB_DISCOVERY_POSTER_SIZE}/poster.jpg"
+    )
+    assert TMDB_DISCOVERY_POSTER_SIZE == "w500"
 
 
 def test_tmdb_get_show_metadata_maps_fields(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,27 +302,144 @@ def test_tmdb_search_show_stringifies_id(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(
         provider,
         "_TmdbMetadataProvider__search_tv",
-        lambda *_a, **_k: {
-            "results": [
-                {
-                    "id": 1396,
-                    "name": "Breaking Bad",
-                    "original_name": "Breaking Bad",
-                    "overview": "Chemistry teacher.",
-                    "poster_path": "/poster.jpg",
-                    "first_air_date": "2008-01-20",
-                    "vote_average": 8.9,
-                    "original_language": "en",
-                }
-            ]
-        },
+        lambda *_a, **_k: {"results": [_tmdb_tv_search_result()]},
     )
     results = provider.search_show("breaking", max_pages=1)
     assert len(results) == 1
     assert results[0].external_id == "1396"
     assert results[0].year == 2008
     assert results[0].metadata_provider == "tmdb"
-    assert results[0].poster_path == "https://image.tmdb.org/t/p/original/poster.jpg"
+    assert results[0].poster_path == _discovery_poster_url("/poster.jpg")
+    assert "/original" not in (results[0].poster_path or "")
+
+
+def test_tmdb_search_movie_uses_discovery_poster_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _tmdb_provider()
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__search_movie",
+        lambda *_a, **_k: {"results": [_tmdb_movie_search_result()]},
+    )
+    results = provider.search_movie("fight", max_pages=1)
+    assert len(results) == 1
+    assert results[0].poster_path == _discovery_poster_url("/poster.jpg")
+    assert "/original" not in (results[0].poster_path or "")
+
+
+def test_tmdb_trending_show_uses_discovery_poster_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _tmdb_provider()
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__get_trending_tv",
+        lambda *_a, **_k: {"results": [_tmdb_tv_search_result()]},
+    )
+    results = provider.search_show()
+    assert len(results) == 1
+    assert results[0].poster_path == _discovery_poster_url("/poster.jpg")
+
+
+def test_tmdb_trending_movie_uses_discovery_poster_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _tmdb_provider()
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__get_trending_movies",
+        lambda *_a, **_k: {"results": [_tmdb_movie_search_result()]},
+    )
+    results = provider.search_movie()
+    assert len(results) == 1
+    assert results[0].poster_path == _discovery_poster_url("/poster.jpg")
+
+
+def test_tmdb_search_show_null_poster(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _tmdb_provider()
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__search_tv",
+        lambda *_a, **_k: {"results": [_tmdb_tv_search_result(poster_path=None)]},
+    )
+    results = provider.search_show("breaking", max_pages=1)
+    assert len(results) == 1
+    assert results[0].poster_path is None
+
+
+def test_tmdb_search_movie_null_poster(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = _tmdb_provider()
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__search_movie",
+        lambda *_a, **_k: {"results": [_tmdb_movie_search_result(poster_path=None)]},
+    )
+    results = provider.search_movie("fight", max_pages=1)
+    assert len(results) == 1
+    assert results[0].poster_path is None
+
+
+def test_tmdb_download_show_poster_still_uses_original(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from miramedia.shows.schemas import Show
+
+    provider = _tmdb_provider()
+    provider.storage_path = tmp_path
+    captured_url: list[str] = []
+
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__get_show_metadata",
+        lambda *_a, **_k: {"poster_path": "/poster.jpg", "name": "Breaking Bad"},
+    )
+    monkeypatch.setattr(
+        "miramedia.metadata.backends.tmdb.miramedia.metadata.utils.download_poster_image",
+        lambda **kwargs: captured_url.append(kwargs["poster_url"]) or True,
+    )
+
+    show = Show(
+        external_id="1396",
+        name="Breaking Bad",
+        overview="",
+        year=2008,
+        metadata_provider="tmdb",
+        original_language="en",
+    )
+    assert provider.download_show_poster_image(show) is True
+    assert captured_url == [f"{TMDB_IMAGE_BASE}/original/poster.jpg"]
+
+
+def test_tmdb_download_movie_poster_still_uses_original(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from miramedia.movies.schemas import Movie
+
+    provider = _tmdb_provider()
+    provider.storage_path = tmp_path
+    captured_url: list[str] = []
+
+    monkeypatch.setattr(
+        provider,
+        "_TmdbMetadataProvider__get_movie_metadata",
+        lambda *_a, **_k: {"poster_path": "/poster.jpg", "title": "Fight Club"},
+    )
+    monkeypatch.setattr(
+        "miramedia.metadata.backends.tmdb.miramedia.metadata.utils.download_poster_image",
+        lambda **kwargs: captured_url.append(kwargs["poster_url"]) or True,
+    )
+
+    movie = Movie(
+        external_id="550",
+        name="Fight Club",
+        overview="",
+        year=1999,
+        metadata_provider="tmdb",
+        original_language="en",
+    )
+    assert provider.download_movie_poster_image(movie) is True
+    assert captured_url == [f"{TMDB_IMAGE_BASE}/original/poster.jpg"]
 
 
 # ---------------------------------------------------------------------------

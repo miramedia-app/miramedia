@@ -66,7 +66,7 @@ def resolve_metadata_provider(
         except Exception:  # noqa: S112 — best-effort fallback, try next provider
             continue
 
-    log.warning(f"No metadata provider available (tried: {candidates})")
+    log.warning("No metadata provider available (tried: %s)", candidates)
     return None
 
 

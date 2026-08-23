@@ -10,7 +10,7 @@ from miramedia.torrents.backends.abstract_download_client import (
 )
 
 if TYPE_CHECKING:
-    from miramedia.torrents.utils import TorrentFile
+    from miramedia.torrents.inspection import TorrentFile
 from miramedia.torrents.backends.native import NativeDownloadClient
 from miramedia.torrents.backends.qbittorrent import QbittorrentDownloadClient
 from miramedia.torrents.backends.sabnzbd import SabnzbdDownloadClient
@@ -129,7 +129,7 @@ class DownloadManager:
         :param indexer_result: The indexer query result to download
         :return: The torrent object representing the download
         """
-        log.info(f"Processing download request for: {indexer_result.title}")
+        log.info("Processing download request for: %s", indexer_result.title)
 
         client = self._get_appropriate_client(indexer_result)
         return client.download_torrent(indexer_result)
@@ -141,7 +141,7 @@ class DownloadManager:
         :param torrent: The torrent to remove
         :param delete_data: Whether to delete the downloaded data
         """
-        log.info(f"Removing torrent: {torrent.title}")
+        log.info("Removing torrent: %s", torrent.title)
 
         client = self._get_appropriate_client(torrent)
         client.remove_torrent(torrent, delete_data)
@@ -158,13 +158,22 @@ class DownloadManager:
         client = self._get_appropriate_client(torrent)
         return client.get_torrent_status(torrent)
 
+    def get_torrent_statuses_bulk(
+        self, torrents: list[Torrent]
+    ) -> dict[str, tuple[TorrentStatus, float, int, int, int]]:
+        """Batch live-status lookup for a torrent list using the torrent client."""
+        if not torrents:
+            return {}
+        client = self._get_appropriate_client(torrents[0])
+        return client.get_torrent_statuses_bulk(torrents)
+
     def pause_torrent(self, torrent: Torrent) -> None:
         """
         Pause a torrent using the appropriate client
 
         :param torrent: The torrent to pause
         """
-        log.debug(f"Pausing torrent: {torrent.title}")
+        log.debug("Pausing torrent: %s", torrent.title)
 
         client = self._get_appropriate_client(torrent)
         client.pause_torrent(torrent)
@@ -175,7 +184,7 @@ class DownloadManager:
 
         :param torrent: The torrent to resume
         """
-        log.debug(f"Resuming torrent: {torrent.title}")
+        log.debug("Resuming torrent: %s", torrent.title)
 
         client = self._get_appropriate_client(torrent)
         client.resume_torrent(torrent)

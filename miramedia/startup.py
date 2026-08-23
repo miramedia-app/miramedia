@@ -197,12 +197,12 @@ def schedule_import_queue_warmup() -> None:
     async def _warm_import_queue() -> None:
         await asyncio.sleep(10)
         try:
-            from miramedia.database import (
-                SessionLocalBackground,
+            from miramedia.background_services import (
                 bg_movie_service,
                 bg_show_service,
                 bg_torrent_service,
             )
+            from miramedia.database import SessionLocalBackground
             from miramedia.imports.queue.sync import rebuild_import_queue
             from miramedia.imports.repository import (
                 STALE_QUEUED_IMPORT_GRACE,

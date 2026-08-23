@@ -61,6 +61,7 @@ export default function WatchlistsHubPage() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [newListName, setNewListName] = React.useState("");
   const {
+    ready: featuresReadyState,
     watch_next: watchNextEnabled,
     watch_next_include_specials: watchNextIncludeSpecials,
     upcoming: upcomingEnabled,
@@ -69,7 +70,12 @@ export default function WatchlistsHubPage() {
     upcoming_default_future_days: upcomingFutureDays,
   } = useFeatures();
   const listsQuery = useWatchlists(customListsEnabled);
-  const watchNextQuery = useWatchNext(watchNextEnabled, watchNextIncludeSpecials);
+  // Only fetch watch-next once feature flags have actually loaded: the optimistic
+  // default is `true`, and firing before resolution 503s when the feature is off.
+  const watchNextQuery = useWatchNext(
+    featuresReadyState && watchNextEnabled,
+    watchNextIncludeSpecials,
+  );
   const createWatchlist = useCreateWatchlist();
 
   const [search, setSearch] = React.useState("");
@@ -172,16 +178,16 @@ export default function WatchlistsHubPage() {
     <Dialog open={createOpen} onOpenChange={setCreateOpen}>
       <DialogTrigger
         render={
-          <Button size="default" className="text-xs">
+          <Button size="default" className="gap-1 text-xs">
             <Plus className="size-4" />
-            Create list
+            Add Watchlist
           </Button>
         }
       />
       <DialogContent className="sm:max-w-md">
         <form onSubmit={handleCreate}>
           <DialogHeader>
-            <DialogTitle>Create watchlist</DialogTitle>
+            <DialogTitle>Add Watchlist</DialogTitle>
           </DialogHeader>
           <div className="grid gap-2 py-4">
             <Label htmlFor="hub-new-list-name">Name</Label>
@@ -203,7 +209,7 @@ export default function WatchlistsHubPage() {
   );
 
   return (
-    <WatchlistsPageShell mainClassName="gap-6">
+    <WatchlistsPageShell mainClassName="gap-4">
       <DataListToolbar
         searchFilter={
           <DataListSearchFilter
@@ -212,7 +218,7 @@ export default function WatchlistsHubPage() {
             facets={hubFacets}
             filters={filters}
             onFiltersChange={setFilters}
-            placeholder="Search or filter lists…"
+            placeholder="Search or filter watchlists…"
           />
         }
         sortOptions={hubSortOptions}
@@ -234,11 +240,11 @@ export default function WatchlistsHubPage() {
       ) : gridEmpty ? (
         <DataListEmpty
           icon={<ListChecks />}
-          title={queryActive ? "No matches" : "No custom lists yet"}
+          title={queryActive ? "No matches" : "No watchlists yet"}
           description={
             queryActive
               ? "Try a different search or clear filters."
-              : "Create a list to track movies, shows, and episodes."
+              : "Create a watchlist to track movies, shows, and episodes."
           }
           action={queryActive ? undefined : createDialog}
         />

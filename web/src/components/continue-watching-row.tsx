@@ -18,8 +18,12 @@ import {
 type ContinueWatchingItem = components["schemas"]["ContinueWatchingItem"];
 
 export function ContinueWatchingRow() {
-  const { continue_watching: continueWatchingEnabled, ready: featuresReady } = useFeatures();
-  const enabled = continueWatchingQueryEnabled(featuresReady, continueWatchingEnabled);
+  const {
+    continue_watching: continueWatchingEnabled,
+    streaming,
+    ready: featuresReady,
+  } = useFeatures();
+  const enabled = continueWatchingQueryEnabled(featuresReady, continueWatchingEnabled) && streaming;
   const continueQuery = useQuery({
     queryKey: ["playback", "continue"],
     queryFn: async ({ signal }) => {

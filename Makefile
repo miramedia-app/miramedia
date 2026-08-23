@@ -36,7 +36,7 @@ help:
 	@echo "  make coverage               # Backend coverage report (informational, not part of make check)"
 	@echo "  make integration-test       # PostgreSQL integration suite (requires MIRAMEDIA_TEST_DATABASE_URL)"
 	@echo "  make lint | format | format-check | ty  # Backend lint, format, format check, typecheck"
-	@echo "  make check                  # Fast local gate (lint, tests, typecheck, migration audit)"
+	@echo "  make check                  # Fast local gate (lint, format-check, ty, test, tsc, frontend-test, frontend-lint, migration-head-audit)"
 	@echo "  make check-ci               # Pre-PR CI parity: check + build + OpenAPI drift + integration + Playwright + real smoke (needs MIRAMEDIA_TEST_DATABASE_URL and Chromium)"
 	@echo "  make frontend-bootstrap     # Fresh-clone web setup (install + generate)"
 	@echo "  make frontend-generate      # Generate web build prerequisites (web 'generate' script)"
@@ -46,6 +46,8 @@ help:
 	@echo "  make frontend-e2e           # Playwright browser smoke tests (install Chromium first; see developer guide)"
 	@echo "  make frontend-smoke-real    # Real frontend→FastAPI→Postgres smoke (needs Chromium, Postgres, frontend-build)"
 	@echo "  make frontend-lint          # Frontend lint + format check (oxlint, oxfmt --check)"
+	@echo "  make openapi                # Regenerate web/src/lib/api/api.d.ts from OpenAPI schema"
+	@echo "  make openapi-json           # Write web/public/openapi.json (bundled into static export)"
 	@echo "  make plans-link             # Symlink the shared (untracked) plans/ dir into this worktree"
 
 # Core lifecycle

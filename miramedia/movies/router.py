@@ -1,5 +1,3 @@
-import asyncio
-import time
 from typing import Annotated
 from uuid import UUID
 
@@ -13,6 +11,7 @@ from miramedia.auth.users import (
     require_can_add_media,
 )
 from miramedia.config import LibraryItem, MiraMediaConfig
+from miramedia.database import release_session_before_external_io
 from miramedia.exceptions import NotFoundError
 from miramedia.metadata.dependencies import metadata_provider_dep
 from miramedia.metadata.schemas import MetaDataProviderSearchResult
@@ -26,6 +25,7 @@ from miramedia.movies.schemas import (
     PublicMovie,
     PublicMovieFile,
 )
+from miramedia.recommended_discovery_cache import _RECOMMENDED_MOVIES_CACHE
 from miramedia.subtitles.dependencies import subtitle_service_dep
 from miramedia.subtitles.schemas import SubtitleFile
 from miramedia.torrents.schemas import RichTorrent
@@ -98,11 +98,6 @@ def lookup_movie_by_imdb(
     return {}
 
 
-_RECOMMENDED_CACHE: dict[tuple[str, int], tuple[float, list]] = {}
-_RECOMMENDED_CACHE_LOCK = asyncio.Lock()
-_RECOMMENDED_TTL = 3600.0  # 1h — trending shifts daily, not per page refresh.
-
-
 @router.get("/recommended")
 async def get_popular_movies(
     response: Response,
@@ -113,21 +108,13 @@ async def get_popular_movies(
     (TMDB → TVDB → Cinemeta). Provider search cached 1h server-side; the
     response is not browser-cached (no-store) because the added/id library
     flags are per-request state and would otherwise show a stale "Add"."""
-    key = ("movies", skip)
-    now = time.monotonic()
-    async with _RECOMMENDED_CACHE_LOCK:
-        cached = _RECOMMENDED_CACHE.get(key)
-    if cached and now - cached[0] < _RECOMMENDED_TTL:
-        response.headers["Cache-Control"] = "private, no-store"
-        # Only the provider search is cached (expensive HTTP fan-out); the
-        # added/id flags are per-library state, so re-annotate every hit or a
-        # title imported after the cache was filled keeps showing "Add".
-        return await movie_service.annotate_search_results(cached[1])
-    results = await movie_service.discover_movies(skip=skip)
-    async with _RECOMMENDED_CACHE_LOCK:
-        _RECOMMENDED_CACHE[key] = (now, results)
     response.headers["Cache-Control"] = "private, no-store"
-    return results
+    await release_session_before_external_io(movie_service.movie_repository.db)
+    return await _RECOMMENDED_MOVIES_CACHE.get(
+        skip,
+        lambda: movie_service.discover_movies(skip=skip),
+        movie_service.annotate_search_results,
+    )
 
 
 # -----------------------------------------------------------------------------

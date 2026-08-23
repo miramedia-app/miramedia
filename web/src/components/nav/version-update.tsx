@@ -39,12 +39,14 @@ function writeDismiss(target: string | null) {
 }
 
 export function VersionUpdate() {
-  const { data } = useQuery({
+  const { data, isError } = useQuery({
     queryKey: ["system", "updates"],
     queryFn: async ({ signal }) => {
-      const { data } = await apiClient.GET("/api/v1/system/updates", { signal });
+      const { data, error } = await apiClient.GET("/api/v1/system/updates", { signal });
+      if (error) throw error;
       return data ?? null;
     },
+    retry: 1,
     staleTime: 60 * 60 * 1000,
   });
 
@@ -55,7 +57,7 @@ export function VersionUpdate() {
     setDismissed(readDismiss(latestVersion));
   }, [latestVersion]);
 
-  if (!data?.enabled) return null;
+  if (isError || !data?.enabled) return null;
   const updateAvailable = !!data.update_available;
   if (!updateAvailable || dismissed || !latestVersion) return null;
 

@@ -42,6 +42,7 @@ from miramedia.torrents.dependencies import (
     torrent_repository_dep,
     torrent_service_dep,
 )
+from miramedia.torrents.inspection import parse_magnet_or_torrent_file
 from miramedia.torrents.integrity import (
     INTEGRITY_MISMATCH_DEFAULT_LIMIT,
     INTEGRITY_MISMATCH_MAX_LIMIT,
@@ -68,7 +69,6 @@ from miramedia.torrents.schemas import (
     TorrentStatus,
     UnifiedDownloadRequest,
 )
-from miramedia.torrents.utils import parse_magnet_or_torrent_file
 
 if TYPE_CHECKING:
     from miramedia.movies.service import MovieService
@@ -619,8 +619,8 @@ async def manual_parse(
     )
 
     # Find candidate media matches
-    shows = await show_service.get_all_shows()
-    movies = await movie_service.get_all_movies()
+    shows = await show_service.get_show_match_candidates()
+    movies = await movie_service.get_movie_match_candidates()
     raw_candidates = find_candidate_media_matches(name, shows, movies)
 
     candidates = [
@@ -1049,7 +1049,7 @@ async def map_torrent_files(
 ) -> ManualMapResult:
     """Apply a user-supplied mapping of source files → target media."""
     from miramedia.file_status import ImportOutcome
-    from miramedia.torrents.utils import get_torrent_filepath, resolve_within
+    from miramedia.torrents.paths import get_torrent_filepath, resolve_within
 
     root = get_torrent_filepath(torrent)
     result = ManualMapResult(mapped=0, skipped=0, failed=0, errors=[])

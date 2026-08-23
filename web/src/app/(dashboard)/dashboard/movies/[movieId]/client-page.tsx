@@ -50,10 +50,12 @@ import { AddToWatchlist } from "@/components/watchlists/add-to-watchlist";
 import { WatchedMenuItems } from "@/components/watchlists/watched-button";
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
+import { DirectDownloadAction } from "@/components/direct-download-action";
 import { useFeatures } from "@/components/providers/features-provider";
 import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import { useSetWatched } from "@/hooks/use-watched-state";
 import apiClient from "@/lib/api/client";
+import { qk } from "@/lib/query-keys";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import {
   formatCastLine,
@@ -69,6 +71,7 @@ const VideoPlayerDialog = dynamic(
 );
 import { languageName } from "@/lib/languages";
 import type { components } from "@/lib/api/api";
+import { importedFileRowActions } from "@/lib/media-download";
 import { watchlistOverflowActionsEnabled } from "@/lib/watchlists";
 
 type MovieFile = components["schemas"]["PublicMovieFile"];
@@ -98,7 +101,7 @@ export default function MovieDetailClientPage() {
   const queryClient = useQueryClient();
   const { user } = useUser();
   const isSuperuser = !!user?.is_superuser;
-  const { watchlists, custom_lists } = useFeatures();
+  const { watchlists, custom_lists, streaming, downloads } = useFeatures();
   const { markWatched } = watchlistOverflowActionsEnabled({ watchlists, custom_lists });
 
   // The detail bundle is heavy (movie + files + subtitles + torrents). It must
@@ -238,7 +241,12 @@ export default function MovieDetailClientPage() {
   const [otherBulkWorking, setOtherBulkWorking] = React.useState(false);
 
   async function invalidateAll() {
-    await queryClient.invalidateQueries({ queryKey: ["movie", movieId] });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["movie", movieId] }),
+      queryClient.invalidateQueries({ queryKey: qk.torrents.list() }),
+      queryClient.invalidateQueries({ queryKey: qk.movies.all }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "summary"] }),
+    ]);
   }
 
   const {
@@ -445,15 +453,29 @@ export default function MovieDetailClientPage() {
   const fileRowActions = React.useCallback(
     (r: FileRow) => {
       if (r.kind === "file") {
+        const { showPlayer, showDownload } = importedFileRowActions({
+          streaming,
+          downloads,
+          imported: r.data.file_status === "imported",
+        });
         return (
           <>
-            {r.data.file_status === "imported" && movie && (
+            {showPlayer && movie && (
               <VideoPlayerDialog
                 mediaType="movie"
                 mediaId={movie.id ?? ""}
                 fileId={r.data.id!}
                 title={getFullyQualifiedMediaName(movie)}
                 subtitleLanguages={subtitleLanguages}
+                buttonVariant="ghost"
+                buttonSize="icon"
+              />
+            )}
+            {showDownload && movie && (
+              <DirectDownloadAction
+                mediaType="movie"
+                mediaId={movie.id ?? ""}
+                fileId={r.data.id!}
                 buttonVariant="ghost"
                 buttonSize="icon"
               />
@@ -515,7 +537,7 @@ export default function MovieDetailClientPage() {
         </DropdownMenu>
       ) : null;
     },
-    [movie, subtitleLanguages, isSuperuser, markWatched],
+    [movie, subtitleLanguages, isSuperuser, markWatched, streaming, downloads],
   );
 
   const torrentColumns = React.useMemo<ColumnDef<RichTorrent>[]>(

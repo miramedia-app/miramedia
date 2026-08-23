@@ -100,7 +100,9 @@ def test_detect_finished_downloads_uses_active_query_only(monkeypatch) -> None:
         yield _Svc()
 
     release = AsyncMock()
-    monkeypatch.setattr("miramedia.database.bg_torrent_service", _bg_torrent_service)
+    monkeypatch.setattr(
+        "miramedia.background_services.bg_torrent_service", _bg_torrent_service
+    )
     monkeypatch.setattr(
         "miramedia.database.release_session_before_external_io", release
     )

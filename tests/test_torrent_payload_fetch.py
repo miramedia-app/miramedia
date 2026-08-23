@@ -10,16 +10,20 @@ import pytest
 import requests
 
 from miramedia.indexers.schemas import IndexerQueryResult
-from miramedia.torrents import utils
-from miramedia.torrents.utils import (
+from miramedia.torrents import fetch, inspection
+from miramedia.torrents.fetch import (
     _MAX_TORRENT_PAYLOAD_BYTES,
     _MAX_TORRENT_PAYLOAD_REDIRECTS,
     _fetch_torrent_payload,
     _guarded_fetch_torrent_bytes,
+    follow_redirects_to_final_torrent_url,
+)
+from miramedia.torrents.inspection import (
+    TorrentInspection,
     get_torrent_hash,
     inspect_torrent,
-    torrent_sidecar_under_root,
 )
+from miramedia.torrents.paths import torrent_sidecar_under_root
 
 _PUBLIC_IPV4 = "93.184.216.34"
 _PASSKEY = "SECRET_PASSKEY_TOKEN"
@@ -73,7 +77,7 @@ def torrent_config(monkeypatch: pytest.MonkeyPatch, tmp_path):
             indexers=SimpleNamespace(timeout_seconds=5),
         )
 
-    monkeypatch.setattr(utils, "MiraMediaConfig", config)
+    monkeypatch.setattr(inspection, "MiraMediaConfig", config)
     return completed
 
 
@@ -127,7 +131,7 @@ def test_guarded_fetch_public_destination_success(
         seen["kwargs"] = kwargs
         return FakeResponse(chunks=[payload])
 
-    monkeypatch.setattr(utils.requests, "get", fake_get)
+    monkeypatch.setattr(fetch.requests, "get", fake_get)
 
     assert (
         _guarded_fetch_torrent_bytes(
@@ -205,7 +209,7 @@ def test_guarded_fetch_rejects_redirect_to_private_destination(
             )
         return FakeResponse(chunks=[b"x"])
 
-    monkeypatch.setattr(utils.requests, "get", fake_get)
+    monkeypatch.setattr(fetch.requests, "get", fake_get)
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
@@ -225,7 +229,7 @@ def test_guarded_fetch_rejects_redirect_loop(monkeypatch: pytest.MonkeyPatch) ->
             headers={"Location": "/loop.torrent"},
         )
 
-    monkeypatch.setattr(utils.requests, "get", fake_get)
+    monkeypatch.setattr(fetch.requests, "get", fake_get)
 
     with pytest.raises(
         ValueError, match="Exceeded maximum number of torrent payload redirects"
@@ -246,7 +250,7 @@ def test_guarded_fetch_follows_relative_redirect(
         assert url == "http://example.com/final.torrent"
         return FakeResponse(chunks=[payload])
 
-    monkeypatch.setattr(utils.requests, "get", fake_get)
+    monkeypatch.setattr(fetch.requests, "get", fake_get)
 
     assert (
         _guarded_fetch_torrent_bytes("http://example.com/a.torrent", timeout=5)
@@ -258,7 +262,7 @@ def test_guarded_fetch_rejects_oversized_content_length(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        utils.requests,
+        fetch.requests,
         "get",
         lambda *_a, **_k: FakeResponse(
             headers={"Content-Length": str(_MAX_TORRENT_PAYLOAD_BYTES + 1)}
@@ -276,7 +280,7 @@ def test_guarded_fetch_rejects_oversized_streamed_body(
     chunks = [chunk] * ((_MAX_TORRENT_PAYLOAD_BYTES // len(chunk)) + 2)
 
     monkeypatch.setattr(
-        utils.requests,
+        fetch.requests,
         "get",
         lambda *_a, **_k: FakeResponse(chunks=chunks),
     )
@@ -291,7 +295,7 @@ def test_guarded_fetch_accepts_boundary_size_body(
     payload = b"x" * _MAX_TORRENT_PAYLOAD_BYTES
     response = FakeResponse(chunks=[payload])
 
-    monkeypatch.setattr(utils.requests, "get", lambda *_a, **_k: response)
+    monkeypatch.setattr(fetch.requests, "get", lambda *_a, **_k: response)
 
     assert (
         _guarded_fetch_torrent_bytes("http://example.com/a.torrent", timeout=5)
@@ -305,7 +309,7 @@ def test_guarded_fetch_closes_response_on_error(
 ) -> None:
     response = FakeResponse(status_code=500)
 
-    monkeypatch.setattr(utils.requests, "get", lambda *_a, **_k: response)
+    monkeypatch.setattr(fetch.requests, "get", lambda *_a, **_k: response)
 
     with pytest.raises(requests.HTTPError):
         _guarded_fetch_torrent_bytes("http://example.com/a.torrent", timeout=5)
@@ -316,7 +320,7 @@ def test_fetch_torrent_payload_returns_none_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        utils,
+        fetch,
         "_guarded_fetch_torrent_bytes",
         MagicMock(side_effect=ValueError("blocked")),
     )
@@ -331,12 +335,12 @@ def test_fetch_torrent_payload_returns_none_on_failure(
 def test_inspect_torrent_returns_none_when_fetch_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(utils, "_fetch_torrent_payload", lambda *_a, **_k: None)
+    monkeypatch.setattr(fetch, "_fetch_torrent_payload", lambda *_a, **_k: None)
 
     inspection = inspect_torrent(
         _indexer("Safe.Title", f"http://example.com/a.torrent?passkey={_PASSKEY}")
     )
-    assert inspection == utils.TorrentInspection(info_hash=None, files=None)
+    assert inspection == TorrentInspection(info_hash=None, files=None)
 
 
 def test_get_torrent_hash_does_not_leave_partial_sidecar_on_oversized_body(
@@ -347,12 +351,12 @@ def test_get_torrent_hash_does_not_leave_partial_sidecar_on_oversized_body(
     chunk = b"x" * (1 << 16)
     chunks = [chunk] * ((_MAX_TORRENT_PAYLOAD_BYTES // len(chunk)) + 2)
     monkeypatch.setattr(
-        utils.requests,
+        fetch.requests,
         "get",
         lambda *_a, **_k: FakeResponse(chunks=chunks),
     )
     monkeypatch.setattr(
-        utils,
+        inspection,
         "_parse_torrent_bytes",
         lambda _content: ("a" * 40, title, []),
     )
@@ -369,6 +373,50 @@ def test_get_torrent_hash_does_not_leave_partial_sidecar_on_oversized_body(
     assert not sidecar.exists()
 
 
+def test_follow_redirects_rejects_non_http_initial_scheme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = requests.Session()
+    get_spy = MagicMock(
+        side_effect=AssertionError("session.get should not be called"),
+    )
+    monkeypatch.setattr(session, "get", get_spy)
+
+    with pytest.raises(ValueError, match="Unsupported torrent URL scheme: 'ftp'"):
+        follow_redirects_to_final_torrent_url(
+            "ftp://example.com/a.torrent",
+            session=session,
+            timeout=1,
+        )
+
+    get_spy.assert_not_called()
+
+
+def test_follow_redirects_rejects_redirect_to_non_http_scheme(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = requests.Session()
+    seen_urls: list[str] = []
+
+    def fake_get(url: str, **_kwargs: object) -> FakeResponse:
+        seen_urls.append(url)
+        return FakeResponse(
+            status_code=302,
+            headers={"Location": "file:///etc/passwd"},
+        )
+
+    monkeypatch.setattr(session, "get", fake_get)
+
+    with pytest.raises(ValueError, match="Unsupported torrent URL scheme: 'file'"):
+        follow_redirects_to_final_torrent_url(
+            "http://example.com/a.torrent",
+            session=session,
+            timeout=1,
+        )
+
+    assert seen_urls == ["http://example.com/a.torrent"]
+
+
 def test_redirect_limit_constant_matches_follow_redirects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,7 +428,7 @@ def test_redirect_limit_constant_matches_follow_redirects(
     monkeypatch.setattr(session, "get", fake_get)
 
     with pytest.raises(RuntimeError, match="Exceeded maximum number of redirects"):
-        utils.follow_redirects_to_final_torrent_url(
+        follow_redirects_to_final_torrent_url(
             "http://example.com/start",
             session=session,
             timeout=1,

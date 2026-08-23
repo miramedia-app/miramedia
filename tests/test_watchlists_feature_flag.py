@@ -1,4 +1,4 @@
-"""Tests for watchlists feature flag gates."""
+"""Tests for watchlists/playback/streams feature flag gates."""
 
 from __future__ import annotations
 
@@ -8,8 +8,12 @@ import pytest
 from fastapi import HTTPException
 
 from miramedia.config import MiraMediaConfig
+from miramedia.playback.dependencies import require_continue_watching_enabled
+from miramedia.streams.dependencies import (
+    require_stream_or_download_enabled,
+    require_streaming_enabled,
+)
 from miramedia.watchlists.dependencies import (
-    require_continue_watching_enabled,
     require_custom_lists_enabled,
     require_upcoming_enabled,
     require_watch_next_enabled,
@@ -18,12 +22,13 @@ from miramedia.watchlists.dependencies import (
 
 
 @pytest.fixture(autouse=True)
-def _restore_watchlists_config() -> Generator[None]:
+def _restore_feature_config() -> Generator[None]:
     cfg = MiraMediaConfig().watchlists
     native = cfg.native
+    playback = MiraMediaConfig().playback
+    streams = MiraMediaConfig().streams
     original = (
         cfg.auto_remove_watched,
-        cfg.continue_watching,
         cfg.max_lists_per_user,
         cfg.max_items_per_list,
         native.enabled,
@@ -33,11 +38,13 @@ def _restore_watchlists_config() -> Generator[None]:
         native.upcoming,
         native.upcoming_default_past_days,
         native.upcoming_default_future_days,
+        playback.continue_watching,
+        streams.enabled,
+        streams.downloads,
     )
     yield
     (
         cfg.auto_remove_watched,
-        cfg.continue_watching,
         cfg.max_lists_per_user,
         cfg.max_items_per_list,
         native.enabled,
@@ -47,6 +54,9 @@ def _restore_watchlists_config() -> Generator[None]:
         native.upcoming,
         native.upcoming_default_past_days,
         native.upcoming_default_future_days,
+        playback.continue_watching,
+        streams.enabled,
+        streams.downloads,
     ) = original
 
 
@@ -126,7 +136,7 @@ def test_derived_flags_follow_master_and_subflags() -> None:
 
 
 def test_require_continue_watching_enabled_raises_when_flag_off() -> None:
-    MiraMediaConfig().watchlists.continue_watching = False
+    MiraMediaConfig().playback.continue_watching = False
 
     with pytest.raises(HTTPException) as exc_info:
         require_continue_watching_enabled()
@@ -136,16 +146,48 @@ def test_require_continue_watching_enabled_raises_when_flag_off() -> None:
 
 
 def test_require_continue_watching_enabled_passes_when_enabled() -> None:
-    MiraMediaConfig().watchlists.continue_watching = True
+    MiraMediaConfig().playback.continue_watching = True
 
     require_continue_watching_enabled()  # should not raise
 
 
-def test_continue_watching_enabled_is_independent_of_native_master() -> None:
-    cfg = MiraMediaConfig().watchlists
-    cfg.native.enabled = False
-    cfg.continue_watching = True
-    assert cfg.continue_watching_enabled is True
+def test_require_streaming_enabled_raises_when_flag_off() -> None:
+    MiraMediaConfig().streams.enabled = False
 
-    cfg.continue_watching = False
-    assert cfg.continue_watching_enabled is False
+    with pytest.raises(HTTPException) as exc_info:
+        require_streaming_enabled()
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Streaming feature is disabled"
+
+
+def test_require_streaming_enabled_passes_when_enabled() -> None:
+    MiraMediaConfig().streams.enabled = True
+
+    require_streaming_enabled()  # should not raise
+
+
+def test_direct_file_gate_checks_downloads_flag_for_download_requests() -> None:
+    MiraMediaConfig().streams.downloads = False
+    MiraMediaConfig().streams.enabled = True
+
+    require_stream_or_download_enabled(False)  # streaming request, should not raise
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_stream_or_download_enabled(True)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Downloads feature is disabled"
+
+
+def test_direct_file_gate_is_independent_of_streaming_flag() -> None:
+    MiraMediaConfig().streams.enabled = False
+    MiraMediaConfig().streams.downloads = True
+
+    require_stream_or_download_enabled(True)  # downloads on, should not raise
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_stream_or_download_enabled(False)  # streaming off
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Streaming feature is disabled"

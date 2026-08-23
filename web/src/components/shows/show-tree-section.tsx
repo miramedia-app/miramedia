@@ -16,6 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { MediaStatusBadge } from "@/components/media-status-badge";
+import { DirectDownloadAction } from "@/components/direct-download-action";
 import { SearchTorrentButton } from "@/components/download-dialogs/download-media-dialog";
 import { SeasonWatchedMenuItems } from "@/components/watchlists/watched-batch-menu";
 import { WatchedMenuItems } from "@/components/watchlists/watched-button";
@@ -24,6 +25,7 @@ import { useFeatures } from "@/components/providers/features-provider";
 import { formatFileSuffix, getTorrentQualityString } from "@/lib/utils";
 import { watchlistOverflowActionsEnabled } from "@/lib/watchlists";
 import { languageName } from "@/lib/languages";
+import { importedFileRowActions } from "@/lib/media-download";
 import type { DeleteTarget, Season, TreeRow } from "@/lib/show-detail";
 import type { ShowDetail } from "@/hooks/use-show-detail";
 
@@ -74,7 +76,7 @@ export function ShowTreeSection({
   openDeleteModal,
 }: ShowTreeSectionProps) {
   const [watchlistEpisodeId, setWatchlistEpisodeId] = React.useState<string | null>(null);
-  const { watchlists, custom_lists } = useFeatures();
+  const { watchlists, custom_lists, streaming, downloads } = useFeatures();
   const { markWatched } = watchlistOverflowActionsEnabled({ watchlists, custom_lists });
   const showOverflowMenu = markWatched || isSuperuser;
   const treeColumns = React.useMemo<ColumnDef<TreeRow>[]>(
@@ -357,15 +359,29 @@ export function ShowTreeSection({
             );
           }
           if (r.kind === "file") {
+            const { showPlayer, showDownload } = importedFileRowActions({
+              streaming,
+              downloads,
+              imported: r.data.file_status === "imported",
+            });
             return (
               <>
-                {r.data.file_status === "imported" && (
+                {showPlayer && (
                   <VideoPlayerDialog
                     mediaType="show"
                     mediaId={r.episodeId}
                     fileId={r.data.id!}
                     title={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.episodeNumber).padStart(2, "0")} ${r.episodeTitle}`}
                     subtitleLanguages={subtitlesByEpisode[r.episodeId] ?? []}
+                    buttonVariant="ghost"
+                    buttonSize="icon"
+                  />
+                )}
+                {showDownload && (
+                  <DirectDownloadAction
+                    mediaType="show"
+                    mediaId={r.episodeId}
+                    fileId={r.data.id!}
                     buttonVariant="ghost"
                     buttonSize="icon"
                   />

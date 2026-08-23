@@ -32,7 +32,7 @@ const STAR_ICON = (
 );
 
 export default function MoviesPage() {
-  const prefetchMovie = useMoviePrefetch();
+  const { prefetch: prefetchMovie, cancel: cancelMoviePrefetch } = useMoviePrefetch();
   const [searchQuery, setSearchQuery] = React.useState("");
   const deferredSearchQuery = React.useDeferredValue(searchQuery);
   const [sortBy, setSortBy] = React.useState("name-asc");
@@ -235,6 +235,8 @@ export default function MoviesPage() {
                     className="flex flex-col"
                     onMouseEnter={() => prefetchMovie(movie)}
                     onFocus={() => prefetchMovie(movie)}
+                    onMouseLeave={cancelMoviePrefetch}
+                    onBlur={cancelMoviePrefetch}
                   >
                     <Link href={`/dashboard/movies/${movie.id}`} className="group">
                       <div className="relative aspect-[2/3] overflow-hidden rounded-lg">

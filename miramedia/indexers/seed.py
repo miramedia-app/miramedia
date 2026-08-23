@@ -58,7 +58,7 @@ async def seed_preloaded_sites(db: AsyncSession) -> None:
                 is_preloaded=True,
             )
             db.add(site)
-            log.info(f"Seeded preloaded indexer site: {name}")
+            log.info("Seeded preloaded indexer site: %s", name)
         else:
             # Merge any code-defined URLs the DB doesn't already have
             current = list(existing.available_urls or [])
@@ -69,7 +69,7 @@ async def seed_preloaded_sites(db: AsyncSession) -> None:
                     added.append(u)
             if added:
                 existing.available_urls = current
-                log.info(f"Added new mirror URL(s) for {name}: {added}")
+                log.info("Added new mirror URL(s) for %s: %s", name, added)
 
     await db.commit()
     invalidate_native_indexer()

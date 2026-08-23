@@ -56,13 +56,10 @@ def _restore_watchlists_config() -> Generator[None]:
     native = cfg.native
     original = (
         cfg.auto_remove_watched,
-        cfg.continue_watching,
         cfg.max_lists_per_user,
         cfg.max_items_per_list,
         native.enabled,
         native.custom_lists,
-        native.watch_next,
-        native.watch_next_include_specials,
         native.upcoming,
         native.upcoming_default_past_days,
         native.upcoming_default_future_days,
@@ -70,13 +67,10 @@ def _restore_watchlists_config() -> Generator[None]:
     yield
     (
         cfg.auto_remove_watched,
-        cfg.continue_watching,
         cfg.max_lists_per_user,
         cfg.max_items_per_list,
         native.enabled,
         native.custom_lists,
-        native.watch_next,
-        native.watch_next_include_specials,
         native.upcoming,
         native.upcoming_default_past_days,
         native.upcoming_default_future_days,

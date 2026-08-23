@@ -74,7 +74,10 @@ class Prowlarr(GenericIndexer, TorznabMixin):
         )
         parsed = self.process_search_result(xml=results.content)
         log.info(
-            f"Indexer {indexer.name} returned {len(parsed)} results for search: {params}"
+            "Indexer %s returned %s results for search: %s",
+            indexer.name,
+            len(parsed),
+            params,
         )
         return parsed
 
@@ -162,7 +165,7 @@ class Prowlarr(GenericIndexer, TorznabMixin):
         return raw_results
 
     def search(self, query: str, is_tv: bool) -> list[IndexerQueryResult]:
-        log.info(f"Searching for: {query}")
+        log.info("Searching for: %s", query)
         params = {
             "q": query,
             "t": "tvsearch" if is_tv else "movie",
@@ -179,7 +182,7 @@ class Prowlarr(GenericIndexer, TorznabMixin):
         searches: list[tuple[IndexerInfo, dict]] = []
 
         for indexer in indexers:
-            log.debug("Preparing search for indexer: " + indexer.name)
+            log.debug("Preparing search for indexer: %s", indexer.name)
             search_params = {
                 "cat": "5000",
                 "q": query,
@@ -204,7 +207,7 @@ class Prowlarr(GenericIndexer, TorznabMixin):
         searches: list[tuple[IndexerInfo, dict]] = []
 
         for indexer in indexers:
-            log.debug("Preparing search for indexer: " + indexer.name)
+            log.debug("Preparing search for indexer: %s", indexer.name)
 
             search_params = {
                 "cat": "2000",

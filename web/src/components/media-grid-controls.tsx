@@ -131,8 +131,8 @@ export function MediaGridControls<T = any>({
 
       <span className="hidden h-6 w-px bg-border sm:block" />
 
-      <Button size="default" className="text-xs" render={<Link href={addHref} />}>
-        <Plus className="mr-1 h-4 w-4" />
+      <Button size="default" className="gap-1 text-xs" render={<Link href={addHref} />}>
+        <Plus className="h-4 w-4" />
         {addLabel}
       </Button>
     </div>

@@ -5,6 +5,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { ListTodo, TriangleAlert, EllipsisVertical } from "lucide-react";
 
+import { DirectDownloadAction } from "@/components/direct-download-action";
 import { DataListEmpty } from "@/components/data-list";
 import { MediaPicture } from "@/components/media-picture";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import { WatchedMenuItems } from "@/components/watchlists/watched-button";
 import { WATCH_NEXT_LABEL } from "@/components/watchlists/watchlists-routes";
 import { useFeatures, useFeaturesStatus } from "@/components/providers/features-provider";
 import { useWatchNext, WATCH_NEXT_MAX_LIMIT, WATCH_NEXT_PAGE_SIZE } from "@/hooks/use-watchlists";
+import { importedFileRowActions } from "@/lib/media-download";
 import type { UpNextItem } from "@/lib/watchlists";
 import {
   asyncListViewState,
@@ -177,6 +179,12 @@ function WatchNextHero({
 }
 
 function WatchNextRow({ item }: { item: UpNextItem }) {
+  const { streaming, downloads } = useFeatures();
+  const { showPlayer, showDownload } = importedFileRowActions({
+    streaming,
+    downloads,
+    imported: Boolean(item.file_id),
+  });
   const copy = formatListItemCopy({
     title: item.title,
     showName: item.show_name,
@@ -208,17 +216,29 @@ function WatchNextRow({ item }: { item: UpNextItem }) {
       </div>
       <div className="flex shrink-0 items-center gap-1">
         <PlaybackProgressMeter positionMs={item.position_ms} durationMs={item.duration_ms} />
-        <VideoPlayerDialog
-          mediaType="show"
-          mediaId={item.media_id}
-          fileId={item.file_id}
-          title={item.title}
-          resumeFromMs={item.position_ms > 0 ? item.position_ms : undefined}
-          buttonVariant="ghost"
-          buttonSize="icon"
-          buttonClassName="min-h-11 min-w-11"
-          triggerLabel={playLabel}
-        />
+        {showPlayer ? (
+          <VideoPlayerDialog
+            mediaType="show"
+            mediaId={item.media_id}
+            fileId={item.file_id}
+            title={item.title}
+            resumeFromMs={item.position_ms > 0 ? item.position_ms : undefined}
+            buttonVariant="ghost"
+            buttonSize="icon"
+            buttonClassName="min-h-11 min-w-11"
+            triggerLabel={playLabel}
+          />
+        ) : null}
+        {showDownload ? (
+          <DirectDownloadAction
+            mediaType="show"
+            mediaId={item.media_id}
+            fileId={item.file_id}
+            buttonVariant="ghost"
+            buttonSize="icon"
+            buttonClassName="min-h-11 min-w-11"
+          />
+        ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger
             render={

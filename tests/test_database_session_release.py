@@ -10,8 +10,8 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 
+from miramedia.exceptions import UnprocessableEntityError
 from miramedia.imports.schemas import ResolveRequest
 from miramedia.imports.service import ImportsService
 from miramedia.torrents.schemas import MediaType
@@ -270,13 +270,12 @@ def test_resolve_scan_metadata_failure_writes_after_provider_io(
                 "miramedia.metadata.dependencies.get_metadata_provider",
                 return_value=MagicMock(),
             ),
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(UnprocessableEntityError),
         ):
             await service.resolve_manual_scan(body, claim_token="token-a")
-        assert exc_info.value.status_code == 422
+        assert events == ["release", "provider_io", "fail_write"]
 
     asyncio.run(_run())
-    assert events == ["release", "provider_io", "fail_write"]
 
 
 def _drive_get_session(exc: BaseException) -> tuple[MagicMock, MagicMock]:

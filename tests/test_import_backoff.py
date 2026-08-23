@@ -202,7 +202,7 @@ class TestMarkTorrentImportFailed:
         async def fake_bg():
             yield inner_svc
 
-        with patch("miramedia.database.bg_show_service", fake_bg):
+        with patch("miramedia.background_services.bg_show_service", fake_bg):
             run_async(outer_svc._mark_torrent_import_failed(torrent.id, "boom"))
 
         updated = inner_repo.episode_files[ef.id]
@@ -237,7 +237,7 @@ class TestMarkTorrentImportFailed:
         async def fake_bg():
             yield inner_svc
 
-        with patch("miramedia.database.bg_movie_service", fake_bg):
+        with patch("miramedia.background_services.bg_movie_service", fake_bg):
             run_async(outer_svc._mark_torrent_import_failed(torrent.id, "boom"))
 
         updated = inner_repo.movie_files[mf.id]
@@ -320,7 +320,7 @@ class TestIsDueForRetryBackoff:
         async def fake_bg():
             yield inner_svc
 
-        with patch("miramedia.database.bg_show_service", fake_bg):
+        with patch("miramedia.background_services.bg_show_service", fake_bg):
             run_async(inner_svc._mark_torrent_import_failed(torrent.id, "err"))
 
         stamped = inner_repo.episode_files[ef.id]
@@ -370,7 +370,7 @@ class TestImportAllTorrentsRetryIntegration:
             raise RuntimeError("import blew up")
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(
                 svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
             ),
@@ -433,7 +433,7 @@ class TestImportAllTorrentsRetryIntegration:
             raise RuntimeError("import blew up")
 
         with (
-            patch("miramedia.database.bg_movie_service", fake_bg),
+            patch("miramedia.background_services.bg_movie_service", fake_bg),
             patch.object(
                 svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
             ),
@@ -486,7 +486,7 @@ class TestImportAllTorrentsRetryIntegration:
             imported_calls.append(True)
 
         with (
-            patch("miramedia.database.bg_show_service", fake_bg),
+            patch("miramedia.background_services.bg_show_service", fake_bg),
             patch.object(
                 svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
             ),

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.1.0"
+    "version": "1.1.1"
   },
   "paths": {
     "/api/v1/health": {
@@ -11803,6 +11803,14 @@
           "continue_watching": {
             "type": "boolean",
             "title": "Continue Watching"
+          },
+          "streaming": {
+            "type": "boolean",
+            "title": "Streaming"
+          },
+          "downloads": {
+            "type": "boolean",
+            "title": "Downloads"
           }
         },
         "type": "object",
@@ -11817,7 +11825,9 @@
           "upcoming",
           "upcoming_default_past_days",
           "upcoming_default_future_days",
-          "continue_watching"
+          "continue_watching",
+          "streaming",
+          "downloads"
         ],
         "title": "FeatureFlags"
       },
@@ -15647,6 +15657,24 @@
         ],
         "title": "PlaybackProgressUpsert"
       },
+      "PlaybackSettingsSchema": {
+        "properties": {
+          "continue_watching": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Continue Watching"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlaybackSettingsSchema"
+      },
       "PreferredCodecBody": {
         "properties": {
           "preferred_codec": {
@@ -18218,6 +18246,57 @@
         ],
         "title": "StreamProbeResponse"
       },
+      "StreamsSettingsSchema": {
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "downloads": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Downloads"
+          },
+          "hls_cache_max_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hls Cache Max Gb"
+          },
+          "hls_cache_max_age_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hls Cache Max Age Days"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StreamsSettingsSchema"
+      },
       "SubtitleFile": {
         "properties": {
           "language": {
@@ -18454,6 +18533,16 @@
             "type": "object",
             "title": "Imports"
           },
+          "streams": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Streams"
+          },
+          "playback": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Playback"
+          },
           "overrides": {
             "additionalProperties": true,
             "type": "object",
@@ -18486,6 +18575,8 @@
           "updates",
           "cloudflare",
           "imports",
+          "streams",
+          "playback",
           "overrides"
         ],
         "title": "SystemSettingsRead",
@@ -18607,6 +18698,26 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ImportsSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "streams": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StreamsSettingsSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "playback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlaybackSettingsSchema"
               },
               {
                 "type": "null"
@@ -20534,17 +20645,6 @@
               }
             ],
             "title": "Auto Remove Watched"
-          },
-          "continue_watching": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Continue Watching"
           },
           "max_lists_per_user": {
             "anyOf": [

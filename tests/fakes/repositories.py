@@ -231,6 +231,15 @@ class FakeShowRepository:
     async def get_torrents_by_show_id(self, *, show_id: ShowId) -> list[Torrent]:
         return list(self.torrents_by_show.get(show_id, []))
 
+    async def set_auto_download_backoff(
+        self, show_id: ShowId, until: datetime | None
+    ) -> None:
+        show = self.shows.get(show_id)
+        if show is not None:
+            self.shows[show_id] = show.model_copy(
+                update={"auto_download_backoff_until": until}
+            )
+
     async def get_orphaned_failed_episode_files(self) -> list[EpisodeFile]:
         return [
             f
@@ -410,6 +419,15 @@ class FakeMovieRepository:
         self, *, movie_id: MovieId
     ) -> list[MovieFile]:
         return [f for f in self.movie_files.values() if f.movie_id == movie_id]
+
+    async def set_auto_download_backoff(
+        self, movie_id: MovieId, until: datetime | None
+    ) -> None:
+        movie = self.movies.get(movie_id)
+        if movie is not None:
+            self.movies[movie_id] = movie.model_copy(
+                update={"auto_download_backoff_until": until}
+            )
 
     async def get_orphaned_failed_movie_files(self) -> list[MovieFile]:
         return [
@@ -716,6 +734,7 @@ def make_show(
     air_date=None,
     skipped: bool = False,
     continuous_download: bool | None = None,
+    auto_download_backoff_until: datetime | None = None,
 ) -> Show:
     episode_id = EpisodeId(uuid.uuid4())
     season_id = SeasonId(uuid.uuid4())
@@ -741,6 +760,7 @@ def make_show(
         metadata_provider="native",
         skipped=skipped,
         continuous_download=continuous_download,
+        auto_download_backoff_until=auto_download_backoff_until,
         seasons=[season],
     )
 
@@ -751,6 +771,8 @@ def make_movie(
     year: int = 2020,
     skipped: bool = False,
     continuous_download: bool | None = None,
+    release_date=None,
+    auto_download_backoff_until: datetime | None = None,
 ) -> Movie:
     return Movie(
         id=MovieId(uuid.uuid4()),
@@ -761,6 +783,8 @@ def make_movie(
         metadata_provider="native",
         skipped=skipped,
         continuous_download=continuous_download,
+        release_date=release_date,
+        auto_download_backoff_until=auto_download_backoff_until,
     )
 
 

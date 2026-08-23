@@ -61,7 +61,7 @@ class NyaaSite(BaseSite):
             except Exception:
                 log.debug("Failed to parse Nyaa row", exc_info=True)
 
-        log.info(f"Nyaa returned {len(results)} results for: {query}")
+        log.info("Nyaa returned %s results for: %s", len(results), query)
         return results
 
     def _parse_row(self, row: Node) -> IndexerQueryResult | None:

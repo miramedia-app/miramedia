@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildTreeRows,
+  classifyWatchedSelection,
   fileKey,
   seasonHasAllSubtitles,
   subKey,
@@ -80,6 +81,54 @@ describe("seasonHasAllSubtitles", () => {
     });
     expect(seasonHasAllSubtitles(s, { ep1: ["en"], ep2: ["en"] })).toBe(true);
     expect(seasonHasAllSubtitles(s, { ep1: ["en"], ep2: [] })).toBe(false);
+  });
+});
+
+describe("classifyWatchedSelection", () => {
+  const specials = season({
+    id: "s0",
+    number: 0,
+    episodes: [
+      episode({ id: "sp1", number: 1, title: "Special 1" }),
+      episode({ id: "sp2", number: 2, title: "Special 2" }),
+    ],
+  });
+  const season1 = season({
+    id: "s1",
+    number: 1,
+    episodes: [episode({ id: "s1e1", number: 1 }), episode({ id: "s1e2", number: 2, title: "E2" })],
+  });
+  const season2 = season({
+    id: "s2",
+    number: 2,
+    episodes: [
+      episode({ id: "s2e1", number: 1, title: "S2E1" }),
+      episode({ id: "s2e2", number: 2, title: "S2E2" }),
+    ],
+  });
+  const seasons = [specials, season1, season2];
+
+  it("classifies a full non-special season as season", () => {
+    expect(classifyWatchedSelection(["s1e1", "s1e2"], seasons)).toEqual({
+      kind: "season",
+      seasonNumber: 1,
+    });
+  });
+
+  it("keeps a full season plus one special as per-episode", () => {
+    expect(classifyWatchedSelection(["s1e1", "s1e2", "sp1"], seasons)).toEqual({
+      kind: "episodes",
+    });
+  });
+
+  it("classifies all non-special episodes as show", () => {
+    expect(classifyWatchedSelection(["s1e1", "s1e2", "s2e1", "s2e2"], seasons)).toEqual({
+      kind: "show",
+    });
+  });
+
+  it("keeps a partial selection as per-episode", () => {
+    expect(classifyWatchedSelection(["s1e1"], seasons)).toEqual({ kind: "episodes" });
   });
 });
 

@@ -41,10 +41,12 @@ def test_verify_imported_files_hashes_after_background_session_closed(
                 session_depth["n"] -= 1
 
         cfg = fake_scheduler_config(integrity_check_enabled=True)
-        monkeypatch.setattr("miramedia.scheduler.MiraMediaConfig", lambda: cfg)
+        monkeypatch.setattr(
+            "miramedia.scheduler_tasks.integrity.MiraMediaConfig", lambda: cfg
+        )
         monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
         monkeypatch.setattr(
-            "miramedia.scheduler.background_session",
+            "miramedia.scheduler_tasks.integrity.background_session",
             integration_background_session,
         )
         monkeypatch.setattr(
@@ -61,7 +63,8 @@ def test_verify_imported_files_hashes_after_background_session_closed(
             return _SHA
 
         monkeypatch.setattr(
-            scheduler, "_compute_sha1_async", compute_after_session_close
+            "miramedia.scheduler_tasks.integrity.compute_sha1_async",
+            compute_after_session_close,
         )
 
         await scheduler.verify_imported_files_task()

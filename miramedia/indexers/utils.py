@@ -560,7 +560,10 @@ def evaluate_indexer_query_results(
         seed_filtered = before_seed - len(query_results)
         if seed_filtered:
             log.info(
-                f"Filtered {seed_filtered}/{before_seed} results below {indexer_config.minimum_seeders} seeders"
+                "Filtered %s/%s results below %s seeders",
+                seed_filtered,
+                before_seed,
+                indexer_config.minimum_seeders,
             )
 
     # Filter out torrents above maximum seeders threshold
@@ -574,7 +577,10 @@ def evaluate_indexer_query_results(
         max_filtered = before_max - len(query_results)
         if max_filtered:
             log.info(
-                f"Filtered {max_filtered}/{before_max} results above {indexer_config.maximum_seeders} seeders"
+                "Filtered %s/%s results above %s seeders",
+                max_filtered,
+                before_max,
+                indexer_config.maximum_seeders,
             )
 
     # Hard size gate (bytes -> MB)
@@ -593,8 +599,11 @@ def evaluate_indexer_query_results(
         size_filtered = before_size - len(kept)
         if size_filtered:
             log.info(
-                f"Filtered {size_filtered}/{before_size} results outside "
-                f"[{min_mb},{max_mb}] MB"
+                "Filtered %s/%s results outside [%s,%s] MB",
+                size_filtered,
+                before_size,
+                min_mb,
+                max_mb,
             )
         query_results = kept
 
@@ -616,7 +625,10 @@ def evaluate_indexer_query_results(
     filtered = before_count - len(query_results)
     if filtered:
         log.info(
-            f"Filtered {filtered}/{before_count} results not matching '{relevance_label}'"
+            "Filtered %s/%s results not matching '%s'",
+            filtered,
+            before_count,
+            relevance_label,
         )
 
     # Generic TV searches can return same-title movies/games. Custom queries
@@ -636,8 +648,10 @@ def evaluate_indexer_query_results(
         tv_filtered = before_tv - len(query_results)
         if tv_filtered:
             log.info(
-                f"Filtered {tv_filtered}/{before_tv} non-TV results for custom "
-                f"query '{query_override}'"
+                "Filtered %s/%s non-TV results for custom query '%s'",
+                tv_filtered,
+                before_tv,
+                query_override,
             )
 
     # TV-marker gate (movies only): a release tagged with SxxEyy / season packs
@@ -649,8 +663,10 @@ def evaluate_indexer_query_results(
         tv_filtered = before_tv - len(query_results)
         if tv_filtered:
             log.info(
-                f"Filtered {tv_filtered}/{before_tv} TV-episode results for "
-                f"movie '{media.name}'"
+                "Filtered %s/%s TV-episode results for movie '%s'",
+                tv_filtered,
+                before_tv,
+                media.name,
             )
 
     # Year gate (movies only): drop releases whose title states a wrong year so a
@@ -665,8 +681,11 @@ def evaluate_indexer_query_results(
         year_filtered = before_year - len(query_results)
         if year_filtered:
             log.info(
-                f"Filtered {year_filtered}/{before_year} results not matching "
-                f"year {media.year} for '{media.name}'"
+                "Filtered %s/%s results not matching year %s for '%s'",
+                year_filtered,
+                before_year,
+                media.year,
+                media.name,
             )
 
     for ruleset in scoring_rulesets:
@@ -676,11 +695,19 @@ def evaluate_indexer_query_results(
             or ("ALL_MOVIES" in ruleset.libraries and not is_tv)
         ):
             log.debug(
-                f"Applying scoring ruleset {ruleset.name} for {media.name} ({media.year}) to {len(query_results)} results."
+                "Applying scoring ruleset %s for %s (%s) to %s results.",
+                ruleset.name,
+                media.name,
+                media.year,
+                len(query_results),
             )
             for result in query_results:
                 log.debug(
-                    f"Applying scoring ruleset {ruleset.name} for IndexerQueryResult {result.title} for {media.name} ({media.year})"
+                    "Applying scoring ruleset %s for IndexerQueryResult %s for %s (%s)",
+                    ruleset.name,
+                    result.title,
+                    media.name,
+                    media.year,
                 )
                 evaluate_indexer_query_result(query_result=result, ruleset=ruleset)
 
@@ -695,7 +722,7 @@ def evaluate_indexer_query_results(
 
     query_results = [result for result in query_results if result.score > 0]
     query_results.sort(reverse=True)
-    log.info(f"{len(query_results)} passed the scoring rulesets")
+    log.info("%s passed the scoring rulesets", len(query_results))
     return query_results
 
 

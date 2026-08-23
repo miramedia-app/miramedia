@@ -206,5 +206,5 @@ class YtsSite(BaseSite):
                     )
                 )
 
-        log.info(f"YTS returned {len(results)} results for: {query}")
+        log.info("YTS returned %s results for: %s", len(results), query)
         return results

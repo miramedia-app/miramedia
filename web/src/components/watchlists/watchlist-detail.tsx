@@ -20,15 +20,18 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { DirectDownloadAction } from "@/components/direct-download-action";
 import { PlaybackProgressMeter } from "@/components/watchlists/playback-progress-meter";
 import { WatchedMenuItems } from "@/components/watchlists/watched-button";
 import { WatchlistDetailHero } from "@/components/watchlists/watchlist-detail-hero";
 import { WATCHLISTS_BASE } from "@/components/watchlists/watchlists-routes";
+import { useFeatures } from "@/components/providers/features-provider";
 import {
   useRemoveWatchlistItem,
   useReorderWatchlistItem,
   useWatchlist,
 } from "@/hooks/use-watchlists";
+import { importedFileRowActions } from "@/lib/media-download";
 import type { WatchlistItemView } from "@/lib/watchlists";
 import {
   showStatusCopy,
@@ -168,6 +171,7 @@ function WatchlistItemRow({
   onRemove: () => void;
   onMove: (direction: "up" | "down") => void;
 }) {
+  const { streaming, downloads } = useFeatures();
   const href = watchlistItemHref(item);
   const playTarget = watchlistItemPlayTarget(item);
   const statusCopy = item.media_kind === "show" ? showStatusCopy(item.show_status) : null;
@@ -176,6 +180,11 @@ function WatchlistItemRow({
   const moveDown = getMoveControlState(index, total, "down");
 
   const copy = watchlistItemCopy(item);
+  const { showPlayer, showDownload } = importedFileRowActions({
+    streaming,
+    downloads,
+    imported: playTarget != null,
+  });
   const media = (
     <>
       <div className="h-14 w-[37px] shrink-0 overflow-hidden rounded-sm">
@@ -211,21 +220,33 @@ function WatchlistItemRow({
                 positionMs={playTarget.resumeFromMs ?? 0}
                 durationMs={durationMs}
               />
-              <VideoPlayerDialog
-                mediaType={playTarget.mediaType}
-                mediaId={playTarget.mediaId}
-                fileId={playTarget.fileId}
-                title={playTarget.title}
-                resumeFromMs={
-                  playTarget.resumeFromMs && playTarget.resumeFromMs > 0
-                    ? playTarget.resumeFromMs
-                    : undefined
-                }
-                buttonVariant="ghost"
-                buttonSize="icon"
-                buttonClassName="min-h-11 min-w-11"
-                triggerLabel={upNextPlayLabel(playTarget.resumeFromMs ?? 0, durationMs)}
-              />
+              {showPlayer ? (
+                <VideoPlayerDialog
+                  mediaType={playTarget.mediaType}
+                  mediaId={playTarget.mediaId}
+                  fileId={playTarget.fileId}
+                  title={playTarget.title}
+                  resumeFromMs={
+                    playTarget.resumeFromMs && playTarget.resumeFromMs > 0
+                      ? playTarget.resumeFromMs
+                      : undefined
+                  }
+                  buttonVariant="ghost"
+                  buttonSize="icon"
+                  buttonClassName="min-h-11 min-w-11"
+                  triggerLabel={upNextPlayLabel(playTarget.resumeFromMs ?? 0, durationMs)}
+                />
+              ) : null}
+              {showDownload ? (
+                <DirectDownloadAction
+                  mediaType={playTarget.mediaType}
+                  mediaId={playTarget.mediaId}
+                  fileId={playTarget.fileId}
+                  buttonVariant="ghost"
+                  buttonSize="icon"
+                  buttonClassName="min-h-11 min-w-11"
+                />
+              ) : null}
             </>
           ) : null}
           <Button

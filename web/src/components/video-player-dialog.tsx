@@ -1,8 +1,9 @@
 "use client";
 
 import * as React from "react";
-import { Download, LoaderCircle, Play } from "lucide-react";
+import { LoaderCircle, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DirectDownloadAction } from "@/components/direct-download-action";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +12,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { useFeatures } from "@/components/providers/features-provider";
 import { usePlaybackProgress } from "@/hooks/use-playback-progress";
 import type { MediaStreamSource, StreamingPlayer } from "@/lib/mediabunny";
 import { loadSubtitlesIfCurrent, runPlaybackLoad } from "@/lib/video-player-subtitles";
@@ -67,6 +69,7 @@ export function VideoPlayerDialog({
   const usingHlsRef = React.useRef(false);
   const appliedResumeFromMsRef = React.useRef(false);
 
+  const { downloads: downloadsEnabled } = useFeatures();
   const mediaKind = mediaType === "movie" ? "movie" : "episode";
   const { initialProgress, reporter } = usePlaybackProgress({
     fileId,
@@ -78,7 +81,6 @@ export function VideoPlayerDialog({
   const endpoint = mediaType === "movie" ? "movies" : "episodes";
   // Streaming endpoints identify the target file by its surrogate uuid.
   const streamUrl = `${apiUrl}/api/v1/streams/${endpoint}/${mediaId}?file_id=${encodeURIComponent(fileId)}`;
-  const downloadUrl = `${streamUrl}&download=true`;
 
   const resumePromptPositionMs =
     resumeFromMs == null &&
@@ -381,12 +383,16 @@ export function VideoPlayerDialog({
           {playerState === "error" && (
             <div className="flex flex-col items-center justify-center gap-4 py-12 text-center">
               <p className="text-muted-foreground">{errorMessage}</p>
-              <a href={downloadUrl}>
-                <Button variant="outline">
-                  <Download className="mr-2 h-4 w-4" />
-                  Download File
-                </Button>
-              </a>
+              {downloadsEnabled && (
+                <DirectDownloadAction
+                  mediaType={mediaType}
+                  mediaId={mediaId}
+                  fileId={fileId}
+                  buttonVariant="outline"
+                  buttonSize="default"
+                  triggerLabel="Download File"
+                />
+              )}
             </div>
           )}
           {playerState === "playing" && (
@@ -437,14 +443,17 @@ export function VideoPlayerDialog({
             </div>
           )}
         </div>
-        <DialogFooter>
-          <a href={downloadUrl}>
-            <Button variant="outline" size="sm">
-              <Download className="mr-2 h-4 w-4" />
-              Download
-            </Button>
-          </a>
-        </DialogFooter>
+        {downloadsEnabled && (
+          <DialogFooter>
+            <DirectDownloadAction
+              mediaType={mediaType}
+              mediaId={mediaId}
+              fileId={fileId}
+              buttonVariant="outline"
+              buttonSize="sm"
+            />
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );

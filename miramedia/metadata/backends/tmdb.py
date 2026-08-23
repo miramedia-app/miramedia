@@ -38,7 +38,17 @@ def _extract_movie_content_rating(
 
 ENDED_STATUS = {"Ended", "Canceled"}
 
+# Discovery cards render at 200 CSS px (add-media-card) and 32 CSS px (search
+# dropdown). w500 is TMDB's standard width for ~250 CSS px at 2x DPR — see
+# tmdbsimple.configuration.Configuration.info docstring.
+TMDB_DISCOVERY_POSTER_SIZE = "w500"
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p"
+
 log = logging.getLogger(__name__)
+
+
+def _discovery_poster_url(poster_path: str) -> str:
+    return f"{TMDB_IMAGE_BASE}/{TMDB_DISCOVERY_POSTER_SIZE}{poster_path}"
 
 
 class TmdbMetadataProvider(AbstractMetadataProvider):
@@ -69,7 +79,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             tv = tmdbsimple.TV(id=show_id)
             return tv.info(language=language)
         except Exception as e:
-            log.exception(f"TMDB API error getting show metadata for ID {show_id}")
+            log.exception("TMDB API error getting show metadata for ID %s", show_id)
             notification_manager.send_notification(
                 title="TMDB API Error",
                 message=f"Failed to fetch show metadata for ID {show_id} from TMDB. Error: {e}",
@@ -81,7 +91,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             tv = tmdbsimple.TV(id=show_id)
             return tv.content_ratings()
         except Exception:
-            log.warning(f"Failed to fetch content ratings for show {show_id}")
+            log.warning("Failed to fetch content ratings for show %s", show_id)
             return {}
 
     def __get_show_external_ids(self, show_id: int) -> dict:
@@ -89,7 +99,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             tv = tmdbsimple.TV(id=show_id)
             return tv.external_ids()
         except Exception as e:
-            log.exception(f"TMDB API error getting show external IDs for ID {show_id}")
+            log.exception("TMDB API error getting show external IDs for ID %s", show_id)
             notification_manager.send_notification(
                 title="TMDB API Error",
                 message=f"Failed to fetch show external IDs for ID {show_id} from TMDB. Error: {e}",
@@ -103,7 +113,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             cast = credits_data.get("cast", [])
             return [member["name"] for member in cast[:10]]
         except Exception:
-            log.warning(f"Failed to fetch credits for show {show_id}")
+            log.warning("Failed to fetch credits for show %s", show_id)
             return []
 
     def __get_season_metadata(
@@ -116,7 +126,9 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return season.info(language=language)
         except Exception as e:
             log.exception(
-                f"TMDB API error getting season {season_number} metadata for show ID {show_id}"
+                "TMDB API error getting season %s metadata for show ID %s",
+                season_number,
+                show_id,
             )
             notification_manager.send_notification(
                 title="TMDB API Error",
@@ -129,7 +141,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             search = tmdbsimple.Search()
             return search.tv(query=query, page=page, language=self.default_language)
         except Exception as e:
-            log.exception(f"TMDB API error searching TV shows with query '{query}'")
+            log.exception("TMDB API error searching TV shows with query '%s'", query)
             notification_manager.send_notification(
                 title="TMDB API Error",
                 message=f"Failed to search TV shows with query '{query}' on TMDB. Error: {e}",
@@ -155,7 +167,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             movie = tmdbsimple.Movies(id=movie_id)
             return movie.info(language=language)
         except Exception as e:
-            log.exception(f"TMDB API error getting movie metadata for ID {movie_id}")
+            log.exception("TMDB API error getting movie metadata for ID %s", movie_id)
             notification_manager.send_notification(
                 title="TMDB API Error",
                 message=f"Failed to fetch movie metadata for ID {movie_id} from TMDB. Error: {e}",
@@ -168,7 +180,8 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             return movie.external_ids()
         except Exception as e:
             log.exception(
-                f"TMDB API error getting movie external IDs for ID {movie_id}"
+                "TMDB API error getting movie external IDs for ID %s",
+                movie_id,
             )
             notification_manager.send_notification(
                 title="TMDB API Error",
@@ -181,7 +194,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             movie = tmdbsimple.Movies(id=movie_id)
             return movie.release_dates()
         except Exception:
-            log.warning(f"Failed to fetch release dates for movie {movie_id}")
+            log.warning("Failed to fetch release dates for movie %s", movie_id)
             return {}
 
     def __get_movie_credits(self, movie_id: int) -> list[str]:
@@ -191,7 +204,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             cast = credits_data.get("cast", [])
             return [member["name"] for member in cast[:10]]
         except Exception:
-            log.warning(f"Failed to fetch credits for movie {movie_id}")
+            log.warning("Failed to fetch credits for movie %s", movie_id)
             return []
 
     def __search_movie(self, query: str, page: int) -> dict:
@@ -199,7 +212,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             search = tmdbsimple.Search()
             return search.movie(query=query, page=page, language=self.default_language)
         except Exception as e:
-            log.exception(f"TMDB API error searching movies with query '{query}'")
+            log.exception("TMDB API error searching movies with query '%s'", query)
             notification_manager.send_notification(
                 title="TMDB API Error",
                 message=f"Failed to search movies with query '{query}' on TMDB. Error: {e}",
@@ -231,18 +244,16 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
         # downloading the poster
         # all pictures from TMDB should already be jpeg, so no need to convert
         if show_metadata["poster_path"] is not None:
-            poster_url = (
-                "https://image.tmdb.org/t/p/original" + show_metadata["poster_path"]
-            )
+            poster_url = f"{TMDB_IMAGE_BASE}/original{show_metadata['poster_path']}"
             if miramedia.metadata.utils.download_poster_image(
                 storage_path=self.storage_path, poster_url=poster_url, uuid=show.id
             ):
-                log.info("Successfully downloaded poster image for show " + show.name)
+                log.info("Successfully downloaded poster image for show %s", show.name)
             else:
-                log.warning(f"download for image of show {show.name} failed")
+                log.warning("download for image of show %s failed", show.name)
                 return False
         else:
-            log.warning(f"image for show {show.name} could not be downloaded")
+            log.warning("image for show %s could not be downloaded", show.name)
             return False
         return True
 
@@ -252,7 +263,7 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
             find = tmdbsimple.Find(imdb_id)
             return find.info(external_source="imdb_id")
         except Exception:
-            log.warning(f"TMDB find by IMDb ID failed for {imdb_id}")
+            log.warning("TMDB find by IMDb ID failed for %s", imdb_id)
             return {}
 
     @override
@@ -407,12 +418,11 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
         formatted_results = []
         for result in results:
             try:
-                if result["poster_path"] is not None:
-                    poster_url = (
-                        "https://image.tmdb.org/t/p/original" + result["poster_path"]
-                    )
-                else:
-                    poster_url = None
+                poster_url = (
+                    _discovery_poster_url(result["poster_path"])
+                    if result["poster_path"] is not None
+                    else None
+                )
 
                 # Determine which name to use based on primary_languages
                 original_language = result.get("original_language")
@@ -524,12 +534,11 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
         formatted_results = []
         for result in results:
             try:
-                if result["poster_path"] is not None:
-                    poster_url = (
-                        "https://image.tmdb.org/t/p/original" + result["poster_path"]
-                    )
-                else:
-                    poster_url = None
+                poster_url = (
+                    _discovery_poster_url(result["poster_path"])
+                    if result["poster_path"] is not None
+                    else None
+                )
 
                 # Determine which name to use based on primary_languages
                 original_language = result.get("original_language")
@@ -574,17 +583,17 @@ class TmdbMetadataProvider(AbstractMetadataProvider):
         # downloading the poster
         # all pictures from TMDB should already be jpeg, so no need to convert
         if movie_metadata["poster_path"] is not None:
-            poster_url = (
-                "https://image.tmdb.org/t/p/original" + movie_metadata["poster_path"]
-            )
+            poster_url = f"{TMDB_IMAGE_BASE}/original{movie_metadata['poster_path']}"
             if miramedia.metadata.utils.download_poster_image(
                 storage_path=self.storage_path, poster_url=poster_url, uuid=movie.id
             ):
-                log.info("Successfully downloaded poster image for movie " + movie.name)
+                log.info(
+                    "Successfully downloaded poster image for movie %s", movie.name
+                )
             else:
-                log.warning(f"download for image of movie {movie.name} failed")
+                log.warning("download for image of movie %s failed", movie.name)
                 return False
         else:
-            log.warning(f"image for movie {movie.name} could not be downloaded")
+            log.warning("image for movie %s could not be downloaded", movie.name)
             return False
         return True

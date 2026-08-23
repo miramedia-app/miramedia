@@ -57,23 +57,29 @@ function ShowSettingsBody({ show }: { show: Show }) {
       </SheetHeader>
 
       <div className="flex flex-col gap-6 px-4 py-6">
-        <PreferenceMultiSelect
-          label="Preferred Quality"
-          mode={prefs.qualityMode}
-          selected={prefs.qualitySelected}
-          options={prefs.enabledQualityNames}
-          onChange={prefs.saveQuality}
-          description="Use global default, accept Any, or restrict to specific qualities."
-        />
+        {prefs.loadError ? (
+          <p className="text-sm text-muted-foreground">{prefs.loadError}</p>
+        ) : (
+          <>
+            <PreferenceMultiSelect
+              label="Preferred Quality"
+              mode={prefs.qualityMode}
+              selected={prefs.qualitySelected}
+              options={prefs.enabledQualityNames}
+              onChange={prefs.saveQuality}
+              description="Use global default, accept Any, or restrict to specific qualities."
+            />
 
-        <PreferenceMultiSelect
-          label="Preferred Codec"
-          mode={prefs.codecMode}
-          selected={prefs.codecSelected}
-          options={prefs.enabledCodecNames}
-          onChange={prefs.saveCodec}
-          description="Use global default, accept Any, or restrict to specific codecs."
-        />
+            <PreferenceMultiSelect
+              label="Preferred Codec"
+              mode={prefs.codecMode}
+              selected={prefs.codecSelected}
+              options={prefs.enabledCodecNames}
+              onChange={prefs.saveCodec}
+              description="Use global default, accept Any, or restrict to specific codecs."
+            />
+          </>
+        )}
 
         <div className="flex flex-col gap-2">
           <Label>Subtitle Languages</Label>

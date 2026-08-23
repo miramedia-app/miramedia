@@ -3,6 +3,7 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy.exc import IntegrityError
@@ -18,6 +19,7 @@ from miramedia.file_status import ImportOutcome
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.movies.schemas import Movie, MovieFile
 from miramedia.shows.schemas import Episode, EpisodeFile, EpisodeNumber, Show
+from miramedia.torrents.backends.native import NativeDownloadClient
 from miramedia.torrents.integrity import (
     INTEGRITY_MISMATCH_MAX_LIMIT,
     IntegrityPathLayout,
@@ -72,6 +74,66 @@ def _torrent_rpc_concurrency_limit() -> int:
 _TORRENT_RPC_CONCURRENCY = _torrent_rpc_concurrency_limit()
 
 
+def _scan_source_files(
+    root: Path,
+    ep_by_se: dict[tuple[int, int], uuid.UUID],
+    movie_id: uuid.UUID | None,
+    *,
+    has_show: bool,
+) -> "list[TorrentSourceFile]":
+    from miramedia.imports.files import list_files_recursively
+    from miramedia.torrents.parsing import (
+        is_subtitle_file,
+        is_video_file,
+        parse_release,
+    )
+    from miramedia.torrents.schemas import TorrentSourceFile
+
+    files: list[TorrentSourceFile] = []
+    if not root.exists():
+        return files
+
+    for path in list_files_recursively(root):
+        try:
+            rel = str(path.relative_to(root))
+        except ValueError:
+            rel = path.name
+        video = is_video_file(path)
+        subtitle = is_subtitle_file(path)
+        info = parse_release(path.name) if (video or subtitle) else None
+
+        seasons: list[int] = info.seasons if info else []
+        episodes: list[int] = info.episodes if info else []
+        quality = info.quality if info else Quality.unknown
+
+        suggested_episode = None
+        suggested_movie = None
+        if has_show and seasons and episodes and (seasons[0], episodes[0]) in ep_by_se:
+            suggested_episode = ep_by_se[(seasons[0], episodes[0])]
+        elif movie_id is not None and video:
+            suggested_movie = movie_id
+
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+
+        files.append(
+            TorrentSourceFile(
+                relative_path=rel,
+                size=size,
+                is_video=video,
+                is_subtitle=subtitle,
+                seasons=seasons,
+                episodes=episodes,
+                quality=quality,
+                suggested_episode_id=suggested_episode,
+                suggested_movie_id=suggested_movie,
+            )
+        )
+    return files
+
+
 class TorrentService:
     def __init__(
         self,
@@ -110,7 +172,7 @@ class TorrentService:
     async def download(self, indexer_result: IndexerQueryResult) -> Torrent:
         from miramedia.database import release_session_before_external_io
 
-        log.info(f"Starting download for torrent: {indexer_result.title}")
+        log.info("Starting download for torrent: %s", indexer_result.title)
 
         # Preflight: check the deny-list and (when payload is available) the
         # file list before handing the result to the download client. Skipped
@@ -223,7 +285,7 @@ class TorrentService:
         magnet branch leaves the file list unknown).
         """
         from miramedia.database import release_session_before_external_io
-        from miramedia.torrents.utils import has_meaningful_video, inspect_torrent
+        from miramedia.torrents.inspection import has_meaningful_video, inspect_torrent
 
         # inspect_torrent may HTTP-fetch a .torrent payload + parse it.
         # Release the session through that fetch.
@@ -305,7 +367,7 @@ class TorrentService:
         dropped, and the info-hash is added to the deny-list so the same
         release can't be re-queued.
         """
-        from miramedia.torrents.utils import has_meaningful_video
+        from miramedia.torrents.inspection import has_meaningful_video
 
         log.info(
             "Post-add verifier: watching %s (hash=%s) for metadata",
@@ -431,22 +493,20 @@ class TorrentService:
             Event(type="torrent.deleted", data={"id": str(torrent.id)})
         )
 
-    async def get_torrent_status(
-        self, torrent: Torrent, persist: bool = True
+    async def _apply_live_status(
+        self,
+        torrent: Torrent,
+        status_tuple: tuple[TorrentStatus, float, int, int, int],
+        *,
+        persist: bool,
     ) -> Torrent:
-        """Refresh a torrent's live fields from the download client.
-
-        Pass ``persist=False`` from hot loops (e.g. the list endpoint) to
-        skip the per-torrent DB write — the scheduler's periodic refresh
-        already persists state.
-        """
         (
             new_status,
             new_progress,
             num_peers,
             num_seeds,
             dl_speed,
-        ) = await asyncio.to_thread(self.download_manager.get_torrent_status, torrent)
+        ) = status_tuple
         # Preserve user-initiated paused status; still update transient fields
         if torrent.status == TorrentStatus.paused:
             torrent.progress = new_progress
@@ -471,6 +531,20 @@ class TorrentService:
             )
         return torrent
 
+    async def get_torrent_status(
+        self, torrent: Torrent, persist: bool = True
+    ) -> Torrent:
+        """Refresh a torrent's live fields from the download client.
+
+        Pass ``persist=False`` from hot loops (e.g. the list endpoint) to
+        skip the per-torrent DB write — the scheduler's periodic refresh
+        already persists state.
+        """
+        status_tuple = await asyncio.to_thread(
+            self.download_manager.get_torrent_status, torrent
+        )
+        return await self._apply_live_status(torrent, status_tuple, persist=persist)
+
     async def cancel_download(
         self, torrent: Torrent, delete_files: bool = False
     ) -> Torrent:
@@ -480,7 +554,7 @@ class TorrentService:
         :param delete_files: Deletes the downloaded files of the torrent too, deactivated by default
         :param torrent: the torrent to cancel
         """
-        log.info(f"Cancelling download for torrent: {torrent.title}")
+        log.info("Cancelling download for torrent: %s", torrent.title)
         await asyncio.to_thread(
             self.download_manager.remove_torrent, torrent, delete_files
         )
@@ -490,7 +564,7 @@ class TorrentService:
         """
         Internal pause — used during linking. Not logged at INFO to avoid noise.
         """
-        log.debug(f"Pausing download for torrent: {torrent.title}")
+        log.debug("Pausing download for torrent: %s", torrent.title)
         await asyncio.to_thread(self.download_manager.pause_torrent, torrent)
         return await self.get_torrent_status(torrent=torrent)
 
@@ -498,13 +572,13 @@ class TorrentService:
         """
         Internal resume — used after linking. Not logged at INFO to avoid noise.
         """
-        log.debug(f"Resuming download for torrent: {torrent.title}")
+        log.debug("Resuming download for torrent: %s", torrent.title)
         await asyncio.to_thread(self.download_manager.resume_torrent, torrent)
         return await self.get_torrent_status(torrent=torrent)
 
     async def user_pause_download(self, torrent: Torrent) -> Torrent:
         """Pause a torrent on behalf of the user (persists paused status)."""
-        log.info(f"User pausing download for torrent: {torrent.title}")
+        log.info("User pausing download for torrent: %s", torrent.title)
         await asyncio.to_thread(self.download_manager.pause_torrent, torrent)
         torrent.status = TorrentStatus.paused
         saved = await self.torrent_repository.save_torrent(torrent=torrent)
@@ -515,7 +589,7 @@ class TorrentService:
 
     async def user_resume_download(self, torrent: Torrent) -> Torrent:
         """Resume a user-paused torrent (clears paused status)."""
-        log.info(f"User resuming download for torrent: {torrent.title}")
+        log.info("User resuming download for torrent: %s", torrent.title)
         await asyncio.to_thread(self.download_manager.resume_torrent, torrent)
         torrent.status = TorrentStatus.downloading
         await self.torrent_repository.save_torrent(torrent=torrent)
@@ -525,32 +599,7 @@ class TorrentService:
 
     async def get_all_torrents(self) -> list[Torrent]:
         all_db_torrents = await self.torrent_repository.get_all_torrents()
-        if not all_db_torrents:
-            return []
-        from miramedia.database import release_session_before_external_io
-
-        # Per-torrent client RPC below is slow external I/O — never hold the
-        # DB session across it (idle-in-transaction reap; see CLAUDE.md).
-        await release_session_before_external_io(self.torrent_repository.db)
-
-        # Parallel-fan-out live-status fetches, but capped: each call is a
-        # libtorrent / qbittorrent RPC and unbounded gather() with a 500-
-        # torrent library would queue 500 simultaneous RPCs against the
-        # client. The semaphore keeps the fan-out at
-        # ``MIRAMEDIA_TORRENT_RPC_CONCURRENCY`` (default 10) in-flight.
-        # ``persist=False`` skips the per-list DB write — the scheduler's
-        # refresh job owns persistence.
-        sem = asyncio.Semaphore(_TORRENT_RPC_CONCURRENCY)
-
-        async def _fetch(t: Torrent) -> Torrent:
-            async with sem:
-                try:
-                    return await self.get_torrent_status(t, persist=False)
-                except Exception:
-                    return t
-
-        torrents = await asyncio.gather(*(_fetch(t) for t in all_db_torrents))
-        return list(torrents)
+        return await self._fetch_live_torrent_statuses(all_db_torrents)
 
     async def get_torrent_by_id(self, torrent_id: TorrentId) -> Torrent:
         return await self.get_torrent_status(
@@ -558,7 +607,7 @@ class TorrentService:
         )
 
     async def delete_torrent(self, torrent_id: TorrentId) -> None:
-        log.info(f"Deleting torrent with ID: {torrent_id}")
+        log.info("Deleting torrent with ID: %s", torrent_id)
         # Per-file: the repository drops only the not-yet-imported ("queued")
         # file rows and leaves imported library media in place (its torrent FK
         # is SET NULL on delete). Partially-imported torrents therefore keep
@@ -599,11 +648,12 @@ class TorrentService:
             await self.cancel_download(torrent=torrent, delete_files=True)
         except Exception:
             log.warning(
-                f"Failed to stop orphaned torrent {torrent.hash} in client",
+                "Failed to stop orphaned torrent %s in client",
+                torrent.hash,
                 exc_info=True,
             )
         await self.delete_torrent(torrent_id=torrent_id)
-        log.info(f"Removed orphaned torrent after file delete: {torrent.title}")
+        log.info("Removed orphaned torrent after file delete: %s", torrent.title)
 
     async def get_movie_files_of_torrent(self, torrent: Torrent) -> list[MovieFile]:
         return await self.torrent_repository.get_movie_files_of_torrent(
@@ -773,7 +823,7 @@ class TorrentService:
             )
 
         try:
-            from miramedia.torrents.utils import get_torrent_filepath
+            from miramedia.torrents.paths import get_torrent_filepath
 
             source_dir = str(get_torrent_filepath(torrent))
         except Exception:
@@ -985,22 +1035,12 @@ class TorrentService:
     async def list_source_files(self, torrent: Torrent) -> "list[TorrentSourceFile]":
         """Enumerate on-disk source files for a torrent with parser hints.
 
-        Imported lazily so the heavy parser/utils modules don't pull in at
-        service construction time.
+        ORM lookups run on the event loop; the recursive walk, guessit parse,
+        and per-file stat run in a worker thread via ``asyncio.to_thread``.
         """
-        from miramedia.imports.files import list_files_recursively
-        from miramedia.torrents.parsing import (
-            is_subtitle_file,
-            is_video_file,
-            parse_release,
-        )
-        from miramedia.torrents.schemas import TorrentSourceFile
-        from miramedia.torrents.utils import get_torrent_filepath
+        from miramedia.torrents.paths import get_torrent_filepath
 
         root = get_torrent_filepath(torrent)
-        files: list[TorrentSourceFile] = []
-        if not root.exists():
-            return files
 
         show = await self.torrent_repository.get_show_of_torrent(torrent.id)
         movie = await self.torrent_repository.get_movie_of_torrent(torrent.id)
@@ -1013,50 +1053,14 @@ class TorrentService:
                 for ep in season.episodes:
                     ep_by_se[(season.number, ep.number)] = ep.id
 
-        for path in list_files_recursively(root):
-            try:
-                rel = str(path.relative_to(root))
-            except ValueError:
-                rel = path.name
-            video = is_video_file(path)
-            subtitle = is_subtitle_file(path)
-            info = parse_release(path.name) if (video or subtitle) else None
-
-            seasons: list[int] = info.seasons if info else []
-            episodes: list[int] = info.episodes if info else []
-            quality = info.quality if info else Quality.unknown
-
-            suggested_episode = None
-            suggested_movie = None
-            if (
-                show is not None
-                and seasons
-                and episodes
-                and (seasons[0], episodes[0]) in ep_by_se
-            ):
-                suggested_episode = ep_by_se[(seasons[0], episodes[0])]
-            elif movie is not None and video:
-                suggested_movie = movie.id
-
-            try:
-                size = path.stat().st_size
-            except OSError:
-                size = 0
-
-            files.append(
-                TorrentSourceFile(
-                    relative_path=rel,
-                    size=size,
-                    is_video=video,
-                    is_subtitle=subtitle,
-                    seasons=seasons,
-                    episodes=episodes,
-                    quality=quality,
-                    suggested_episode_id=suggested_episode,
-                    suggested_movie_id=suggested_movie,
-                )
-            )
-        return files
+        movie_id = movie.id if movie is not None else None
+        return await asyncio.to_thread(
+            _scan_source_files,
+            root,
+            ep_by_se,
+            movie_id,
+            has_show=show is not None,
+        )
 
     async def reset_import_status(self, torrent: Torrent) -> int:
         """Reset every linked file back to ``ImportOutcome.pending``.
@@ -1110,6 +1114,36 @@ class TorrentService:
         # session-attached ORM rows, so get_torrent_status(persist=False)
         # mutates plain objects with no risk of an unrelated commit flushing
         # the transient live fields. No session detach needed.
+        torrent_client = self.download_manager._torrent_client
+        torrent_rows = [t for t in torrents if not t.usenet]
+        usenet_rows = [t for t in torrents if t.usenet]
+
+        if torrent_rows and isinstance(torrent_client, NativeDownloadClient):
+            try:
+                bulk = await asyncio.to_thread(
+                    torrent_client.get_torrent_statuses_bulk, torrent_rows
+                )
+            except Exception:
+                return await self._fan_out_live_torrent_statuses(torrents)
+            updated = [
+                await self._apply_live_status(
+                    t,
+                    bulk.get(t.hash, (TorrentStatus.unknown, 0.0, 0, 0, 0)),
+                    persist=False,
+                )
+                for t in torrent_rows
+            ]
+            if not usenet_rows:
+                return updated
+            usenet_updated = await self._fan_out_live_torrent_statuses(usenet_rows)
+            by_id = {t.id: t for t in updated + usenet_updated}
+            return [by_id[t.id] for t in torrents]
+
+        return await self._fan_out_live_torrent_statuses(torrents)
+
+    async def _fan_out_live_torrent_statuses(
+        self, torrents: list[Torrent]
+    ) -> list[Torrent]:
         sem = asyncio.Semaphore(_TORRENT_RPC_CONCURRENCY)
 
         async def _fetch(t: Torrent) -> Torrent:
@@ -1377,20 +1411,20 @@ class TorrentService:
             # fully back down — client copy AND DB row — not just the client.
             if isinstance(exc, IntegrityError):
                 log.exception(
-                    f"Media file already exists for torrent {torrent.title}; "
-                    "removing the duplicate torrent"
+                    "Media file already exists for torrent %s; removing the duplicate torrent",
+                    torrent.title,
                 )
             else:
                 log.exception(
-                    f"Linking failed for torrent {torrent.title}; "
-                    "removing the orphaned torrent"
+                    "Linking failed for torrent %s; removing the orphaned torrent",
+                    torrent.title,
                 )
             try:
                 await self.cancel_download(torrent=torrent, delete_files=True)
             except Exception:
                 log.warning(
-                    f"Failed to stop torrent {torrent.hash} in client during "
-                    "link-failure cleanup",
+                    "Failed to stop torrent %s in client during link-failure cleanup",
+                    torrent.hash,
                     exc_info=True,
                 )
             # Best-effort row removal. ``add_*_file`` rolls back the session on
@@ -1403,14 +1437,17 @@ class TorrentService:
                 await self.delete_torrent(torrent_id=torrent.id)
             except Exception:
                 log.warning(
-                    f"Failed to delete orphaned torrent row {torrent.hash} "
-                    "after link failure",
+                    "Failed to delete orphaned torrent row %s after link failure",
+                    torrent.hash,
                     exc_info=True,
                 )
             raise
         else:
             log.info(
-                f"Successfully linked torrent {torrent.title} to {media_type.value} {media_id}"
+                "Successfully linked torrent %s to %s %s",
+                torrent.title,
+                media_type.value,
+                media_id,
             )
             # Record the grab in the durable history log (refreshed with the
             # outcome + file snapshot at import time). Best-effort.
@@ -1428,7 +1465,7 @@ class TorrentService:
             # between download() and now
             db_torrent = await self.torrent_repository.get_torrent_by_id(torrent.id)
             if db_torrent.status == TorrentStatus.paused:
-                log.info(f"Torrent {torrent.title} is user-paused, not resuming")
+                log.info("Torrent %s is user-paused, not resuming", torrent.title)
             else:
                 await self.resume_download(torrent=torrent)
             # Fire-and-forget metadata verifier. Torrent payloads we could

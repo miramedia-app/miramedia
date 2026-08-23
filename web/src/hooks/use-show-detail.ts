@@ -5,13 +5,19 @@ import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { showDetailBundleQueryOptions } from "@/lib/api/media-queries";
+import { qk } from "@/lib/query-keys";
 import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import apiClient from "@/lib/api/client";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import { getTorrentStatusString } from "@/lib/utils";
-import { invalidateWatchedCaches } from "@/hooks/use-watched-state";
+import {
+  invalidateWatchedCaches,
+  setSeasonWatched,
+  setShowWatched,
+} from "@/hooks/use-watched-state";
 import {
   buildTreeRows,
+  classifyWatchedSelection,
   fileKey,
   seasonHasAllSubtitles as seasonHasAllSubtitlesPure,
   subKey,
@@ -183,7 +189,12 @@ export function useShowDetail(showId: string | null | undefined) {
   }, []);
 
   const invalidateAll = React.useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ["show", showId] });
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["show", showId] }),
+      queryClient.invalidateQueries({ queryKey: qk.torrents.list() }),
+      queryClient.invalidateQueries({ queryKey: qk.shows.all }),
+      queryClient.invalidateQueries({ queryKey: ["dashboard", "summary"] }),
+    ]);
   }, [queryClient, showId]);
 
   const {
@@ -373,9 +384,36 @@ export function useShowDetail(showId: string | null | undefined) {
 
   const bulkWatched = React.useCallback(
     async (watched: boolean) => {
-      if (!allSelectedEpisodes.length) return;
+      if (!show || !allSelectedEpisodes.length) return;
       setOtherBulkWorking(true);
       try {
+        const classified = classifyWatchedSelection(allSelectedEpisodes, show.seasons);
+        if (classified.kind !== "episodes") {
+          const n = allSelectedEpisodes.length;
+          try {
+            if (classified.kind === "season") {
+              await setSeasonWatched({
+                show_id: showId!,
+                season_number: classified.seasonNumber,
+                watched,
+              });
+            } else {
+              await setShowWatched({ show_id: showId!, watched });
+            }
+            toast.success(
+              watched
+                ? `${n} episode${n === 1 ? "" : "s"} marked as watched`
+                : `${n} episode${n === 1 ? "" : "s"} marked as unwatched`,
+            );
+            await invalidateAll();
+            await invalidateWatchedCaches(queryClient);
+            deselectAll();
+          } catch {
+            toast.error(`${n} episode${n === 1 ? "" : "s"} could not be updated.`);
+          }
+          return;
+        }
+
         const { ok, failed } = await bulkMutate(allSelectedEpisodes, (id) =>
           apiClient.PUT("/api/v1/playback/watched", {
             body: { media_kind: "episode", media_id: id, watched },
@@ -398,7 +436,7 @@ export function useShowDetail(showId: string | null | undefined) {
         setOtherBulkWorking(false);
       }
     },
-    [allSelectedEpisodes, invalidateAll, deselectAll, queryClient],
+    [allSelectedEpisodes, show, showId, invalidateAll, deselectAll, queryClient],
   );
 
   const bulkDeleteFiles = React.useCallback(async () => {

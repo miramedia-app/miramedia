@@ -190,9 +190,12 @@ export function useMediaPreferences(media: MediaInput, kind: MediaKind) {
     }
   }, [cfg.metadata, params, invalidate]);
 
+  const loadError = optionsQuery.isError ? "Failed to load quality and codec options" : null;
+
   return {
     enabledQualityNames,
     enabledCodecNames,
+    loadError,
     qualityMode,
     qualitySelected,
     codecMode,

@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from miramedia.settings.validation import (
+    LIST_PATH_WILDCARD,
     SECRET_MASK,
     SECRET_OVERRIDE_PATHS,
     mask_secret_values,
@@ -191,14 +192,31 @@ def test_export_omits_all_secret_paths() -> None:
 @pytest.mark.parametrize("path", sorted(SECRET_OVERRIDE_PATHS))
 def test_every_secret_path_is_covered_by_mask_helper(path: tuple[str, ...]) -> None:
     tree: dict = {}
-    node = tree
-    for key in path[:-1]:
-        node = node.setdefault(key, {})
+    node: Any = tree
+    for i, key in enumerate(path[:-1]):
+        if key == LIST_PATH_WILDCARD:
+            continue
+        next_key = path[i + 1]
+        if next_key == LIST_PATH_WILDCARD:
+            item: dict = {}
+            node = node.setdefault(key, [item])[0]
+        else:
+            node = node.setdefault(key, {})
     node[path[-1]] = "credential-value"
     masked = mask_secret_values(tree)
-    leaf = masked
-    for key in path:
-        leaf = leaf[key]
+    leaf: Any = masked
+    index = 0
+    while index < len(path):
+        key = path[index]
+        if key == LIST_PATH_WILDCARD:
+            leaf = leaf[0]
+            index += 1
+        elif index + 1 < len(path) and path[index + 1] == LIST_PATH_WILDCARD:
+            leaf = leaf[key][0]
+            index += 2
+        else:
+            leaf = leaf[key]
+            index += 1
     assert leaf == SECRET_MASK
 
 
@@ -330,6 +348,88 @@ def test_replace_import_explicit_secret_wins() -> None:
         )
     assert response.status_code == 200
     assert fake_repo.overrides["metadata"]["tmdb"]["api_key"] == "new-key"
+
+
+FAKE_TORZNAB_KEY = "FAKEKEY123"
+
+TORZNAB_SITES_OVERRIDE = {
+    "indexers": {
+        "native": {
+            "custom_torznab_sites": [
+                {
+                    "name": "site-one",
+                    "url": "http://one.example/torznab",
+                    "api_key": FAKE_TORZNAB_KEY,
+                },
+                {
+                    "name": "site-two",
+                    "url": "http://two.example/torznab",
+                    "api_key": FAKE_TORZNAB_KEY,
+                },
+            ]
+        }
+    }
+}
+
+
+def test_custom_torznab_site_api_key_path_is_derived() -> None:
+    assert (
+        "indexers",
+        "native",
+        "custom_torznab_sites",
+        LIST_PATH_WILDCARD,
+        "api_key",
+    ) in SECRET_OVERRIDE_PATHS
+
+
+def test_get_settings_masks_custom_torznab_site_api_keys() -> None:
+    repo = FakeSettingsRepository(overrides=TORZNAB_SITES_OVERRIDE)
+    with settings_client(repo=repo) as (client, _repo):
+        response = client.get(SETTINGS_PREFIX)
+    assert response.status_code == 200
+    sites = response.json()["indexers"]["native"]["custom_torznab_sites"]
+    assert len(sites) == 2
+    assert sites[0]["api_key"] == SECRET_MASK
+    assert sites[1]["api_key"] == SECRET_MASK
+    assert FAKE_TORZNAB_KEY not in response.text
+
+
+def test_export_omits_custom_torznab_site_api_keys() -> None:
+    exported = sanitize_export_overrides(TORZNAB_SITES_OVERRIDE)
+    sites = exported["indexers"]["native"]["custom_torznab_sites"]
+    assert len(sites) == 2
+    assert "api_key" not in sites[0]
+    assert "api_key" not in sites[1]
+    assert FAKE_TORZNAB_KEY not in str(exported)
+
+
+def test_put_with_mask_sentinel_keeps_custom_torznab_site_api_keys() -> None:
+    repo = FakeSettingsRepository(overrides=TORZNAB_SITES_OVERRIDE)
+    with settings_client(repo=repo) as (client, fake_repo):
+        response = client.get(SETTINGS_PREFIX)
+        assert response.status_code == 200
+        sites = response.json()["indexers"]["native"]["custom_torznab_sites"]
+        response = client.put(
+            SETTINGS_PREFIX,
+            json={
+                "indexers": {
+                    "native": {
+                        "custom_torznab_sites": [
+                            {
+                                **sites[0],
+                                "url": "http://one.updated.example/torznab",
+                            },
+                            sites[1],
+                        ]
+                    }
+                }
+            },
+        )
+    assert response.status_code == 200
+    stored_sites = fake_repo.overrides["indexers"]["native"]["custom_torznab_sites"]
+    assert stored_sites[0]["api_key"] == FAKE_TORZNAB_KEY
+    assert stored_sites[1]["api_key"] == FAKE_TORZNAB_KEY
+    assert stored_sites[0]["url"] == "http://one.updated.example/torznab"
 
 
 def test_put_with_new_secret_updates_override() -> None:

@@ -34,6 +34,7 @@ from miramedia.auth.runtime import (
     join_frontend_path,
 )
 from miramedia.auth.schemas import UserCreate, UserUpdate
+from miramedia.auth.startup_migrations import should_grant_admin_emails_superuser
 from miramedia.config import MiraMediaConfig
 from miramedia.database import get_session
 
@@ -68,9 +69,9 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         update_dict: dict[str, Any],
         request: Request | None = None,
     ) -> None:
-        log.info(f"User {user.id} has been updated.")
+        log.info("User %s has been updated.", user.id)
         if update_dict.get("is_superuser"):
-            log.info(f"User {user.id} has been granted superuser privileges.")
+            log.info("User %s has been granted superuser privileges.", user.id)
         # Drop cached auth state so role/active/email changes take effect on the
         # next request instead of waiting out the TTL window.
         invalidate_auth_cache(user.id)
@@ -103,14 +104,22 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         )
         await session.commit()
         invalidate_auth_cache(user.id)
-        log.info(f"User {user.id} {reason}; sessions and API tokens revoked.")
+        log.info("User %s %s; sessions and API tokens revoked.", user.id, reason)
 
     @override
     async def on_after_register(
         self, user: User, request: Request | None = None
     ) -> None:
-        log.info(f"User {user.id} has registered.")
-        if user.email in get_live_auth_config().admin_emails:
+        log.info("User %s has registered.", user.id)
+        cfg = get_live_auth_config()
+        admin_emails = [
+            e.strip().lower() for e in (cfg.admin_emails or []) if e and e.strip()
+        ]
+        if (
+            admin_emails
+            and user.email.strip().lower() in admin_emails
+            and await should_grant_admin_emails_superuser(self.user_db.session)
+        ):
             updated_user = UserUpdate(is_superuser=True, is_verified=True)
             await self.update(user=user, user_update=updated_user)
 
@@ -119,7 +128,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         self, user: User, token: str, request: Request | None = None
     ) -> None:
         link = f"{MiraMediaConfig().misc.frontend_url}web/login/reset-password?token={token}"
-        log.info(f"User {user.id} requested a password reset.")
+        log.info("User %s requested a password reset.", user.id)
 
         if not get_live_auth_config().email_password_resets:
             log.warning(
@@ -146,7 +155,7 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
         miramedia.notifications.utils.send_email(
             subject=subject, html=html, addressee=user.email
         )
-        log.info(f"Sent password reset email to {user.email}")
+        log.info("Sent password reset email to %s", user.email)
 
     @override
     async def on_after_reset_password(
@@ -158,11 +167,11 @@ class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
     async def on_after_request_verify(
         self, user: User, token: str, request: Request | None = None
     ) -> None:
-        log.info(f"Verification requested for user {user.id}")
+        log.info("Verification requested for user %s", user.id)
 
     @override
     async def on_after_verify(self, user: User, request: Request | None = None) -> None:
-        log.info(f"User {user.id} has been verified")
+        log.info("User %s has been verified", user.id)
 
     @override
     async def on_after_login(
@@ -192,48 +201,63 @@ get_user_manager_context = contextlib.asynccontextmanager(get_user_manager)
 
 
 async def migrate_admin_emails_to_superuser_flag() -> None:
-    """Promote any users whose email matches ``auth.admin_emails`` to ``is_superuser=True``.
+    """One-shot promotion for users matching deprecated ``auth.admin_emails``.
 
-    ``admin_emails`` is deprecated as a long-lived superuser source; the canonical superuser
-    flag now lives on the user row. This runs at startup so existing installations stay
-    compatible while we migrate to per-user flags. Logs a deprecation warning when any
-    addresses are listed.
+    ``admin_emails`` is deprecated as a long-lived superuser source; the canonical
+    superuser flag lives on the user row. The first startup with a non-empty list
+    promotes matching users and records a durable completion marker. Later startups
+    warn about stale configuration without re-granting privileges, so deliberate
+    demotions survive restart.
     """
-    cfg = MiraMediaConfig().auth
-    emails = [e.strip().lower() for e in (cfg.admin_emails or []) if e and e.strip()]
-    if not emails:
-        return
-
-    from sqlalchemy import select as sa_select
-    from sqlalchemy import update as sa_update
-
-    from miramedia.auth.db import User as UserModel
+    from miramedia.auth.startup_migrations import (
+        acquire_admin_emails_promotion_lock,
+        is_admin_emails_promotion_complete,
+        log_admin_emails_deprecation_warning,
+        log_stale_admin_emails_warning,
+        normalized_admin_emails,
+        promote_users_for_admin_emails,
+        record_admin_emails_promotion_complete,
+    )
     from miramedia.database import SessionLocal
 
+    cfg = MiraMediaConfig().auth
+    emails = normalized_admin_emails(cfg.admin_emails)
+
+    promoted: list[str] = []
+    recorded_completion = False
+
     async with SessionLocal() as db:
-        stmt = sa_select(UserModel.id, UserModel.email, UserModel.is_superuser).where(
-            UserModel.email.in_(emails)
-        )
-        rows = (await db.execute(stmt)).all()
-        promoted = [row.email for row in rows if not row.is_superuser]
+        async with db.begin():
+            await acquire_admin_emails_promotion_lock(db)
+
+            if await is_admin_emails_promotion_complete(db):
+                if emails:
+                    log_stale_admin_emails_warning()
+                return
+
+            if not emails:
+                return
+
+            result = await promote_users_for_admin_emails(db, emails)
+            promoted = result.promoted
+            if result.matched_emails:
+                await record_admin_emails_promotion_complete(db)
+                recorded_completion = True
+            else:
+                log.info(
+                    "No registered users match auth.admin_emails; one-shot promotion "
+                    "is deferred until a matching user registers."
+                )
+
         if promoted:
-            await db.execute(
-                sa_update(UserModel)
-                .where(UserModel.email.in_(promoted))
-                .values(is_superuser=True)
-            )
-            await db.commit()
             log.info(
                 "Promoted %d user(s) to superuser via deprecated admin_emails: %s",
                 len(promoted),
                 ", ".join(promoted),
             )
 
-    log.warning(
-        "auth.admin_emails is deprecated. Existing users matching this list have been "
-        "promoted to superuser. Manage superuser status from the Users page going forward; "
-        "remove admin_emails from your config to silence this warning."
-    )
+    if recorded_completion:
+        log_admin_emails_deprecation_warning()
 
 
 async def create_default_admin_user() -> None:
@@ -270,15 +294,16 @@ async def create_default_admin_user() -> None:
                         user = await user_manager.create(user_create)
                         log.info("=" * 60)
                         log.info("DEFAULT ADMIN USER CREATED!")
-                        log.info(f"    Email: {admin_email}")
-                        log.info(f"    Password: {default_password}")
-                        log.info(f"    User ID: {user.id}")
+                        log.info("    Email: %s", admin_email)
+                        log.info("    Password: %s", default_password)
+                        log.info("    User ID: %s", user.id)
                         log.info("IMPORTANT: Change this password after login.")
                         log.info("=" * 60)
 
                     else:
                         log.info(
-                            f"Found {user_count} existing users. Skipping default user creation."
+                            "Found %s existing users. Skipping default user creation.",
+                            user_count,
                         )
     except Exception:
         log.exception("Failed to create default admin user")

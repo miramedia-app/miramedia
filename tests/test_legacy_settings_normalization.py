@@ -362,3 +362,30 @@ def test_indexer_empty_scoring_rules_list_clears_legacy_key() -> None:
     result = migrate_indexer_scoring_rules(raw)
     assert "quality_scoring_rules" not in result
     assert result["quality_options"] == []
+
+
+def test_continue_watching_migrates_from_watchlists() -> None:
+    raw = {
+        "watchlists": {
+            "auto_remove_watched": True,
+            "continue_watching": False,
+            "native": {"enabled": False, "watch_next": False},
+        }
+    }
+    result = normalize_legacy_overrides(raw)
+    assert result["playback"] == {"continue_watching": False}
+    assert result["watchlists"] == {
+        "auto_remove_watched": True,
+        "native": {"enabled": False, "watch_next": False},
+    }
+
+
+def test_playback_migration_prefers_new_section_and_is_idempotent() -> None:
+    raw = {
+        "watchlists": {"continue_watching": False},
+        "playback": {"continue_watching": True},
+    }
+    once = normalize_legacy_overrides(raw)
+    assert once["playback"] == {"continue_watching": True}
+    assert "watchlists" not in once
+    assert normalize_legacy_overrides(once) == once

@@ -12,9 +12,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.imports.repository import ScanClaimOutcome, ScanClaimResult
 from miramedia.imports.scan_resolve import validate_scan_resolve_request
 from miramedia.imports.schemas import ResolveRequest
@@ -219,9 +219,8 @@ def test_validate_scan_resolve_rejects_missing_cache_row(
     body = ResolveRequest.model_validate(_scan_body(str(target)))
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(NotFoundError):
             await validate_scan_resolve_request(repo, body)
-        assert exc_info.value.status_code == 404
 
     asyncio.run(_run())
 
@@ -239,9 +238,8 @@ def test_validate_scan_resolve_rejects_symlink_alias_without_exact_row(
     body = ResolveRequest.model_validate(_scan_body(str(alias)))
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(NotFoundError):
             await validate_scan_resolve_request(repo, body)
-        assert exc_info.value.status_code == 404
         repo.get_scan_cache_entry.assert_awaited_once_with(str(alias))
 
     asyncio.run(_run())
@@ -371,9 +369,8 @@ def test_alias_request_does_not_claim_canonical_cache_row(
     body = ResolveRequest.model_validate(_scan_body(str(alias)))
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(NotFoundError):
             await validate_scan_resolve_request(repo, body)
-        assert exc_info.value.status_code == 404
 
     asyncio.run(_run())
     repo.claim_scan_cache_row.assert_not_awaited()
@@ -408,9 +405,8 @@ def test_resolve_scan_requires_queued_exact_row_before_import(
     body = ResolveRequest.model_validate(_scan_body(str(target)))
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ConflictError):
             await service.resolve_manual_scan(body, claim_token="token-a")
-        assert exc_info.value.status_code == 409
 
     asyncio.run(_run())
     show_service.import_show_from_directory.assert_not_awaited()
@@ -442,9 +438,8 @@ def test_resolve_scan_rejects_missing_media_type_hint(
     body = ResolveRequest.model_validate(_scan_body(str(target)))
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ConflictError):
             await service.resolve_manual_scan(body, claim_token="token-a")
-        assert exc_info.value.status_code == 409
 
     asyncio.run(_run())
 
@@ -475,9 +470,8 @@ def test_resolve_scan_rejects_missing_worker_started_marker(
     body = ResolveRequest.model_validate(_scan_body(str(target)))
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(ConflictError):
             await service.resolve_manual_scan(body, claim_token="token-a")
-        assert exc_info.value.status_code == 409
 
     asyncio.run(_run())
 
@@ -518,9 +512,8 @@ def test_resolve_scan_does_not_import_outside_root(
     )
 
     async def _run() -> None:
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(NotFoundError):
             await service.resolve_manual_scan(body, claim_token="token-a")
-        assert exc_info.value.status_code == 404
 
     asyncio.run(_run())
     show_service.import_show_from_directory.assert_not_awaited()
@@ -564,10 +557,9 @@ def test_resolve_scan_honors_lost_terminal_cas(
                 "miramedia.imports.followup.run_post_import_completion",
                 new=AsyncMock(),
             ) as followup_mock,
-            pytest.raises(HTTPException) as exc_info,
+            pytest.raises(ConflictError),
         ):
             await service.resolve_manual_scan(body, claim_token="token-a")
-        assert exc_info.value.status_code == 409
         followup_mock.assert_not_awaited()
 
     asyncio.run(_run())

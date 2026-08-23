@@ -1,0 +1,81 @@
+---
+title: Streaming
+description: "The [streams] section: in-app playback, file downloads, and HLS cache retention."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The `[streams]` section controls whether the browser can play imported files,
+whether those files can be downloaded, and how large/long the on-disk HLS
+transcode cache may grow. How playback works in the player is covered in
+[Playing Media](/docs/user-guide/playing-media) and
+[Streaming](/docs/features/streaming) — this page is the operator switches.
+
+These keys are editable from **System → Settings → Playback**. Saving applies
+immediately; no restart.
+
+## Settings (`[streams]`)
+
+| Key                      | Default | Purpose |
+| ------------------------ | ------- | ------- |
+| `enabled`                | `true`  | Master switch for in-app playback/streaming |
+| `downloads`              | `true`  | Allow downloading media files from the player |
+| `hls_cache_max_gb`       | `20.0`  | HLS cache size budget, in gigabytes (`value × 1024³` bytes) |
+| `hls_cache_max_age_days` | `30`    | HLS cache age budget, in days |
+
+## Streaming (`enabled`)
+
+When `enabled` is `false`, stream endpoints return **503** (`Streaming
+feature is disabled`) and the frontend hides play buttons. That includes
+probe, HLS playlists/segments, subtitle streaming, and direct-file playback
+without `?download=true`. The router stays mounted so the OpenAPI schema is
+unchanged.
+
+## Downloads (`downloads`)
+
+`downloads` is **independent of** `enabled`. Direct-file endpoints
+(`/api/v1/streams/movies/{id}` and `/api/v1/streams/episodes/{id}`) share a
+query flag:
+
+- `?download=true` requires `streams.downloads`. When that flag is off, the
+  request returns **503** (`Downloads feature is disabled`) and the frontend
+  hides Download buttons.
+- A normal (non-download) stream on those same URLs requires
+  `streams.enabled`, not `downloads`.
+
+You can leave streaming on and turn downloads off, or the reverse: streaming
+off with downloads on still serves `?download=true`. Subtitle files are
+available whenever either streaming or downloads is enabled.
+
+<Callout type="info">
+
+Torrent/Usenet grabbing is a different feature. `[streams].downloads` only
+gates fetching an already-imported file from the player.
+
+</Callout>
+
+## HLS cache
+
+Server-side transcoding writes a cached HLS bundle under `MIRAMEDIA_HLS_CACHE`
+(default `/app/images/hls`). See
+[Environment Variables](/docs/advanced-features/environment-variables) and
+[Performance](/docs/advanced-features/performance#streaming).
+
+A nightly sweep deletes complete cache directories older than
+`hls_cache_max_age_days` and, if the tree is still over `hls_cache_max_gb`,
+deletes the oldest remaining directories until the size budget is met.
+
+If **either** `hls_cache_max_gb` or `hls_cache_max_age_days` is `0` or
+negative, the sweep is skipped entirely (no age eviction and no size
+eviction). Transcoding can still write new bundles; they are just not pruned
+by this job.
+
+## Example
+
+```toml title="config.toml"
+[streams]
+enabled = true
+downloads = true
+hls_cache_max_gb = 20.0
+hls_cache_max_age_days = 30
+```

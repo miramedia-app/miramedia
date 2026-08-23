@@ -321,10 +321,9 @@ async def _encode_hls(source: Path, _key: str, tmp_dir: Path) -> None:
             try:
                 _publish_tmp_dir(tmp_dir, out_dir)
             except OSError:
-                log.error(
+                log.exception(
                     "HLS publish failed for %s",
                     source.name,
-                    exc_info=True,
                 )
         else:
             msg = f"HLS background encode failed for {source.name} (exit code {code})"

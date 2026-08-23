@@ -66,7 +66,7 @@ def test_import_all_resolves_media_in_filter_and_re_resolves_in_loop() -> None:
         import_calls.append(torrent.title)
 
     with (
-        patch("miramedia.database.bg_show_service", fake_bg),
+        patch("miramedia.background_services.bg_show_service", fake_bg),
         patch.object(
             svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
         ),
@@ -131,7 +131,7 @@ def test_import_all_skips_vanished_torrent_without_aborting_batch() -> None:
         import_calls.append(torrent.title)
 
     with (
-        patch("miramedia.database.bg_show_service", fake_bg),
+        patch("miramedia.background_services.bg_show_service", fake_bg),
         patch.object(
             svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
         ),
@@ -194,7 +194,7 @@ def test_import_all_failure_isolation_continues_batch() -> None:
             raise RuntimeError(boom)
 
     with (
-        patch("miramedia.database.bg_show_service", fake_bg),
+        patch("miramedia.background_services.bg_show_service", fake_bg),
         patch.object(
             svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
         ),
@@ -261,7 +261,7 @@ def test_import_all_re_resolves_media_after_prior_import_mutates_show() -> None:
                 torrent_repo.show_of_torrent[tid] = updated
 
     with (
-        patch("miramedia.database.bg_show_service", fake_bg),
+        patch("miramedia.background_services.bg_show_service", fake_bg),
         patch.object(
             svc, "reconcile_orphaned_failed_imports", AsyncMock(return_value=0)
         ),
@@ -324,7 +324,7 @@ def test_import_all_skips_when_media_vanishes_before_loop() -> None:
         import_calls.append(torrent.title)
 
     with (
-        patch("miramedia.database.bg_show_service", fake_bg),
+        patch("miramedia.background_services.bg_show_service", fake_bg),
         patch(
             "miramedia.database.release_session_before_external_io",
             unlink_vanish,

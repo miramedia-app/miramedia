@@ -45,7 +45,9 @@ def _update_table(stmt: Update) -> str:
 
 def _patch_integrity_config(monkeypatch, *, enabled: bool = True) -> None:
     cfg = fake_scheduler_config(integrity_check_enabled=enabled)
-    monkeypatch.setattr("miramedia.scheduler.MiraMediaConfig", lambda: cfg)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.MiraMediaConfig", lambda: cfg
+    )
     monkeypatch.setattr("miramedia.torrents.integrity.MiraMediaConfig", lambda: cfg)
     patch_audit_repository_lookups(monkeypatch)
 
@@ -95,7 +97,8 @@ def test_integrity_disabled_skips_background_session(monkeypatch) -> None:
 
     _patch_integrity_config(monkeypatch, enabled=False)
     monkeypatch.setattr(
-        "miramedia.scheduler.background_session", _fail_background_session
+        "miramedia.scheduler_tasks.integrity.background_session",
+        _fail_background_session,
     )
 
     _run(scheduler.verify_imported_files_task())
@@ -111,11 +114,12 @@ def test_baseline_sha1_written_when_prior_is_none(monkeypatch, tmp_path: Path) -
     bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", bg_session
+    )
     patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha("computed-sha1-abc"),
     )
 
@@ -137,11 +141,12 @@ def test_matching_prior_sha1_produces_no_update(monkeypatch, tmp_path: Path) -> 
     bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", bg_session
+    )
     patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha(prior),
     )
 
@@ -167,11 +172,12 @@ def test_mismatch_stamps_import_error_without_status_change(
     bg_session, sessions = _high_water_background_session_factory(movie_rows=[row])
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", bg_session
+    )
     patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha("cccccccccccccccccccccccccccccccccccccccc"),
     )
 
@@ -197,9 +203,13 @@ def test_unresolvable_path_skips_row_without_crash(monkeypatch) -> None:
         return "hash"
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", bg_session
+    )
     patch_batch_resolve_paths(monkeypatch, {row.id: None})
-    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async", _track_hash
+    )
 
     _run(scheduler.verify_imported_files_task())
 
@@ -216,11 +226,12 @@ def test_hash_io_error_skips_row(monkeypatch, tmp_path: Path) -> None:
     bg_session, sessions = _high_water_background_session_factory(episode_rows=[row])
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", bg_session
+    )
     patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha(None),
     )
 
@@ -256,10 +267,13 @@ def test_integrity_audit_no_session_held_during_slow_hash(
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.scheduler.background_session", _tracking_background_session
+        "miramedia.scheduler_tasks.integrity.background_session",
+        _tracking_background_session,
     )
     patch_batch_resolve_paths(monkeypatch, {file_id: media_path})
-    monkeypatch.setattr(scheduler, "_compute_sha1_async", _slow_hash)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async", _slow_hash
+    )
 
     _run(scheduler.verify_imported_files_task())
 
@@ -292,7 +306,8 @@ def test_integrity_audit_no_session_held_during_path_resolve(
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.scheduler.background_session", _tracking_background_session
+        "miramedia.scheduler_tasks.integrity.background_session",
+        _tracking_background_session,
     )
     monkeypatch.setattr(
         "miramedia.torrents.integrity.batch_resolve_episode_paths_async",
@@ -303,8 +318,7 @@ def test_integrity_audit_no_session_held_during_path_resolve(
         lambda *_a, **_k: {},
     )
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha("hash-value000000000000000000000000"),
     )
 
@@ -350,12 +364,12 @@ def test_integrity_audit_chunks_keyset_reads(monkeypatch, tmp_path: Path) -> Non
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.scheduler.background_session", _chunk_observing_session
+        "miramedia.scheduler_tasks.integrity.background_session",
+        _chunk_observing_session,
     )
     patch_batch_resolve_paths(monkeypatch, path_by_id)
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha("chunk-hash-000000000000000000000000000000"),
     )
 
@@ -407,12 +421,15 @@ def test_integrity_audit_budget_defers_rows_inserted_after_start(
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.scheduler.background_session", _deferred_insert_session
+        "miramedia.scheduler_tasks.integrity.background_session",
+        _deferred_insert_session,
     )
     patch_batch_resolve_paths(
         monkeypatch, {initial_id: initial_path, deferred_id: deferred_path}
     )
-    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async", _track_hash
+    )
 
     _run(scheduler.verify_imported_files_task())
 
@@ -430,7 +447,9 @@ def test_integrity_audit_empty_table_skips_chunk_reads(monkeypatch) -> None:
         yield session
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", _counting_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", _counting_session
+    )
     patch_batch_resolve_paths(monkeypatch, {})
 
     _run(scheduler.verify_imported_files_task())
@@ -476,11 +495,12 @@ def test_integrity_audit_exact_chunk_boundary(monkeypatch, tmp_path: Path) -> No
             yield session
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", _boundary_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", _boundary_session
+    )
     patch_batch_resolve_paths(monkeypatch, path_by_id)
     monkeypatch.setattr(
-        scheduler,
-        "_compute_sha1_async",
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async",
         lambda _path: _return_sha("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
     )
 
@@ -521,7 +541,9 @@ def test_integrity_audit_overlapping_cross_table_uuids(
     )
 
     _patch_integrity_config(monkeypatch)
-    monkeypatch.setattr("miramedia.scheduler.background_session", bg_session)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.background_session", bg_session
+    )
 
     async def _episode_paths(rows, episode_context, shows, layout):  # noqa: ARG001
         return {row.id: show_path for row in rows}
@@ -537,7 +559,9 @@ def test_integrity_audit_overlapping_cross_table_uuids(
         "miramedia.torrents.integrity.batch_resolve_movie_paths_async",
         _movie_paths,
     )
-    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async", _track_hash
+    )
 
     _run(scheduler.verify_imported_files_task())
 
@@ -627,7 +651,8 @@ def test_integrity_audit_budget_caps_episode_reads_and_movie_still_runs(
 
     _patch_integrity_config(monkeypatch)
     monkeypatch.setattr(
-        "miramedia.scheduler.background_session", _budget_starvation_session
+        "miramedia.scheduler_tasks.integrity.background_session",
+        _budget_starvation_session,
     )
     patch_batch_resolve_paths(
         monkeypatch,
@@ -637,7 +662,9 @@ def test_integrity_audit_budget_caps_episode_reads_and_movie_still_runs(
             movie_id: movie_path,
         },
     )
-    monkeypatch.setattr(scheduler, "_compute_sha1_async", _track_hash)
+    monkeypatch.setattr(
+        "miramedia.scheduler_tasks.integrity.compute_sha1_async", _track_hash
+    )
 
     _run(scheduler.verify_imported_files_task())
 
