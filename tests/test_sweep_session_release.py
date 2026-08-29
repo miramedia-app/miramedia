@@ -96,7 +96,7 @@ def test_import_all_torrents_releases_session_before_import_loop() -> None:
         ),
         patch.object(
             svc.torrent_service,
-            "get_all_torrents",
+            "get_finished_torrents",
             AsyncMock(return_value=[torrent]),
         ),
         patch.object(
@@ -136,6 +136,8 @@ def test_auto_download_movie_releases_session_before_indexer_fan_out(
                 "year": 2024,
                 "skipped": False,
                 "continuous_download": None,
+                "quality_upgrades": None,
+                "upgrade_until_quality": None,
                 "release_date": None,
                 "auto_download_backoff_until": None,
             },
@@ -168,6 +170,25 @@ def test_auto_download_movie_releases_session_before_indexer_fan_out(
     monkeypatch.setattr(
         "miramedia.database.release_session_before_external_io",
         _release,
+    )
+    monkeypatch.setattr(
+        "miramedia.media_service.MiraMediaConfig",
+        lambda: type(
+            "Cfg",
+            (),
+            {
+                "misc": type(
+                    "Misc",
+                    (),
+                    {
+                        "quality_upgrades": False,
+                        "upgrade_until_quality": None,
+                        "auto_download_interval_hours": 1,
+                    },
+                )(),
+                "indexers": type("Idx", (), {"quality_options": []})(),
+            },
+        )(),
     )
 
     from miramedia.movies.service import _try_auto_download_movie_id_impl

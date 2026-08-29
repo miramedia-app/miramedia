@@ -46,6 +46,8 @@ EXPECTED_TASK_NAMES = frozenset(
         "miramedia.scheduler:fulfill_approved_requests_task",
         "miramedia.scheduler:import_all_movie_torrents_task",
         "miramedia.scheduler:import_all_show_torrents_task",
+        "miramedia.scheduler:jellyfin_viewing_state_dry_run_task",
+        "miramedia.scheduler:observe_release_feeds_task",
         "miramedia.scheduler:purge_old_indexer_query_results_task",
         "miramedia.scheduler:purge_old_taskiq_messages_task",
         "miramedia.scheduler:reclaim_stale_queued_imports_task",

@@ -34,29 +34,33 @@ class _RowResult:
     def first(self) -> Any | None:
         return self.row
 
+    def unique(self) -> Self:
+        return self
+
 
 @dataclass
 class FakeAsyncSession:
     """Minimal async session for DatabaseTokenStrategy.read_token."""
 
-    row: Any | None = None
-    user: Any | None = None
+    joined_row: Any | None = None
     executes: list[Any] = field(default_factory=list)
     expunge_calls: list[Any] = field(default_factory=list)
+    get_calls: list[Any] = field(default_factory=list)
     committed: bool = False
 
     async def execute(self, stmt: Any) -> _RowResult:
         self.executes.append(stmt)
-        # SELECT returns the configured row; UPDATE returns an empty result.
+        # SELECT returns the configured joined row; UPDATE returns an empty result.
         if isinstance(stmt, Update):
             return _RowResult(None)
-        return _RowResult(self.row)
+        return _RowResult(self.joined_row)
 
     async def commit(self) -> None:
         self.committed = True
 
-    async def get(self, _model: Any, _pk: Any) -> Any | None:
-        return self.user
+    async def get(self, model: Any, pk: Any) -> Any | None:
+        self.get_calls.append((model, pk))
+        return None
 
     def expunge(self, obj: Any) -> None:
         self.expunge_calls.append(obj)
@@ -116,14 +120,36 @@ def test_read_token_uninitialized_sessionlocal(
     )
 
 
+def _joined_token_row(
+    user: Any,
+    *,
+    token_id: uuid.UUID | None = None,
+    expires_at: datetime | None = None,
+    last_used_at: datetime | None = None,
+    scopes: list[str] | None = None,
+    preview: str = "abcd",
+) -> tuple[Any, uuid.UUID, datetime | None, datetime | None, list[str], str]:
+    return (
+        user,
+        token_id or uuid.uuid4(),
+        expires_at,
+        last_used_at,
+        scopes or [],
+        preview,
+    )
+
+
+def _select_execute_count(session: FakeAsyncSession) -> int:
+    return sum(1 for stmt in session.executes if not isinstance(stmt, Update))
+
+
 def test_read_token_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid.uuid4()
     token_id = uuid.uuid4()
-    row = SimpleNamespace(
-        id=token_id, user_id=user_id, expires_at=None, last_used_at=None
-    )
     user = SimpleNamespace(id=user_id, is_active=True)
-    session = FakeAsyncSession(row=row, user=user)
+    session = FakeAsyncSession(
+        joined_row=_joined_token_row(user, token_id=token_id, last_used_at=None)
+    )
     factory = FakeSessionLocal(session)
     monkeypatch.setattr("miramedia.database.SessionLocal", factory)
 
@@ -134,6 +160,8 @@ def test_read_token_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result is user
     assert session.committed is True
     assert session.expunge_calls == [user]
+    assert session.get_calls == []
+    assert _select_execute_count(session) == 1
     assert any(isinstance(stmt, Update) for stmt in session.executes)
     assert factory.calls == 1
 
@@ -142,14 +170,13 @@ def test_read_token_skips_last_used_update_when_fresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     user_id = uuid.uuid4()
-    row = SimpleNamespace(
-        id=uuid.uuid4(),
-        user_id=user_id,
-        expires_at=None,
-        last_used_at=datetime.now(UTC) - timedelta(seconds=5),
-    )
     user = SimpleNamespace(id=user_id, is_active=True)
-    session = FakeAsyncSession(row=row, user=user)
+    session = FakeAsyncSession(
+        joined_row=_joined_token_row(
+            user,
+            last_used_at=datetime.now(UTC) - timedelta(seconds=5),
+        )
+    )
     monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
 
     plaintext, _, _ = generate_token()
@@ -166,14 +193,13 @@ def test_read_token_updates_last_used_when_stale(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     user_id = uuid.uuid4()
-    row = SimpleNamespace(
-        id=uuid.uuid4(),
-        user_id=user_id,
-        expires_at=None,
-        last_used_at=datetime.now(UTC) - timedelta(seconds=120),
-    )
     user = SimpleNamespace(id=user_id, is_active=True)
-    session = FakeAsyncSession(row=row, user=user)
+    session = FakeAsyncSession(
+        joined_row=_joined_token_row(
+            user,
+            last_used_at=datetime.now(UTC) - timedelta(seconds=120),
+        )
+    )
     monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
 
     plaintext, _, _ = generate_token()
@@ -186,16 +212,29 @@ def test_read_token_updates_last_used_when_stale(
     assert session.expunge_calls == [user]
 
 
+def test_read_token_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = FakeAsyncSession(joined_row=None)
+    monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
+
+    plaintext, _, _ = generate_token()
+    strategy = DatabaseTokenStrategy()
+    assert (
+        asyncio.run(strategy.read_token(plaintext, user_manager=None)) is None  # type: ignore[arg-type]
+    )
+    assert session.get_calls == []
+    assert _select_execute_count(session) == 1
+    assert not any(isinstance(stmt, Update) for stmt in session.executes)
+
+
 def test_read_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
     user_id = uuid.uuid4()
-    row = SimpleNamespace(
-        id=uuid.uuid4(),
-        user_id=user_id,
-        expires_at=datetime.now(UTC) - timedelta(hours=1),
-        last_used_at=None,
-    )
+    user = SimpleNamespace(id=user_id, is_active=True)
     session = FakeAsyncSession(
-        row=row, user=SimpleNamespace(id=user_id, is_active=True)
+        joined_row=_joined_token_row(
+            user,
+            expires_at=datetime.now(UTC) - timedelta(hours=1),
+            last_used_at=None,
+        )
     )
     monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
 
@@ -208,15 +247,7 @@ def test_read_token_expired(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_read_token_inactive_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    user_id = uuid.uuid4()
-    row = SimpleNamespace(
-        id=uuid.uuid4(),
-        user_id=user_id,
-        expires_at=None,
-        last_used_at=datetime.now(UTC) - timedelta(seconds=5),
-    )
-    user = SimpleNamespace(id=user_id, is_active=False)
-    session = FakeAsyncSession(row=row, user=user)
+    session = FakeAsyncSession(joined_row=None)
     monkeypatch.setattr("miramedia.database.SessionLocal", FakeSessionLocal(session))
 
     plaintext, _, _ = generate_token()
@@ -300,7 +331,7 @@ class FakeCreateTokenSession:
 def api_token_client(
     override_dependency: Callable[[Callable, object], None],
 ) -> tuple[TestClient, uuid.UUID, FakeCreateTokenSession]:
-    from miramedia.auth.users import current_active_user
+    from miramedia.auth.users import current_interactive_user
     from miramedia.database import get_session
     from miramedia.main import app
 
@@ -316,7 +347,7 @@ def api_token_client(
         return user
 
     override_dependency(get_session, _stub_session)
-    override_dependency(current_active_user, _active_user)
+    override_dependency(current_interactive_user, _active_user)
     client = TestClient(app, raise_server_exceptions=False)
     return client, user_id, session
 

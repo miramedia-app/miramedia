@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.1.1"
+    "version": "1.1.2"
   },
   "paths": {
     "/api/v1/health": {
@@ -3052,6 +3052,56 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/seasons/files/batch": {
+      "post": {
+        "tags": [
+          "seasons"
+        ],
+        "summary": "Batch Get Episode Files",
+        "description": "Fetch episode files for multiple seasons in one bounded request.",
+        "operationId": "batch_get_episode_files_api_v1_seasons_files_batch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SeasonFilesBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SeasonFilesBatchResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
       }
     },
     "/api/v1/seasons/{season_id}/files": {
@@ -10304,6 +10354,280 @@
           }
         ]
       }
+    },
+    "/api/v1/diagnostics/storage": {
+      "get": {
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Get Diagnostics Storage",
+        "operationId": "get_diagnostics_storage_api_v1_diagnostics_storage_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageHealthSummary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/diagnostics/storage/files": {
+      "get": {
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "List Diagnostics Storage Files",
+        "operationId": "list_diagnostics_storage_files_api_v1_diagnostics_storage_files_get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "exclusiveMinimum": 0,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "corrupt",
+                    "unknown",
+                    "orphaned",
+                    "pending",
+                    "healthy"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "name": "media_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "show",
+                    "movie"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Media Type"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedStorageHealthFiles"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/storage/files/{media_type}/{file_id}": {
+      "get": {
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Get Diagnostics Storage File",
+        "operationId": "get_diagnostics_storage_file_api_v1_diagnostics_storage_files__media_type___file_id__get",
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "media_type",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "show",
+                "movie"
+              ],
+              "type": "string",
+              "title": "Media Type"
+            }
+          },
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageHealthFile"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/diagnostics/database": {
+      "get": {
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Get Diagnostics Database",
+        "operationId": "get_diagnostics_database_api_v1_diagnostics_database_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsDatabase"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/diagnostics/scheduler": {
+      "get": {
+        "tags": [
+          "diagnostics"
+        ],
+        "summary": "Get Diagnostics Scheduler",
+        "operationId": "get_diagnostics_scheduler_api_v1_diagnostics_scheduler_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiagnosticsScheduler"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "OAuth2PasswordBearer": []
+          },
+          {
+            "APIKeyCookie": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -10374,6 +10698,13 @@
             "minLength": 1,
             "title": "Name"
           },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
+          },
           "expires_at": {
             "anyOf": [
               {
@@ -10407,6 +10738,13 @@
           "preview": {
             "type": "string",
             "title": "Preview"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
           },
           "created_at": {
             "type": "string",
@@ -10447,6 +10785,7 @@
           "id",
           "name",
           "preview",
+          "scopes",
           "created_at",
           "last_used_at",
           "expires_at",
@@ -10469,6 +10808,13 @@
           "preview": {
             "type": "string",
             "title": "Preview"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Scopes"
           },
           "created_at": {
             "type": "string",
@@ -10505,6 +10851,7 @@
           "id",
           "name",
           "preview",
+          "scopes",
           "created_at",
           "last_used_at",
           "expires_at"
@@ -11472,6 +11819,339 @@
         },
         "type": "object",
         "title": "DashboardSummary"
+      },
+      "DiagnosticsDatabase": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "host": {
+            "type": "string",
+            "title": "Host"
+          },
+          "port": {
+            "type": "integer",
+            "title": "Port"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "user": {
+            "type": "string",
+            "title": "User"
+          },
+          "server_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Version"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "max_connections": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Connections"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "connections": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticsDatabaseConnection"
+            },
+            "type": "array",
+            "title": "Connections",
+            "default": []
+          },
+          "pools": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticsDatabasePool"
+            },
+            "type": "array",
+            "title": "Pools",
+            "default": []
+          },
+          "largest_tables": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticsDatabaseTable"
+            },
+            "type": "array",
+            "title": "Largest Tables",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "host",
+          "port",
+          "name",
+          "user"
+        ],
+        "title": "DiagnosticsDatabase"
+      },
+      "DiagnosticsDatabaseConnection": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "state",
+          "count"
+        ],
+        "title": "DiagnosticsDatabaseConnection"
+      },
+      "DiagnosticsDatabasePool": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          },
+          "checked_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Out"
+          },
+          "overflow": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overflow"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "DiagnosticsDatabasePool"
+      },
+      "DiagnosticsDatabaseTable": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "total_bytes": {
+            "type": "integer",
+            "title": "Total Bytes"
+          },
+          "table_bytes": {
+            "type": "integer",
+            "title": "Table Bytes"
+          },
+          "index_bytes": {
+            "type": "integer",
+            "title": "Index Bytes"
+          },
+          "estimated_rows": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "total_bytes",
+          "table_bytes",
+          "index_bytes"
+        ],
+        "title": "DiagnosticsDatabaseTable"
+      },
+      "DiagnosticsScheduledTask": {
+        "properties": {
+          "task_name": {
+            "type": "string",
+            "title": "Task Name"
+          },
+          "display_name": {
+            "type": "string",
+            "title": "Display Name"
+          },
+          "broker": {
+            "type": "string",
+            "enum": [
+              "background",
+              "interactive"
+            ],
+            "title": "Broker"
+          },
+          "cron": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cron"
+          },
+          "queued": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queued"
+          },
+          "schedule_created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule Created At"
+          },
+          "schedule_updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_name",
+          "display_name",
+          "broker"
+        ],
+        "title": "DiagnosticsScheduledTask"
+      },
+      "DiagnosticsScheduler": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/DiagnosticsScheduledTask"
+            },
+            "type": "array",
+            "title": "Tasks"
+          },
+          "queue_background": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Background"
+          },
+          "queue_interactive": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Queue Interactive"
+          },
+          "schedules_loaded": {
+            "type": "boolean",
+            "title": "Schedules Loaded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "tasks",
+          "schedules_loaded"
+        ],
+        "title": "DiagnosticsScheduler"
       },
       "EmailNotificationsSettingsSchema": {
         "properties": {
@@ -14289,6 +14969,28 @@
             ],
             "title": "Continuous Download"
           },
+          "quality_upgrades": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Upgrades"
+          },
+          "upgrade_until_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upgrade Until Quality"
+          },
           "download_specials": {
             "anyOf": [
               {
@@ -14354,6 +15056,39 @@
               }
             ],
             "title": "Import Sweep Interval Minutes"
+          },
+          "release_feeds_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Feeds Enabled"
+          },
+          "release_feeds_poll_interval_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Feeds Poll Interval Minutes"
+          },
+          "release_feeds_maxage_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Feeds Maxage Days"
           },
           "integrity_check_enabled": {
             "anyOf": [
@@ -14499,6 +15234,28 @@
               }
             ],
             "title": "Continuous Download"
+          },
+          "quality_upgrades": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Upgrades"
+          },
+          "upgrade_until_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upgrade Until Quality"
           },
           "skipped": {
             "type": "boolean",
@@ -15584,6 +16341,48 @@
         ],
         "title": "PaginatedResponse[ActivityLogRead]"
       },
+      "PaginatedStorageHealthFiles": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StorageHealthFile"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "offset",
+          "limit"
+        ],
+        "title": "PaginatedStorageHealthFiles"
+      },
       "PlaybackProgress": {
         "properties": {
           "file_id": {
@@ -16021,6 +16820,28 @@
               }
             ],
             "title": "Continuous Download"
+          },
+          "quality_upgrades": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quality Upgrades"
+          },
+          "upgrade_until_quality": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upgrade Until Quality"
           },
           "skipped": {
             "type": "boolean",
@@ -17657,6 +18478,60 @@
         ],
         "title": "Season"
       },
+      "SeasonFilesBatchRequest": {
+        "properties": {
+          "season_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Season Ids"
+          },
+          "show_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Show Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "season_ids"
+        ],
+        "title": "SeasonFilesBatchRequest"
+      },
+      "SeasonFilesBatchResponse": {
+        "properties": {
+          "results": {
+            "additionalProperties": {
+              "items": {
+                "$ref": "#/components/schemas/PublicEpisodeFile"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Results"
+          },
+          "errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "title": "SeasonFilesBatchResponse"
+      },
       "SeasonWatchStateUpdate": {
         "properties": {
           "show_id": {
@@ -18216,6 +19091,363 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SmtpSettingsSchema"
+      },
+      "StorageHealthCounts": {
+        "properties": {
+          "imported": {
+            "type": "integer",
+            "title": "Imported"
+          },
+          "healthy": {
+            "type": "integer",
+            "title": "Healthy"
+          },
+          "unknown": {
+            "type": "integer",
+            "title": "Unknown"
+          },
+          "corrupt": {
+            "type": "integer",
+            "title": "Corrupt"
+          },
+          "orphaned": {
+            "type": "integer",
+            "title": "Orphaned"
+          },
+          "pending": {
+            "type": "integer",
+            "title": "Pending"
+          },
+          "missing": {
+            "type": "null",
+            "title": "Missing"
+          }
+        },
+        "type": "object",
+        "required": [
+          "imported",
+          "healthy",
+          "unknown",
+          "corrupt",
+          "orphaned",
+          "pending"
+        ],
+        "title": "StorageHealthCounts"
+      },
+      "StorageHealthFile": {
+        "properties": {
+          "file_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "File Id"
+          },
+          "media_type": {
+            "type": "string",
+            "enum": [
+              "show",
+              "movie"
+            ],
+            "title": "Media Type"
+          },
+          "media_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Media Id"
+          },
+          "media_title": {
+            "type": "string",
+            "title": "Media Title"
+          },
+          "episode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode"
+          },
+          "library": {
+            "type": "string",
+            "title": "Library"
+          },
+          "quality": {
+            "$ref": "#/components/schemas/Quality"
+          },
+          "variant_tag": {
+            "type": "string",
+            "title": "Variant Tag"
+          },
+          "import_status": {
+            "$ref": "#/components/schemas/ImportOutcome"
+          },
+          "import_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Import Error"
+          },
+          "sha1": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha1"
+          },
+          "imported_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imported At"
+          },
+          "last_attempt_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Attempt At"
+          },
+          "torrent_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Torrent Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "corrupt",
+              "unknown",
+              "orphaned",
+              "pending",
+              "healthy",
+              "missing",
+              "inaccessible"
+            ],
+            "title": "State"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file_id",
+          "media_type",
+          "media_id",
+          "media_title",
+          "episode",
+          "library",
+          "quality",
+          "variant_tag",
+          "import_status",
+          "import_error",
+          "sha1",
+          "imported_at",
+          "last_attempt_at",
+          "torrent_id",
+          "state",
+          "path"
+        ],
+        "title": "StorageHealthFile"
+      },
+      "StorageHealthLibraryProbe": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "show",
+              "movie"
+            ],
+            "title": "Kind"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "kind",
+          "path",
+          "ok"
+        ],
+        "title": "StorageHealthLibraryProbe"
+      },
+      "StorageHealthSummary": {
+        "properties": {
+          "generated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Generated At"
+          },
+          "integrity_check_enabled": {
+            "type": "boolean",
+            "title": "Integrity Check Enabled"
+          },
+          "integrity_check_interval_hours": {
+            "type": "integer",
+            "title": "Integrity Check Interval Hours"
+          },
+          "freshness_note": {
+            "type": "string",
+            "title": "Freshness Note"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/StorageHealthCounts"
+          },
+          "libraries": {
+            "items": {
+              "$ref": "#/components/schemas/StorageHealthLibraryProbe"
+            },
+            "type": "array",
+            "title": "Libraries"
+          },
+          "unconfigured_library_names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unconfigured Library Names"
+          },
+          "volumes": {
+            "items": {
+              "$ref": "#/components/schemas/StorageVolume"
+            },
+            "type": "array",
+            "title": "Volumes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "generated_at",
+          "integrity_check_enabled",
+          "integrity_check_interval_hours",
+          "freshness_note",
+          "counts",
+          "libraries",
+          "unconfigured_library_names",
+          "volumes"
+        ],
+        "title": "StorageHealthSummary"
+      },
+      "StorageVolume": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "total_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Bytes"
+          },
+          "used_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used Bytes"
+          },
+          "free_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Free Bytes"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "label",
+          "path"
+        ],
+        "title": "StorageVolume"
       },
       "StreamProbeResponse": {
         "properties": {

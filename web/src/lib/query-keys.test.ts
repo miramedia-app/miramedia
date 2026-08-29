@@ -20,3 +20,18 @@ describe("imports query keys", () => {
     }
   });
 });
+
+describe("diagnostics query keys", () => {
+  it("keys storage, database, and scheduler under one prefix", () => {
+    const summary = qk.diagnostics.storage.summary() as readonly unknown[];
+    const list = qk.diagnostics.storage.list({ offset: 0, limit: 50 }) as readonly unknown[];
+    const detail = qk.diagnostics.storage.detail("show", "abc") as readonly unknown[];
+    const database = qk.diagnostics.database() as readonly unknown[];
+    const scheduler = qk.diagnostics.scheduler() as readonly unknown[];
+    expect(summary.slice(0, qk.diagnostics.all.length)).toEqual([...qk.diagnostics.all]);
+    expect(list.slice(0, qk.diagnostics.all.length)).toEqual([...qk.diagnostics.all]);
+    expect(detail.slice(0, qk.diagnostics.all.length)).toEqual([...qk.diagnostics.all]);
+    expect(database.slice(0, qk.diagnostics.all.length)).toEqual([...qk.diagnostics.all]);
+    expect(scheduler.slice(0, qk.diagnostics.all.length)).toEqual([...qk.diagnostics.all]);
+  });
+});

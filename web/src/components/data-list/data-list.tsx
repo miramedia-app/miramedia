@@ -1,9 +1,10 @@
 "use client";
 
 import * as React from "react";
-import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, ListChecksIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,7 +14,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { SelectionBar } from "@/components/selection-bar";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { DataListBulkBar } from "./data-list-bulk-bar";
+import { DataListCardRow } from "./data-list-card-row";
 import { DataListEmpty } from "./data-list-empty";
 import { DataListGroupHeader, useCollapsedGroups } from "./data-list-group";
 import { DataListPagination } from "./data-list-pagination";
@@ -24,6 +27,7 @@ import { DataListToolbar } from "./data-list-toolbar";
 import { isRowExpanded, nextExpandedRows } from "./expand-utils";
 import { nextFocusId } from "./focus-utils";
 import { countGroups } from "./grouping-utils";
+import { scrollMinWidth } from "./mobile-utils";
 import { useListFilters } from "./use-list-filters";
 import { useListHotkeys } from "./use-list-hotkeys";
 import { selectionHeaderState, useListSelection } from "./use-list-selection";
@@ -32,8 +36,10 @@ import type {
   BulkAction,
   ColumnDef,
   DataListDensity,
+  DataListMobileConfig,
   FacetDef,
   GroupByDef,
+  MobileAction,
   SortOption,
 } from "./types";
 
@@ -83,6 +89,13 @@ export interface DataListProps<T> {
   rowActions?: (item: T) => React.ReactNode;
   /** Fixed width for the trailing actions column. Defaults to '88px'. */
   rowActionsWidth?: string;
+  /**
+   * Labelled actions for the mobile card action sheet. Preferred over
+   * `rowActions` on phones (icon-only buttons get auto-labelled otherwise).
+   */
+  mobileActions?: (item: T) => MobileAction[];
+  /** Title of the mobile action sheet for a row (e.g. the item name). */
+  mobileActionsTitle?: (item: T) => string;
   /** Free-form content rendered below the row when expanded. Return null to disable expand for an item. */
   expandedContent?: (item: T) => React.ReactNode | null;
   /**
@@ -132,6 +145,13 @@ export interface DataListProps<T> {
    */
   bulkBarVariant?: "floating" | "inline";
 
+  /**
+   * Mobile rendering (`useIsMobile()`: width < lg OR coarse pointer).
+   * Defaults to `{ mode: "cards" }` — stacked card rows driven by
+   * `ColumnDef.mobile`. Use `{ mode: "scroll" }` for wide-by-nature lists.
+   */
+  mobile?: DataListMobileConfig;
+
   className?: string;
 }
 
@@ -151,6 +171,8 @@ export function DataList<T>({
   disableSelection,
   rowActions,
   rowActionsWidth = "88px",
+  mobileActions,
+  mobileActionsTitle,
   expandedContent,
   isExpandable,
   defaultExpanded = false,
@@ -171,8 +193,16 @@ export function DataList<T>({
   onPaginationChange,
   showHeader = true,
   bulkBarVariant = "inline",
+  mobile,
   className,
 }: DataListProps<T>) {
+  const isMobile = useIsMobile();
+  const mobileMode = mobile?.mode ?? "cards";
+  const cardMode = isMobile && mobileMode === "cards";
+  const scrollMode = isMobile && mobileMode === "scroll";
+  // Card rows hide the checkbox until the user enters select mode from the
+  // toolbar (iOS-style "Select"); selection is cleared on exit.
+  const [selectMode, setSelectMode] = React.useState(false);
   const paginationEnabled = !!defaultPageSize;
   const serverPaged = onPaginationChange != null;
   const totalKnown = isServerPaginationTotalKnown(serverPaged, totalCount);
@@ -358,14 +388,19 @@ export function DataList<T>({
   const selectable = !disableSelection && (bulkActions?.length ?? 0) > 0;
 
   const hasExpandColumn = !!expandedContent;
-  const gridTemplate = React.useMemo(() => {
+  const gridTracks = React.useMemo(() => {
     const parts: string[] = [];
     if (selectable) parts.push("24px");
     if (hasExpandColumn) parts.push("24px");
     for (const c of columns) parts.push(c.width);
     if (rowActions) parts.push(rowActionsWidth);
-    return parts.join(" ");
+    return parts;
   }, [columns, selectable, rowActions, rowActionsWidth, hasExpandColumn]);
+  const gridTemplate = React.useMemo(() => gridTracks.join(" "), [gridTracks]);
+  const scrollStyle = React.useMemo(
+    () => (scrollMode ? { minWidth: mobile?.minWidth ?? scrollMinWidth(gridTracks) } : undefined),
+    [scrollMode, mobile?.minWidth, gridTracks],
+  );
 
   const [expandedRows, setExpandedRows] = React.useState<Set<string>>(new Set());
   // State encoding (see expand-utils.ts): bare id = explicitly expanded,
@@ -440,6 +475,32 @@ export function DataList<T>({
     const expandable = expandedContent != null && (isExpandable ? isExpandable(item) : true);
     const isExpanded = expandable && isRowExpanded(expandedRows, id, defaultExpanded);
     const content = isExpanded && expandedContent ? expandedContent(item) : null;
+    if (cardMode) {
+      return (
+        <DataListCardRow
+          key={id}
+          item={item}
+          id={id}
+          columns={columns}
+          hasSelectColumn={selectable && selectMode}
+          selectable={selectable && !unselectableIds?.has(id)}
+          selected={selection.isSelected(id)}
+          focused={focusedId === id}
+          density={density}
+          onToggleSelectId={handleToggleSelectId}
+          onClickId={onRowOpen ? handleClickId : undefined}
+          onFocusId={handleFocusId}
+          renderActions={rowActions}
+          mobileActions={mobileActions}
+          sheetTitle={mobileActionsTitle?.(item)}
+          expandable={expandable}
+          expanded={isExpanded}
+          onToggleExpandId={handleToggleExpandId}
+          expandedContent={isExpanded ? content : null}
+          rowIndex={indexHint}
+        />
+      );
+    }
     return (
       <DataListRow
         key={id}
@@ -472,17 +533,18 @@ export function DataList<T>({
   const visibleBodyCount = grouped
     ? grouped.reduce((n, g) => n + (collapsed.has(g.key) ? 0 : g.items.length), 0)
     : paged.length;
-  const ariaRowCount = (showHeader ? 1 : 0) + visibleBodyCount;
+  const headerVisible = showHeader && !cardMode;
+  const ariaRowCount = (headerVisible ? 1 : 0) + visibleBodyCount;
   const groupRowStart = React.useMemo(() => {
     if (!grouped) return null;
     const starts = new Map<string, number>();
-    let next = showHeader ? 2 : 1;
+    let next = headerVisible ? 2 : 1;
     for (const g of grouped) {
       starts.set(g.key, next);
       if (!collapsed.has(g.key)) next += g.items.length;
     }
     return starts;
-  }, [grouped, collapsed, showHeader]);
+  }, [grouped, collapsed, headerVisible]);
 
   return (
     <div className={cn("flex w-full flex-col gap-4", className)}>
@@ -505,13 +567,53 @@ export function DataList<T>({
         group={group || defaultGroupId || "none"}
         onGroupChange={(id) => setGroup(id === "none" ? "" : id)}
         leading={toolbarLeading}
-        trailing={toolbarTrailing}
+        trailing={
+          cardMode && selectable && bulkActions && bulkActions.length > 0 && sorted.length > 0 ? (
+            <>
+              <Button
+                variant={selectMode ? "secondary" : "outline"}
+                size="icon"
+                aria-pressed={selectMode}
+                aria-label={selectMode ? "Done selecting" : "Select rows"}
+                data-slot="select-mode-toggle"
+                onClick={() => {
+                  if (selectMode) selection.clear();
+                  setSelectMode((v) => !v);
+                }}
+              >
+                {selectMode ? (
+                  <CheckIcon className="h-4 w-4" />
+                ) : (
+                  <ListChecksIcon className="h-4 w-4" />
+                )}
+              </Button>
+              {toolbarTrailing}
+            </>
+          ) : (
+            toolbarTrailing
+          )
+        }
       />
+
+      {cardMode && selectMode && selectable && sorted.length > 0 && (
+        <label className="-my-1 flex min-h-11 items-center gap-3 px-4 text-sm text-muted-foreground">
+          <Checkbox
+            checked={allSelected}
+            indeterminate={someSelected}
+            onCheckedChange={(c) => toggleAll(c === true)}
+            aria-label="Select all"
+          />
+          <span>
+            {selection.count > 0 ? `${selection.count} selected` : `Select all ${totalFiltered}`}
+          </span>
+        </label>
+      )}
 
       {selectable &&
         bulkActions &&
         bulkActions.length > 0 &&
         bulkBarVariant === "inline" &&
+        !cardMode &&
         sorted.length > 0 && (
           <SelectionBar
             allChecked={allSelected}
@@ -521,6 +623,7 @@ export function DataList<T>({
             summary={
               selection.count > 0 ? `${selection.count} selected` : `Select all ${totalFiltered}`
             }
+            hideActions={isMobile}
             actions={bulkActions.map((a) => (
               <Button
                 key={a.id}
@@ -562,12 +665,16 @@ export function DataList<T>({
         />
       ) : (
         <div
-          className="overflow-hidden rounded-lg border bg-card"
+          className={cn(
+            "overflow-hidden rounded-lg border bg-card",
+            scrollMode && "overflow-x-auto overscroll-x-contain",
+          )}
           role="grid"
           aria-label="Results"
           aria-rowcount={ariaRowCount}
+          style={scrollStyle}
         >
-          {showHeader && (
+          {headerVisible && (
             <div role="rowgroup">
               <DataListHeaderRow
                 columns={columns}
@@ -594,6 +701,7 @@ export function DataList<T>({
                       totalCount={groupTotals?.get(g.key)}
                       collapsed={isCollapsed}
                       onToggle={() => toggleGroup(g.key)}
+                      className={cn(!headerVisible && "top-0", cardMode && "h-10 px-4")}
                     />
                     {!isCollapsed &&
                       g.items.map((it, idx) =>
@@ -605,7 +713,7 @@ export function DataList<T>({
             </div>
           ) : (
             <div role="rowgroup" className="flex flex-col">
-              {paged.map((it, idx) => renderRow(it, (showHeader ? 2 : 1) + idx))}
+              {paged.map((it, idx) => renderRow(it, (headerVisible ? 2 : 1) + idx))}
             </div>
           )}
         </div>
@@ -679,14 +787,17 @@ export function DataList<T>({
           </div>
         ))}
 
-      {selectable && bulkActions && bulkActions.length > 0 && bulkBarVariant === "floating" && (
-        <DataListBulkBar
-          count={selection.count}
-          selectedItems={selectedItems}
-          actions={bulkActions}
-          onClear={() => selection.clear()}
-        />
-      )}
+      {selectable &&
+        bulkActions &&
+        bulkActions.length > 0 &&
+        (bulkBarVariant === "floating" || isMobile) && (
+          <DataListBulkBar
+            count={selection.count}
+            selectedItems={selectedItems}
+            actions={bulkActions}
+            onClear={() => selection.clear()}
+          />
+        )}
     </div>
   );
 }

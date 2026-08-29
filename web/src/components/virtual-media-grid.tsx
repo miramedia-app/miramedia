@@ -3,9 +3,30 @@
 import * as React from "react";
 import { useWindowVirtualizer } from "@tanstack/react-virtual";
 
-/** Tailwind breakpoints for the media library grid (matches movies/shows pages). */
-function useGridColumnCount(): number {
-  const [cols, setCols] = React.useState(5);
+/**
+ * Poster ladder for the media library grid. Desktop (lg+) is capped at 5
+ * columns on purpose: page sizes are 20/50/100/200, all multiples of 5, so
+ * the last row of a page stays full. `MEDIA_GRID_COLUMNS_CLASS` and
+ * `MEDIA_GRID_BREAKPOINT_COLUMNS` MUST stay in sync: the virtualizer chunks
+ * rows in JS from the same column counts the CSS grid renders, otherwise rows
+ * overflow or leave holes. Mirrored by `media-grid-skeleton.tsx`.
+ */
+export const MEDIA_GRID_COLUMNS_CLASS =
+  "grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5";
+export const MEDIA_GRID_GAP_CLASS = "gap-3 md:gap-4";
+
+/** Column count per Tailwind breakpoint (base first); mirrors `MEDIA_GRID_COLUMNS_CLASS`. */
+export const MEDIA_GRID_BREAKPOINT_COLUMNS = {
+  base: 2,
+  sm: 3,
+  md: 3,
+  lg: 3,
+  xl: 4,
+  "2xl": 5,
+} as const;
+
+export function useGridColumnCount(): number {
+  const [cols, setCols] = React.useState<number>(MEDIA_GRID_BREAKPOINT_COLUMNS.xl);
 
   React.useEffect(() => {
     const mqSm = window.matchMedia("(min-width: 640px)");
@@ -15,12 +36,12 @@ function useGridColumnCount(): number {
     const mq2xl = window.matchMedia("(min-width: 1536px)");
 
     const update = () => {
-      if (mq2xl.matches) setCols(5);
-      else if (mqXl.matches) setCols(4);
-      else if (mqLg.matches) setCols(3);
-      else if (mqMd.matches) setCols(2);
-      else if (mqSm.matches) setCols(1);
-      else setCols(1);
+      if (mq2xl.matches) setCols(MEDIA_GRID_BREAKPOINT_COLUMNS["2xl"]);
+      else if (mqXl.matches) setCols(MEDIA_GRID_BREAKPOINT_COLUMNS.xl);
+      else if (mqLg.matches) setCols(MEDIA_GRID_BREAKPOINT_COLUMNS.lg);
+      else if (mqMd.matches) setCols(MEDIA_GRID_BREAKPOINT_COLUMNS.md);
+      else if (mqSm.matches) setCols(MEDIA_GRID_BREAKPOINT_COLUMNS.sm);
+      else setCols(MEDIA_GRID_BREAKPOINT_COLUMNS.base);
     };
 
     update();
@@ -100,7 +121,7 @@ export function VirtualMediaGrid<T>({
               key={virtualRow.key}
               data-index={virtualRow.index}
               ref={virtualizer.measureElement}
-              className="absolute top-0 left-0 grid w-full auto-rows-min gap-4 [content-visibility:auto] sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"
+              className={`absolute top-0 left-0 grid w-full auto-rows-min ${MEDIA_GRID_GAP_CLASS} ${MEDIA_GRID_COLUMNS_CLASS} [content-visibility:auto]`}
               style={{
                 transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
                 // Pair with content-visibility:auto so skipped rows keep a

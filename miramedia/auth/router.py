@@ -11,8 +11,21 @@ from miramedia.auth.db import User
 from miramedia.auth.oauth_router import get_dynamic_oauth_router
 from miramedia.auth.runtime import auth_runtime_store
 from miramedia.auth.schemas import AuthMetadata, UserRead
+from miramedia.auth.token_scopes import (
+    SCOPE_DOWNLOADS_WRITE,
+    SCOPE_LIBRARY_READ,
+    SCOPE_LIBRARY_WRITE,
+    SCOPE_OPS_READ,
+    SCOPE_PLAYBACK_WRITE,
+    SCOPE_SETTINGS_WRITE,
+    SCOPE_VOCABULARY,
+    TOKEN_SCOPE_SESSION,
+    token_scope,
+    validate_scope_names,
+)
 from miramedia.auth.users import (
     SECRET,
+    CurrentInteractiveUserDep,
     CurrentUserDep,
     SuperuserDep,
     current_superuser,
@@ -67,12 +80,17 @@ def get_auth_metadata() -> AuthMetadata:
 
 
 # --- Personal API tokens -----------------------------------------------------
+#
+# Credential boundary: creating or revoking tokens requires an interactive session
+# (JWT bearer or cookie). Listing tokens is read-only metadata and still accepts
+# API tokens via ``CurrentUserDep``.
 
 
 class ApiTokenRead(BaseModel):
     id: uuid.UUID
     name: str
     preview: str  # last 4 chars of the plaintext token, for disambiguation only
+    scopes: list[str]
     created_at: datetime
     last_used_at: datetime | None
     expires_at: datetime | None
@@ -80,6 +98,7 @@ class ApiTokenRead(BaseModel):
 
 class ApiTokenCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    scopes: list[str] = Field(default_factory=list)
     expires_at: datetime | None = None
 
     @field_validator("name", mode="before")
@@ -97,6 +116,23 @@ class ApiTokenCreate(BaseModel):
             raise ValueError(msg)
         return value
 
+    @field_validator("scopes")
+    @classmethod
+    def validate_scopes(cls, value: list[str]) -> list[str]:
+        return validate_scope_names(value)
+
+
+# OpenAPI vocabulary for token mint UI (frozen set from design 388).
+API_TOKEN_SCOPE_NAMES = sorted(SCOPE_VOCABULARY)
+API_TOKEN_SCOPE_LABELS: dict[str, str] = {
+    SCOPE_LIBRARY_READ: "Library read (catalog, queue, notifications)",
+    SCOPE_LIBRARY_WRITE: "Library write (add, skip, watchlists, requests)",
+    SCOPE_DOWNLOADS_WRITE: "Downloads write (search, start/control torrents, imports)",
+    SCOPE_PLAYBACK_WRITE: "Playback write (own progress and watched state)",
+    SCOPE_OPS_READ: "Ops read (health details, logs, updates, metrics)",
+    SCOPE_SETTINGS_WRITE: "Settings write (config and indexer CRUD)",
+}
+
 
 class ApiTokenCreated(ApiTokenRead):
     """Response on creation — includes the plaintext token, shown to the user once."""
@@ -108,6 +144,7 @@ class ApiTokenCreated(ApiTokenRead):
     "/users/me/tokens",
     status_code=status.HTTP_200_OK,
 )
+@token_scope(TOKEN_SCOPE_SESSION)
 async def list_my_tokens(
     db: DbSessionDependency,
     user: CurrentUserDep,
@@ -133,7 +170,7 @@ async def list_my_tokens(
 async def create_my_token(
     data: ApiTokenCreate,
     db: DbSessionDependency,
-    user: CurrentUserDep,
+    user: CurrentInteractiveUserDep,
 ) -> ApiTokenCreated:
     if data.expires_at is not None and data.expires_at <= datetime.now(UTC):
         raise HTTPException(
@@ -146,6 +183,7 @@ async def create_my_token(
         name=data.name,
         token_hash=token_hash,
         preview=preview,
+        scopes=data.scopes,
         expires_at=data.expires_at,
     )
     db.add(row)
@@ -155,6 +193,7 @@ async def create_my_token(
         id=row.id,
         name=row.name,
         preview=row.preview,
+        scopes=row.scopes,
         created_at=row.created_at,
         last_used_at=row.last_used_at,
         expires_at=row.expires_at,
@@ -166,10 +205,11 @@ async def create_my_token(
     "/users/me/tokens/{token_id}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
+@token_scope(TOKEN_SCOPE_SESSION)
 async def revoke_my_token(
     token_id: uuid.UUID,
     db: DbSessionDependency,
-    user: CurrentUserDep,
+    user: CurrentInteractiveUserDep,
 ) -> None:
     row = await db.get(UserApiToken, token_id)
     if row is None or row.user_id != user.id:

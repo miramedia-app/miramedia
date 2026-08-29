@@ -48,6 +48,10 @@ class Movie(Base):
     continuous_download: Mapped[bool | None] = mapped_column(
         default=None, nullable=True
     )
+    quality_upgrades: Mapped[bool | None] = mapped_column(default=None, nullable=True)
+    upgrade_until_quality: Mapped[str | None] = mapped_column(
+        default=None, nullable=True
+    )
     skipped: Mapped[bool] = mapped_column(default=False, index=True)
     vote_average: Mapped[float | None] = mapped_column(default=None)
     content_rating: Mapped[str | None] = mapped_column(default=None)
@@ -110,6 +114,14 @@ class MovieFile(Base):
             "ix_movie_file_import_status_pending",
             "import_status",
             postgresql_where=text("import_status <> 'imported'"),
+        ),
+        Index(
+            "ix_movie_file_orphaned_failed",
+            "import_status",
+            postgresql_where=text(
+                "torrent_id IS NULL AND import_status IN "
+                "('failed_io', 'failed_no_match')"
+            ),
         ),
     )
 

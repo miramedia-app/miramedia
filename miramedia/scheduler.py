@@ -8,9 +8,11 @@ from taskiq_postgresql.scheduler_source import PostgresqlSchedulerSource
 
 from miramedia.config import MiraMediaConfig
 from miramedia.scheduler_tasks import dispatch as dispatch_tasks
+from miramedia.scheduler_tasks import feeds as feed_tasks
 from miramedia.scheduler_tasks import integrity as integrity_tasks
 from miramedia.scheduler_tasks import maintenance as maintenance_tasks
 from miramedia.scheduler_tasks import media as media_tasks
+from miramedia.scheduler_tasks import viewing_sync as viewing_sync_tasks
 from miramedia.scheduler_tasks.maintenance import (  # noqa: F401
     POSTER_VARIANT_WIDTHS,
     evict_poster_variants,
@@ -117,6 +119,16 @@ async def auto_download_missing_movies_task() -> None:
     await media_tasks.auto_download_missing_movies()
 
 
+@background_broker.task(labels={"priority": "background"})
+async def observe_release_feeds_task() -> None:
+    await feed_tasks.observe_release_feeds()
+
+
+@background_broker.task(labels={"priority": "background"})
+async def jellyfin_viewing_state_dry_run_task() -> None:
+    await viewing_sync_tasks.jellyfin_viewing_state_dry_run()
+
+
 @interactive_broker.task(labels={"priority": "interactive"})
 async def add_show_task(
     external_id: str,
@@ -149,7 +161,22 @@ _STARTUP_SCHEDULES: dict[str, list[dict[str, str]]] = {
     auto_download_missing_movies_task.task_name: [
         {"cron": f"0 */{MiraMediaConfig().misc.auto_download_interval_hours} * * *"}
     ],
+    observe_release_feeds_task.task_name: [
+        {
+            "cron": f"*/{max(1, MiraMediaConfig().misc.release_feeds_poll_interval_minutes)} * * * *"
+        }
+    ],
 }
+_VIEWING_SYNC_MINS = max(1, MiraMediaConfig().viewing_sync.poll_interval_minutes)
+_STARTUP_SCHEDULES[jellyfin_viewing_state_dry_run_task.task_name] = [
+    {
+        "cron": (
+            f"0 */{_VIEWING_SYNC_MINS // 60} * * *"
+            if _VIEWING_SYNC_MINS >= 60
+            else f"*/{_VIEWING_SYNC_MINS} * * * *"
+        )
+    }
+]
 
 
 @background_broker.task(labels={"priority": "background"})
@@ -344,6 +371,22 @@ def get_dynamic_schedule_targets() -> dict[str, str]:
     targets["miramedia.scheduler:verify_imported_files_task"] = _interval_cron(
         cfg.misc.integrity_check_interval_hours
     )
+    mins = max(1, cfg.misc.release_feeds_poll_interval_minutes)
+    if mins >= 60:
+        targets["miramedia.scheduler:observe_release_feeds_task"] = _interval_cron(
+            mins // 60
+        )
+    else:
+        targets["miramedia.scheduler:observe_release_feeds_task"] = f"*/{mins} * * * *"
+    sync_mins = max(1, cfg.viewing_sync.poll_interval_minutes)
+    if sync_mins >= 60:
+        targets["miramedia.scheduler:jellyfin_viewing_state_dry_run_task"] = (
+            _interval_cron(sync_mins // 60)
+        )
+    else:
+        targets["miramedia.scheduler:jellyfin_viewing_state_dry_run_task"] = (
+            f"*/{sync_mins} * * * *"
+        )
     return targets
 
 

@@ -5,7 +5,7 @@ import { ChevronRight, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { components } from "@/lib/api/api";
 import { AddMediaCard } from "./add-media-card";
-import { MediaGridSkeleton } from "./media-grid-skeleton";
+import { MEDIA_ROW_COLUMNS_CLASS, MediaGridSkeleton } from "./media-grid-skeleton";
 
 type SearchResult = components["schemas"]["MetaDataProviderSearchResult"];
 
@@ -37,7 +37,7 @@ export function RecommendedMediaCarousel({
       </div>
       {errorMessage ? (
         <div className="relative w-full">
-          <div className="grid w-full gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          <div className={`grid w-full gap-3 md:gap-4 ${MEDIA_ROW_COLUMNS_CLASS}`}>
             <div className="pointer-events-none aspect-[2/3]" />
           </div>
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed text-center">
@@ -49,9 +49,9 @@ export function RecommendedMediaCarousel({
           </div>
         </div>
       ) : isLoading ? (
-        <MediaGridSkeleton count={5} />
+        <MediaGridSkeleton count={5} columnsClass={MEDIA_ROW_COLUMNS_CLASS} />
       ) : (
-        <div className="grid w-full gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div className="flex w-full snap-x snap-mandatory [scrollbar-width:none] gap-3 overflow-x-auto overscroll-x-contain pb-2 sm:grid sm:grid-cols-3 sm:gap-4 sm:overflow-visible sm:pb-0 md:grid-cols-4 lg:grid-cols-5 [&>*]:w-[42vw] [&>*]:shrink-0 [&>*]:snap-start sm:[&>*]:w-auto">
           {media
             .slice(0, 5)
             // First card is above-the-fold LCP candidate — fetch high.

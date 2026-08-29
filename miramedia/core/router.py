@@ -41,6 +41,22 @@ def _get_expected_alembic_head() -> str | None:
     return _EXPECTED_ALEMBIC_HEAD
 
 
+HEALTH_DB_TIMEOUT_SECONDS = 2.0
+
+
+async def _run_health_db_query(
+    engine: object,
+    sql: str,
+    *,
+    seconds: float | None = None,
+) -> object:
+    """Connect + execute with a hard timeout so probes cannot pile up."""
+    limit = HEALTH_DB_TIMEOUT_SECONDS if seconds is None else seconds
+    async with asyncio.timeout(limit):
+        async with engine.connect() as conn:  # type: ignore[union-attr]
+            return await conn.execute(text(sql))
+
+
 async def _detailed_health() -> dict:
     payload: dict = {
         "status": "ok",
@@ -61,10 +77,10 @@ async def _detailed_health() -> dict:
             db_section["error"] = "healthcheck engine not initialised"
         else:
             try:
-                async with healthcheck_engine.connect() as conn:
-                    await asyncio.wait_for(conn.execute(text("SELECT 1")), timeout=2.0)
+                await _run_health_db_query(healthcheck_engine, "SELECT 1")
                 db_section["ok"] = True
             except TimeoutError:
+                log.warning("health check section failed: TimeoutError")
                 db_section["error"] = "timeout"
 
         pools: dict[str, dict] = {}
@@ -79,7 +95,7 @@ async def _detailed_health() -> dict:
                     "overflow": p.overflow(),
                 }
             except Exception as exc:
-                log.warning("health check section failed", exc_info=exc)
+                log.warning("health check section failed: %s", type(exc).__name__)
                 pools[name] = {"error": "unavailable"}
         db_section["pools"] = pools
 
@@ -91,7 +107,7 @@ async def _detailed_health() -> dict:
         except Exception:  # noqa: S110 — best-effort gauge refresh, non-fatal
             pass
     except Exception as exc:
-        log.warning("health check section failed", exc_info=exc)
+        log.warning("health check section failed: %s", type(exc).__name__)
         db_section = {"ok": False, "error": "unavailable"}
     payload["db"] = db_section
 
@@ -100,23 +116,32 @@ async def _detailed_health() -> dict:
     # immutable for the process). Current revision is read with a raw SELECT to
     # avoid MigrationContext.configure(), which logs at INFO on every call.
     alembic_section: dict = {"ok": False}
-    try:
-        from miramedia.database import healthcheck_engine as _hc
-
-        expected = _get_expected_alembic_head()
-        async with _hc.connect() as conn:  # type: ignore[union-attr]
-            row = (
-                await conn.execute(text("SELECT version_num FROM alembic_version"))
-            ).first()
-        current = row[0] if row else None
+    if not db_section.get("ok"):
         alembic_section = {
-            "ok": current == expected,
-            "expected_head": expected,
-            "current_revision": current,
+            "ok": False,
+            "error": db_section.get("error", "unavailable"),
         }
-    except Exception as exc:
-        log.warning("health check section failed", exc_info=exc)
-        alembic_section = {"ok": False, "error": "unavailable"}
+    else:
+        try:
+            from miramedia.database import healthcheck_engine as _hc
+
+            expected = _get_expected_alembic_head()
+            result = await _run_health_db_query(
+                _hc, "SELECT version_num FROM alembic_version"
+            )
+            row = result.first()
+            current = row[0] if row else None
+            alembic_section = {
+                "ok": current == expected,
+                "expected_head": expected,
+                "current_revision": current,
+            }
+        except TimeoutError:
+            log.warning("health check section failed: TimeoutError")
+            alembic_section = {"ok": False, "error": "unavailable"}
+        except Exception as exc:
+            log.warning("health check section failed: %s", type(exc).__name__)
+            alembic_section = {"ok": False, "error": "unavailable"}
     payload["alembic"] = alembic_section
 
     # Metadata cache stats — uses get_all_cache_stats() from the cache module.

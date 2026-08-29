@@ -39,6 +39,7 @@ import {
 import { AddTorrentDialog } from "@/components/torrents/add-torrent-dialog";
 import { torrentProgressColumn, torrentStatusColumn } from "@/components/torrents/torrent-columns";
 import { DataList, DataListEmpty } from "@/components/data-list";
+import type { MobileAction } from "@/components/data-list";
 import type {
   BulkAction,
   ColumnDef,
@@ -212,6 +213,17 @@ export default function TorrentsPage() {
         id: "title",
         header: "Title",
         width: "minmax(0,1fr)",
+        mobile: {
+          role: "title",
+          render: (t) => (
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className="line-clamp-2">{getMediaName(t)}</span>
+              <span className="line-clamp-1 text-xs font-normal break-all text-muted-foreground">
+                {t.title}
+              </span>
+            </div>
+          ),
+        },
         render: (t) => {
           const mediaLink = getMediaLink(t);
           return (
@@ -236,6 +248,7 @@ export default function TorrentsPage() {
         id: "type",
         header: "Type",
         width: "72px",
+        mobile: { role: "meta", order: 1 },
         render: (t) => <TypePill>{t.media?.media_type === "show" ? "Show" : "Movie"}</TypePill>,
       },
       {
@@ -243,6 +256,7 @@ export default function TorrentsPage() {
         header: "S / E",
         width: "120px",
         hideBelow: "md",
+        mobile: { role: "meta", order: 2 },
         render: (t) => {
           const eps = t.media?.episodes ?? [];
           const seasons = t.media?.seasons ?? [];
@@ -267,12 +281,13 @@ export default function TorrentsPage() {
         header: "Quality",
         width: "88px",
         hideBelow: "sm",
+        mobile: { role: "meta", order: 3 },
         render: (t) => (
           <MetaPill className="font-mono">{getTorrentQualityString(t.quality)}</MetaPill>
         ),
       },
-      torrentProgressColumn(),
-      torrentStatusColumn(),
+      { ...torrentProgressColumn(), mobile: { role: "progress" } },
+      { ...torrentStatusColumn(), mobile: { role: "status" } },
     ],
     [],
   );
@@ -417,6 +432,58 @@ export default function TorrentsPage() {
     [user?.is_superuser, bulkWorking, bulkPauseTorrents, bulkResumeTorrents],
   );
 
+  const mobileActions = React.useCallback(
+    (t: RichTorrent): MobileAction[] => {
+      const status = getTorrentStatusString(t.status);
+      const mediaLink = getMediaLink(t);
+      const admin = !!user?.is_superuser;
+      const out: MobileAction[] = [];
+      if (admin && status === "Downloading") {
+        out.push({
+          id: "pause",
+          label: "Pause",
+          icon: <Pause />,
+          onSelect: () => void pauseTorrent(t),
+        });
+      }
+      if (admin && status === "Paused") {
+        out.push({
+          id: "resume",
+          label: "Resume",
+          icon: <Play />,
+          onSelect: () => void resumeTorrent(t),
+        });
+      }
+      if (admin && status !== "Finished") {
+        out.push({
+          id: "retry",
+          label: "Retry download",
+          icon: <RotateCcw />,
+          onSelect: () => void retryTorrentDownload(t),
+        });
+      }
+      if (mediaLink) {
+        out.push({
+          id: "view",
+          label: "View media",
+          icon: <ExternalLink />,
+          onSelect: () => router.push(mediaLink),
+        });
+      }
+      if (admin) {
+        out.push({
+          id: "delete",
+          label: "Delete",
+          icon: <Trash2 />,
+          destructive: true,
+          onSelect: () => setDeleteDialogTorrent(t),
+        });
+      }
+      return out;
+    },
+    [user?.is_superuser, router, pauseTorrent, resumeTorrent, retryTorrentDownload],
+  );
+
   const renderRowActions = React.useCallback(
     (t: RichTorrent) => {
       const status = getTorrentStatusString(t.status);
@@ -529,6 +596,8 @@ export default function TorrentsPage() {
             emptyDescription="Search a show or movie to start downloading."
             toolbarTrailing={user?.is_superuser ? <AddTorrentDialog /> : null}
             rowActions={renderRowActions}
+            mobileActions={mobileActions}
+            mobileActionsTitle={getMediaName}
           />
         )}
       </main>

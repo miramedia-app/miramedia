@@ -32,7 +32,22 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testIgnore: /mobile-layout\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
+    },
+    // Phone layouts (closest built-in descriptors to iPhone 16 Pro Max).
+    // Only the mobile-layout spec runs here; desktop specs stay on chromium.
+    // Descriptors default to WebKit; the suite is Chromium-only (no WebKit
+    // download in CI), so keep the emulation but force Chromium.
+    {
+      name: "mobile",
+      use: { ...devices["iPhone 15 Pro Max"], defaultBrowserType: "chromium" },
+      testMatch: /mobile-layout\.spec\.ts/,
+    },
+    {
+      name: "mobile-landscape",
+      use: { ...devices["iPhone 15 Pro Max landscape"], defaultBrowserType: "chromium" },
+      testMatch: /mobile-layout\.spec\.ts/,
     },
   ],
   webServer: {

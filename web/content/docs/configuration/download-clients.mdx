@@ -22,11 +22,15 @@ resume data is persisted, so downloads survive restarts.
 
 - `enabled` — enabled in the shipped `config.example.toml`.
 - `listen_port_start` — the BitTorrent listen port. Must match the port
-  published by Docker (the bundled compose publishes `6891` TCP+UDP).
+  published by Docker (the bundled compose publishes `6881` TCP+UDP).
 - `max_download_rate` / `max_upload_rate` — KB/s, `0` = unlimited.
 
 It downloads into `misc.incomplete_torrent_path` (if set) and moves finished
 data to the completed path. See [Paths & Naming](paths-and-naming).
+
+`docker-compose.dev.yaml` intentionally publishes `6891` so the native
+client does not collide with the development-profile qBittorrent mapping.
+That override is not the shipped production default.
 
 <Callout type="info">
 
@@ -75,7 +79,7 @@ age rather than seeders.
 
 [torrents.native]
 enabled = true
-listen_port_start = 6891
+listen_port_start = 6881
 max_download_rate = 0
 max_upload_rate = 0
 

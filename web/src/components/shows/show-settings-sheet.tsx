@@ -39,7 +39,7 @@ export function ShowSettingsSheet({ show }: { show: Show }) {
         <Settings className="h-4 w-4" />
         Settings
       </SheetTrigger>
-      <SheetContent side="right" className="w-80 overflow-y-auto sm:max-w-sm">
+      <SheetContent side="right" className="w-[88vw] overflow-y-auto sm:w-80 sm:max-w-sm">
         {open ? <ShowSettingsBody show={show} /> : null}
       </SheetContent>
     </Sheet>

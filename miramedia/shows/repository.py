@@ -714,6 +714,30 @@ class ShowRepository:
             log.exception("Database error while retrieving season %s", season_id)
             raise
 
+    async def get_seasons_by_ids(
+        self, season_ids: list[SeasonId]
+    ) -> dict[SeasonId, SeasonSchema]:
+        """Batch-load seasons with episodes eager-loaded."""
+        if not season_ids:
+            return {}
+        try:
+            stmt = (
+                select(Season)
+                .where(Season.id.in_(season_ids))
+                .options(
+                    selectinload(Season.episodes).selectinload(Episode.episode_files),
+                    selectinload(Season.show),
+                )
+            )
+            rows = (await self.db.execute(stmt)).unique().scalars().all()
+            return {
+                SeasonId(season.id): SeasonSchema.model_validate(season)
+                for season in rows
+            }
+        except SQLAlchemyError:
+            log.exception("Database error while retrieving seasons %s", season_ids)
+            raise
+
     async def get_episode(self, episode_id: EpisodeId) -> EpisodeSchema:
         """
         Retrieve an episode by its ID.

@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import { showDetailBundleQueryOptions } from "@/lib/api/media-queries";
@@ -118,43 +118,60 @@ export function useShowDetail(showId: string | null | undefined) {
   const [expandedSeasons, setExpandedSeasons] = React.useState<Set<string>>(new Set());
   const [expandedEpisodes, setExpandedEpisodes] = React.useState<Set<string>>(new Set());
 
-  // Season files — one query per expanded season. React Query handles dedup,
-  // caching, and per-key invalidation. Stable key order matters for hook
-  // call counts, so sort the expanded set.
+  // Season files — one bounded batch request for all expanded seasons. Per-season
+  // cache keys are seeded so narrow invalidation still works.
   const expandedSeasonIds = React.useMemo(
     () => Array.from(expandedSeasons).sort(),
     [expandedSeasons],
   );
-  const seasonFileQueries = useQueries({
-    queries: expandedSeasonIds.map((seasonId) => ({
-      queryKey: ["season-files", seasonId],
-      queryFn: async ({ signal }): Promise<EpisodeFile[]> => {
-        const { data, error } = await apiClient.GET("/api/v1/seasons/{season_id}/files", {
-          signal,
-          params: { path: { season_id: seasonId } },
-        });
-        if (error) throw error;
-        return data ?? [];
-      },
-      staleTime: 60 * 1000,
-    })),
+  const seasonFilesBatchQuery = useQuery({
+    queryKey: ["season-files-batch", showId, expandedSeasonIds],
+    queryFn: async ({ signal }) => {
+      const { data, error } = await apiClient.POST("/api/v1/seasons/files/batch", {
+        signal,
+        body: { season_ids: expandedSeasonIds, show_id: showId! },
+      });
+      if (error) throw error;
+      return data;
+    },
+    enabled: !!showId && expandedSeasonIds.length > 0,
+    staleTime: 60 * 1000,
   });
+
+  React.useEffect(() => {
+    const results = seasonFilesBatchQuery.data?.results;
+    if (!results) return;
+    for (const [seasonId, files] of Object.entries(results)) {
+      queryClient.setQueryData(["season-files", seasonId], files);
+    }
+  }, [seasonFilesBatchQuery.data, queryClient]);
+
   const seasonFilesMap = React.useMemo(() => {
     const map = new Map<string, EpisodeFile[]>();
-    expandedSeasonIds.forEach((id, i) => {
-      const data = seasonFileQueries[i]?.data;
-      if (data) map.set(id, data);
-    });
+    const results = seasonFilesBatchQuery.data?.results;
+    if (results) {
+      for (const [seasonId, files] of Object.entries(results)) {
+        map.set(seasonId, files);
+      }
+    }
+    for (const seasonId of expandedSeasonIds) {
+      const cached = queryClient.getQueryData<EpisodeFile[]>(["season-files", seasonId]);
+      if (cached) map.set(seasonId, cached);
+    }
     return map;
-  }, [expandedSeasonIds, seasonFileQueries]);
+  }, [expandedSeasonIds, seasonFilesBatchQuery.data, queryClient]);
 
   const seasonFilesErrorIds = React.useMemo(() => {
     const failed = new Set<string>();
-    expandedSeasonIds.forEach((id, i) => {
-      if (seasonFileQueries[i]?.isError) failed.add(id);
-    });
+    const errors = seasonFilesBatchQuery.data?.errors;
+    if (errors) {
+      for (const seasonId of Object.keys(errors)) failed.add(seasonId);
+    }
+    if (seasonFilesBatchQuery.isError) {
+      expandedSeasonIds.forEach((id) => failed.add(id));
+    }
     return failed;
-  }, [expandedSeasonIds, seasonFileQueries]);
+  }, [expandedSeasonIds, seasonFilesBatchQuery.data, seasonFilesBatchQuery.isError]);
 
   const getEpisodeFiles = React.useCallback(
     (seasonId: string, episodeId: string) =>
@@ -163,11 +180,13 @@ export function useShowDetail(showId: string | null | undefined) {
   );
 
   const invalidateSeasonFiles = React.useCallback(
-    (seasonId?: string) =>
-      queryClient.invalidateQueries({
+    (seasonId?: string) => {
+      void queryClient.invalidateQueries({
         queryKey: seasonId ? ["season-files", seasonId] : ["season-files"],
-      }),
-    [queryClient],
+      });
+      void queryClient.invalidateQueries({ queryKey: ["season-files-batch", showId] });
+    },
+    [queryClient, showId],
   );
 
   const toggleSeason = React.useCallback((seasonId: string) => {
@@ -644,6 +663,7 @@ export function useShowDetail(showId: string | null | undefined) {
     seasonHasAllSubtitles,
     sortedSeasons,
     treeRows,
+    getEpisodeFiles,
     seasonFilesErrorIds,
     invalidateSeasonFiles,
     // expansion

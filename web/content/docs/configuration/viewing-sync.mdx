@@ -1,0 +1,114 @@
+---
+title: Viewing sync
+description: "Jellyfin viewing-state dry-run: manual user map, per-user cursors, proposals, and how to turn it off."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Viewing sync is an **opt-in dry-run** pilot. When enabled, MiraMedia reads
+Jellyfin play state for **manually mapped** users, compares it to local
+playback, and **stores proposals and quarantines**. It does **not** write
+Continue Watching, progress, or watched flags.
+
+There is no viewing-sync page and no Settings tab. Edit `[viewing_sync]` in
+`config.toml` (or `MIRAMEDIA_VIEWING_SYNC__*`) and restart after file edits.
+
+<Callout type="warn">
+
+Dry-run only. Proposal actions such as `upsert_progress` are labels on
+stored rows. Playback state is never applied.
+
+</Callout>
+
+## Defaults
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `viewing_sync.enabled` | `false` | Master switch |
+| `viewing_sync.poll_interval_minutes` | `60` | Poll cadence (minimum 1) |
+| `viewing_sync.retention_days` | `14` | Age cutoff for stored rows |
+| `viewing_sync.retention_min_rows` | `5000` | Floor of newest rows to keep |
+| `viewing_sync.jellyfin.url` | `""` (example file uses `http://jellyfin:8096`) | Jellyfin base URL |
+| `viewing_sync.jellyfin.api_key` | `""` | API key (never logged) |
+| `viewing_sync.jellyfin.timeout_seconds` | `30` | HTTP timeout |
+| `viewing_sync.jellyfin.allow_private_network` | `true` | Permit loopback / RFC1918 Jellyfin URLs |
+| `viewing_sync.jellyfin.allow_insecure_transport` | `true` | Permit `http://` (not HTTPS-only) |
+| `viewing_sync.jellyfin.user_map` | `{}` | Jellyfin user GUID → MiraMedia `user.id` |
+
+## Prerequisites
+
+- A reachable Jellyfin URL and a **read-only** API key.
+- A non-empty `user_map`. Keys are Jellyfin user GUIDs; values are existing
+  MiraMedia user UUIDs. **Users are never auto-created.** Duplicate MiraMedia
+  targets in the map abort the run.
+- Mapped titles must exist in MiraMedia with a playable file, or the item is
+  quarantined (`no_playable_file`).
+
+## Per-user cursors
+
+Each mapped Jellyfin user has an independent `min_last_played_date` cursor.
+Jellyfin is queried with that watermark so later polls skip older UserData.
+
+- Users added after the cursor table was migrated start at **NULL** (full
+  pull for that user).
+- A user missing from Jellyfin `/Users`, or a per-user fetch failure, **does
+  not** advance that user's cursor. Other mapped users still proceed.
+
+## Safety boundary
+
+The service **reads** local progress/watched state to decide what it *would*
+do, then inserts `viewing_sync_proposal` / `viewing_sync_quarantine` rows.
+It never calls playback write APIs.
+
+Unmapped users, ambiguous matches, missing provider IDs, multi-episode
+items, clock skew, and missing playable files are quarantined rather than
+proposed.
+
+<Callout type="warn">
+
+`allow_private_network` and `allow_insecure_transport` default **on** so a
+typical LAN Jellyfin URL is accepted. That relaxes the same URL checks used
+elsewhere (private/loopback addresses and cleartext HTTP). Turn them off if
+Jellyfin is only reachable on HTTPS at a public hostname. Do not paste real
+API keys or home URLs into shared configs — use `YOUR_JELLYFIN_API_KEY`.
+
+</Callout>
+
+## Observability
+
+There is no operator UI for proposals. Use:
+
+- **System → Logs** — `viewing_sync_dry_run_item`,
+  `viewing_sync_dry_run_summary`, `viewing_sync_poll_error`,
+  `viewing_sync_user_missing`, `viewing_sync_user_fetch_error`,
+  `viewing_sync_config_error`, `viewing_sync_disabled_no_user_map`.
+- Prometheus — `viewing_sync_items_seen`, `viewing_sync_unique_matches`,
+  `viewing_sync_quarantined`, `viewing_sync_poll_errors`,
+  `viewing_sync_users_missing`, `viewing_sync_user_fetch_errors`.
+- **System → Diagnostics → Scheduled tasks** — the
+  `jellyfin_viewing_state_dry_run_task` cron. That tab does not list
+  proposals.
+
+## Disable / rollback
+
+Set `viewing_sync.enabled = false` and restart. Polling stops. Stored
+proposals, quarantines, and cursors remain until retention purge; local
+playback is unchanged because this pilot never wrote it.
+
+```toml title="config.toml"
+[viewing_sync]
+enabled = false
+poll_interval_minutes = 60
+retention_days = 14
+retention_min_rows = 5000
+
+[viewing_sync.jellyfin]
+url = "http://jellyfin:8096"
+api_key = "YOUR_JELLYFIN_API_KEY"
+allow_private_network = true
+allow_insecure_transport = true
+timeout_seconds = 30
+
+# [viewing_sync.jellyfin.user_map]
+# "jellyfin-user-guid" = "miramedia-user-uuid"
+```

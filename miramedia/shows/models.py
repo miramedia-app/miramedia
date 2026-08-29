@@ -160,6 +160,14 @@ class EpisodeFile(Base):
             "import_status",
             postgresql_where=text("import_status <> 'imported'"),
         ),
+        Index(
+            "ix_episode_file_orphaned_failed",
+            "import_status",
+            postgresql_where=text(
+                "torrent_id IS NULL AND import_status IN "
+                "('failed_io', 'failed_no_match')"
+            ),
+        ),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     episode_id: Mapped[UUID] = mapped_column(

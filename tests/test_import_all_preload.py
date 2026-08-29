@@ -72,7 +72,7 @@ def test_import_all_resolves_media_in_filter_and_re_resolves_in_loop() -> None:
         ),
         patch.object(
             svc.torrent_service,
-            "get_all_torrents",
+            "get_finished_torrents",
             AsyncMock(return_value=torrents),
         ),
         patch.object(
@@ -137,7 +137,7 @@ def test_import_all_skips_vanished_torrent_without_aborting_batch() -> None:
         ),
         patch.object(
             svc.torrent_service,
-            "get_all_torrents",
+            "get_finished_torrents",
             AsyncMock(return_value=[keep, vanish]),
         ),
         patch.object(
@@ -200,7 +200,7 @@ def test_import_all_failure_isolation_continues_batch() -> None:
         ),
         patch.object(
             svc.torrent_service,
-            "get_all_torrents",
+            "get_finished_torrents",
             AsyncMock(return_value=[bad, good]),
         ),
         patch.object(
@@ -267,7 +267,7 @@ def test_import_all_re_resolves_media_after_prior_import_mutates_show() -> None:
         ),
         patch.object(
             svc.torrent_service,
-            "get_all_torrents",
+            "get_finished_torrents",
             AsyncMock(return_value=[first, second]),
         ),
         patch.object(
@@ -334,7 +334,7 @@ def test_import_all_skips_when_media_vanishes_before_loop() -> None:
         ),
         patch.object(
             svc.torrent_service,
-            "get_all_torrents",
+            "get_finished_torrents",
             AsyncMock(return_value=[keep, vanish]),
         ),
         patch.object(

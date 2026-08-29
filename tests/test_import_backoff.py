@@ -377,7 +377,7 @@ class TestImportAllTorrentsRetryIntegration:
             patch.object(fresh_svc, "import_show_from_torrent", boom_import),
             patch.object(
                 svc.torrent_service,
-                "get_all_torrents",
+                "get_finished_torrents",
                 AsyncMock(return_value=[torrent]),
             ),
             patch.object(
@@ -440,7 +440,7 @@ class TestImportAllTorrentsRetryIntegration:
             patch.object(fresh_svc, "import_movie_from_torrent", boom_import),
             patch.object(
                 svc.torrent_service,
-                "get_all_torrents",
+                "get_finished_torrents",
                 AsyncMock(return_value=[torrent]),
             ),
             patch.object(
@@ -492,7 +492,7 @@ class TestImportAllTorrentsRetryIntegration:
             ),
             patch.object(
                 svc.torrent_service,
-                "get_all_torrents",
+                "get_finished_torrents",
                 AsyncMock(return_value=[imported_t, not_due_t, ready_t]),
             ),
             patch.object(

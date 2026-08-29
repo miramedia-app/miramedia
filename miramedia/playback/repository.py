@@ -2,17 +2,28 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, delete, or_, select, text
+from sqlalchemy import ColumnElement, delete, or_, select, text, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.movies.models import Movie, MovieFile
 from miramedia.movies.schemas import MovieId
 from miramedia.naming import format_episode_label
+from miramedia.playback.bulk import (
+    BULK_CHUNK_SIZE as _BULK_CHUNK_SIZE,
+)
+from miramedia.playback.bulk import (
+    UserFileKey,
+    UserMediaKey,
+)
+from miramedia.playback.bulk import (
+    chunked as _chunked,
+)
 from miramedia.playback.models import MediaWatchState as MediaWatchStateRow
 from miramedia.playback.models import PlaybackProgress as PlaybackProgressRow
 from miramedia.playback.models import WatchStateSource
@@ -84,6 +95,66 @@ class PlaybackRepository:
         )
         row = (await self.db.execute(stmt)).scalars().first()
         return self._to_schema(row) if row else None
+
+    async def bulk_get_progress(
+        self,
+        keys: Sequence[UserFileKey],
+        *,
+        chunk_size: int = _BULK_CHUNK_SIZE,
+    ) -> dict[UserFileKey, PlaybackProgress]:
+        if not keys:
+            return {}
+
+        unique_keys = list(dict.fromkeys(keys))
+        progress_by_key: dict[UserFileKey, PlaybackProgress] = {}
+
+        for chunk in _chunked(unique_keys, chunk_size):
+            movie_pairs = [
+                (key.user_id, key.file_id)
+                for key in chunk
+                if key.media_kind == MediaKind.movie
+            ]
+            episode_pairs = [
+                (key.user_id, key.file_id)
+                for key in chunk
+                if key.media_kind == MediaKind.episode
+            ]
+
+            if movie_pairs:
+                stmt = select(PlaybackProgressRow).where(
+                    tuple_(
+                        PlaybackProgressRow.user_id,
+                        PlaybackProgressRow.movie_file_id,
+                    ).in_(movie_pairs)
+                )
+                for row in (await self.db.execute(stmt)).scalars().all():
+                    if row.movie_file_id is None:
+                        continue
+                    key = UserFileKey(
+                        user_id=row.user_id,
+                        file_id=row.movie_file_id,
+                        media_kind=MediaKind.movie,
+                    )
+                    progress_by_key[key] = self._to_schema(row)
+
+            if episode_pairs:
+                stmt = select(PlaybackProgressRow).where(
+                    tuple_(
+                        PlaybackProgressRow.user_id,
+                        PlaybackProgressRow.episode_file_id,
+                    ).in_(episode_pairs)
+                )
+                for row in (await self.db.execute(stmt)).scalars().all():
+                    if row.episode_file_id is None:
+                        continue
+                    key = UserFileKey(
+                        user_id=row.user_id,
+                        file_id=row.episode_file_id,
+                        media_kind=MediaKind.episode,
+                    )
+                    progress_by_key[key] = self._to_schema(row)
+
+        return progress_by_key
 
     async def upsert_progress(
         self,
@@ -490,6 +561,162 @@ class PlaybackRepository:
             source=None,
             watched_at=None,
         )
+
+    async def bulk_get_watched(
+        self,
+        keys: Sequence[UserMediaKey],
+        *,
+        chunk_size: int = _BULK_CHUNK_SIZE,
+    ) -> dict[UserMediaKey, WatchState]:
+        if not keys:
+            return {}
+
+        unique_keys = list(dict.fromkeys(keys))
+        watch_by_key: dict[UserMediaKey, WatchState] = {}
+
+        for chunk in _chunked(unique_keys, chunk_size):
+            movie_keys = [key for key in chunk if key.media_kind == MediaKind.movie]
+            episode_keys = [key for key in chunk if key.media_kind == MediaKind.episode]
+
+            watch_rows: dict[UserMediaKey, MediaWatchStateRow] = {}
+            if movie_keys:
+                movie_pairs = [(key.user_id, key.media_id) for key in movie_keys]
+                stmt = select(MediaWatchStateRow).where(
+                    tuple_(
+                        MediaWatchStateRow.user_id,
+                        MediaWatchStateRow.movie_id,
+                    ).in_(movie_pairs)
+                )
+                for row in (await self.db.execute(stmt)).scalars().all():
+                    if row.movie_id is None:
+                        continue
+                    watch_rows[
+                        UserMediaKey(
+                            user_id=row.user_id,
+                            media_kind=MediaKind.movie,
+                            media_id=row.movie_id,
+                        )
+                    ] = row
+
+            if episode_keys:
+                episode_pairs = [(key.user_id, key.media_id) for key in episode_keys]
+                stmt = select(MediaWatchStateRow).where(
+                    tuple_(
+                        MediaWatchStateRow.user_id,
+                        MediaWatchStateRow.episode_id,
+                    ).in_(episode_pairs)
+                )
+                for row in (await self.db.execute(stmt)).scalars().all():
+                    if row.episode_id is None:
+                        continue
+                    watch_rows[
+                        UserMediaKey(
+                            user_id=row.user_id,
+                            media_kind=MediaKind.episode,
+                            media_id=row.episode_id,
+                        )
+                    ] = row
+
+            completed_keys: set[UserMediaKey] = set()
+            pending_completed = [
+                key
+                for key in chunk
+                if key not in watch_rows
+                or watch_rows[key].source != WatchStateSource.manual
+            ]
+            movie_pending = [
+                key for key in pending_completed if key.media_kind == MediaKind.movie
+            ]
+            episode_pending = [
+                key for key in pending_completed if key.media_kind == MediaKind.episode
+            ]
+
+            if movie_pending:
+                movie_pairs = [(key.user_id, key.media_id) for key in movie_pending]
+                stmt = (
+                    select(PlaybackProgressRow.user_id, MovieFile.movie_id)
+                    .join(
+                        MovieFile,
+                        PlaybackProgressRow.movie_file_id == MovieFile.id,
+                    )
+                    .where(
+                        tuple_(
+                            PlaybackProgressRow.user_id,
+                            MovieFile.movie_id,
+                        ).in_(movie_pairs),
+                        PlaybackProgressRow.completed.is_(True),
+                    )
+                    .distinct()
+                )
+                for user_id, media_id in (await self.db.execute(stmt)).all():
+                    completed_keys.add(
+                        UserMediaKey(
+                            user_id=user_id,
+                            media_kind=MediaKind.movie,
+                            media_id=media_id,
+                        )
+                    )
+
+            if episode_pending:
+                episode_pairs = [(key.user_id, key.media_id) for key in episode_pending]
+                stmt = (
+                    select(PlaybackProgressRow.user_id, EpisodeFile.episode_id)
+                    .join(
+                        EpisodeFile,
+                        PlaybackProgressRow.episode_file_id == EpisodeFile.id,
+                    )
+                    .where(
+                        tuple_(
+                            PlaybackProgressRow.user_id,
+                            EpisodeFile.episode_id,
+                        ).in_(episode_pairs),
+                        PlaybackProgressRow.completed.is_(True),
+                    )
+                    .distinct()
+                )
+                for user_id, media_id in (await self.db.execute(stmt)).all():
+                    completed_keys.add(
+                        UserMediaKey(
+                            user_id=user_id,
+                            media_kind=MediaKind.episode,
+                            media_id=media_id,
+                        )
+                    )
+
+            for key in chunk:
+                row = watch_rows.get(key)
+                if row is not None and row.source == WatchStateSource.manual:
+                    watch_by_key[key] = self._watch_state_to_schema(
+                        media_kind=key.media_kind,
+                        media_id=key.media_id,
+                        watched=row.watched,
+                        source=WatchStateSource.manual,
+                        watched_at=row.watched_at,
+                    )
+                    continue
+
+                if key in completed_keys:
+                    watched_at = row.watched_at if row is not None else None
+                    if watched_at is None and row is not None:
+                        watched_at = row.updated_at
+                    watch_by_key[key] = self._watch_state_to_schema(
+                        media_kind=key.media_kind,
+                        media_id=key.media_id,
+                        watched=True,
+                        source=WatchStateSource.derived,
+                        watched_at=watched_at,
+                    )
+                    continue
+
+                watch_by_key[key] = self._watch_state_to_schema(
+                    media_kind=key.media_kind,
+                    media_id=key.media_id,
+                    watched=False,
+                    source=None,
+                    watched_at=None,
+                )
+
+        return watch_by_key
 
     async def set_watched(
         self,

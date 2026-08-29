@@ -367,35 +367,37 @@ export default function SystemSettingsPage() {
                 Reset All
               </Button>
               <span className="hidden h-6 w-px bg-border sm:block" />
-              {editor.isDirty && (
-                <span className="text-xs text-muted-foreground">
-                  {editor.dirtyTabs.size} unsaved{" "}
-                  {editor.dirtyTabs.size === 1 ? "section" : "sections"}
-                </span>
-              )}
-              <Button
-                onClick={() => void editor.saveAllSettings()}
-                disabled={editor.saving || !editor.isDirty}
-                size="default"
-                className="gap-1 text-xs"
-              >
-                {editor.saving ? (
-                  <LoaderCircle className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Check className="h-4 w-4" />
+              <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 flex items-center justify-end gap-3 border-t bg-background/95 px-4 py-2 backdrop-blur md:static md:bottom-auto md:z-auto md:border-0 md:bg-transparent md:p-0 md:backdrop-blur-none">
+                {editor.isDirty && (
+                  <span className="text-xs text-muted-foreground">
+                    {editor.dirtyTabs.size} unsaved{" "}
+                    {editor.dirtyTabs.size === 1 ? "section" : "sections"}
+                  </span>
                 )}
-                Save
-              </Button>
+                <Button
+                  onClick={() => void editor.saveAllSettings()}
+                  disabled={editor.saving || !editor.isDirty}
+                  size="default"
+                  className="gap-1 text-xs max-md:min-w-28"
+                >
+                  {editor.saving ? (
+                    <LoaderCircle className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Check className="h-4 w-4" />
+                  )}
+                  Save
+                </Button>
+              </div>
             </div>
 
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full pb-16 md:pb-0">
               <div className="grid gap-6 md:grid-cols-[220px_minmax(0,1fr)]">
-                <TabsList className="sticky top-4 flex h-auto flex-col items-stretch justify-start self-start bg-transparent p-0">
+                <TabsList className="sticky top-4 flex h-auto flex-col items-stretch justify-start self-start bg-transparent p-0 max-md:static max-md:-mx-4 max-md:snap-x max-md:snap-mandatory max-md:[scrollbar-width:none] max-md:flex-row max-md:gap-1 max-md:overflow-x-auto max-md:px-4 max-md:py-1 max-md:[&::-webkit-scrollbar]:hidden">
                   {TAB_DEFS.map(({ value, label }) => (
                     <TabsTrigger
                       key={value}
                       value={value}
-                      className="relative justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[active]:border-border data-[active]:bg-muted data-[active]:shadow-none!"
+                      className="relative justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[active]:border-border data-[active]:bg-muted data-[active]:shadow-none! max-md:min-h-11 max-md:shrink-0 max-md:snap-start"
                     >
                       {label}
                       {editor.dirtyTabs.has(value) && (

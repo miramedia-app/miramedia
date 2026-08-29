@@ -85,6 +85,7 @@ export default function NotificationsPage() {
         id: "state",
         header: "",
         width: "28px",
+        mobile: { role: "hidden" },
         render: (n) =>
           n.read ? (
             <span className="h-2 w-2 rounded-full bg-transparent" aria-hidden />
@@ -96,6 +97,25 @@ export default function NotificationsPage() {
         id: "message",
         header: "Message",
         width: "minmax(0,1fr)",
+        mobile: {
+          role: "title",
+          render: (n) => (
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <span className={`line-clamp-3 ${n.read ? "font-normal text-muted-foreground" : ""}`}>
+                {!n.read && (
+                  <span
+                    className="mr-1.5 inline-block h-2 w-2 -translate-y-px rounded-full bg-primary"
+                    aria-label="Unread"
+                  />
+                )}
+                {n.message}
+              </span>
+              <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                {n.timestamp ? new Date(n.timestamp).toLocaleString() : "—"}
+              </span>
+            </div>
+          ),
+        },
         render: (n) => (
           <div className="flex min-w-0 flex-col gap-0.5">
             <span

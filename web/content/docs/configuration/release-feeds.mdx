@@ -1,0 +1,98 @@
+---
+title: Release feeds
+description: "Observe-only Torznab/Newznab release feeds: sources, max-age, decisions, and how to turn them off."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Release feeds are an **opt-in, observe-only** pilot. When enabled, MiraMedia
+polls configured recent-search feeds, scores each item against the library,
+and **records a decision**. It never starts a download from a feed item.
+
+There is **no feeds page** and no Settings tab. Configure `config.toml` (or
+`MIRAMEDIA_MISC__RELEASE_FEEDS_*`) and restart after file edits.
+
+<Callout type="warn">
+
+Feeds do **not** auto-grab. `would_grab` means “this item would have been
+chosen if observe-only were not in force.” Downloads stay forbidden.
+
+</Callout>
+
+## Defaults
+
+| Key                                      | Default | Purpose |
+| ---------------------------------------- | ------- | ------- |
+| `misc.release_feeds_enabled`             | `false` | Master switch |
+| `misc.release_feeds_poll_interval_minutes` | `15`  | Poll cadence (minimum 1) |
+| `misc.release_feeds_maxage_days`         | `2`     | Absolute age window for **dated** items |
+
+## Prerequisites
+
+At least one feed source must be enabled and reachable:
+
+| Backend | What is polled |
+| ------- | -------------- |
+| Jackett | Each name in `indexers.jackett.indexers` except `all` |
+| Prowlarr | Indexers listed by that Prowlarr instance |
+| Native Torznab | Enabled indexer **sites** whose type is `torznab` (custom Torznab endpoints, not HTML scrapers such as YTS / EZTV) |
+
+See [Indexers](indexers). Native scrapers are **not** feed sources.
+
+## Max-age and watermarks
+
+When `release_feeds_maxage_days` is greater than `0`:
+
+- Dated items older than `now − maxage_days` are **rejected**, even if they
+  carry a provider GUID.
+- Items **without** a pub date are kept (undated).
+- A late GUID that is still inside the absolute window is still considered
+  (out-of-order items in-window still apply).
+
+`maxage_days <= 0` disables this age filter entirely (watermark ordering is
+unchanged). Stored observations older than 14 days are purged per source,
+keeping at least 5,000 newest rows.
+
+The poller **commits a source lease before** it performs the external HTTP
+poll, so overlapping workers do not double-fetch the same source.
+
+## Decisions
+
+Each new item is persisted with a decision such as `would_grab`,
+`unmatched`, `not_wanted`, `already_have`, `active_download`, `deny_listed`,
+`drop_score`, `skipped_destination`, or `error`. Duplicate GUIDs/URLs are
+skipped. Download URLs are stored redacted.
+
+## Observability
+
+There is no operator UI for feed rows. Use:
+
+- **System → Logs** — `feed_decision`, `feed_poll_ok`, `feed_poll_hold`,
+  `feed_poll_abandoned`.
+- Prometheus (`GET /api/v1/metrics`) — `feed_items_seen`,
+  `feed_items_unmatched`, `feed_would_grab`, `feed_poll_errors`. Superuser
+  by default; see [Logging](logging) and
+  [Performance Tuning](/docs/advanced-features/performance#observability).
+- **System → Diagnostics → Scheduled tasks** — the
+  `observe_release_feeds_task` cron. That tab does **not** show per-item
+  decisions.
+
+<Callout type="info">
+
+Persisted observations live in the database (`feed_item` / `feed_source`).
+Browsing them from the dashboard is not shipped.
+
+</Callout>
+
+## Disable / rollback
+
+Set `release_feeds_enabled = false` and restart. Polling stops; existing
+observation rows remain until the usual retention purge. No torrents were
+started by this pilot, so there is nothing to cancel on disable.
+
+```toml title="config.toml"
+[misc]
+release_feeds_enabled = false
+release_feeds_poll_interval_minutes = 15
+release_feeds_maxage_days = 2
+```

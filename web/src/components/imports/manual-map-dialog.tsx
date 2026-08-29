@@ -4,13 +4,13 @@ import * as React from "react";
 import { toast } from "sonner";
 import { LoaderCircle, FileVideo, FileText } from "lucide-react";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogDescription,
+  ResponsiveDialogFooter,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+} from "@/components/ui/responsive-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -208,15 +208,15 @@ export function ManualMapDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] w-fit min-w-[80vw] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Manually map files</DialogTitle>
-          <DialogDescription>
+    <ResponsiveDialog open={open} onOpenChange={onOpenChange}>
+      <ResponsiveDialogContent className="max-h-[90vh] w-full overflow-y-auto sm:w-fit sm:min-w-[80vw]">
+        <ResponsiveDialogHeader>
+          <ResponsiveDialogTitle>Manually map files</ResponsiveDialogTitle>
+          <ResponsiveDialogDescription>
             Assign each torrent file ({torrentTitle}) to an episode or movie. Skipped files stay on
             disk untouched.
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveDialogDescription>
+        </ResponsiveDialogHeader>
 
         {isLoading ? (
           <div className="flex justify-center py-10">
@@ -227,7 +227,7 @@ export function ManualMapDialog({
         ) : (
           <>
             <div className="rounded-md border">
-              <div className="grid grid-cols-[minmax(220px,2fr)_120px_auto_minmax(220px,2fr)_140px] gap-2 border-b bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground">
+              <div className="hidden grid-cols-[minmax(220px,2fr)_120px_auto_minmax(220px,2fr)_140px] gap-2 border-b bg-muted/50 px-3 py-2 text-xs font-semibold text-muted-foreground sm:grid">
                 <span>File</span>
                 <span>Size</span>
                 <span>Detected</span>
@@ -237,7 +237,7 @@ export function ManualMapDialog({
               {rows.map((row, idx) => (
                 <div
                   key={row.relative_path}
-                  className="grid grid-cols-[minmax(220px,2fr)_120px_auto_minmax(220px,2fr)_140px] gap-2 border-b px-3 py-2 text-xs last:border-b-0"
+                  className="grid grid-cols-1 gap-2 border-b px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[minmax(220px,2fr)_120px_auto_minmax(220px,2fr)_140px]"
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     {row.is_video ? (
@@ -249,7 +249,10 @@ export function ManualMapDialog({
                       {row.relative_path}
                     </span>
                   </div>
-                  <span className="tabular-nums">{formatSize(row.size)}</span>
+                  <span className="tabular-nums">
+                    <span className="text-muted-foreground sm:hidden">Size: </span>
+                    {formatSize(row.size)}
+                  </span>
                   <div className="flex flex-wrap items-center gap-1">
                     {(row.seasons.length || row.episodes.length) > 0 && (
                       <Badge variant="outline" className="text-[10px]">
@@ -264,7 +267,7 @@ export function ManualMapDialog({
                     )}
                   </div>
                   <Select value={row.target} onValueChange={(v) => updateRow(idx, { target: v })}>
-                    <SelectTrigger className="text-xs">
+                    <SelectTrigger className="text-xs coarse:min-h-11" aria-label="Target">
                       <SelectValue>{previewTarget(row)}</SelectValue>
                     </SelectTrigger>
                     <SelectContent>
@@ -281,10 +284,11 @@ export function ManualMapDialog({
                   </Select>
                   <Input
                     type="text"
-                    placeholder="(none)"
+                    placeholder="Variant (none)"
+                    aria-label="Variant"
                     value={row.variant}
                     onChange={(e) => updateRow(idx, { variant: e.target.value })}
-                    className="h-8 text-xs"
+                    className="h-8 text-xs coarse:min-h-11"
                   />
                 </div>
               ))}
@@ -296,7 +300,7 @@ export function ManualMapDialog({
           </>
         )}
 
-        <DialogFooter>
+        <ResponsiveDialogFooter>
           <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
             Cancel
           </Button>
@@ -304,8 +308,8 @@ export function ManualMapDialog({
             {isSubmitting && <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />}
             Apply mapping
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveDialogFooter>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

@@ -63,7 +63,7 @@ export function WatchlistSettingsSheet({
         <Settings className="size-4" />
         Settings
       </SheetTrigger>
-      <SheetContent side="right" className="w-80 overflow-y-auto sm:max-w-sm">
+      <SheetContent side="right" className="w-[88vw] overflow-y-auto sm:w-80 sm:max-w-sm">
         <SheetHeader>
           <SheetTitle>Watchlist Settings</SheetTitle>
           <SheetDescription>{initialName}</SheetDescription>

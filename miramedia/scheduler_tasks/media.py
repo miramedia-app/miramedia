@@ -48,27 +48,37 @@ async def import_all_show_torrents() -> None:
 
 async def detect_finished_downloads() -> None:
     """Promptly notice downloads that just finished and trigger their import."""
-    from miramedia.background_services import bg_torrent_service
-    from miramedia.database import release_session_before_external_io
-    from miramedia.torrents.schemas import TorrentStatus
 
-    async with bg_torrent_service() as svc:
-        torrents = await svc.torrent_repository.get_active_torrents()
-        if not torrents:
-            return
-        await release_session_before_external_io(svc.torrent_repository.db)
-        live = await svc._fetch_live_torrent_statuses(torrents)
-        newly_finished = any(t.status == TorrentStatus.finished for t in live)
+    async def _run() -> None:
+        from miramedia.background_services import bg_torrent_service
+        from miramedia.database import release_session_before_external_io
+        from miramedia.torrents.schemas import TorrentStatus
 
-    if newly_finished:
-        enqueue = dispatch_tasks.enqueue_import_all
-        if enqueue is None:
-            log.warning(
-                "Finished downloads detected but import-all dispatch is unset; "
-                "skipping enqueue (scheduler not registered?)"
-            )
-            return
-        await enqueue()
+        async with bg_torrent_service() as svc:
+            torrents = await svc.torrent_repository.get_active_torrents()
+            if not torrents:
+                return
+            await release_session_before_external_io(svc.torrent_repository.db)
+            live = await svc._fetch_live_torrent_statuses(torrents)
+            newly_finished = any(t.status == TorrentStatus.finished for t in live)
+
+        if newly_finished:
+            enqueue = dispatch_tasks.enqueue_import_all
+            if enqueue is None:
+                log.warning(
+                    "Finished downloads detected but import-all dispatch is unset; "
+                    "skipping enqueue (scheduler not registered?)"
+                )
+                return
+            await enqueue()
+
+    from miramedia.scheduler_tasks.locks import run_unless_locked
+
+    await run_unless_locked(
+        "detect_finished",
+        _run,
+        skip_message="Finished-download detector already running; skipping overlapping tick",
+    )
 
 
 async def update_all_movies_metadata() -> None:
@@ -92,17 +102,35 @@ async def update_all_shows_metadata() -> None:
 
 
 async def auto_download_missing_episodes() -> None:
-    from miramedia.shows.service import _auto_download_missing_episodes_impl
+    async def _run() -> None:
+        from miramedia.shows.service import _auto_download_missing_episodes_impl
 
-    log.info("Running auto-download for shows with continuous download enabled")
-    await _auto_download_missing_episodes_impl()
+        log.info("Running auto-download for shows with continuous download enabled")
+        await _auto_download_missing_episodes_impl()
+
+    from miramedia.scheduler_tasks.locks import run_unless_locked
+
+    await run_unless_locked(
+        "auto_download_episodes",
+        _run,
+        skip_message="Show auto-download already running; skipping overlapping tick",
+    )
 
 
 async def auto_download_missing_movies() -> None:
-    from miramedia.movies.service import _auto_download_missing_movies_impl
+    async def _run() -> None:
+        from miramedia.movies.service import _auto_download_missing_movies_impl
 
-    log.info("Running auto-download for movies with continuous download enabled")
-    await _auto_download_missing_movies_impl()
+        log.info("Running auto-download for movies with continuous download enabled")
+        await _auto_download_missing_movies_impl()
+
+    from miramedia.scheduler_tasks.locks import run_unless_locked
+
+    await run_unless_locked(
+        "auto_download_movies",
+        _run,
+        skip_message="Movie auto-download already running; skipping overlapping tick",
+    )
 
 
 async def add_show(
@@ -242,14 +270,23 @@ def notify_update_available(info) -> None:  # noqa: ANN001
 
 
 async def scan_missing_subtitles() -> None:
-    from miramedia.background_services import bg_subtitle_service
+    async def _run() -> None:
+        from miramedia.background_services import bg_subtitle_service
 
-    cfg = MiraMediaConfig().subtitles
-    if not (cfg.enabled and cfg.native.enabled):
-        return
-    log.info("Running scheduled subtitle scan")
-    async with bg_subtitle_service() as subtitle_service:
-        await subtitle_service.scan_all_missing_subtitles()
+        cfg = MiraMediaConfig().subtitles
+        if not (cfg.enabled and cfg.native.enabled):
+            return
+        log.info("Running scheduled subtitle scan")
+        async with bg_subtitle_service() as subtitle_service:
+            await subtitle_service.scan_all_missing_subtitles()
+
+    from miramedia.scheduler_tasks.locks import run_unless_locked
+
+    await run_unless_locked(
+        "scan_subtitles",
+        _run,
+        skip_message="Subtitle scan already running; skipping overlapping tick",
+    )
 
 
 async def scheduled_library_scan() -> None:

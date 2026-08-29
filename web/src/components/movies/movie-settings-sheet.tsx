@@ -39,7 +39,7 @@ export function MovieSettingsSheet({ movie }: { movie: Movie }) {
         <Settings className="h-4 w-4" />
         Settings
       </SheetTrigger>
-      <SheetContent side="right" className="w-80 overflow-y-auto sm:max-w-sm">
+      <SheetContent side="right" className="w-[88vw] overflow-y-auto sm:w-80 sm:max-w-sm">
         {open ? <MovieSettingsBody movie={movie} /> : null}
       </SheetContent>
     </Sheet>

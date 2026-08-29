@@ -8,8 +8,8 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from miramedia.config import MiraMediaConfig
+from miramedia.settings.composition import SETTINGS_SECTIONS, deep_merge
 from miramedia.settings.schemas import SystemSettingsUpdate
-from miramedia.settings.service import SETTINGS_SECTIONS, deep_merge
 
 RESTART_ONLY_OVERRIDE_PATHS: frozenset[tuple[str, ...]] = frozenset(
     {("auth", "token_secret")}

@@ -102,16 +102,20 @@ them from inside the container.
 | `miramedia/movies/` | Movie management | `/api/v1/movies/` |
 | `miramedia/torrents/` | Torrent lifecycle, unified download system, manual add, scoring | `/api/v1/torrents/` |
 | `miramedia/indexers/` | Torrent search (native sites, Prowlarr, Jackett, custom Torznab) | `/api/v1/indexers/` |
+| `miramedia/feeds/` | Observe-only release-feed orchestration (bind, gates, lease). Scheduler task composes the service; does not own domain rules. | - |
 | `miramedia/imports/` | Import pipeline, recovery dashboard, library scan | `/api/v1/imports/` |
 | `miramedia/metadata/` | Metadata providers (native TVmaze+Cinemeta, TMDB, TVDB) | - |
 | `miramedia/notifications/` | Notification system | `/api/v1/notifications/` |
 | `miramedia/streams/` | Media streaming & subtitle delivery | `/api/v1/streams/` |
 | `miramedia/subtitles/` | Subtitle management (subliminal; subdl/subsource/yifysubtitles; vendored keyless plugins; optional Bazarr) | `/api/v1/subtitles/` |
 | `miramedia/playback/` | Playback progress, continue watching, watch state | `/api/v1/playback/` |
+| `miramedia/viewing_sync/` | Jellyfin viewing-state dry-run sync. Scheduler task composes the service; dry-run does not apply playback mutations. No HTTP router or admin UI. | - |
 | `miramedia/watchlists/` | Watchlists, watch next, custom lists, upcoming library view | `/api/v1/watchlists/` |
 | `miramedia/events/` | Server-sent events for live dashboard updates | `/api/v1/events/` |
 | `miramedia/requests/` | Media request system (native + Seerr composite, optional) | `/api/v1/requests/` |
 | `miramedia/ops/` | Operational endpoints (superuser metrics-adjacent summary) | `/api/v1/ops/` |
+| `miramedia/diagnostics/` | Read-only operator diagnostics (storage health, database, scheduled tasks). Consumes `storage` health; does not own storage rules. | `/api/v1/diagnostics/` |
+| `miramedia/storage/` | Library/volume health probes and storage summary used by diagnostics. No HTTP router. | - |
 | `miramedia/cloudflare/` | Shared Cloudflare bypass (nodriver + curl_cffi) | - |
 | `miramedia/core/` | Health, features, dashboard summary, static poster images | - |
 | `miramedia/upcoming/` | Upcoming library list (windowed air/release dates) | - |

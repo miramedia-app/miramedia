@@ -591,7 +591,7 @@ export function GeneralTab({
                 value caps its own phase; the overall request budget is their sum (shown below).
                 Increase them on slow NAS hardware.
               </p>
-              <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+              <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
                 <div className="space-y-2">
                   <Label>
                     Browser Launch

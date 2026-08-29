@@ -601,10 +601,16 @@ class TorrentService:
         all_db_torrents = await self.torrent_repository.get_all_torrents()
         return await self._fetch_live_torrent_statuses(all_db_torrents)
 
+    async def get_finished_torrents(self) -> list[Torrent]:
+        return await self.torrent_repository.get_finished_torrents()
+
     async def get_torrent_by_id(self, torrent_id: TorrentId) -> Torrent:
         return await self.get_torrent_status(
             await self.torrent_repository.get_torrent_by_id(torrent_id=torrent_id)
         )
+
+    async def pop_manual_parse_token(self, token_id: uuid.UUID) -> dict | None:
+        return await self.torrent_repository.pop_manual_parse_token(token_id)
 
     async def delete_torrent(self, torrent_id: TorrentId) -> None:
         log.info("Deleting torrent with ID: %s", torrent_id)

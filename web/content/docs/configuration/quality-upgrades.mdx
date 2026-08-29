@@ -1,0 +1,100 @@
+---
+title: Quality upgrades
+description: "Opt-in movie quality upgrades: eligibility, retain-all, cutoff precedence, and how to turn them off."
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Movie quality upgrades are an **opt-in pilot**. When they are off (the
+default), auto-download stops once any on-disk movie file exists. When they
+are on, the continuous-download sweep may grab a **strictly better
+resolution** for a movie you already have.
+
+This is movies only. There is no dashboard toggle yet — set it in
+`config.toml` (or `MIRAMEDIA_MISC__QUALITY_UPGRADES`). File edits need a
+restart.
+
+## Defaults
+
+| Key                       | Default | Purpose |
+| ------------------------- | ------- | ------- |
+| `misc.quality_upgrades`   | `false` | Master switch for the upgrade sweep |
+| `misc.upgrade_until_quality` | unset | Optional global cutoff (indexer quality option **name**) |
+
+When the cutoff name is unset, the sweep uses the **first enabled** entry in
+`[[indexers.quality_options]]` (the shipped list starts at `4K (UHD)`). If
+none of those names map to a resolution bucket, the cutoff is 1080p.
+
+## Prerequisites
+
+- `misc.continuous_download` must not be disabled for that movie (the
+  upgrade path is the same auto-download sweep).
+- Indexers and a download client must already work for ordinary grabs.
+- The movie must already have an on-disk file. Unknown on-disk quality skips
+  the upgrade rather than guessing.
+
+## Eligibility and cutoff
+
+The sweep only searches when **all** of these hold:
+
+1. Quality upgrades are effective for that movie.
+2. The movie is already downloaded.
+3. It has no in-flight torrent (`torrent_id` on a file row).
+4. The best **known** on-disk resolution is below the cutoff.
+
+A candidate is kept only when it is a **strict resolution improvement** at or
+below the cutoff: UHD &gt; 1080p &gt; 720p &gt; SD. Equal quality, a
+downgrade, a quality above the cutoff, or `unknown` on either side is
+rejected.
+
+**Override precedence**
+
+- Per-movie `quality_upgrades`: `null` inherits the global flag; explicit
+  `false` wins over a global `true`; explicit `true` enables the movie even
+  when the global flag is off. There is no Settings control for the
+  per-movie field yet — operators use the global switch.
+- Cutoff name: per-movie `upgrade_until_quality` wins over
+  `misc.upgrade_until_quality`, which wins over the first enabled quality
+  option.
+
+Preferred-quality scoring on the movie page is a separate whitelist. It does
+not replace the upgrade cutoff.
+
+## Safety boundary: retain-all
+
+Upgrades **keep** the existing library files. The new grab is imported as an
+additional quality/variant; the previous copy is not deleted. Ordinary
+`cleanup_after_import` still removes the **finished torrent** from the
+client after import — that is not the previous library file.
+
+<Callout type="info">
+
+Disk use grows with each retained quality. Turn the pilot off if you do not
+want extra copies.
+
+</Callout>
+
+## Observability
+
+There is no quality-upgrade page. Watch:
+
+- **System → Logs** — lines prefixed `Quality upgrade:`
+  (`eligible`, `started`, `skip_satisfied`, `skip_unknown_best`,
+  `skip_no_candidates`, `skip_rejected`).
+- Notifications — `Quality upgrade started` when a grab begins (if
+  notification providers are configured).
+- **System → Diagnostics → Scheduled tasks** — the movie auto-download cron
+  (same job as missing-movie grabs).
+
+## Disable / rollback
+
+Set `quality_upgrades = false` and restart (or apply the equivalent env
+override). In-flight torrents finish as usual; already-imported extra
+qualities stay on disk. The next sweep will not search for further
+upgrades.
+
+```toml title="config.toml"
+[misc]
+quality_upgrades = false
+# upgrade_until_quality = "1080p (Full HD)"
+```

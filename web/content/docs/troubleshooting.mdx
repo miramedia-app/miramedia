@@ -10,7 +10,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 Start with the logs. **System → Logs** in the dashboard shows filterable
 backend logs without shell access; `docker compose logs -f api`
 shows the console stream. Set `MIRAMEDIA_LOG_LEVEL=DEBUG` for detail. See
-[Logging](configuration/logging).
+[Logging](configuration/logging). For a read-only snapshot of storage, the
+database, and scheduled tasks, open **System → Diagnostics** — see
+[Admin Tasks](/docs/user-guide/admin-tasks#system--diagnostics). That page
+diagnoses; it does not repair, fix, backup, or restore.
 
 </Callout>
 

@@ -75,6 +75,9 @@ async def test_stream_custom_query_filters_and_scores_results(
     class ShowService:
         show_repository = ShowRepository()
 
+        async def get_show_by_id(self, show_id):  # noqa: ARG002
+            return show
+
     class IndexerService:
         async def search(self, query, is_tv, on_partial):  # noqa: ARG002
             on_partial("fixture", results)

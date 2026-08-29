@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Logo } from "@/components/logo";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Activity,
   Bell,
   Clapperboard,
   Download,
@@ -28,21 +29,22 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { WATCHLISTS_SIDEBAR } from "@/components/watchlists/watchlists-routes";
+import { useUser } from "@/components/providers/user-provider";
+import { useFeatures } from "@/components/providers/features-provider";
+import apiClient from "@/lib/api/client";
 import { NavMain, type NavItem } from "./nav-main";
 import { NavSystem, type NavSystemItem } from "./nav-system";
+import { NavUser } from "./nav-user";
+import { VersionUpdate } from "./version-update";
 
 const SYSTEM_ITEMS: NavSystemItem[] = [
   { title: "Users", url: "/dashboard/system/users", icon: Users },
   { title: "Indexers", url: "/dashboard/system/indexers", icon: Search },
   { title: "Settings", url: "/dashboard/system/settings", icon: Settings },
+  { title: "Diagnostics", url: "/dashboard/system/diagnostics", icon: Activity },
   { title: "Logs", url: "/dashboard/system/logs", icon: ScrollText },
 ];
-import { WATCHLISTS_SIDEBAR } from "@/components/watchlists/watchlists-routes";
-import { NavUser } from "./nav-user";
-import { VersionUpdate } from "./version-update";
-import { useUser } from "@/components/providers/user-provider";
-import { useFeatures } from "@/components/providers/features-provider";
-import apiClient from "@/lib/api/client";
 
 export function AppSidebar(props: React.ComponentProps<typeof Sidebar>) {
   const { user } = useUser();

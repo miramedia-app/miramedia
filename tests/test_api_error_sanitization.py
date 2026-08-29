@@ -22,7 +22,7 @@ from miramedia.shows.schemas import (
     Show,
     ShowId,
 )
-from miramedia.torrents.router import _safe_bulk_item_error_message
+from miramedia.torrents.route_orchestration import safe_bulk_item_error_message
 from miramedia.torrents.schemas import ManualMapTargetType, Quality
 from tests.fakes.repositories import FakeShowRepository, make_torrent
 from tests.fakes.services import (
@@ -274,8 +274,8 @@ def manual_map_client(
     from miramedia.auth.users import current_active_user, current_superuser
     from miramedia.database import get_session
     from miramedia.main import app
-    from miramedia.movies.dependencies import get_movie_service
-    from miramedia.shows.dependencies import get_show_service
+    from miramedia.movies.dependencies import get_movie_repository, get_movie_service
+    from miramedia.shows.dependencies import get_show_repository, get_show_service
     from miramedia.torrents.dependencies import (
         get_torrent_by_id,
         get_torrent_service,
@@ -284,8 +284,8 @@ def manual_map_client(
     show, episode, _season = _episode_show()
     show_repo = FakeShowRepository()
     show_repo.add_show(show)
-    show_service, _, torrent_repo = build_show_service(show_repo=show_repo)
-    movie_service, _, _ = build_movie_service(torrent_repo=torrent_repo)
+    show_service, show_repo, torrent_repo = build_show_service(show_repo=show_repo)
+    movie_service, movie_repo, _ = build_movie_service(torrent_repo=torrent_repo)
     torrent_service, _ = build_torrent_service(torrent_repo=torrent_repo)
     torrent = make_torrent(title="Sanitize.Show.S01E01")
     torrent_repo.torrents[torrent.id] = torrent
@@ -320,6 +320,8 @@ def manual_map_client(
     app.dependency_overrides[get_torrent_service] = lambda: torrent_service
     app.dependency_overrides[get_show_service] = lambda: show_service
     app.dependency_overrides[get_movie_service] = lambda: movie_service
+    app.dependency_overrides[get_show_repository] = lambda: show_repo
+    app.dependency_overrides[get_movie_repository] = lambda: movie_repo
     try:
         with patch(
             "miramedia.torrents.paths.get_torrent_filepath",
@@ -368,7 +370,7 @@ def test_manual_map_item_failure_hides_raw_exception_text(tmp_path) -> None:
 
 def test_safe_bulk_item_error_message_allows_control_flow_value_errors() -> None:
     assert (
-        _safe_bulk_item_error_message(
+        safe_bulk_item_error_message(
             ValueError("episode_id required for target_type=episode"),
             fallback="import failed",
         )
@@ -379,10 +381,10 @@ def test_safe_bulk_item_error_message_allows_control_flow_value_errors() -> None
 def test_safe_bulk_item_error_message_hides_unexpected_value_error_secrets() -> None:
     secret = "OSError: [Errno 13] Permission denied: '/secret/path'"
     assert (
-        _safe_bulk_item_error_message(ValueError(secret), fallback="import failed")
+        safe_bulk_item_error_message(ValueError(secret), fallback="import failed")
         == "import failed"
     )
-    assert "/secret/path" not in _safe_bulk_item_error_message(
+    assert "/secret/path" not in safe_bulk_item_error_message(
         ValueError(secret), fallback="import failed"
     )
 
@@ -390,9 +392,9 @@ def test_safe_bulk_item_error_message_hides_unexpected_value_error_secrets() -> 
 def test_safe_bulk_item_error_message_hides_malicious_unknown_target_suffix() -> None:
     malicious = "unknown target_type /secret/db/path"
     assert (
-        _safe_bulk_item_error_message(ValueError(malicious), fallback="import failed")
+        safe_bulk_item_error_message(ValueError(malicious), fallback="import failed")
         == "import failed"
     )
-    assert "/secret/" not in _safe_bulk_item_error_message(
+    assert "/secret/" not in safe_bulk_item_error_message(
         ValueError(malicious), fallback="import failed"
     )

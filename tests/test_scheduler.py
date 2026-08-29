@@ -109,3 +109,42 @@ def test_notify_update_available_uses_notification_singleton() -> None:
     assert calls[0][0] == "MiraMedia update available"
     assert "2.0.0" in calls[0][1]
     assert "1.0.0" in calls[0][1]
+
+
+def test_detect_finished_downloads_skips_when_lock_held() -> None:
+    async def run() -> None:
+        lock = import_sweep_lock("detect_finished")
+        async with lock:
+            with patch(
+                "miramedia.background_services.bg_torrent_service",
+                side_effect=AssertionError("should skip while lock is held"),
+            ):
+                await media_tasks.detect_finished_downloads()
+
+    asyncio.run(run())
+
+
+def test_auto_download_missing_movies_skips_when_lock_held() -> None:
+    async def run() -> None:
+        lock = import_sweep_lock("auto_download_movies")
+        async with lock:
+            with patch(
+                "miramedia.movies.service._auto_download_missing_movies_impl",
+                side_effect=AssertionError("should skip while lock is held"),
+            ):
+                await media_tasks.auto_download_missing_movies()
+
+    asyncio.run(run())
+
+
+def test_scan_missing_subtitles_skips_when_lock_held() -> None:
+    async def run() -> None:
+        lock = import_sweep_lock("scan_subtitles")
+        async with lock:
+            with patch(
+                "miramedia.background_services.bg_subtitle_service",
+                side_effect=AssertionError("should skip while lock is held"),
+            ):
+                await media_tasks.scan_missing_subtitles()
+
+    asyncio.run(run())

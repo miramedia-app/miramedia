@@ -1,6 +1,6 @@
 ---
 title: Admin Tasks
-description: "The System section: settings, users, indexers, logs. Superuser only."
+description: "The System section: settings, users, indexers, diagnostics, logs. Superuser only."
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -92,6 +92,19 @@ Settings page just makes everything editable from the UI. See
 
 </Callout>
 
+### Pilot features (config-file only)
+
+Three opt-in pilots have **no Settings tab and no dashboard pages**. Enable
+them in `config.toml`, then watch **System → Logs** (and Prometheus if you
+scrape `/api/v1/metrics`):
+
+- Movie quality upgrades (retain existing files) —
+  [Quality upgrades](/docs/configuration/quality-upgrades)
+- Observe-only release feeds (never auto-grab) —
+  [Release feeds](/docs/configuration/release-feeds)
+- Jellyfin viewing-sync dry-run (does not apply playback) —
+  [Viewing sync](/docs/configuration/viewing-sync)
+
 ## System → Users
 
 Default landing for the **System** group. Columns: **Email** (with a "You"
@@ -124,6 +137,108 @@ Actions: Add / edit a site, **Test** connectivity, toggle enabled, set
 priority, manage mirror URLs. Preloaded sites can be disabled or edited but
 not deleted. See [Indexers](/docs/configuration/indexers) and
 [Cloudflare Bypass](/docs/configuration/cloudflare).
+
+## System → Diagnostics
+
+**System → Diagnostics** is a superuser-only, **read-only** snapshot. The
+page subtitle is **"Read-only storage, database, and scheduler snapshot for
+operators."** Non-admins see **"Admin access required."** Tabs: **Storage**,
+**Database**, **Scheduled tasks**.
+
+<Callout type="warn">
+
+This surface **diagnoses**; it does **not** repair, fix, backup, restore,
+rebaseline, delete, reimport, or reacquire anything. There are no mutation
+controls here. For import recovery, leave Diagnostics and use
+[Imports](/docs/user-guide/importing-media). Backup and restore are not
+provided on this page.
+
+</Callout>
+
+Failed loads show an error plus **Retry** — never a healthy or zero
+snapshot. Use **System → Logs** next when you need timestamps, modules, and
+log lines rather than this point-in-time view.
+
+### Storage
+
+Library file condition. A freshness note (default: **"Read-only library
+file condition. Integrity mismatch times are last import attempt, not
+audit time."**) plus **Integrity audit on/off · interval Nh**.
+
+- Volume cards: label, path, free / used / total, **% used**. A volume
+  error is shown as text, not as 0% used.
+- Library badges: `name · kind`. Inaccessible roots use a destructive
+  badge and **"This library root is inaccessible. Files were not marked
+  missing."**
+- Unconfigured library names are listed; **files were not marked missing**.
+- Stat cards (click to filter the list, except **Healthy**): **Corrupt**
+  (SHA1 mismatch stamps), **Orphaned** (Ghost failed rows), **Pending**
+  (Acquisition recovery, plus **Open Imports**), **Unknown** (**Not yet
+  hashed**, or **"Hashing disabled — imported files have no SHA1."** when
+  the audit is off), **Healthy** (footer: `N imported`).
+- Unknown is **not** a failure count and is never coerced to healthy or
+  zero. With the audit on and unknown &gt; 0: **"Not yet hashed. The next
+  audit pass will baseline or verify these files."** With the audit off:
+  **"Integrity audit is off. Imported files are not hashed; this is not a
+  failure count."**
+- **"No imported file issues in the database. On-disk missing is not
+  counted here."** when corrupt / orphaned / pending / unknown are all
+  zero.
+- **"Missing files are shown on title pages and in row detail when a
+  directory is readable."** Missing is not a summary card.
+
+File list columns: **Title**, **Type** (Show / Movie), **State**,
+**Quality**. Search: **"Search titles…"**. Facets: **State** (Corrupt, Not
+hashed, Orphaned, Pending, Healthy) and **Type** (Show, Movie). Pagination:
+20 / 50 / 100 (default 50). Empty: **"No matching files"**. Row states can
+also include **Missing** and **Inaccessible**.
+
+Load errors: **"Failed to load storage"** / **"Failed to load files"** with
+**"Unable to load storage diagnostics. Check that the server is reachable
+and try again."** and **Retry**.
+
+Opening a row shows a read-only sheet: **"Read-only file condition. Repair
+actions live on Imports."** Diagnostics still does **not** repair from this
+page. Fields: **Library**, **Quality**, **Variant**, **Import**, **Error**,
+**SHA1**, **Path**. Links: **Open title**, **Open Imports** — they leave
+Diagnostics.
+
+### Database
+
+PostgreSQL snapshot: `user@host:port/name · PostgreSQL` version, plus
+**Server started** when known.
+
+Stat cards: **Database size**, **Connections** (footer: counts by state, or
+**"No activity snapshot"**), **Request pool** and **Background pool**
+(`N checked out · overflow N`, or **"Engine not initialized"** / **—**
+when unknown).
+
+Table list columns: **Table**, **Total**, **Data**, **Indexes**, **Rows**
+(estimated; **—** when unknown). Search: **"Search tables…"**. Empty:
+**"No table sizes"** / **"Table sizes are unavailable until PostgreSQL
+catalog queries succeed."** No pagination.
+
+Load error: **"Failed to load database"** with **"Unable to load
+diagnostics. Check that the server is reachable and try again."** and
+**Retry**.
+
+### Scheduled tasks
+
+**"Cron-scheduled background work. Interactive add-show / add-movie jobs
+are not listed."** If live rows are unavailable: **"Live schedule rows were
+unavailable; showing configured crons."**
+
+Stat cards: **Background queue** and **Interactive queue** (footer:
+**Waiting messages**; **—** when the depth is unknown — never coerced to
+0).
+
+Task list columns: **Task**, **Schedule**, **Cron**, **Queued** (**—** when
+unknown), **Lane**. Search: **"Search tasks…"**. Empty: **"No scheduled
+tasks"** / **"The scheduler catalog is empty."** No pagination.
+
+Load error: **"Failed to load scheduled tasks"** with **"Unable to load
+diagnostics. Check that the server is reachable and try again."** and
+**Retry**.
 
 ## System → Logs
 

@@ -5,6 +5,17 @@
    docs layout. Keeps the dashboard CSS bundle smaller. */
 
 @custom-variant dark (&:is(.dark *));
+/* Touch density: applies on any coarse-pointer device regardless of width
+   (a phone in landscape is still a phone). Usage: `coarse:h-11`. */
+@custom-variant coarse (@media (pointer: coarse));
+
+/* Safe-area insets as spacing tokens: `pb-safe-b`, `pt-safe-t`, `mb-safe-b`... */
+@theme {
+  --spacing-safe-t: env(safe-area-inset-top);
+  --spacing-safe-b: env(safe-area-inset-bottom);
+  --spacing-safe-l: env(safe-area-inset-left);
+  --spacing-safe-r: env(safe-area-inset-right);
+}
 
 :root {
   --radius: 0.625rem;

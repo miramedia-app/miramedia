@@ -17,9 +17,9 @@ export type Crumb = { label: string; href?: string };
 
 export function DashboardHeader({ crumbs }: { crumbs: Crumb[] }) {
   return (
-    <header className="flex h-16 shrink-0 items-center gap-2">
+    <header className="sticky top-0 z-30 flex h-16 shrink-0 items-center gap-2 bg-background/90 pt-safe-t backdrop-blur lg:static lg:bg-transparent lg:pt-0 lg:backdrop-blur-none">
       <div className="flex items-center gap-2 px-4">
-        <SidebarTrigger className="-ml-1" />
+        <SidebarTrigger size="icon" className="-ml-1 coarse:size-11" />
         <Separator className="mr-2 h-4 !self-center" orientation="vertical" />
         <Breadcrumb>
           <BreadcrumbList>
@@ -27,7 +27,7 @@ export function DashboardHeader({ crumbs }: { crumbs: Crumb[] }) {
               const isLast = idx === crumbs.length - 1;
               return (
                 <React.Fragment key={`${c.label}-${idx}`}>
-                  <BreadcrumbItem className={idx === 0 ? "hidden md:block" : undefined}>
+                  <BreadcrumbItem className={idx === 0 ? "hidden lg:block" : undefined}>
                     {isLast || !c.href ? (
                       <BreadcrumbPage>{c.label}</BreadcrumbPage>
                     ) : (
@@ -35,7 +35,7 @@ export function DashboardHeader({ crumbs }: { crumbs: Crumb[] }) {
                     )}
                   </BreadcrumbItem>
                   {!isLast && (
-                    <BreadcrumbSeparator className={idx === 0 ? "hidden md:block" : undefined} />
+                    <BreadcrumbSeparator className={idx === 0 ? "hidden lg:block" : undefined} />
                   )}
                 </React.Fragment>
               );

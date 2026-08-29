@@ -84,8 +84,8 @@ def torrent_bulk_client(
     from miramedia.auth.users import current_active_user, current_superuser
     from miramedia.database import get_session
     from miramedia.main import app
-    from miramedia.movies.dependencies import get_movie_service
-    from miramedia.shows.dependencies import get_show_service
+    from miramedia.movies.dependencies import get_movie_repository, get_movie_service
+    from miramedia.shows.dependencies import get_show_repository, get_show_service
     from miramedia.torrents.dependencies import (
         get_torrent_by_id,
         get_torrent_repository,
@@ -118,6 +118,10 @@ def torrent_bulk_client(
     app.dependency_overrides[get_torrent_service] = lambda: torrent_service
     app.dependency_overrides[get_show_service] = lambda: show_service
     app.dependency_overrides[get_movie_service] = lambda: movie_service
+    app.dependency_overrides[get_show_repository] = lambda: show_service.show_repository
+    app.dependency_overrides[get_movie_repository] = lambda: (
+        movie_service.movie_repository
+    )
     client = TestClient(app, raise_server_exceptions=False)
     try:
         yield client

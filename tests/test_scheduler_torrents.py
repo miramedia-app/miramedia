@@ -22,6 +22,17 @@ def _run(coro) -> None:
     asyncio.run(coro)
 
 
+def test_finished_torrent_query_filters_in_sql() -> None:
+    stmt = select(Torrent).where(Torrent.status == TorrentStatus.finished)
+    sql = str(
+        stmt.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "torrent.status" in sql
+    assert "'finished'" in sql
+
+
 def test_active_torrent_query_filters_in_sql() -> None:
     stmt = select(Torrent).where(Torrent.status.in_(ACTIVE_TORRENT_STATUSES))
     sql = str(
@@ -60,6 +71,8 @@ def test_fake_active_torrent_repository_excludes_inactive_statuses() -> None:
 
     active = asyncio.run(repo.get_active_torrents())
     assert [t.id for t in active] == [active_id]
+    finished = asyncio.run(repo.get_finished_torrents())
+    assert [t.id for t in finished] == [finished_id]
     assert asyncio.run(repo.get_all_torrents())  # all-record callers unchanged
 
 

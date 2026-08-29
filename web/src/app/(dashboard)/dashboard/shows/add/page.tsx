@@ -41,7 +41,7 @@ export default function ShowsAddPage() {
 
         {errorMessage ? (
           <div className="relative w-full">
-            <div className="grid w-full gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <div className="grid w-full grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-3 md:gap-4 lg:grid-cols-4 xl:grid-cols-5">
               <div className="pointer-events-none aspect-[2/3]" />
             </div>
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed text-center">
@@ -58,7 +58,7 @@ export default function ShowsAddPage() {
           <h3 className="mx-auto text-muted-foreground">No shows found.</h3>
         ) : results ? (
           <>
-            <div className="grid w-full gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+            <div className="grid w-full grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-3 md:gap-4 lg:grid-cols-4 xl:grid-cols-5">
               {results.map((dataItem) => (
                 <AddMediaCard key={String(dataItem.external_id)} result={dataItem} isShow />
               ))}

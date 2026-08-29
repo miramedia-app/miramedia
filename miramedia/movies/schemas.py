@@ -25,6 +25,8 @@ class Movie(BaseModel):
     external_id: str
     metadata_provider: str
     continuous_download: bool | None = None
+    quality_upgrades: bool | None = None
+    upgrade_until_quality: str | None = None
     skipped: bool = False
     library: str = "Default"
     original_language: str | None = None

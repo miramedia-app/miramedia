@@ -23,6 +23,10 @@ When `continue_watching` is `false`, `GET /api/v1/playback/continue` returns
 **503** (`Continue Watching feature is disabled`) and the dashboard hides the
 row. Progress upserts, watched overrides, and Watch Next keep working.
 
+Jellyfin viewing-state import is a separate **dry-run** pilot under
+`[viewing_sync]` — it does not apply playback. See
+[Viewing sync](viewing-sync).
+
 The dashboard row also requires [streaming](streams) (`streams.enabled`) to
 be on, because each item is a play/resume action. Turning streaming off hides
 the row even if `continue_watching` stays `true`.

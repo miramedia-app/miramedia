@@ -1,6 +1,6 @@
 ---
 title: API Reference
-description: "Interactive Scalar API reference, generated live from the running backend."
+description: "Interactive Scalar API reference. Self-hosted docs use the running instance schema; GitHub Pages uses the committed project schema."
 ---
 
 {/*
@@ -12,6 +12,9 @@ renders an embedded Scalar reference instead. This MDX body is never shown —
 do not put real content here; edit the Scalar route/component instead.
 */}
 
-The API reference is an interactive [Scalar](https://scalar.com) UI built live
-from the backend's OpenAPI schema (`/openapi.json`), so it always matches the
-exact version and configuration you're running.
+The API reference is an interactive [Scalar](https://scalar.com) UI.
+
+On a self-hosted instance, `/docs/api-reference` reads the running backend's
+OpenAPI schema (`/openapi.json`), including config-gated endpoints. The hosted
+GitHub Pages copy uses the committed project schema and can differ from an
+installed version or configuration.

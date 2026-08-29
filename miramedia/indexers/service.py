@@ -111,6 +111,9 @@ class IndexerService:
     async def get_result(self, result_id: IndexerQueryResultId) -> IndexerQueryResult:
         return await self.repository.get_result(result_id=result_id)
 
+    async def save_result(self, result: IndexerQueryResult) -> None:
+        await self.repository.save_result(result=result)
+
     @staticmethod
     def _invoke_indexer_search(
         indexer: GenericIndexer, query: str, is_tv: bool, on_partial: OnPartial | None

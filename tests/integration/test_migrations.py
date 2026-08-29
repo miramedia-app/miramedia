@@ -64,8 +64,13 @@ def _sanitize_database_url(url: str) -> str:
     return make_url(url).render_as_string(hide_password=True)
 
 
-def _alembic_subprocess_env(sync_url: str) -> dict[str, str]:
-    return {**os.environ, "DATABASE_URL": sync_url}
+def _alembic_subprocess_env(
+    sync_url: str, *, config_file: str | None = None
+) -> dict[str, str]:
+    env = {**os.environ, "DATABASE_URL": sync_url}
+    if config_file is not None:
+        env["MIRAMEDIA_CONFIG_FILE"] = config_file
+    return env
 
 
 def _format_alembic_failure(
@@ -79,13 +84,15 @@ def _format_alembic_failure(
     )
 
 
-def _run_alembic(sync_url: str, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_alembic(
+    sync_url: str, *args: str, config_file: str | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(  # noqa: S603
         ["uv", "run", "--python", "3.13", "alembic", *args],
         check=False,
         capture_output=True,
         text=True,
-        env=_alembic_subprocess_env(sync_url),
+        env=_alembic_subprocess_env(sync_url, config_file=config_file),
     )
 
 
@@ -313,8 +320,9 @@ def test_upgrade_and_downgrade_traverse_new_watchlist_revision(
     _assert_disposable_database_for_alembic_downgrade(sync_url)
 
     head = _repo_head_revision()
-    assert head == _WATCHLIST_REVISION
-    predecessor = _immediate_predecessor_revision(head)
+    watchlist_revision = _script_directory().get_revision(_WATCHLIST_REVISION)
+    assert watchlist_revision is not None, f"missing revision {_WATCHLIST_REVISION}"
+    predecessor = _immediate_predecessor_revision(_WATCHLIST_REVISION)
     assert predecessor == "k9f0a1b2c3d4"
     restore_error: str | None = None
 
@@ -349,6 +357,194 @@ def test_upgrade_and_downgrade_traverse_new_watchlist_revision(
 
         upgrade = _run_alembic(sync_url, "upgrade", "head")
         assert upgrade.returncode == 0, _format_alembic_failure(upgrade, sync_url)
+        assert _database_revision(sync_url) == head
+    finally:
+        restore = _restore_head_revision(sync_url)
+        if restore.returncode != 0:
+            restore_error = _format_alembic_failure(restore, sync_url)
+        elif _database_revision(sync_url) != head:
+            restore_error = (
+                f"failed to restore head revision {head} "
+                f"(database={_sanitize_database_url(sync_url)}, "
+                f"actual={_database_revision(sync_url)!r})"
+            )
+
+    if restore_error is not None:
+        pytest.fail(restore_error)
+
+
+_VIEWING_SYNC_CURSOR_REVISION = "s7t8u9v0w1x2"
+_LEGACY_CURSOR_TS = "2026-01-15 12:00:00+00:00"
+_USER_B_MAX_TS = "2026-03-01 08:00:00+00:00"
+
+
+def _write_viewing_sync_user_map_config(path: Path) -> None:
+    path.write_text(
+        """
+[viewing_sync.jellyfin]
+user_map = { "user-a" = "00000000-0000-0000-0000-000000000001", "user-b" = "00000000-0000-0000-0000-000000000002" }
+""".lstrip(),
+        encoding="utf-8",
+    )
+
+
+def test_upgrade_and_downgrade_traverse_per_user_viewing_sync_cursor_revision(
+    integration_db_url: str, tmp_path: Path
+) -> None:
+    sync_url = alembic_sync_url(integration_db_url)
+    _assert_disposable_database_for_alembic_downgrade(sync_url)
+
+    head = _repo_head_revision()
+    cursor_revision = _script_directory().get_revision(_VIEWING_SYNC_CURSOR_REVISION)
+    assert cursor_revision is not None, (
+        f"missing revision {_VIEWING_SYNC_CURSOR_REVISION}"
+    )
+    predecessor = _immediate_predecessor_revision(_VIEWING_SYNC_CURSOR_REVISION)
+    assert predecessor == "r6s7t8u9v0w1"
+    config_file = str(tmp_path / "viewing_sync_user_map.toml")
+    _write_viewing_sync_user_map_config(Path(config_file))
+    restore_error: str | None = None
+
+    try:
+        downgrade = _run_alembic(sync_url, "downgrade", predecessor)
+        assert downgrade.returncode == 0, _format_alembic_failure(downgrade, sync_url)
+        assert _database_revision(sync_url) == predecessor
+
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO viewing_sync_cursor (
+                            connector, min_last_played_date, updated_at
+                        )
+                        VALUES (
+                            'jellyfin',
+                            '2026-01-15T12:00:00+00:00',
+                            now()
+                        )
+                        ON CONFLICT (connector) DO UPDATE
+                        SET min_last_played_date = EXCLUDED.min_last_played_date
+                        """
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        upgrade = _run_alembic(sync_url, "upgrade", "head", config_file=config_file)
+        assert upgrade.returncode == 0, _format_alembic_failure(upgrade, sync_url)
+        assert _database_revision(sync_url) == head
+
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        try:
+            with engine.connect() as conn:
+                columns = {
+                    row[0]
+                    for row in conn.execute(
+                        text(
+                            """
+                            SELECT column_name
+                            FROM information_schema.columns
+                            WHERE table_schema = 'public'
+                              AND table_name = 'viewing_sync_cursor'
+                            """
+                        )
+                    )
+                }
+                pk_columns = [
+                    row[0]
+                    for row in conn.execute(
+                        text(
+                            """
+                            SELECT a.attname
+                            FROM pg_index i
+                            JOIN pg_attribute a
+                              ON a.attrelid = i.indrelid
+                             AND a.attnum = ANY(i.indkey)
+                            JOIN pg_class c ON c.oid = i.indrelid
+                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                            WHERE n.nspname = 'public'
+                              AND c.relname = 'viewing_sync_cursor'
+                              AND i.indisprimary
+                            ORDER BY array_position(i.indkey, a.attnum)
+                            """
+                        )
+                    )
+                ]
+                copied_rows = conn.execute(
+                    text(
+                        """
+                        SELECT connector_user_id, min_last_played_date
+                        FROM viewing_sync_cursor
+                        WHERE connector = 'jellyfin'
+                        ORDER BY connector_user_id
+                        """
+                    )
+                ).all()
+            assert columns == {
+                "connector",
+                "connector_user_id",
+                "min_last_played_date",
+                "updated_at",
+            }
+            assert pk_columns == ["connector", "connector_user_id"]
+            assert copied_rows == [
+                ("user-a", _LEGACY_CURSOR_TS),
+                ("user-b", _LEGACY_CURSOR_TS),
+            ]
+        finally:
+            engine.dispose()
+
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE viewing_sync_cursor
+                        SET min_last_played_date = '2026-02-01T08:00:00+00:00'
+                        WHERE connector = 'jellyfin'
+                          AND connector_user_id = 'user-a'
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        UPDATE viewing_sync_cursor
+                        SET min_last_played_date = '2026-03-01T08:00:00+00:00'
+                        WHERE connector = 'jellyfin'
+                          AND connector_user_id = 'user-b'
+                        """
+                    )
+                )
+        finally:
+            engine.dispose()
+
+        collapse = _run_alembic(sync_url, "downgrade", predecessor)
+        assert collapse.returncode == 0, _format_alembic_failure(collapse, sync_url)
+        assert _database_revision(sync_url) == predecessor
+
+        engine = create_engine(sync_url, pool_pre_ping=True)
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(
+                    text(
+                        """
+                        SELECT min_last_played_date
+                        FROM viewing_sync_cursor
+                        WHERE connector = 'jellyfin'
+                        """
+                    )
+                ).first()
+                assert row is not None
+                assert str(row[0]) == _USER_B_MAX_TS
+        finally:
+            engine.dispose()
+
+        restore = _run_alembic(sync_url, "upgrade", "head")
+        assert restore.returncode == 0, _format_alembic_failure(restore, sync_url)
         assert _database_revision(sync_url) == head
     finally:
         restore = _restore_head_revision(sync_url)

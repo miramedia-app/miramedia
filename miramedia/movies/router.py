@@ -5,6 +5,7 @@ from cachetools import TTLCache
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field
 
+from miramedia.auth.token_scopes import SCOPE_LIBRARY_READ, token_scope
 from miramedia.auth.users import (
     current_active_user,
     current_superuser,
@@ -123,6 +124,7 @@ async def get_popular_movies(
 
 
 @router.get("")
+@token_scope(SCOPE_LIBRARY_READ)
 async def get_all_movies(
     movie_service: movie_service_dep,
     response: Response,

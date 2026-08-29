@@ -81,12 +81,10 @@ def test_safe_titles_accepted_unchanged(title: str) -> None:
         "CON",
         "NUL.txt",
         "COM1.log",
-        "name<bad>",
         "trail...",
         "bad name ",
         "bad name.",
         ".resume_data",
-        "file:name",
         "bad\x85name",
         "bad\x9bname",
         "CONIN$",
@@ -99,6 +97,31 @@ def test_safe_titles_accepted_unchanged(title: str) -> None:
 def test_unsafe_titles_rejected(title: str) -> None:
     with pytest.raises(UnsafeTorrentTitleError):
         torrent_title_path_component(title)
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        (
+            "Spider-Man: Brand New Day 2026 1080p HQ Pre Multi AAC 2 0 x264",
+            "Spider-Man Brand New Day 2026 1080p HQ Pre Multi AAC 2 0 x264",
+        ),
+        ("Movie: Subtitle?", "Movie Subtitle"),
+        ("name<bad>", "namebad"),
+        ("file:name", "filename"),
+    ],
+)
+def test_invalid_filename_chars_are_sanitized(title: str, expected: str) -> None:
+    assert torrent_title_path_component(title) == expected
+
+
+def test_colon_title_dir_stays_inside_root(tmp_path: Path) -> None:
+    root = tmp_path / "torrents"
+    root.mkdir()
+    resolved = torrent_dir_under_root(root, "Spider-Man: Brand New Day 2026 1080p")
+    assert resolved.parent == root.resolve()
+    assert ":" not in resolved.name
+    assert resolved.is_relative_to(root.resolve())
 
 
 def test_torrent_dir_under_root_stays_inside(tmp_path: Path) -> None:

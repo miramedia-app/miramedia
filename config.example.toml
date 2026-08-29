@@ -30,6 +30,12 @@ cleanup_after_import = true        # remove torrent from client after successful
 # Continuous download: keep searching for upgrades/missing items after the
 # first grab. Global default; per-show / per-movie nullable override in the UI.
 continuous_download = true
+# Opt-in movie quality upgrades. Default off — when off, auto-download stops
+# once any on-disk movie file exists. When on, a strictly better resolution
+# may be grabbed; existing library files are kept (not replaced).
+# Docs: /docs/configuration/quality-upgrades
+quality_upgrades = false
+# upgrade_until_quality = "1080p (Full HD)"  # optional global cutoff name
 # Auto-download Season 0 specials. Off by default — when off, specials show as
 # "skipped" and are excluded from the auto-download sweep.
 download_specials = false
@@ -37,6 +43,14 @@ auto_download_interval_hours = 1   # how often the continuous-download sweep run
 
 # Background import sweep interval (minutes). Catches stragglers; manual import is unchanged.
 import_sweep_interval_minutes = 5
+
+# Observe-only release feeds (Torznab/Newznab recent search). Default off —
+# records would_grab / unmatched decisions; never starts a download.
+# Dated items older than now minus maxage_days are dropped even with a GUID.
+# Docs: /docs/configuration/release-feeds
+release_feeds_enabled = false
+release_feeds_poll_interval_minutes = 15
+release_feeds_maxage_days = 2
 # Drop cached indexer search rows after this many days (nightly purge).
 indexer_query_result_retention_days = 7
 # Database-backed activity log retention (nightly purge, days).
@@ -104,6 +118,27 @@ hls_cache_max_age_days = 30
 # Playback state features.
 [playback]
 continue_watching = true   # dashboard Continue Watching row
+
+# Jellyfin viewing-state dry-run. Default off — persists proposals/quarantines;
+# does not apply playback. Map users by hand (no auto-creation).
+# allow_private_network / allow_insecure_transport relax URL checks (LAN/HTTP).
+# Docs: /docs/configuration/viewing-sync
+[viewing_sync]
+enabled = false
+poll_interval_minutes = 60
+retention_days = 14
+retention_min_rows = 5000
+
+[viewing_sync.jellyfin]
+url = "http://jellyfin:8096"
+api_key = ""  # never logged; placeholder YOUR_JELLYFIN_API_KEY; read-only key
+allow_private_network = true
+allow_insecure_transport = true
+timeout_seconds = 30
+
+# Map Jellyfin user GUIDs to MiraMedia user.id UUIDs (no auto-creation).
+# [viewing_sync.jellyfin.user_map]
+# "jellyfin-user-guid" = "miramedia-user-uuid"
 
 [database]
 host = "db"

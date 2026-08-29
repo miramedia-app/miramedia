@@ -182,6 +182,7 @@ def init_engine(
         url,
         echo=False,
         poolclass=NullPool,
+        connect_args={"timeout": 2},
     )
     _wire_pool_observability(engine, "request")
     _wire_pool_observability(background_engine, "background")

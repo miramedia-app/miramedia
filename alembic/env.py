@@ -25,6 +25,7 @@ from miramedia.auth.api_tokens import UserApiToken  # noqa: E402, F401
 from miramedia.auth.db import OAuthAccount, User  # noqa: E402
 from miramedia.auth.startup_migrations import AuthStartupMigration  # noqa: E402, F401
 from miramedia.database import Base  # noqa: E402
+from miramedia.feeds.models import FeedItem, FeedSource  # noqa: E402, F401
 from miramedia.imports.models import (  # noqa: E402, F401
     IgnoredImportPath,
     ImportBatch,
@@ -55,6 +56,12 @@ from miramedia.torrents.models import (  # noqa: E402, F401
     Torrent,
     TorrentBlock,
     TorrentHistory,
+)
+from miramedia.viewing_sync.models import (  # noqa: E402, F401
+    ViewingSyncCursor,
+    ViewingSyncProposal,
+    ViewingSyncQuarantine,
+    ViewingSyncRun,
 )
 from miramedia.watchlists.models import Watchlist, WatchlistItem  # noqa: E402
 

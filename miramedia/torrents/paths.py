@@ -167,29 +167,23 @@ def torrent_title_path_component(title: str) -> str:
 
     Security boundary: every torrent-title-derived directory join must go
     through this helper. The display title stored in the database is never
-    modified — invalid titles are rejected rather than lossily sanitized.
+    modified. Path separators, reserved names, and traversal are rejected;
+    Windows-invalid filename characters (``:<>\"|?*``) are stripped so
+    ordinary release titles like ``Movie: Subtitle`` still download.
     """
     reason: str | None = None
     if not title or not title.strip():
         reason = "Torrent title is empty"
     elif _has_disallowed_unicode_controls(title):
         reason = f"Torrent title contains control characters: {title!r}"
-    elif any(ch in _WINDOWS_INVALID_LEAF_CHARS for ch in title):
-        reason = f"Torrent title contains invalid filename characters: {title!r}"
-    elif ":" in title:
-        reason = f"Torrent title contains an alternate-data-stream marker: {title!r}"
-    elif _has_invalid_leaf_trailing_chars(title):
-        reason = f"Torrent title has invalid trailing characters: {title!r}"
-    elif title.casefold() in {n.casefold() for n in _APPLICATION_CONTROL_LEAF_NAMES}:
-        reason = f"Torrent title is a reserved application directory name: {title!r}"
-    elif _is_windows_reserved_leaf(title):
-        reason = f"Torrent title is a reserved Windows device name: {title!r}"
     elif any(sep in title for sep in _PATH_SEPARATORS):
         reason = f"Torrent title contains a path separator: {title!r}"
     elif PurePosixPath(title).is_absolute():
         reason = f"Torrent title is an absolute path: {title!r}"
     elif _has_windows_path_anchor(title):
         reason = f"Torrent title has a Windows path anchor: {title!r}"
+    elif title.casefold() in {n.casefold() for n in _APPLICATION_CONTROL_LEAF_NAMES}:
+        reason = f"Torrent title is a reserved application directory name: {title!r}"
     elif title in _RESERVED_LEAF_NAMES:
         reason = f"Torrent title is not a valid directory name: {title!r}"
     else:
@@ -199,6 +193,29 @@ def torrent_title_path_component(title: str) -> str:
                 break
 
     if reason is not None:
+        raise UnsafeTorrentTitleError(reason)
+
+    if any(ch in _WINDOWS_INVALID_LEAF_CHARS for ch in title):
+        # Strip before the reserved-device check: Python 3.13's
+        # ``ntpath.isreserved`` treats ``:`` as reserved, which would
+        # otherwise reject ordinary titles like ``Movie: Subtitle``.
+        title = "".join(ch for ch in title if ch not in _WINDOWS_INVALID_LEAF_CHARS)
+        title = " ".join(title.split())
+        if not title:
+            reason = "Torrent title is empty after removing invalid filename characters"
+            raise UnsafeTorrentTitleError(reason)
+
+    if _has_invalid_leaf_trailing_chars(title):
+        reason = f"Torrent title has invalid trailing characters: {title!r}"
+        raise UnsafeTorrentTitleError(reason)
+    if title.casefold() in {n.casefold() for n in _APPLICATION_CONTROL_LEAF_NAMES}:
+        reason = f"Torrent title is a reserved application directory name: {title!r}"
+        raise UnsafeTorrentTitleError(reason)
+    if _is_windows_reserved_leaf(title):
+        reason = f"Torrent title is a reserved Windows device name: {title!r}"
+        raise UnsafeTorrentTitleError(reason)
+    if title in _RESERVED_LEAF_NAMES:
+        reason = f"Torrent title is not a valid directory name: {title!r}"
         raise UnsafeTorrentTitleError(reason)
 
     return title

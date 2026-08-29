@@ -41,6 +41,39 @@ def is_semver(s: str | None) -> bool:
     return _parse_semver(s) is not None
 
 
+def _compare_prerelease_identifiers(a: str, b: str) -> int:
+    """Compare dot-separated SemVer prerelease identifiers."""
+    if a == b:
+        return 0
+    ids_a = a.split(".")
+    ids_b = b.split(".")
+    for i in range(max(len(ids_a), len(ids_b))):
+        if i >= len(ids_a):
+            return -1
+        if i >= len(ids_b):
+            return 1
+        id_a = ids_a[i]
+        id_b = ids_b[i]
+        if id_a == id_b:
+            continue
+        num_a = id_a.isdigit()
+        num_b = id_b.isdigit()
+        if num_a and num_b:
+            int_a = int(id_a)
+            int_b = int(id_b)
+            if int_a != int_b:
+                return 1 if int_a > int_b else -1
+        elif num_a:
+            return -1
+        elif num_b:
+            return 1
+        elif id_a > id_b:
+            return 1
+        else:
+            return -1
+    return 0
+
+
 def compare_semver(a: str, b: str) -> int:
     """Return 1 if a>b, -1 if a<b, 0 if equal. Falls back to localeCompare-numeric."""
     pa = _parse_semver(a)
@@ -56,7 +89,7 @@ def compare_semver(a: str, b: str) -> int:
             return 1
         if not pb[3]:
             return -1
-        return 1 if pa[3] > pb[3] else -1
+        return _compare_prerelease_identifiers(pa[3], pb[3])
     # Fallback for non-semver tags: numeric-aware lexical
     if a == b:
         return 0

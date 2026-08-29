@@ -578,7 +578,9 @@ export function DownloadMediaDialog({
             <Table className="w-full table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[330px] pr-6">Title</TableHead>
+                  <TableHead className="sticky left-0 z-10 w-[330px] bg-popover pr-6 max-sm:w-[220px]">
+                    Title
+                  </TableHead>
                   <TableHead className="w-[70px]">Quality</TableHead>
                   <TableHead className="w-[70px]">Size</TableHead>
                   <TableHead className="w-[60px]">Seed</TableHead>
@@ -591,7 +593,7 @@ export function DownloadMediaDialog({
               <TableBody>
                 {results.map((t) => (
                   <TableRow key={t.id ?? t.title}>
-                    <TableCell className="pr-6 font-medium break-words whitespace-normal">
+                    <TableCell className="sticky left-0 z-10 bg-popover pr-6 font-medium break-words whitespace-normal">
                       {t.title}
                     </TableCell>
                     <TableCell>
@@ -617,6 +619,7 @@ export function DownloadMediaDialog({
                     <TableCell className="text-right">
                       <Button
                         size="sm"
+                        className="coarse:min-h-11"
                         disabled={!t.id}
                         onClick={() => t.id && downloadTorrent(t.id)}
                       >

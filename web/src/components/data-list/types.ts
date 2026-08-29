@@ -50,6 +50,64 @@ export interface ColumnDef<T> {
   hideBelow?: "sm" | "md" | "lg" | "xl";
   /** Tabular numerals — useful for IDs/dates/counts. */
   mono?: boolean;
+  /**
+   * Placement inside the mobile card row (see `data-list-card-row.tsx`).
+   * When omitted, roles are inferred: the first column whose width is a
+   * flexible track (`1fr` / `minmax`) — or simply the first column — becomes
+   * the title and every other column is rendered as a meta chip.
+   */
+  mobile?: ColumnMobileConfig<T>;
+}
+
+/**
+ * Card-row slot for a column on mobile:
+ * - `title`    first line, bold, clamps to two lines
+ * - `status`   pill right-aligned on the title line
+ * - `subtitle` second line, muted
+ * - `progress` full-width line (progress bars)
+ * - `meta`     small `·`-separated chips on the last line
+ * - `hidden`   not rendered
+ */
+export type ColumnMobileRole = "title" | "subtitle" | "status" | "progress" | "meta" | "hidden";
+
+export interface ColumnMobileConfig<T = unknown> {
+  role: ColumnMobileRole;
+  /** Ordering among columns that share a role (lower first). */
+  order?: number;
+  /**
+   * Mobile-specific renderer. Use when the desktop cell (icons, ids, mono
+   * paths, multi-line stacks) does not read well as a card line.
+   */
+  render?: (item: T, ctx: { focused: boolean; selected: boolean }) => React.ReactNode;
+}
+
+/** One entry of the mobile `⋯` action sheet. */
+export interface MobileAction {
+  id: string;
+  label: string;
+  icon?: React.ReactNode;
+  onSelect: () => void;
+  destructive?: boolean;
+  disabled?: boolean;
+  /**
+   * Render this action as a 44px icon button inline on the card (right edge)
+   * instead of inside the `⋯` sheet. Any remaining actions stay reachable via
+   * a compact `⋯` next to it. Only the first `primary` action is inlined.
+   */
+  primary?: boolean;
+}
+
+export type DataListMobileMode = "cards" | "scroll";
+
+export interface DataListMobileConfig {
+  /**
+   * `cards` (default) renders each row as a stacked card driven by
+   * `ColumnDef.mobile`. `scroll` keeps the grid and adds horizontal scroll —
+   * for lists that are wide by nature (logs).
+   */
+  mode?: DataListMobileMode;
+  /** Explicit min width for `scroll` mode; defaults to the sum of px tracks. */
+  minWidth?: number;
 }
 
 export interface GroupByDef<T> {

@@ -69,6 +69,21 @@ class FakeShowRepository:
     async def get_season(self, *, season_id: SeasonId) -> Season:
         return self.seasons[season_id]
 
+    async def get_seasons_by_ids(
+        self, season_ids: list[SeasonId]
+    ) -> dict[SeasonId, Season]:
+        self.get_seasons_by_ids_calls = getattr(self, "get_seasons_by_ids_calls", 0) + 1
+        self.last_season_ids_batch = list(season_ids)
+        return {
+            season_id: self.seasons[season_id]
+            for season_id in season_ids
+            if season_id in self.seasons
+        }
+
+    async def get_show_by_season_id(self, *, season_id: SeasonId) -> Show:
+        season = self.seasons[season_id]
+        return self.shows[season.show_id]
+
     async def update_season_skipped(
         self, *, season_id: SeasonId, skipped: bool
     ) -> None:
@@ -227,6 +242,15 @@ class FakeShowRepository:
             if season.id in season_id_set:
                 grouped[season.id].append(episode_file)
         return grouped
+
+    async def get_episode_files_by_episode_id(
+        self, episode_id: EpisodeId
+    ) -> list[EpisodeFile]:
+        return [
+            episode_file
+            for episode_file in self.episode_files.values()
+            if episode_file.episode_id == episode_id
+        ]
 
     async def get_torrents_by_show_id(self, *, show_id: ShowId) -> list[Torrent]:
         return list(self.torrents_by_show.get(show_id, []))
@@ -533,6 +557,10 @@ class FakeTorrentRepository:
         self.show_of_torrent: dict[TorrentId, Show] = {}
         self.movie_of_torrent: dict[TorrentId, Movie] = {}
         self.blocked_hashes: set[str] = set()
+        self.manual_parse_tokens: dict[uuid.UUID, dict] = {}
+
+    async def pop_manual_parse_token(self, token_id: uuid.UUID) -> dict | None:
+        return self.manual_parse_tokens.pop(token_id, None)
 
     @staticmethod
     def _normalize_hash(info_hash: str) -> str:
@@ -692,6 +720,13 @@ class FakeTorrentRepository:
             if torrent.status in ACTIVE_TORRENT_STATUSES
         ]
 
+    async def get_finished_torrents(self) -> list[Torrent]:
+        return [
+            torrent
+            for torrent in self.torrents.values()
+            if torrent.status == TorrentStatus.finished
+        ]
+
     async def paginate_sha1_mismatch_keys(
         self, *, offset: int, limit: int
     ) -> Sha1MismatchPage:
@@ -771,6 +806,8 @@ def make_movie(
     year: int = 2020,
     skipped: bool = False,
     continuous_download: bool | None = None,
+    quality_upgrades: bool | None = None,
+    upgrade_until_quality: str | None = None,
     release_date=None,
     auto_download_backoff_until: datetime | None = None,
 ) -> Movie:
@@ -783,6 +820,8 @@ def make_movie(
         metadata_provider="native",
         skipped=skipped,
         continuous_download=continuous_download,
+        quality_upgrades=quality_upgrades,
+        upgrade_until_quality=upgrade_until_quality,
         release_date=release_date,
         auto_download_backoff_until=auto_download_backoff_until,
     )

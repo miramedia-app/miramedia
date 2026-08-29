@@ -162,7 +162,7 @@ export function AddMediaCard({
             </span>
           )}
         </div>
-        <p className="line-clamp-2 min-h-[2.5rem] text-sm leading-tight font-medium">
+        <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-tight font-medium sm:text-sm">
           {result.name}
         </p>
         {result.added ? (
@@ -182,11 +182,11 @@ export function AddMediaCard({
             View
           </Button>
         ) : (
-          <div className="flex gap-2">
+          <div className="flex flex-col gap-2 sm:flex-row">
             {canAdd && (
               <Button
                 variant={queuedLocal ? "secondary" : "default"}
-                className={`${requestsEnabled && !canAdd ? "flex-1" : "w-full"} ${queuedLocal ? "text-muted-foreground" : "border-primary"} bg-clip-border font-semibold`}
+                className={`${requestsEnabled && !canAdd ? "w-full sm:flex-1" : "w-full"} ${queuedLocal ? "text-muted-foreground" : "border-primary"} bg-clip-border font-semibold`}
                 disabled={loading || queuedLocal}
                 onClick={addMedia}
               >
@@ -208,7 +208,7 @@ export function AddMediaCard({
                 metadataProvider={result.metadata_provider}
                 variant="secondary"
                 buttonText="Request"
-                className={`${canAdd ? "flex-1" : "w-full"} border-secondary bg-clip-border font-semibold`}
+                className={`${canAdd ? "w-full sm:flex-1" : "w-full"} border-secondary bg-clip-border font-semibold`}
               />
             )}
           </div>

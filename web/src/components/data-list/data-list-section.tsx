@@ -2,10 +2,13 @@
 
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { DataListCardRow } from "./data-list-card-row";
 import { DataListEmpty } from "./data-list-empty";
 import { DataListHeaderRow, DataListRow } from "./data-list-row";
 import { isRowExpanded, nextExpandedRows } from "./expand-utils";
-import type { ColumnDef, DataListDensity } from "./types";
+import { scrollMinWidth } from "./mobile-utils";
+import type { ColumnDef, DataListDensity, DataListMobileConfig, MobileAction } from "./types";
 
 export interface DataListSectionProps<T> {
   data: T[];
@@ -22,6 +25,13 @@ export interface DataListSectionProps<T> {
   density?: DataListDensity;
   rowActions?: (item: T) => React.ReactNode;
   rowActionsWidth?: string;
+  /** Labelled actions for the mobile card action sheet (see `DataListProps`). */
+  mobileActions?: (item: T) => MobileAction[];
+  mobileActionsTitle?: (item: T) => string;
+  /** Extra classes per mobile card row (e.g. to emphasise group/parent rows). */
+  mobileRowClassName?: (item: T) => string | undefined;
+  /** Mobile only: show the selection checkbox column. Defaults to `selectable`. */
+  mobileShowSelect?: boolean;
   expandedContent?: (item: T) => React.ReactNode | null;
   /**
    * Cheap predicate for whether a row can expand. Defaults to true when
@@ -43,6 +53,8 @@ export interface DataListSectionProps<T> {
   bordered?: boolean;
   /** Indent rows for nested usage (in pixels). */
   indent?: number;
+  /** Mobile rendering; see `DataListProps.mobile`. Defaults to card rows. */
+  mobile?: DataListMobileConfig;
   className?: string;
 }
 
@@ -64,6 +76,10 @@ export function DataListSection<T>({
   density = "standard",
   rowActions,
   rowActionsWidth = "88px",
+  mobileActions,
+  mobileActionsTitle,
+  mobileRowClassName,
+  mobileShowSelect,
   expandedContent,
   isExpandable,
   defaultExpanded = false,
@@ -75,18 +91,24 @@ export function DataListSection<T>({
   emptyIcon,
   bordered = true,
   indent = 0,
+  mobile,
   className,
 }: DataListSectionProps<T>) {
   const hasExpandColumn = !!expandedContent;
+  const isMobile = useIsMobile();
+  const mobileMode = mobile?.mode ?? "cards";
+  const cardMode = isMobile && mobileMode === "cards";
+  const scrollMode = isMobile && mobileMode === "scroll";
 
-  const gridTemplate = React.useMemo(() => {
+  const gridTracks = React.useMemo(() => {
     const parts: string[] = [];
     if (selectable) parts.push("24px");
     if (hasExpandColumn) parts.push("24px");
     for (const c of columns) parts.push(c.width);
     if (rowActions) parts.push(rowActionsWidth);
-    return parts.join(" ");
+    return parts;
   }, [columns, selectable, rowActions, rowActionsWidth, hasExpandColumn]);
+  const gridTemplate = React.useMemo(() => gridTracks.join(" "), [gridTracks]);
 
   const [internalExpanded, setInternalExpanded] = React.useState<Set<string>>(new Set());
   const expandedRows = expandedIds ?? internalExpanded;
@@ -155,10 +177,17 @@ export function DataListSection<T>({
 
   return (
     <div
-      className={cn(bordered && "overflow-hidden rounded-lg border bg-card", className)}
-      style={indent > 0 ? { marginLeft: indent } : undefined}
+      className={cn(
+        bordered && "overflow-hidden rounded-lg border bg-card",
+        scrollMode && "overflow-x-auto overscroll-x-contain",
+        className,
+      )}
+      style={{
+        marginLeft: indent > 0 ? indent : undefined,
+        minWidth: scrollMode ? (mobile?.minWidth ?? scrollMinWidth(gridTracks)) : undefined,
+      }}
     >
-      {showHeader && (
+      {showHeader && !cardMode && (
         <DataListHeaderRow
           columns={columns}
           gridTemplate={gridTemplate}
@@ -188,6 +217,31 @@ export function DataListSection<T>({
           const isExpanded = expandable && isRowExpanded(expandedRows, id, defaultExpanded);
           if (isExpanded && isExpandable && expandedContent) content = expandedContent(item);
           const isSelectable = !!selectable && !(unselectableIds?.has(id) ?? false);
+          if (cardMode) {
+            return (
+              <DataListCardRow<T>
+                key={id}
+                item={item}
+                id={id}
+                columns={columns}
+                hasSelectColumn={mobileShowSelect ?? !!selectable}
+                selectable={isSelectable}
+                selected={!!selectedIds?.has(id)}
+                focused={false}
+                density={density}
+                onToggleSelectId={handleToggleSelectId}
+                onClickId={onRowOpen ? handleClickId : undefined}
+                renderActions={rowActions}
+                mobileActions={mobileActions}
+                sheetTitle={mobileActionsTitle?.(item)}
+                className={mobileRowClassName?.(item)}
+                expandable={expandable}
+                expanded={isExpanded}
+                onToggleExpandId={handleToggleExpandId}
+                expandedContent={isExpanded ? content : null}
+              />
+            );
+          }
           return (
             <DataListRow<T>
               key={id}

@@ -42,12 +42,17 @@ class MiscSettingsSchema(SettingsSectionSchema):
     movie_libraries: list[LibraryItemSchema] | None = None
     naming: NamingSettingsSchema | None = None
     continuous_download: bool | None = None
+    quality_upgrades: bool | None = None
+    upgrade_until_quality: str | None = None
     download_specials: bool | None = None
     auto_download_interval_hours: int | None = None
     cleanup_after_import: bool | None = None
     log_retention_days: int | None = None
     indexer_query_result_retention_days: int | None = None
     import_sweep_interval_minutes: int | None = None
+    release_feeds_enabled: bool | None = None
+    release_feeds_poll_interval_minutes: int | None = None
+    release_feeds_maxage_days: int | None = None
     integrity_check_enabled: bool | None = None
     integrity_check_interval_hours: int | None = None
     auto_pick_confidence_threshold: float | None = None

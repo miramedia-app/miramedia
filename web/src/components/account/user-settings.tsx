@@ -59,12 +59,12 @@ export function UserSettings() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-start justify-between gap-4">
+      <CardHeader className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1.5">
           <CardTitle>Account</CardTitle>
           <CardDescription>Update your account email and password</CardDescription>
         </div>
-        <Button onClick={saveUser} disabled={!canSave} size="sm" className="gap-1">
+        <Button onClick={saveUser} disabled={!canSave} size="sm" className="gap-1 sm:shrink-0">
           <Check className="h-4 w-4" />
           Save
         </Button>

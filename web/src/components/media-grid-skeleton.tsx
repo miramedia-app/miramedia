@@ -2,22 +2,29 @@
 
 import * as React from "react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { MEDIA_GRID_COLUMNS_CLASS, MEDIA_GRID_GAP_CLASS } from "@/components/virtual-media-grid";
 
 /** Poster-grid loading placeholder.
  *
  * - `layout="default"` matches the shows/movies library + add cards
  *   (poster + year/title/button text rows).
  * - `layout="compact"` is poster-only (denser grid). */
+/** Ladder for fixed-count dashboard rows (5 items max — never more columns than items). */
+export const MEDIA_ROW_COLUMNS_CLASS = "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5";
+
 export function MediaGridSkeleton({
   count = 10,
   layout = "default",
+  columnsClass = MEDIA_GRID_COLUMNS_CLASS,
 }: {
   count?: number;
   layout?: "default" | "compact";
+  /** Override the column ladder so the skeleton matches the grid it replaces. */
+  columnsClass?: string;
 }) {
   if (layout === "compact") {
     return (
-      <div className="grid w-full gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      <div className={`grid w-full ${MEDIA_GRID_GAP_CLASS} ${columnsClass}`}>
         {Array.from({ length: count }).map((_, i) => (
           <Skeleton key={i} className="aspect-[2/3] w-full rounded-lg" />
         ))}
@@ -26,7 +33,7 @@ export function MediaGridSkeleton({
   }
 
   return (
-    <div className="grid w-full auto-rows-min gap-4 sm:grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+    <div className={`grid w-full auto-rows-min ${MEDIA_GRID_GAP_CLASS} ${columnsClass}`}>
       {Array.from({ length: count }).map((_, i) => (
         <div key={i} className="flex flex-col">
           <Skeleton className="aspect-[2/3] w-full rounded-lg" />

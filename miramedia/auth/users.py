@@ -9,7 +9,7 @@ from typing import Annotated, Any, override
 
 import jwt
 from cachetools import TTLCache
-from fastapi import Depends, Request
+from fastapi import Depends
 from fastapi.responses import RedirectResponse, Response
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, models
 from fastapi_users.authentication import (
@@ -25,6 +25,7 @@ from sqlalchemy import func, select
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import make_transient
 from starlette import status
+from starlette.requests import Request
 
 import miramedia.notifications.utils
 from miramedia.auth.db import OAuthAccount, User, get_user_db
@@ -605,12 +606,37 @@ fastapi_users = FastAPIUsers[User, uuid.UUID](
     [bearer_auth_backend, cookie_auth_backend, api_token_auth_backend],
 )
 
-current_active_user = fastapi_users.current_user(active=True, verified=True)
-current_superuser = fastapi_users.current_user(
+# Interactive session auth (JWT bearer + cookie) — excludes personal API tokens.
+# Credential-management routes must depend on ``current_interactive_user`` so a
+# stolen API token cannot mint replacements or revoke other credentials. Ordinary
+# API routes keep ``current_active_user``, which accepts all backends.
+INTERACTIVE_AUTH_BACKENDS = (
+    bearer_auth_backend,
+    cookie_auth_backend,
+)
+
+
+async def get_interactive_auth_backends() -> list[AuthenticationBackend]:
+    return list(INTERACTIVE_AUTH_BACKENDS)
+
+
+_base_current_active_user = fastapi_users.current_user(active=True, verified=True)
+_base_current_superuser = fastapi_users.current_user(
     active=True, verified=True, superuser=True
 )
 
+current_active_user = _base_current_active_user
+current_superuser = _base_current_superuser
+
+
+current_interactive_user = fastapi_users.current_user(
+    active=True,
+    verified=True,
+    get_enabled_backends=get_interactive_auth_backends,
+)
+
 CurrentUserDep = Annotated[User, Depends(current_active_user)]
+CurrentInteractiveUserDep = Annotated[User, Depends(current_interactive_user)]
 SuperuserDep = Annotated[User, Depends(current_superuser)]
 
 

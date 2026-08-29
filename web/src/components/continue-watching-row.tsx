@@ -55,7 +55,7 @@ export function ContinueWatchingRow() {
   return (
     <div className="space-y-4">
       <h3 className="text-2xl font-semibold">Continue Watching</h3>
-      <div className="grid w-full gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+      <div className="flex w-full snap-x snap-mandatory [scrollbar-width:none] gap-3 overflow-x-auto overscroll-x-contain pb-2 sm:grid sm:grid-cols-3 sm:gap-4 sm:overflow-visible sm:pb-0 md:grid-cols-4 lg:grid-cols-5 [&>*]:w-[42vw] [&>*]:shrink-0 [&>*]:snap-start sm:[&>*]:w-auto">
         {items.map((item) => (
           <ContinueWatchingCard key={item.file_id} item={item} />
         ))}
@@ -102,7 +102,9 @@ function ContinueWatchingCard({ item }: { item: ContinueWatchingItem }) {
               </span>
             ) : null}
             <span className="block min-w-0 space-y-0.5">
-              <span className="block truncate text-sm whitespace-nowrap">{copy.title}</span>
+              <span className="block truncate text-xs whitespace-nowrap sm:text-sm">
+                {copy.title}
+              </span>
               {copy.subtitle ? (
                 <span className="block truncate text-xs text-muted-foreground">
                   {copy.subtitle}

@@ -60,8 +60,51 @@ all users and superuser status at **System → Users** in the dashboard.
 
 ## API tokens
 
-Each user can create personal API tokens from their account settings (list /
-create / revoke). Use these for scripting against the API.
+Each user can create personal API tokens from **My Account** (list / create /
+revoke). Send the token as `Authorization: Bearer mm_…` when scripting against
+the [API](/docs/api-reference).
+
+<Callout type="warn">
+
+Tokens are **default-deny**. If you select no scopes, scoped routes return
+**403**. Grant only the scopes the script needs.
+
+</Callout>
+
+### Scopes
+
+These are the six supported scope strings:
+
+| Scope | Access |
+| --- | --- |
+| `library:read` | Library read (catalog, queue, notifications) |
+| `library:write` | Library write (add, skip, watchlists, requests) |
+| `downloads:write` | Downloads write (search, start/control torrents, imports) |
+| `playback:write` | Playback write (own progress and watched state) |
+| `ops:read` | Ops read (health details, logs, updates, metrics) |
+| `settings:write` | Settings write (config and indexer CRUD) |
+
+### Expiry and revocation
+
+You can set an optional expiry when creating a token. Revoke a token at any
+time from **My Account**. Expired and revoked tokens are rejected.
+
+### Session-only credential management
+
+Mint, list, and revoke live at `/users/me/tokens` and are **session-only**
+(`TOKEN_SCOPE_SESSION`). An API token cannot mint replacement tokens or
+revoke other credentials — use the logged-in UI (or a session cookie / JWT)
+for those routes.
+
+### Example
+
+A catalog listing needs only `library:read`:
+
+```bash
+curl -H "Authorization: Bearer mm_YOUR_TOKEN_HERE" \
+  https://miramedia.example.com/api/v1/movies
+```
+
 
 ## OpenID Connect (`[auth.openid_connect]`)
 

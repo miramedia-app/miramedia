@@ -57,11 +57,14 @@ const QUALITY_OPTIONS = [
 export function MediaActionsMenu({
   media,
   mediaType,
+  before,
   afterSubtitles,
   children,
 }: {
   media: Media;
   mediaType: "show" | "movie";
+  /** Rendered ahead of Search (first action slot). */
+  before?: React.ReactNode;
   afterSubtitles?: React.ReactNode;
   children?: React.ReactNode;
 }) {
@@ -163,6 +166,7 @@ export function MediaActionsMenu({
 
   return (
     <div className="flex items-center gap-2">
+      {before}
       {isSuperuser && (
         <>
           <Button variant="outline" size="sm" onClick={() => setSearchOpen(true)}>

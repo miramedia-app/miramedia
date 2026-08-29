@@ -16,8 +16,14 @@ import {
   Play,
   RotateCcw,
 } from "lucide-react";
-import { DataListSection } from "@/components/data-list";
-import type { ColumnDef } from "@/components/data-list/types";
+import {
+  DataListBulkBar,
+  DataListSection,
+  DataListSectionSelectToggle,
+  MobilePrimaryAction,
+  useSectionSelectMode,
+} from "@/components/data-list";
+import type { BulkAction, ColumnDef } from "@/components/data-list/types";
 import { torrentProgressColumn, torrentStatusColumn } from "@/components/torrents/torrent-columns";
 import { Badge } from "@/components/ui/badge";
 import { StatusPill } from "@/components/ui/status-pill";
@@ -42,11 +48,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { DashboardHeader } from "@/components/dashboard-header";
-import { MediaPicture } from "@/components/media-picture";
-import { MediaStatusBadge } from "@/components/media-status-badge";
-import { MediaActionsMenu } from "@/components/media-actions-menu";
+import { MediaDetailHero } from "@/components/media-detail-hero";
 import { MovieSettingsSheet } from "@/components/movies/movie-settings-sheet";
-import { AddToWatchlist } from "@/components/watchlists/add-to-watchlist";
 import { WatchedMenuItems } from "@/components/watchlists/watched-button";
 import { SelectionBar } from "@/components/selection-bar";
 import { useUser } from "@/components/providers/user-provider";
@@ -58,7 +61,6 @@ import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
 import { bulkMutate } from "@/lib/bulk-mutate";
 import {
-  formatCastLine,
   formatFileSuffix,
   getFullyQualifiedMediaName,
   getTorrentQualityString,
@@ -169,6 +171,12 @@ export default function MovieDetailClientPage() {
     return rows;
   }, [movieFiles, subtitleFiles]);
 
+  // Mobile hero Play: first imported file (desktop keeps Play on file rows).
+  const heroPlayableFile = React.useMemo(
+    () => movieFiles.find((f) => f.file_status === "imported" && f.id),
+    [movieFiles],
+  );
+
   const subtitleLanguages = React.useMemo(
     () => [...new Set(subtitleFiles.map((s) => s.language))].sort(),
     [subtitleFiles],
@@ -198,6 +206,10 @@ export default function MovieDetailClientPage() {
 
   // ── Torrent selection ───────────────────────────────────────────────────
   const [selectedTorrents, setSelectedTorrents] = React.useState<Set<string>>(new Set());
+  const clearFiles = React.useCallback(() => setSelectedFiles(new Set()), []);
+  const clearTorrents = React.useCallback(() => setSelectedTorrents(new Set()), []);
+  const filesSelect = useSectionSelectMode(clearFiles);
+  const torrentsSelect = useSectionSelectMode(clearTorrents);
   const torrentIds = React.useMemo(() => torrents.map((t) => t.id!).filter(Boolean), [torrents]);
   const allTorrentsSelected =
     torrentIds.length > 0 && torrentIds.every((id) => selectedTorrents.has(id));
@@ -260,6 +272,88 @@ export default function MovieDetailClientPage() {
   } = useBulkTorrentActions(invalidateAll);
   const bulkWorking = torrentBulkWorking || otherBulkWorking;
   const setWatched = useSetWatched();
+  const fileBulkActions = React.useMemo<BulkAction<string>[]>(
+    () => [
+      {
+        id: "watched",
+        label: "Watched",
+        icon: <Eye className="h-4 w-4" />,
+        onRun: () =>
+          setWatched.mutate({ media_kind: "movie", media_id: movie?.id ?? "", watched: true }),
+        disabled: bulkWorking || setWatched.isPending || !movie?.id,
+      },
+      {
+        id: "unwatched",
+        label: "Unwatched",
+        icon: <EyeOff className="h-4 w-4" />,
+        onRun: () =>
+          setWatched.mutate({ media_kind: "movie", media_id: movie?.id ?? "", watched: false }),
+        disabled: bulkWorking || setWatched.isPending || !movie?.id,
+      },
+      {
+        id: "wanted",
+        label: "Wanted",
+        icon: <Check className="h-4 w-4" />,
+        onRun: () => void setMovieSkipped(false),
+        disabled: bulkWorking,
+      },
+      {
+        id: "skipped",
+        label: "Skipped",
+        icon: <Ban className="h-4 w-4" />,
+        onRun: () => void setMovieSkipped(true),
+        disabled: bulkWorking,
+      },
+      {
+        id: "delete",
+        label: "Delete",
+        icon: <Trash2 className="h-4 w-4" />,
+        variant: "destructive",
+        onRun: () => openDeleteModal({ type: "bulk-files" }),
+        disabled: bulkWorking || selectedFiles.size === 0,
+      },
+    ],
+    [setWatched, movie?.id, bulkWorking, setMovieSkipped, openDeleteModal, selectedFiles.size],
+  );
+  const torrentBulkActions = React.useMemo<BulkAction<string>[]>(
+    () => [
+      {
+        id: "pause",
+        label: "Pause",
+        icon: <Pause className="h-4 w-4" />,
+        onRun: async () => {
+          await bulkPauseTorrents(selectedPausableIds);
+        },
+        disabled: bulkWorking || selectedPausableIds.length === 0,
+      },
+      {
+        id: "start",
+        label: "Start",
+        icon: <Play className="h-4 w-4" />,
+        onRun: async () => {
+          await bulkResumeTorrents(selectedStartableIds);
+        },
+        disabled: bulkWorking || selectedStartableIds.length === 0,
+      },
+      {
+        id: "delete",
+        label: "Delete",
+        icon: <Trash2 className="h-4 w-4" />,
+        variant: "destructive",
+        onRun: () => openDeleteModal({ type: "bulk-torrents" }),
+        disabled: bulkWorking || selectedTorrents.size === 0,
+      },
+    ],
+    [
+      bulkPauseTorrents,
+      bulkResumeTorrents,
+      selectedPausableIds,
+      selectedStartableIds,
+      bulkWorking,
+      openDeleteModal,
+      selectedTorrents.size,
+    ],
+  );
 
   async function setMovieSkipped(skipped: boolean) {
     if (!movie?.id) return;
@@ -405,6 +499,7 @@ export default function MovieDetailClientPage() {
         id: "title",
         header: "Title",
         width: "minmax(0,1fr)",
+        mobile: { role: "title" },
         render: (r) => (
           <span className="truncate text-sm text-muted-foreground">
             {r.kind === "file" ? (r.data.file_name ?? formatFileSuffix(r.data)) : r.data.file_name}
@@ -415,12 +510,14 @@ export default function MovieDetailClientPage() {
         id: "type",
         header: "Type",
         width: "96px",
+        mobile: { role: "meta", order: 1 },
         render: (r) => <TypePill>{r.kind === "file" ? "Video" : "Subtitle"}</TypePill>,
       },
       {
         id: "language",
         header: "Language",
         width: "120px",
+        mobile: { role: "meta", order: 3 },
         render: (r) => {
           const lang = r.kind === "subtitle" ? r.data.language : (movie?.original_language ?? null);
           return lang ? <MetaPill>{languageName(lang)}</MetaPill> : null;
@@ -430,6 +527,7 @@ export default function MovieDetailClientPage() {
         id: "quality",
         header: "Quality",
         width: "84px",
+        mobile: { role: "meta", order: 2 },
         render: (r) =>
           r.kind === "file" ? (
             <MetaPill className="font-mono">{getTorrentQualityString(r.data.quality)}</MetaPill>
@@ -439,6 +537,7 @@ export default function MovieDetailClientPage() {
         id: "status",
         header: "Status",
         width: "112px",
+        mobile: { role: "meta", order: 0 },
         render: (r) => (
           <StatusPill
             status={r.kind === "file" ? r.data.file_status : "imported"}
@@ -461,15 +560,17 @@ export default function MovieDetailClientPage() {
         return (
           <>
             {showPlayer && movie && (
-              <VideoPlayerDialog
-                mediaType="movie"
-                mediaId={movie.id ?? ""}
-                fileId={r.data.id!}
-                title={getFullyQualifiedMediaName(movie)}
-                subtitleLanguages={subtitleLanguages}
-                buttonVariant="ghost"
-                buttonSize="icon"
-              />
+              <MobilePrimaryAction>
+                <VideoPlayerDialog
+                  mediaType="movie"
+                  mediaId={movie.id ?? ""}
+                  fileId={r.data.id!}
+                  title={getFullyQualifiedMediaName(movie)}
+                  subtitleLanguages={subtitleLanguages}
+                  buttonVariant="ghost"
+                  buttonSize="icon"
+                />
+              </MobilePrimaryAction>
             )}
             {showDownload && movie && (
               <DirectDownloadAction
@@ -546,18 +647,20 @@ export default function MovieDetailClientPage() {
         id: "title",
         header: "Torrent",
         width: "minmax(0,1fr)",
+        mobile: { role: "title" },
         render: (t) => <span className="block truncate pr-4 text-sm font-medium">{t.title}</span>,
       },
       {
         id: "quality",
         header: "Quality",
         width: "88px",
+        mobile: { role: "meta", order: 1 },
         render: (t) => (
           <MetaPill className="font-mono">{getTorrentQualityString(t.quality)}</MetaPill>
         ),
       },
-      torrentProgressColumn(),
-      torrentStatusColumn(),
+      { ...torrentProgressColumn(), mobile: { role: "subtitle" } },
+      { ...torrentStatusColumn(), mobile: { role: "meta", order: 0 } },
     ],
     [],
   );
@@ -691,63 +794,46 @@ export default function MovieDetailClientPage() {
       />
       <main className="flex w-full flex-col gap-6 p-4">
         {/* Hero */}
-        <div className="flex flex-col gap-4 md:flex-row md:items-stretch">
-          <div className="w-[8.8rem] shrink-0 overflow-hidden rounded-xl md:w-44">
-            <MediaPicture media={movie} />
-          </div>
-          <div className="flex flex-1 flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <MediaStatusBadge status={movie.status ?? (movie.skipped ? "skipped" : "wanted")} />
-              {movie.skipped && <Badge variant="outline">Skipped</Badge>}
-            </div>
-            <h1 className="line-clamp-1 text-2xl font-bold tracking-tight">{movie.name}</h1>
-            {movie.content_rating && (
-              <Badge variant="outline" className="w-fit font-mono text-xs">
-                {movie.content_rating}
-              </Badge>
-            )}
-            {movie.overview && (
-              <p className="mt-1 line-clamp-3 text-sm leading-relaxed text-muted-foreground">
-                {movie.overview}
-              </p>
-            )}
-            {movie.genres && movie.genres.length > 0 && (
-              <div className="mt-1 flex flex-wrap gap-1">
-                {movie.genres.map((g) => (
-                  <Badge key={g} variant="secondary" className="text-xs">
-                    {g}
-                  </Badge>
-                ))}
-              </div>
-            )}
-            <div className="mt-1 text-xs text-muted-foreground">
+        <MediaDetailHero
+          media={movie}
+          mediaType="movie"
+          extraBadges={movie.skipped ? <Badge variant="outline">Skipped</Badge> : null}
+          metaLine={
+            <>
               {movie.year != null && <>{movie.year}</>}
               {movie.year != null && movie.runtime ? " · " : ""}
               {movie.runtime ? `${Math.floor(movie.runtime / 60)}h ${movie.runtime % 60}m` : ""}
-            </div>
-            {movie.cast && movie.cast.length > 0 && (
-              <p className="line-clamp-1 text-xs text-muted-foreground">
-                {formatCastLine(movie.cast)}
-              </p>
-            )}
-            <div className="mt-3 flex flex-wrap items-center gap-2 md:mt-auto md:pt-3">
-              <MediaActionsMenu
-                media={movie}
+            </>
+          }
+          settings={isSuperuser ? <MovieSettingsSheet movie={movie} /> : null}
+          mobilePrimaryAction={
+            streaming && heroPlayableFile ? (
+              <VideoPlayerDialog
                 mediaType="movie"
-                afterSubtitles={
-                  <AddToWatchlist mediaKind="movie" mediaId={movie.id!} triggerLabel="Watchlists" />
-                }
-              >
-                {isSuperuser ? <MovieSettingsSheet movie={movie} /> : null}
-              </MediaActionsMenu>
-            </div>
-          </div>
-        </div>
+                mediaId={movie.id ?? ""}
+                fileId={heroPlayableFile.id!}
+                title={getFullyQualifiedMediaName(movie)}
+                subtitleLanguages={subtitleLanguages}
+                buttonVariant="default"
+                buttonSize="sm"
+                triggerLabel="Play"
+              />
+            ) : null
+          }
+        />
 
         {/* Downloads */}
         <div className="flex flex-col gap-3">
-          <h2 className="text-lg font-semibold">Downloads</h2>
-          {isSuperuser && totalFiles > 0 && (
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold">Downloads</h2>
+            {filesSelect.isMobile && isSuperuser && totalFiles > 0 && (
+              <DataListSectionSelectToggle
+                selectMode={filesSelect.mobileSelectMode}
+                onToggle={filesSelect.toggle}
+              />
+            )}
+          </div>
+          {!filesSelect.isMobile && isSuperuser && totalFiles > 0 && (
             <SelectionBar
               allChecked={allFilesSelected}
               indeterminate={someFilesSelected}
@@ -828,6 +914,7 @@ export default function MovieDetailClientPage() {
             selectedIds={selectedFiles}
             onToggleSelected={(id) => toggleFileRow(id)}
             onToggleAllSelected={toggleSelectAllFiles}
+            mobileShowSelect={filesSelect.selectMode}
             emptyTitle="No files downloaded yet."
             columns={fileColumns}
             rowActions={fileRowActions}
@@ -836,8 +923,16 @@ export default function MovieDetailClientPage() {
           {/* Torrents */}
           {isSuperuser && (
             <>
-              <h2 className="mt-4 text-lg font-semibold">Torrents</h2>
-              {torrents.length > 0 && (
+              <div className="mt-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Torrents</h2>
+                {torrentsSelect.isMobile && torrents.length > 0 && (
+                  <DataListSectionSelectToggle
+                    selectMode={torrentsSelect.mobileSelectMode}
+                    onToggle={torrentsSelect.toggle}
+                  />
+                )}
+              </div>
+              {!torrentsSelect.isMobile && torrents.length > 0 && (
                 <SelectionBar
                   allChecked={allTorrentsSelected}
                   indeterminate={someTorrentsSelected}
@@ -888,6 +983,7 @@ export default function MovieDetailClientPage() {
                   selectable={isSuperuser}
                   selectedIds={selectedTorrents}
                   onToggleSelected={(id) => toggleTorrentRow(id, !selectedTorrents.has(id))}
+                  mobileShowSelect={torrentsSelect.selectMode}
                   columns={torrentColumns}
                   rowActions={torrentRowActions}
                 />
@@ -900,6 +996,22 @@ export default function MovieDetailClientPage() {
           )}
         </div>
       </main>
+      {filesSelect.isMobile && isSuperuser && (
+        <DataListBulkBar<string>
+          count={selectedFiles.size}
+          selectedItems={[...selectedFiles]}
+          actions={fileBulkActions}
+          onClear={clearFiles}
+        />
+      )}
+      {torrentsSelect.isMobile && isSuperuser && (
+        <DataListBulkBar<string>
+          count={selectedTorrents.size}
+          selectedItems={[...selectedTorrents]}
+          actions={torrentBulkActions}
+          onClear={clearTorrents}
+        />
+      )}
 
       <AlertDialog
         open={deleteTarget !== null}

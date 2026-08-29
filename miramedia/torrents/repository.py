@@ -136,6 +136,16 @@ class TorrentRepository:
         result = (await self.db.execute(stmt)).scalars().all()
         return [TorrentSchema.model_validate(row) for row in result]
 
+    async def get_finished_torrents(self) -> list[TorrentSchema]:
+        """Torrents already in the finished state, for import sweeps.
+
+        Avoids hydrating the full library (including active/paused/errored
+        rows) on every import tick.
+        """
+        stmt = select(Torrent).where(Torrent.status == TorrentStatus.finished)
+        result = (await self.db.execute(stmt)).scalars().all()
+        return [TorrentSchema.model_validate(row) for row in result]
+
     # ---- torrent history (durable download log) -------------------------
 
     async def record_torrent_downloaded(

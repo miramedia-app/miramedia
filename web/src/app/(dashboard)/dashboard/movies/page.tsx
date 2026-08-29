@@ -255,7 +255,7 @@ export default function MoviesPage() {
                         )}
                       </div>
                       <Link href={`/dashboard/movies/${movie.id}`} className="group">
-                        <p className="line-clamp-2 min-h-[2.5rem] text-sm leading-tight font-medium group-hover:underline">
+                        <p className="line-clamp-2 min-h-[2.5rem] text-xs leading-tight font-medium group-hover:underline sm:text-sm">
                           {movie.name}
                         </p>
                       </Link>

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -22,6 +23,15 @@ import apiClient from "@/lib/api/client";
 import type { components } from "@/lib/api/api";
 
 type ApiTokenRead = components["schemas"]["ApiTokenRead"];
+
+const API_TOKEN_SCOPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "library:read", label: "Library read — catalog, queue, notifications" },
+  { value: "library:write", label: "Library write — add, skip, watchlists, requests" },
+  { value: "downloads:write", label: "Downloads write — search and start torrents" },
+  { value: "playback:write", label: "Playback write — own progress and watched state" },
+  { value: "ops:read", label: "Ops read — health details, logs, updates" },
+  { value: "settings:write", label: "Settings write — config and indexer CRUD" },
+];
 
 function formatDate(value: string | null | undefined): string {
   if (!value) return "—";
@@ -48,11 +58,17 @@ export function ApiTokens() {
   const [creating, setCreating] = React.useState(false);
   const [newName, setNewName] = React.useState("");
   const [newExpiresAt, setNewExpiresAt] = React.useState("");
+  const [selectedScopes, setSelectedScopes] = React.useState<string[]>([]);
 
   const [revealedToken, setRevealedToken] = React.useState<string | null>(null);
   const [revealedName, setRevealedName] = React.useState("");
+  const [revealedScopes, setRevealedScopes] = React.useState<string[]>([]);
 
   const [revoking, setRevoking] = React.useState<Record<string, boolean>>({});
+
+  function toggleScope(scope: string, checked: boolean) {
+    setSelectedScopes((prev) => (checked ? [...prev, scope] : prev.filter((s) => s !== scope)));
+  }
 
   async function create() {
     if (!newName.trim()) {
@@ -61,7 +77,10 @@ export function ApiTokens() {
     }
     setCreating(true);
     try {
-      const body: { name: string; expires_at?: string | null } = { name: newName.trim() };
+      const body: { name: string; scopes: string[]; expires_at?: string | null } = {
+        name: newName.trim(),
+        scopes: selectedScopes,
+      };
       if (newExpiresAt) body.expires_at = new Date(newExpiresAt).toISOString();
       const { data, error } = await apiClient.POST("/api/v1/users/me/tokens", { body });
       if (error || !data) {
@@ -70,9 +89,11 @@ export function ApiTokens() {
       }
       setRevealedToken((data as { token: string }).token);
       setRevealedName((data as { name: string }).name);
+      setRevealedScopes((data as { scopes: string[] }).scopes ?? []);
       setCreateOpen(false);
       setNewName("");
       setNewExpiresAt("");
+      setSelectedScopes([]);
       await qc.invalidateQueries({ queryKey: ["users", "me", "tokens"] });
     } finally {
       setCreating(false);
@@ -124,6 +145,8 @@ export function ApiTokens() {
               <code className="rounded bg-muted px-1 py-0.5 text-xs">
                 Authorization: Bearer mm_…
               </code>
+              . Choose scopes at creation — existing tokens without scopes no longer work after
+              upgrade.
             </CardDescription>
           </div>
           <Button size="sm" className="gap-1" onClick={() => setCreateOpen(true)}>
@@ -143,10 +166,10 @@ export function ApiTokens() {
               {tokens.map((token) => (
                 <li
                   key={token.id}
-                  className="flex items-center justify-between gap-3 rounded-lg border p-4"
+                  className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <KeyRound className="h-4 w-4 text-muted-foreground" />
                       <span className="font-medium">{token.name}</span>
                       <Badge variant="outline" className="font-mono text-xs">
@@ -158,6 +181,19 @@ export function ApiTokens() {
                         </Badge>
                       )}
                     </div>
+                    {token.scopes?.length ? (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {token.scopes.map((scope) => (
+                          <Badge key={scope} variant="secondary" className="font-mono text-xs">
+                            {scope}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        No scopes — cannot call API routes
+                      </p>
+                    )}
                     <div className="mt-1 flex flex-wrap gap-x-4 text-xs text-muted-foreground">
                       <span>Created {formatDate(token.created_at)}</span>
                       <span>Last used {formatDate(token.last_used_at)}</span>
@@ -167,6 +203,7 @@ export function ApiTokens() {
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="self-end sm:self-auto"
                     onClick={() => void revoke(token)}
                     disabled={revoking[token.id]}
                     aria-label="Revoke token"
@@ -189,7 +226,8 @@ export function ApiTokens() {
           <DialogHeader>
             <DialogTitle>Create API Token</DialogTitle>
             <DialogDescription>
-              Give the token a memorable name. The plaintext value is shown once after creation.
+              Give the token a memorable name and select allowed scopes. The plaintext value is
+              shown once after creation.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -202,6 +240,27 @@ export function ApiTokens() {
                 placeholder="e.g. Home Assistant"
                 maxLength={120}
               />
+            </div>
+            <div className="space-y-2">
+              <Label>Scopes</Label>
+              <ul className="space-y-2 rounded-md border p-3">
+                {API_TOKEN_SCOPE_OPTIONS.map((option) => (
+                  <li key={option.value} className="flex items-start gap-2">
+                    <Checkbox
+                      id={`scope-${option.value}`}
+                      checked={selectedScopes.includes(option.value)}
+                      onCheckedChange={(checked) => toggleScope(option.value, checked === true)}
+                    />
+                    <label
+                      htmlFor={`scope-${option.value}`}
+                      className="cursor-pointer text-sm leading-snug"
+                    >
+                      <span className="font-mono text-xs">{option.value}</span>
+                      <span className="block text-muted-foreground">{option.label}</span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
             </div>
             <div className="space-y-2">
               <Label htmlFor="token-expires">Expires (optional)</Label>
@@ -239,11 +298,21 @@ export function ApiTokens() {
           </DialogHeader>
           <div className="space-y-2">
             <Label>{revealedName}</Label>
+            {revealedScopes.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {revealedScopes.map((scope) => (
+                  <Badge key={scope} variant="secondary" className="font-mono text-xs">
+                    {scope}
+                  </Badge>
+                ))}
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <Input value={revealedToken ?? ""} readOnly className="font-mono text-xs" />
               <Button
                 variant="outline"
                 size="icon"
+                className="shrink-0"
                 onClick={() => void copyTokenToClipboard()}
                 aria-label="Copy"
               >

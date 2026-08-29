@@ -27,6 +27,8 @@ from miramedia.shows.schemas import (
     PublicEpisodeFile,
     PublicShow,
     Season,
+    SeasonFilesBatchRequest,
+    SeasonFilesBatchResponse,
     SeasonId,
     Show,
 )
@@ -529,6 +531,22 @@ def get_season(season: season_dep) -> Season:
     Get details for a specific season.
     """
     return season
+
+
+@seasons_router.post("/files/batch", status_code=status.HTTP_200_OK)
+async def batch_get_episode_files(
+    body: SeasonFilesBatchRequest,
+    show_service: show_service_dep,
+) -> SeasonFilesBatchResponse:
+    """Fetch episode files for multiple seasons in one bounded request."""
+    results, errors = await show_service.get_public_episode_files_by_season_ids(
+        body.season_ids,
+        show_id=body.show_id,
+    )
+    return SeasonFilesBatchResponse(
+        results={str(season_id): files for season_id, files in results.items()},
+        errors={str(season_id): message for season_id, message in errors.items()},
+    )
 
 
 @seasons_router.get("/{season_id}/files")

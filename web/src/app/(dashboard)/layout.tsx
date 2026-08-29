@@ -12,6 +12,7 @@ import { FeaturesProvider } from "@/components/providers/features-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { PageLoader } from "@/components/ui/page-loader";
 import { AppSidebar } from "@/components/nav/app-sidebar";
+import { MobileTabBar } from "@/components/nav/mobile-tab-bar";
 
 function AuthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -66,7 +67,10 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     <FeaturesProvider>
       <SidebarProvider>
         <AppSidebar />
-        <SidebarInset>{children}</SidebarInset>
+        <SidebarInset className="pb-[calc(3.5rem+env(safe-area-inset-bottom))] lg:pb-0">
+          {children}
+        </SidebarInset>
+        <MobileTabBar />
       </SidebarProvider>
     </FeaturesProvider>
   );

@@ -5,8 +5,8 @@ import * as React from "react";
 import { StatusPill } from "@/components/ui/status-pill";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
 import { MatchConfidencePill } from "@/components/match-confidence-pill";
-import type { ColumnDef, FacetDef, GroupByDef } from "@/components/data-list";
-import { getTorrentStatusString, qualityToString } from "@/lib/utils";
+import type { ColumnDef, FacetDef, GroupByDef, MobileAction } from "@/components/data-list";
+import { cn, getTorrentStatusString, qualityToString } from "@/lib/utils";
 import {
   BUCKET_ORDER,
   CORRUPT_LABEL,
@@ -18,9 +18,86 @@ import {
   isTorrent,
   rankedChoices,
 } from "@/lib/imports";
-import type { ImportItem, StagedChoice } from "@/lib/imports";
+import type {
+  ImportItem,
+  IntegrityImport,
+  ScanCandidate,
+  ScanImport,
+  ScanProviderCandidate,
+  StagedChoice,
+  TorrentImport,
+} from "@/lib/imports";
 
 const TRAILING_SLASHES = /\/+$/;
+
+/** Human name of the row's source (release title, corrupt file, or folder). */
+function sourceName(it: ImportItem): string {
+  if (isMedia(it) && it.torrent_title) return it.torrent_title;
+  if (isIntegrity(it)) return it.mismatch.path?.split("/").filter(Boolean).pop() ?? "—";
+  const folder = isTorrent(it)
+    ? it.entry.source_dir
+    : isMedia(it)
+      ? it.source_dir
+      : it.result.directory;
+  return folder?.replace(TRAILING_SLASHES, "").split("/").filter(Boolean).pop() || "—";
+}
+
+/** Resolved destination for a scan row: staged choice, else best candidate. */
+function scanDestination(
+  it: ScanImport,
+  stagedByScan: Record<string, StagedChoice>,
+): { label: string; conf: number | null; staged: boolean } {
+  const r = it.result;
+  if (r.imported_name) return { label: r.imported_name, conf: null, staged: false };
+  const staged = stagedByScan[it.id];
+  const top = rankedChoices(r)[0];
+  if (staged?.kind === "candidate") {
+    return {
+      label: `${staged.data.media_name}${staged.data.media_year ? ` (${staged.data.media_year})` : ""}`,
+      conf: staged.data.confidence,
+      staged: true,
+    };
+  }
+  if (staged?.kind === "provider") {
+    return {
+      label: `${staged.data.name}${staged.data.year ? ` (${staged.data.year})` : ""}`,
+      conf: staged.data.confidence,
+      staged: true,
+    };
+  }
+  if (top?.kind === "candidate") {
+    return {
+      label: `${top.data.media_name}${top.data.media_year ? ` (${top.data.media_year})` : ""}`,
+      conf: top.confidence,
+      staged: false,
+    };
+  }
+  if (top?.kind === "provider") {
+    return {
+      label: `${top.data.name}${top.data.year ? ` (${top.data.year})` : ""}`,
+      conf: top.confidence,
+      staged: false,
+    };
+  }
+  return { label: "Unmatched", conf: null, staged: false };
+}
+
+/** Human title for a row on mobile: what it is / where it goes. */
+function destinationTitle(it: ImportItem, stagedByScan: Record<string, StagedChoice>): string {
+  if (isTorrent(it)) {
+    const m = it.entry.media;
+    return m?.media_name
+      ? `${m.media_name}${m.media_year ? ` (${m.media_year})` : ""}`
+      : "Unlinked";
+  }
+  if (isMedia(it)) return `${it.media_name}${it.media_year ? ` (${it.media_year})` : ""}`;
+  if (isIntegrity(it)) {
+    return it.mismatch.episode
+      ? `${it.mismatch.media_title} · ${it.mismatch.episode}`
+      : it.mismatch.media_title;
+  }
+  return scanDestination(it, stagedByScan).label;
+}
 
 export interface BuildImportColumnsOptions {
   stagedByScan: Record<string, StagedChoice>;
@@ -40,6 +117,14 @@ export function buildImportColumns({
       id: "source",
       header: "Source",
       width: "minmax(240px,2fr)",
+      mobile: {
+        role: "subtitle",
+        render: (it) => (
+          <span className="truncate font-mono text-[11px]" title={sourceName(it)}>
+            {sourceName(it)}
+          </span>
+        ),
+      },
       render: (it) => {
         // Imported (cleaned-up) rows have no live source dir; show the
         // original torrent release name preserved in torrent_history.
@@ -82,6 +167,24 @@ export function buildImportColumns({
       id: "destination",
       header: "Destination",
       width: "minmax(240px,2fr)",
+      mobile: {
+        role: "title",
+        render: (it) => {
+          const title = destinationTitle(it, stagedByScan);
+          const unmatched = title === "Unmatched" || title === "Unlinked";
+          const dest = it.kind === "scan" ? scanDestination(it, stagedByScan) : null;
+          return (
+            <span className={cn("line-clamp-2", unmatched && "text-muted-foreground")}>
+              {title}
+              {dest?.conf != null && (
+                <span className="ml-1.5 inline-flex align-text-bottom">
+                  <MatchConfidencePill confidence={dest.conf} />
+                </span>
+              )}
+            </span>
+          );
+        },
+      },
       render: (it) => {
         if (isTorrent(it)) {
           const m = it.entry.media;
@@ -165,6 +268,12 @@ export function buildImportColumns({
       id: "kind",
       header: "Type",
       width: "92px",
+      mobile: {
+        role: "meta",
+        order: 1,
+        render: (it) =>
+          it.kind === "scan" ? "Scan" : it.kind === "integrity" ? "Integrity" : "Torrent",
+      },
       render: (it) => (
         <TypePill>
           {it.kind === "scan" ? "Scan" : it.kind === "integrity" ? "Integrity" : "Torrent"}
@@ -176,6 +285,27 @@ export function buildImportColumns({
       header: "Progress",
       width: "84px",
       hideBelow: "md",
+      mobile: {
+        role: "meta",
+        order: 2,
+        render: (it) => {
+          if (isTorrent(it) || isMedia(it)) {
+            const p = isTorrent(it) ? it.entry.progress : it.progress;
+            return (
+              <span className="tabular-nums">
+                {p.imported}/{p.total} imported
+              </span>
+            );
+          }
+          if (isIntegrity(it)) {
+            return [qualityToString(it.mismatch.quality), it.mismatch.variant_tag]
+              .filter(Boolean)
+              .join(" · ");
+          }
+          const videos = it.result.files?.filter((f) => f.is_video).length ?? 0;
+          return videos > 0 ? `${videos} ${videos === 1 ? "video" : "videos"}` : null;
+        },
+      },
       render: (it) => {
         if (isTorrent(it) || isMedia(it)) {
           const p = isTorrent(it) ? it.entry.progress : it.progress;
@@ -217,6 +347,7 @@ export function buildImportColumns({
       header: "Status",
       width: "112px",
       hideBelow: "md",
+      mobile: { role: "status" },
       render: (it) => {
         if (isTorrent(it)) {
           const p = it.entry.progress;
@@ -423,4 +554,98 @@ export function ImportExpandedContent({ item: it }: { item: ImportItem }): React
       </div>
     </div>
   );
+}
+
+export interface ImportMobileActionsOptions {
+  busyId: string | null;
+  queuedScanIds: Set<string>;
+  effectiveChoiceFor: (item: ScanImport) => StagedChoice | null;
+  onChooseDestination: (item: ScanImport) => void;
+  onResolveIntegrity: (item: IntegrityImport, action: "rebaseline" | "dismiss") => void;
+  onMapTorrent: (payload: { id: string; title: string }) => void;
+  onRetryTorrent: (item: TorrentImport) => void;
+  onIgnore: (item: ImportItem) => void;
+  onPickScanCandidate: (item: ScanImport, candidate: ScanCandidate) => void;
+  onPickProviderCandidate: (item: ScanImport, candidate: ScanProviderCandidate) => void;
+  onClearStaged: (scanId: string) => void;
+}
+
+/** Labelled action-sheet entries for one import row (mobile card rows). */
+export function buildImportMobileActions(
+  it: ImportItem,
+  o: ImportMobileActionsOptions,
+): MobileAction[] {
+  const busy = o.busyId === it.id;
+  if (isMedia(it)) return [];
+  if (isIntegrity(it)) {
+    return [
+      {
+        id: "rebaseline",
+        label: "Accept current checksum",
+        disabled: busy,
+        onSelect: () => o.onResolveIntegrity(it, "rebaseline"),
+      },
+      {
+        id: "dismiss",
+        label: "Dismiss (re-verify next audit)",
+        disabled: busy,
+        onSelect: () => o.onResolveIntegrity(it, "dismiss"),
+      },
+    ];
+  }
+  if (isTorrent(it)) {
+    return [
+      {
+        id: "map",
+        label: "Map to media…",
+        onSelect: () => o.onMapTorrent({ id: it.id, title: it.entry.torrent_title }),
+      },
+      { id: "retry", label: "Retry import", disabled: busy, onSelect: () => o.onRetryTorrent(it) },
+      {
+        id: "delete",
+        label: "Delete",
+        destructive: true,
+        disabled: busy,
+        onSelect: () => o.onIgnore(it),
+      },
+    ];
+  }
+  const r = it.result;
+  if (r.status === "imported") {
+    return [
+      {
+        id: "ignore",
+        label: "Ignore",
+        destructive: true,
+        disabled: busy,
+        onSelect: () => o.onIgnore(it),
+      },
+    ];
+  }
+  if (r.status === "queued" || o.queuedScanIds.has(it.id)) return [];
+  const effective = o.effectiveChoiceFor(it);
+  const out: MobileAction[] = [];
+  if (effective) {
+    out.push({
+      id: "import",
+      label: "Import",
+      disabled: busy,
+      onSelect: () => {
+        o.onClearStaged(it.id);
+        if (effective.kind === "candidate") o.onPickScanCandidate(it, effective.data);
+        else o.onPickProviderCandidate(it, effective.data);
+      },
+    });
+  }
+  out.push(
+    { id: "choose", label: "Choose destination…", onSelect: () => o.onChooseDestination(it) },
+    {
+      id: "ignore",
+      label: "Ignore",
+      destructive: true,
+      disabled: busy,
+      onSelect: () => o.onIgnore(it),
+    },
+  );
+  return out;
 }

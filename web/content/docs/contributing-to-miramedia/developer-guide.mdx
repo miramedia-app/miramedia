@@ -221,7 +221,7 @@ uv sync
 ### Run database migrations
 
 ```bash
-uv run alembic upgrade head
+uv run --python 3.13 alembic upgrade head
 ```
 
 ### Run the backend (development mode)
@@ -433,14 +433,14 @@ docker compose -f docker-compose.dev.yaml build api
 
 ```bash
 make app
-uv run alembic upgrade head
+uv run --python 3.13 alembic upgrade head
 ```
 
 - To create new migration:
 
 ```bash
 make app
-uv run alembic revision --autogenerate -m "description"
+uv run --python 3.13 alembic revision --autogenerate -m "description"
 ```
 
 - Downgrade floor: the squashed initial schema revision is the lowest supported
@@ -494,7 +494,7 @@ make frontend
 docker compose -f docker-compose.dev.yaml exec -it web sh
 ```
 
-- Once inside, you can run commands like `uv run alembic upgrade head`, `pnpm install`, etc.
+- Once inside, you can run commands like `uv run --python 3.13 alembic upgrade head`, `pnpm install`, etc.
 
 </details>
 

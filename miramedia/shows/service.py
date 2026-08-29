@@ -507,26 +507,69 @@ class ShowService(MediaService[Show, ShowId]):
         :param season: The season object.
         :return: A list of public episode files.
         """
-        from miramedia.file_status import FileStatus
+        results, errors = await self.get_public_episode_files_by_season_ids([season.id])
+        if season.id in errors:
+            raise NotFoundError(errors[season.id])
+        return results.get(season.id, [])
 
-        episode_files = await self.show_repository.get_episode_files_by_season_id(
-            season_id=season.id
+    async def get_public_episode_files_by_season_ids(
+        self,
+        season_ids: list[SeasonId],
+        *,
+        show_id: ShowId | None = None,
+    ) -> tuple[dict[SeasonId, list[PublicEpisodeFile]], dict[SeasonId, str]]:
+        """Batch-fetch public episode files for many seasons in bounded set-oriented queries."""
+        from miramedia.database import release_session_before_external_io
+
+        distinct_ids = list(dict.fromkeys(season_ids))
+        results: dict[SeasonId, list[PublicEpisodeFile]] = {}
+        errors: dict[SeasonId, str] = {}
+
+        if not distinct_ids:
+            return results, errors
+
+        seasons_by_id = await self.show_repository.get_seasons_by_ids(distinct_ids)
+
+        for season_id in distinct_ids:
+            if season_id not in seasons_by_id:
+                errors[season_id] = f"Season with ID {season_id} not found."
+                continue
+            season = seasons_by_id[season_id]
+            if show_id is not None and season.show_id != show_id:
+                errors[season_id] = (
+                    f"Season {season_id} does not belong to show {show_id}."
+                )
+
+        valid_ids = [season_id for season_id in distinct_ids if season_id not in errors]
+        if not valid_ids:
+            return results, errors
+
+        files_by_season = await self.show_repository.get_episode_files_by_season_ids(
+            valid_ids
         )
-        public_episode_files = [
-            PublicEpisodeFile.model_validate(x) for x in episode_files
-        ]
 
-        show = await self.show_repository.get_show_by_season_id(season_id=season.id)
-        season_dir = self.get_root_season_directory(
-            show=show, season_number=season.number
+        show_ids = list(
+            {
+                seasons_by_id[season_id].show_id
+                for season_id in valid_ids
+                if seasons_by_id[season_id].show_id is not None
+            }
         )
-        episode_map = {ep.id: ep for ep in season.episodes}
+        shows_by_id = await self.show_repository.get_shows_by_ids(show_ids)
 
-        # Batch resolve torrent imported-state. Read-only: no client RPC, no
-        # per-file DB writes — the torrents poll on the page already covers
-        # live status.
+        public_files_by_season: dict[SeasonId, list[PublicEpisodeFile]] = {
+            season_id: [
+                PublicEpisodeFile.model_validate(episode_file)
+                for episode_file in files_by_season.get(season_id, [])
+            ]
+            for season_id in valid_ids
+        }
+
         torrent_ids = [
-            ef.torrent_id for ef in public_episode_files if ef.torrent_id is not None
+            episode_file.torrent_id
+            for season_id in valid_ids
+            for episode_file in public_files_by_season[season_id]
+            if episode_file.torrent_id is not None
         ]
         imported_by_torrent = (
             await self.torrent_service.bulk_check_torrents_imported(torrent_ids)
@@ -534,30 +577,76 @@ class ShowService(MediaService[Show, ShowId]):
             else {}
         )
 
+        await release_session_before_external_io(self.show_repository.db)
+
         video_exts = frozenset({".mkv", ".mp4", ".avi", ".mov"})
 
-        def _stems_for_episode_file(episode_file: EpisodeFile) -> list[str]:
-            episode = episode_map.get(episode_file.episode_id)
-            if episode is None:
-                return []
-            return episode_file_stem_candidates(
-                show,
-                season_number=season.number,
-                episode_number=episode.number,
-                quality=episode_file.quality,
-                parts=NameParts.from_row(episode_file),
+        async def scan_one(season_id: SeasonId) -> tuple[SeasonId, dict[UUID, str]]:
+            season = seasons_by_id[season_id]
+            show = shows_by_id.get(season.show_id)
+            if show is None:
+                return season_id, {}
+            season_dir = self.get_root_season_directory(
+                show=show, season_number=season.number
+            )
+            public_episode_files = public_files_by_season[season_id]
+            episode_map = {episode.id: episode for episode in season.episodes}
+
+            def _stems_for_episode_file(episode_file: EpisodeFile) -> list[str]:
+                episode = episode_map.get(episode_file.episode_id)
+                if episode is None:
+                    return []
+                return episode_file_stem_candidates(
+                    show,
+                    season_number=season.number,
+                    episode_number=episode.number,
+                    quality=episode_file.quality,
+                    parts=NameParts.from_row(episode_file),
+                )
+
+            disk_names = cast(
+                dict[UUID, str],
+                await asyncio.to_thread(
+                    scan_rows_for_files,
+                    season_dir,
+                    public_episode_files,
+                    key=lambda ef: ef.id,
+                    stems=_stems_for_episode_file,
+                    video_exts=video_exts,
+                ),
+            )
+            return season_id, disk_names
+
+        scan_results = await asyncio.gather(
+            *(scan_one(season_id) for season_id in valid_ids)
+        )
+        disk_names_by_season = dict(scan_results)
+
+        for season_id in valid_ids:
+            season = seasons_by_id[season_id]
+            show = shows_by_id.get(season.show_id)
+            if show is None:
+                errors[season_id] = f"Show for season {season_id} not found."
+                continue
+            disk_names = disk_names_by_season.get(season_id, {})
+            results[season_id] = self._enrich_public_episode_files(
+                public_episode_files=public_files_by_season[season_id],
+                imported_by_torrent=imported_by_torrent,
+                disk_names=disk_names,
             )
 
-        disk_names = await asyncio.to_thread(
-            scan_rows_for_files,
-            season_dir,
-            public_episode_files,
-            key=lambda ef: ef.id,
-            stems=_stems_for_episode_file,
-            video_exts=video_exts,
-        )
+        return results, errors
 
-        result = []
+    @staticmethod
+    def _enrich_public_episode_files(
+        *,
+        public_episode_files: list[PublicEpisodeFile],
+        imported_by_torrent: dict[TorrentId, bool],
+        disk_names: dict[UUID, str | None],
+    ) -> list[PublicEpisodeFile]:
+        from miramedia.file_status import FileStatus
+
+        result: list[PublicEpisodeFile] = []
         for episode_file in public_episode_files:
             tid = episode_file.torrent_id
             considered_imported = (
@@ -1337,7 +1426,7 @@ class ShowService(MediaService[Show, ShowId]):
         *episode_target* pins linking to an explicit ``(season, episode)`` for
         releases whose title can't be parsed (Season 0 specials).
         """
-        from miramedia.exceptions import NoVideoFilesError
+        from miramedia.exceptions import NoVideoFilesError, UnsafeTorrentTitleError
 
         for candidate in results:
             log.info(
@@ -1352,7 +1441,7 @@ class ShowService(MediaService[Show, ShowId]):
                     show_id=show.id,
                     episode_target=episode_target,
                 )
-            except NoVideoFilesError as e:
+            except (NoVideoFilesError, UnsafeTorrentTitleError) as e:
                 log.info("Auto-download: skipping %s — %s", candidate.title, e)
                 continue
             return candidate

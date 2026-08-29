@@ -21,6 +21,7 @@ import {
   IMPORT_GROUPINGS,
   ImportExpandedContent,
   buildImportColumns,
+  buildImportMobileActions,
   importSearchMatch,
   isImportExpandable,
 } from "@/components/imports/import-list-config";
@@ -118,6 +119,34 @@ export default function ImportsPage() {
       },
     ],
     [bulkImport, bulkRetry],
+  );
+
+  const mobileActions = React.useCallback(
+    (it: ImportItem) =>
+      buildImportMobileActions(it, {
+        busyId,
+        queuedScanIds,
+        effectiveChoiceFor,
+        onChooseDestination: (item) => setCandidateModalScan(item),
+        onResolveIntegrity: (item, action) => void resolveIntegrity(item, action),
+        onMapTorrent: setMapDialogTorrent,
+        onRetryTorrent: (item) => void resolveTorrentRetry(item),
+        onIgnore: (item) => void ignoreItem(item),
+        onPickScanCandidate: (item, c) => void pickScanCandidate(item, c),
+        onPickProviderCandidate: (item, c) => void pickProviderCandidate(item, c),
+        onClearStaged: clearStaged,
+      }),
+    [
+      busyId,
+      queuedScanIds,
+      effectiveChoiceFor,
+      resolveIntegrity,
+      resolveTorrentRetry,
+      ignoreItem,
+      pickScanCandidate,
+      pickProviderCandidate,
+      clearStaged,
+    ],
   );
 
   const renderRowActions = React.useCallback(
@@ -221,6 +250,7 @@ export default function ImportsPage() {
             isExpandable={isImportExpandable}
             expandedContent={(it) => <ImportExpandedContent item={it} />}
             rowActions={renderRowActions}
+            mobileActions={mobileActions}
           />
         )}
       </main>

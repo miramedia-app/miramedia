@@ -958,6 +958,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/seasons/files/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch Get Episode Files
+         * @description Fetch episode files for multiple seasons in one bounded request.
+         */
+        post: operations["batch_get_episode_files_api_v1_seasons_files_batch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/seasons/{season_id}/files": {
         parameters: {
             query?: never;
@@ -3125,6 +3145,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/diagnostics/storage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Diagnostics Storage */
+        get: operations["get_diagnostics_storage_api_v1_diagnostics_storage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/diagnostics/storage/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Diagnostics Storage Files */
+        get: operations["list_diagnostics_storage_files_api_v1_diagnostics_storage_files_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/diagnostics/storage/files/{media_type}/{file_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Diagnostics Storage File */
+        get: operations["get_diagnostics_storage_file_api_v1_diagnostics_storage_files__media_type___file_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/diagnostics/database": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Diagnostics Database */
+        get: operations["get_diagnostics_database_api_v1_diagnostics_database_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/diagnostics/scheduler": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Diagnostics Scheduler */
+        get: operations["get_diagnostics_scheduler_api_v1_diagnostics_scheduler_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3158,6 +3263,8 @@ export interface components {
         ApiTokenCreate: {
             /** Name */
             name: string;
+            /** Scopes */
+            scopes?: string[];
             /** Expires At */
             expires_at?: string | null;
         };
@@ -3175,6 +3282,8 @@ export interface components {
             name: string;
             /** Preview */
             preview: string;
+            /** Scopes */
+            scopes: string[];
             /**
              * Created At
              * Format: date-time
@@ -3198,6 +3307,8 @@ export interface components {
             name: string;
             /** Preview */
             preview: string;
+            /** Scopes */
+            scopes: string[];
             /**
              * Created At
              * Format: date-time
@@ -3544,6 +3655,117 @@ export interface components {
              * @default 0
              */
             imports_ambiguous: number;
+        };
+        /** DiagnosticsDatabase */
+        DiagnosticsDatabase: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Host */
+            host: string;
+            /** Port */
+            port: number;
+            /** Name */
+            name: string;
+            /** User */
+            user: string;
+            /** Server Version */
+            server_version?: string | null;
+            /** Size Bytes */
+            size_bytes?: number | null;
+            /** Max Connections */
+            max_connections?: number | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Connections
+             * @default []
+             */
+            connections: components["schemas"]["DiagnosticsDatabaseConnection"][];
+            /**
+             * Pools
+             * @default []
+             */
+            pools: components["schemas"]["DiagnosticsDatabasePool"][];
+            /**
+             * Largest Tables
+             * @default []
+             */
+            largest_tables: components["schemas"]["DiagnosticsDatabaseTable"][];
+        };
+        /** DiagnosticsDatabaseConnection */
+        DiagnosticsDatabaseConnection: {
+            /** State */
+            state: string;
+            /** Count */
+            count: number;
+        };
+        /** DiagnosticsDatabasePool */
+        DiagnosticsDatabasePool: {
+            /** Name */
+            name: string;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /** Size */
+            size?: number | null;
+            /** Checked Out */
+            checked_out?: number | null;
+            /** Overflow */
+            overflow?: number | null;
+        };
+        /** DiagnosticsDatabaseTable */
+        DiagnosticsDatabaseTable: {
+            /** Name */
+            name: string;
+            /** Total Bytes */
+            total_bytes: number;
+            /** Table Bytes */
+            table_bytes: number;
+            /** Index Bytes */
+            index_bytes: number;
+            /** Estimated Rows */
+            estimated_rows?: number | null;
+        };
+        /** DiagnosticsScheduledTask */
+        DiagnosticsScheduledTask: {
+            /** Task Name */
+            task_name: string;
+            /** Display Name */
+            display_name: string;
+            /**
+             * Broker
+             * @enum {string}
+             */
+            broker: "background" | "interactive";
+            /** Cron */
+            cron?: string | null;
+            /** Queued */
+            queued?: number | null;
+            /** Schedule Created At */
+            schedule_created_at?: string | null;
+            /** Schedule Updated At */
+            schedule_updated_at?: string | null;
+        };
+        /** DiagnosticsScheduler */
+        DiagnosticsScheduler: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Tasks */
+            tasks: components["schemas"]["DiagnosticsScheduledTask"][];
+            /** Queue Background */
+            queue_background?: number | null;
+            /** Queue Interactive */
+            queue_interactive?: number | null;
+            /** Schedules Loaded */
+            schedules_loaded: boolean;
         };
         /** EmailNotificationsSettingsSchema */
         EmailNotificationsSettingsSchema: {
@@ -4587,6 +4809,10 @@ export interface components {
             naming?: components["schemas"]["NamingSettingsSchema"] | null;
             /** Continuous Download */
             continuous_download?: boolean | null;
+            /** Quality Upgrades */
+            quality_upgrades?: boolean | null;
+            /** Upgrade Until Quality */
+            upgrade_until_quality?: string | null;
             /** Download Specials */
             download_specials?: boolean | null;
             /** Auto Download Interval Hours */
@@ -4599,6 +4825,12 @@ export interface components {
             indexer_query_result_retention_days?: number | null;
             /** Import Sweep Interval Minutes */
             import_sweep_interval_minutes?: number | null;
+            /** Release Feeds Enabled */
+            release_feeds_enabled?: boolean | null;
+            /** Release Feeds Poll Interval Minutes */
+            release_feeds_poll_interval_minutes?: number | null;
+            /** Release Feeds Maxage Days */
+            release_feeds_maxage_days?: number | null;
             /** Integrity Check Enabled */
             integrity_check_enabled?: boolean | null;
             /** Integrity Check Interval Hours */
@@ -4635,6 +4867,10 @@ export interface components {
             metadata_provider: string;
             /** Continuous Download */
             continuous_download?: boolean | null;
+            /** Quality Upgrades */
+            quality_upgrades?: boolean | null;
+            /** Upgrade Until Quality */
+            upgrade_until_quality?: string | null;
             /**
              * Skipped
              * @default false
@@ -4887,6 +5123,19 @@ export interface components {
             /** Limit */
             limit: number;
         };
+        /** PaginatedStorageHealthFiles */
+        PaginatedStorageHealthFiles: {
+            /** Items */
+            items: components["schemas"]["StorageHealthFile"][];
+            /** Total */
+            total: number;
+            /** Offset */
+            offset: number;
+            /** Limit */
+            limit: number;
+            /** Next Offset */
+            next_offset?: number | null;
+        };
         /** PlaybackProgress */
         PlaybackProgress: {
             /**
@@ -5065,6 +5314,10 @@ export interface components {
             metadata_provider: string;
             /** Continuous Download */
             continuous_download?: boolean | null;
+            /** Quality Upgrades */
+            quality_upgrades?: boolean | null;
+            /** Upgrade Until Quality */
+            upgrade_until_quality?: string | null;
             /**
              * Skipped
              * @default false
@@ -5684,6 +5937,24 @@ export interface components {
             /** Episodes */
             episodes: components["schemas"]["Episode"][];
         };
+        /** SeasonFilesBatchRequest */
+        SeasonFilesBatchRequest: {
+            /** Season Ids */
+            season_ids: string[];
+            /** Show Id */
+            show_id?: string | null;
+        };
+        /** SeasonFilesBatchResponse */
+        SeasonFilesBatchResponse: {
+            /** Results */
+            results?: {
+                [key: string]: components["schemas"]["PublicEpisodeFile"][];
+            };
+            /** Errors */
+            errors?: {
+                [key: string]: string;
+            };
+        };
         /** SeasonWatchStateUpdate */
         SeasonWatchStateUpdate: {
             /**
@@ -5890,6 +6161,120 @@ export interface components {
             from_email?: string | null;
             /** Use Tls */
             use_tls?: boolean | null;
+        };
+        /** StorageHealthCounts */
+        StorageHealthCounts: {
+            /** Imported */
+            imported: number;
+            /** Healthy */
+            healthy: number;
+            /** Unknown */
+            unknown: number;
+            /** Corrupt */
+            corrupt: number;
+            /** Orphaned */
+            orphaned: number;
+            /** Pending */
+            pending: number;
+            /** Missing */
+            missing?: null;
+        };
+        /** StorageHealthFile */
+        StorageHealthFile: {
+            /**
+             * File Id
+             * Format: uuid
+             */
+            file_id: string;
+            /**
+             * Media Type
+             * @enum {string}
+             */
+            media_type: "show" | "movie";
+            /**
+             * Media Id
+             * Format: uuid
+             */
+            media_id: string;
+            /** Media Title */
+            media_title: string;
+            /** Episode */
+            episode: string | null;
+            /** Library */
+            library: string;
+            quality: components["schemas"]["Quality"];
+            /** Variant Tag */
+            variant_tag: string;
+            import_status: components["schemas"]["ImportOutcome"];
+            /** Import Error */
+            import_error: string | null;
+            /** Sha1 */
+            sha1: string | null;
+            /** Imported At */
+            imported_at: string | null;
+            /** Last Attempt At */
+            last_attempt_at: string | null;
+            /** Torrent Id */
+            torrent_id: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "corrupt" | "unknown" | "orphaned" | "pending" | "healthy" | "missing" | "inaccessible";
+            /** Path */
+            path: string | null;
+        };
+        /** StorageHealthLibraryProbe */
+        StorageHealthLibraryProbe: {
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "show" | "movie";
+            /** Path */
+            path: string;
+            /** Ok */
+            ok: boolean;
+            /** Error */
+            error?: string | null;
+        };
+        /** StorageHealthSummary */
+        StorageHealthSummary: {
+            /**
+             * Generated At
+             * Format: date-time
+             */
+            generated_at: string;
+            /** Integrity Check Enabled */
+            integrity_check_enabled: boolean;
+            /** Integrity Check Interval Hours */
+            integrity_check_interval_hours: number;
+            /** Freshness Note */
+            freshness_note: string;
+            counts: components["schemas"]["StorageHealthCounts"];
+            /** Libraries */
+            libraries: components["schemas"]["StorageHealthLibraryProbe"][];
+            /** Unconfigured Library Names */
+            unconfigured_library_names: string[];
+            /** Volumes */
+            volumes: components["schemas"]["StorageVolume"][];
+        };
+        /** StorageVolume */
+        StorageVolume: {
+            /** Label */
+            label: string;
+            /** Path */
+            path: string;
+            /** Total Bytes */
+            total_bytes?: number | null;
+            /** Used Bytes */
+            used_bytes?: number | null;
+            /** Free Bytes */
+            free_bytes?: number | null;
+            /** Error */
+            error?: string | null;
         };
         /** StreamProbeResponse */
         StreamProbeResponse: {
@@ -8549,6 +8934,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    batch_get_episode_files_api_v1_seasons_files_batch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SeasonFilesBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SeasonFilesBatchResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -12462,6 +12880,133 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OpsSummary"];
+                };
+            };
+        };
+    };
+    get_diagnostics_storage_api_v1_diagnostics_storage_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageHealthSummary"];
+                };
+            };
+        };
+    };
+    list_diagnostics_storage_files_api_v1_diagnostics_storage_files_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+                limit?: number;
+                state?: ("corrupt" | "unknown" | "orphaned" | "pending" | "healthy") | null;
+                media_type?: ("show" | "movie") | null;
+                q?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PaginatedStorageHealthFiles"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_diagnostics_storage_file_api_v1_diagnostics_storage_files__media_type___file_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                media_type: "show" | "movie";
+                file_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StorageHealthFile"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_diagnostics_database_api_v1_diagnostics_database_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiagnosticsDatabase"];
+                };
+            };
+        };
+    };
+    get_diagnostics_scheduler_api_v1_diagnostics_scheduler_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiagnosticsScheduler"];
                 };
             };
         };

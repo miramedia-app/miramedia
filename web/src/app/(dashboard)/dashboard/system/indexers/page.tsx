@@ -17,6 +17,7 @@ import {
   IndexerRowActions,
   buildIndexerBulkActions,
   buildIndexerColumns,
+  buildIndexerMobileActions,
   indexerSearchMatch,
 } from "@/components/providers/indexer-list-config";
 import { AddIndexerDialog } from "@/components/providers/add-indexer-dialog";
@@ -82,6 +83,19 @@ export default function IndexersPage() {
     [invalidateSites],
   );
 
+  const mobileActions = React.useCallback(
+    (site: Site) =>
+      buildIndexerMobileActions(site, {
+        testingId,
+        onTest: testSite,
+        onEdit: openEdit,
+        onManageUrls: openUrls,
+        onToggleEnabled: (s) => void updateSite(s.id, { enabled: !s.enabled }),
+        onDelete: (id, name) => void deleteSite(id, name),
+      }),
+    [testingId, testSite, openEdit, openUrls, updateSite, deleteSite],
+  );
+
   const renderRowActions = React.useCallback(
     (site: Site) => (
       <IndexerRowActions
@@ -142,6 +156,8 @@ export default function IndexersPage() {
             }
             columns={columns}
             rowActions={renderRowActions}
+            mobileActions={mobileActions}
+            mobileActionsTitle={(s) => s.name}
           />
         )}
       </main>

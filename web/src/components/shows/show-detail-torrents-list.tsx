@@ -70,6 +70,7 @@ export function ShowDetailTorrentsList({
         id: "title",
         header: "Torrent",
         width: "minmax(0,1fr)",
+        mobile: { role: "title" },
         render: (t) => <span className="block truncate pr-4 text-sm font-medium">{t.title}</span>,
       },
       {
@@ -77,6 +78,7 @@ export function ShowDetailTorrentsList({
         header: "S / E",
         width: "120px",
         hideBelow: "md",
+        mobile: { role: "meta", order: 1 },
         render: (t) => {
           const label = formatTorrentSeasonEpisodeLabel(
             t.media?.seasons ?? [],
@@ -89,12 +91,13 @@ export function ShowDetailTorrentsList({
         id: "quality",
         header: "Quality",
         width: "88px",
+        mobile: { role: "meta", order: 2 },
         render: (t) => (
           <MetaPill className="font-mono">{getTorrentQualityString(t.quality)}</MetaPill>
         ),
       },
-      torrentProgressColumn(),
-      torrentStatusColumn(),
+      { ...torrentProgressColumn(), mobile: { role: "subtitle" } },
+      { ...torrentStatusColumn(), mobile: { role: "meta", order: 0 } },
     ],
     [],
   );

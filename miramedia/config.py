@@ -34,6 +34,7 @@ from miramedia.streams.config import StreamsConfig
 from miramedia.subtitles.config import SubtitleConfig
 from miramedia.torrents.config import TorrentConfig
 from miramedia.updates.config import UpdateConfig
+from miramedia.viewing_sync.config import ViewingSyncConfig
 from miramedia.watchlists.config import WatchlistsConfig
 
 log = logging.getLogger(__name__)
@@ -96,6 +97,12 @@ class BasicConfig(BaseSettings):
     naming: NamingConfig = NamingConfig()
 
     continuous_download: bool = True
+    # Opt-in movie quality upgrades (design 309 Slice A). When off, movies keep
+    # today's "stop when any file exists" auto-download behavior.
+    quality_upgrades: bool = False
+    # Global upgrade-until cutoff (indexer quality option name). Null uses the
+    # highest enabled quality option.
+    upgrade_until_quality: str | None = None
     # Auto-download Season 0 specials. Off by default — when off, specials are
     # surfaced as "skipped" and excluded from the auto-download sweep.
     download_specials: bool = False
@@ -106,6 +113,10 @@ class BasicConfig(BaseSettings):
     indexer_query_result_retention_days: int = 7
     # Background import sweep for finished torrents (user-triggered import unchanged).
     import_sweep_interval_minutes: int = 5
+    # Observe-only Torznab/Newznab release feeds (design 385 Slice A). Default off.
+    release_feeds_enabled: bool = False
+    release_feeds_poll_interval_minutes: int = 15
+    release_feeds_maxage_days: int = 2
 
     # Phase 6.5 — opt-in. When enabled, every newly-imported file gets a SHA1
     # stored in its EpisodeFile/MovieFile row, and a periodic audit re-hashes
@@ -205,6 +216,7 @@ class MiraMediaConfig(BaseSettings):
     imports: ImportsConfig = ImportsConfig()
     streams: StreamsConfig = StreamsConfig()
     playback: PlaybackConfig = PlaybackConfig()
+    viewing_sync: ViewingSyncConfig = ViewingSyncConfig()
 
     _instance: ClassVar[MiraMediaConfig | None] = None
     _initialized: ClassVar[bool] = False

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from miramedia.config import MiraMediaConfig
+from miramedia.file_status import ImportOutcome
 from miramedia.imports.files import files_matching_stem
 from miramedia.movies.schemas import Movie, MovieId
 from miramedia.movies.schemas import MovieFile as MovieFileSchema
@@ -18,7 +19,7 @@ from miramedia.naming import (
     episode_file_stem_candidates,
     movie_file_stem_candidates,
 )
-from miramedia.shows.schemas import EpisodeId, ShowId
+from miramedia.shows.schemas import Episode, EpisodeId, Season, Show, ShowId
 from miramedia.shows.service import ShowService
 from miramedia.subtitles.bazarr_client import BazarrClient
 from miramedia.subtitles.repository import SubtitleRepository
@@ -614,20 +615,14 @@ class SubtitleService:
         season_dir = self.show_service.get_root_season_directory(
             show=show, season_number=season.number
         )
-        file_stems = episode_file_stem_candidates(
-            show,
-            season_number=season.number,
-            episode_number=episode.number,
-            quality=Quality.unknown,
-            parts=NameParts(),
-        )
-
-        # Find the video file to scan
-        video_path = await asyncio.to_thread(
-            self._find_first_video_file, season_dir, file_stems
+        video_path = await self._resolve_episode_video_for_subtitles(
+            episode_id,
+            show=show,
+            season=season,
+            episode=episode,
+            season_dir=season_dir,
         )
         if not video_path:
-            log.warning("No video file found for episode %s", episode_id)
             return []
 
         # Commit + release the connection before the slow subliminal call so
@@ -878,6 +873,48 @@ class SubtitleService:
             ):
                 return f
         return None
+
+    async def _resolve_episode_video_for_subtitles(
+        self,
+        episode_id: EpisodeId,
+        *,
+        show: Show,
+        season: Season,
+        episode: Episode,
+        season_dir: Path,
+    ) -> Path | None:
+        """Prefer the imported library file path; fall back to stem search.
+
+        Missing-on-disk is a skip, not a warning: bulk scans retry the same
+        episodes every interval and would otherwise flood logs.
+        """
+        if self.show_service is not None:
+            files = (
+                await self.show_service.show_repository.get_episode_files_by_episode_id(
+                    episode_id
+                )
+            )
+            imported = [
+                row for row in files if row.import_status == ImportOutcome.imported
+            ]
+            for row in imported:
+                resolved = await self.show_service.resolve_episode_file_path(row)
+                if resolved is not None:
+                    return resolved
+
+        file_stems = episode_file_stem_candidates(
+            show,
+            season_number=season.number,
+            episode_number=episode.number,
+            quality=Quality.unknown,
+            parts=NameParts(),
+        )
+        video_path = await asyncio.to_thread(
+            self._find_first_video_file, season_dir, file_stems
+        )
+        if video_path is None:
+            log.debug("No video file found for episode %s", episode_id)
+        return video_path
 
     def _find_first_video_file(
         self, directory: Path, file_stems: list[str]

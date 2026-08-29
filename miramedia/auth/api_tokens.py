@@ -22,8 +22,14 @@ from typing import TYPE_CHECKING, Optional
 
 from fastapi_users.authentication.strategy import Strategy
 from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from miramedia.auth.token_scopes import (
+    attach_api_token_state,
+    enforce_api_token_scopes,
+    get_current_request,
+)
 from miramedia.database import Base
 
 if TYPE_CHECKING:
@@ -65,6 +71,9 @@ class UserApiToken(Base):
     )
     expires_at: Mapped[Optional[datetime]] = mapped_column(  # noqa: UP045
         DateTime(timezone=True), nullable=True
+    )
+    scopes: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
     )
 
 
@@ -113,34 +122,51 @@ class DatabaseTokenStrategy(Strategy):
         now = datetime.now(UTC)
         async with SessionLocal() as db:
             row = (
-                await db.execute(
-                    sa_select(
-                        UserApiToken.id,
-                        UserApiToken.user_id,
-                        UserApiToken.expires_at,
-                        UserApiToken.last_used_at,
-                    ).where(UserApiToken.token_hash == token_hash)
+                (
+                    await db.execute(
+                        sa_select(
+                            UserModel,
+                            UserApiToken.id,
+                            UserApiToken.expires_at,
+                            UserApiToken.last_used_at,
+                            UserApiToken.scopes,
+                            UserApiToken.preview,
+                        )
+                        .join(UserModel, UserApiToken.user_id == UserModel.id)
+                        .where(
+                            UserApiToken.token_hash == token_hash,
+                            UserModel.__table__.c.is_active.is_(True),
+                        )
+                    )
                 )
-            ).first()
+                .unique()
+                .first()
+            )
             if row is None:
                 return None
-            if row.expires_at is not None and row.expires_at < now:
+            user, token_id, expires_at, last_used_at, scopes, preview = row
+            if expires_at is not None and expires_at < now:
                 return None
             stale = (
-                row.last_used_at is None
-                or (now - row.last_used_at).total_seconds()
-                >= _LAST_USED_WRITE_INTERVAL_S
+                last_used_at is None
+                or (now - last_used_at).total_seconds() >= _LAST_USED_WRITE_INTERVAL_S
             )
             if stale:
                 await db.execute(
                     sa_update(UserApiToken)
-                    .where(UserApiToken.id == row.id)
+                    .where(UserApiToken.id == token_id)
                     .values(last_used_at=now)
                 )
                 await db.commit()
-            user = await db.get(UserModel, row.user_id)
-            if user is None or not user.is_active:
-                return None
+            request = get_current_request()
+            if request is not None:
+                attach_api_token_state(
+                    request,
+                    token_id=token_id,
+                    scopes=list(scopes or []),
+                    preview=preview,
+                )
+                await enforce_api_token_scopes(request)
             # Detach so callers don't trip lazy-load on a closed session.
             # The User row is plain SQLAlchemy mapped data; ``oauth_accounts``
             # uses ``lazy="joined"`` so it's already loaded.

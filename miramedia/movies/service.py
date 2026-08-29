@@ -813,6 +813,36 @@ class MovieService(MediaService[Movie, MovieId]):
 
         return await asyncio.to_thread(_check)
 
+    async def get_on_disk_movie_file_qualities(self, movie: Movie) -> list[Quality]:
+        """Return qualities for movie files with a matching video on disk."""
+        movie_files = await self.movie_repository.get_movie_files_by_movie_id(
+            movie_id=movie.id
+        )
+        if not movie_files:
+            return []
+        movie_root = self.get_movie_root_path(movie=movie)
+
+        def _scan() -> list[Quality]:
+            if not movie_root.exists():
+                return []
+            video_extensions = {".mkv", ".mp4", ".avi", ".mov"}
+            qualities: list[Quality] = []
+            for movie_file in movie_files:
+                stems = movie_file_stem_candidates(
+                    movie, movie_file.quality, NameParts.from_row(movie_file)
+                )
+                for stem in stems:
+                    for path in files_matching_stem(movie_root, stem):
+                        if path.suffix.lower() in video_extensions:
+                            qualities.append(movie_file.quality)
+                            break
+                    else:
+                        continue
+                    break
+            return qualities
+
+        return await asyncio.to_thread(_scan)
+
     async def get_movie_by_external_id(
         self, external_id: str, metadata_provider: str
     ) -> Movie | None:
@@ -852,7 +882,7 @@ class MovieService(MediaService[Movie, MovieId]):
         """Iterate ranked results, downloading the first one not rejected
         by deny-list/no-video preflight. Returns the picked result or
         ``None`` if every candidate was rejected."""
-        from miramedia.exceptions import NoVideoFilesError
+        from miramedia.exceptions import NoVideoFilesError, UnsafeTorrentTitleError
 
         for candidate in results:
             log.info(
@@ -865,7 +895,7 @@ class MovieService(MediaService[Movie, MovieId]):
                 await self.download_torrent(
                     public_indexer_result_id=candidate.id, movie=movie
                 )
-            except NoVideoFilesError as e:
+            except (NoVideoFilesError, UnsafeTorrentTitleError) as e:
                 log.info("Auto-download: skipping %s — %s", candidate.title, e)
                 continue
             return candidate

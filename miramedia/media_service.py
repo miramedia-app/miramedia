@@ -75,7 +75,13 @@ from miramedia.metadata.schemas import MetaDataProviderSearchResult
 from miramedia.movies.schemas import Movie, MovieId
 from miramedia.notifications.service import NotificationService
 from miramedia.shows.schemas import Show, ShowId
-from miramedia.torrents.schemas import MediaType, Torrent, TorrentId, TorrentStatus
+from miramedia.torrents.schemas import (
+    MediaType,
+    Quality,
+    Torrent,
+    TorrentId,
+    TorrentStatus,
+)
 from miramedia.torrents.service import TorrentService
 
 log = logging.getLogger(__name__)
@@ -518,7 +524,7 @@ class MediaService(ABC, Generic[TMedia, TMediaId]):
         async with self._bg_service() as svc:
             await svc.reconcile_orphaned_failed_imports()
 
-        torrents = await self.torrent_service.get_all_torrents()
+        torrents = await self.torrent_service.get_finished_torrents()
         finished = [t for t in torrents if t.status == TorrentStatus.finished]
         ready_items: list[tuple[TorrentId, str]] = []
         if finished:
@@ -1202,7 +1208,21 @@ async def _auto_download_for_movie_impl(movie: Movie, max_downloads: int) -> Non
             _log_auto_download_backoff_skip(fresh)
             return
 
-        if await svc.is_movie_downloaded(movie=fresh):
+        config = MiraMediaConfig()
+        from miramedia.movies.quality_upgrades import (
+            best_on_disk_library_quality,
+            effective_quality_upgrades,
+            filter_upgrade_candidates,
+            library_satisfied_for_cutoff,
+            resolve_upgrade_cutoff_quality,
+        )
+
+        upgrades_effective = effective_quality_upgrades(
+            global_enabled=config.misc.quality_upgrades,
+            movie_override=fresh.quality_upgrades,
+        )
+        downloaded = await svc.is_movie_downloaded(movie=fresh)
+        if downloaded and not upgrades_effective:
             return
 
         movie_files = await svc.movie_repository.get_movie_files_by_movie_id(
@@ -1216,10 +1236,73 @@ async def _auto_download_for_movie_impl(movie: Movie, max_downloads: int) -> Non
             )
             return
 
+        upgrade_mode = downloaded and upgrades_effective
+        best_library: Quality | None = None
+        cutoff: Quality | None = None
+        if upgrade_mode:
+            on_disk_qualities = await svc.get_on_disk_movie_file_qualities(movie=fresh)
+            best_library = best_on_disk_library_quality(on_disk_qualities)
+            if best_library is None:
+                log.info(
+                    "Quality upgrade: skip_unknown_best movie_id=%s name=%s",
+                    fresh.id,
+                    fresh.name,
+                )
+                return
+            cutoff = resolve_upgrade_cutoff_quality(
+                movie_cutoff_name=fresh.upgrade_until_quality,
+                global_cutoff_name=config.misc.upgrade_until_quality,
+                quality_options=config.indexers.quality_options,
+            )
+            if library_satisfied_for_cutoff(best_library=best_library, cutoff=cutoff):
+                log.info(
+                    "Quality upgrade: skip_satisfied movie_id=%s name=%s best=%s cutoff=%s",
+                    fresh.id,
+                    fresh.name,
+                    best_library.name,
+                    cutoff.name,
+                )
+                return
+
         await release_session_before_external_io(svc.movie_repository.db)
 
         raw_results = await svc.get_all_available_torrents_for_movie(movie=fresh)
         results = await svc.torrent_service.filter_deny_listed(raw_results)
+        if upgrade_mode:
+            if best_library is None or cutoff is None:
+                return
+            results = filter_upgrade_candidates(
+                results,
+                best_library=best_library,
+                cutoff=cutoff,
+            )
+            if not results:
+                if raw_results:
+                    log.info(
+                        "Quality upgrade: skip_no_candidates movie_id=%s name=%s best=%s cutoff=%s raw_count=%d",
+                        fresh.id,
+                        fresh.name,
+                        best_library.name,
+                        cutoff.name,
+                        len(raw_results),
+                    )
+                else:
+                    log.debug(
+                        "Quality upgrade: no indexer results movie_id=%s name=%s",
+                        fresh.id,
+                        fresh.name,
+                    )
+                return
+            log.info(
+                "Quality upgrade: eligible movie_id=%s name=%s best=%s cutoff=%s candidate_count=%d top_quality=%s top_title=%s",
+                fresh.id,
+                fresh.name,
+                best_library.name,
+                cutoff.name,
+                len(results),
+                results[0].quality.name,
+                results[0].title,
+            )
         if not results:
             if raw_results:
                 until = now_utc + timedelta(hours=_auto_download_backoff_hours())
@@ -1241,14 +1324,44 @@ async def _auto_download_for_movie_impl(movie: Movie, max_downloads: int) -> Non
 
         picked = await svc._try_download_first_valid(results=results, movie=fresh)
         if picked is None:
-            log.info(
-                "Auto-download: no usable candidates for %s after deny-list/no-video filtering",
-                fresh.name,
-            )
+            if upgrade_mode:
+                log.info(
+                    "Quality upgrade: skip_rejected movie_id=%s name=%s best=%s cutoff=%s",
+                    fresh.id,
+                    fresh.name,
+                    best_library.name if best_library is not None else "unknown",
+                    cutoff.name if cutoff is not None else "unknown",
+                )
+            else:
+                log.info(
+                    "Auto-download: no usable candidates for %s after deny-list/no-video filtering",
+                    fresh.name,
+                )
             return
 
-        if svc.notification_service:
-            await svc.notification_service.send_notification_to_all_providers(
-                title="Auto-download started",
-                message=f"Downloading {fresh.name} ({fresh.year}): {picked.title}",
+        if upgrade_mode:
+            log.info(
+                "Quality upgrade: started movie_id=%s name=%s best=%s cutoff=%s candidate_quality=%s title=%s",
+                fresh.id,
+                fresh.name,
+                best_library.name if best_library is not None else "unknown",
+                cutoff.name if cutoff is not None else "unknown",
+                picked.quality.name,
+                picked.title,
             )
+
+        if svc.notification_service:
+            if upgrade_mode:
+                await svc.notification_service.send_notification_to_all_providers(
+                    title="Quality upgrade started",
+                    message=(
+                        f"Upgrading {fresh.name} ({fresh.year}) from "
+                        f"{best_library.name if best_library is not None else 'unknown'}: "
+                        f"{picked.title}"
+                    ),
+                )
+            else:
+                await svc.notification_service.send_notification_to_all_providers(
+                    title="Auto-download started",
+                    message=f"Downloading {fresh.name} ({fresh.year}): {picked.title}",
+                )

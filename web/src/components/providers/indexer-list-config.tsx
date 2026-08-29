@@ -27,6 +27,7 @@ import type {
   ColumnDef,
   FacetDef,
   GroupByDef,
+  MobileAction,
   SortOption,
 } from "@/components/data-list";
 import apiClient from "@/lib/api/client";
@@ -57,6 +58,7 @@ export function buildIndexerColumns({
       id: "name",
       header: "Name",
       width: "minmax(120px,0.5fr)",
+      mobile: { role: "title" },
       render: (s) => (
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-sm font-medium">{s.name}</span>
@@ -68,6 +70,10 @@ export function buildIndexerColumns({
       id: "url",
       header: "URL",
       width: "minmax(0,1fr)",
+      mobile: {
+        role: "subtitle",
+        render: (s) => <span className="truncate">{s.url.replace(/^https?:\/\//, "")}</span>,
+      },
       render: (s) => (
         <div className="flex min-w-0 items-center gap-1">
           <span className="truncate text-xs text-muted-foreground">{s.url}</span>
@@ -90,6 +96,11 @@ export function buildIndexerColumns({
       id: "type",
       header: "Type",
       width: "80px",
+      mobile: {
+        role: "meta",
+        order: 2,
+        render: (s) => <span>{siteTypeLabel[s.site_type] ?? s.site_type}</span>,
+      },
       render: (s) => <TypePill>{siteTypeLabel[s.site_type] ?? s.site_type}</TypePill>,
     },
     {
@@ -98,8 +109,13 @@ export function buildIndexerColumns({
       width: "80px",
       align: "center",
       hideBelow: "sm",
+      mobile: {
+        role: "meta",
+        order: 4,
+        render: (s) => <span className="tabular-nums">Priority {sitePriority(s)}</span>,
+      },
       render: (s) => (
-        <span className="text-sm text-muted-foreground tabular-nums">{sitePriority(s)}</span>
+        <span className="text-sm text-muted-foreground tabular-nums">P{sitePriority(s)}</span>
       ),
     },
     {
@@ -107,6 +123,14 @@ export function buildIndexerColumns({
       header: "Supports",
       width: "136px",
       hideBelow: "md",
+      mobile: {
+        role: "meta",
+        order: 3,
+        render: (s) => {
+          const parts = [s.supports_tv && "Shows", s.supports_movies && "Movies"].filter(Boolean);
+          return parts.length ? <span>{parts.join(" & ")}</span> : null;
+        },
+      },
       render: (s) => (
         <div className="grid w-full grid-cols-[60px_64px] items-center gap-1">
           {s.supports_tv ? (
@@ -127,6 +151,7 @@ export function buildIndexerColumns({
       header: "Health",
       width: "100px",
       align: "start",
+      mobile: { role: "meta", order: 1 },
       render: (s) => {
         if (s.last_test_status === "error") {
           return (
@@ -154,6 +179,7 @@ export function buildIndexerColumns({
       header: "Status",
       width: "112px",
       align: "start",
+      mobile: { role: "status" },
       render: (s) => (
         <StatusPill
           status={s.enabled ? "enabled" : "disabled"}
@@ -302,6 +328,61 @@ export function buildIndexerBulkActions(
       onRun: (items) => run(items, false),
     },
   ];
+}
+
+export interface IndexerMobileActionsOptions {
+  testingId: string | null;
+  onTest: (site: Site) => void;
+  onEdit: (site: Site) => void;
+  onManageUrls: (site: Site) => void;
+  onToggleEnabled: (site: Site) => void;
+  onDelete: (siteId: string, siteName: string) => void;
+}
+
+/** Labelled action-sheet entries for one indexer (mobile card rows). */
+export function buildIndexerMobileActions(
+  site: Site,
+  {
+    testingId,
+    onTest,
+    onEdit,
+    onManageUrls,
+    onToggleEnabled,
+    onDelete,
+  }: IndexerMobileActionsOptions,
+): MobileAction[] {
+  const out: MobileAction[] = [
+    {
+      id: "test",
+      label: testingId === site.id ? "Testing…" : "Test connection",
+      icon: testingId === site.id ? <LoaderCircle className="animate-spin" /> : <FlaskConical />,
+      disabled: testingId === site.id,
+      onSelect: () => onTest(site),
+    },
+    {
+      id: "toggle",
+      label: site.enabled ? "Disable" : "Enable",
+      icon: site.enabled ? <PowerOff /> : <Power />,
+      onSelect: () => onToggleEnabled(site),
+    },
+    { id: "edit", label: "Edit", icon: <Pencil />, onSelect: () => onEdit(site) },
+    {
+      id: "urls",
+      label: (site.available_urls ?? []).length > 1 ? "Manage mirrors" : "Add mirror",
+      icon: <LinkIcon />,
+      onSelect: () => onManageUrls(site),
+    },
+  ];
+  if (!site.is_preloaded) {
+    out.push({
+      id: "delete",
+      label: "Delete",
+      icon: <Trash2 />,
+      destructive: true,
+      onSelect: () => onDelete(site.id, site.name),
+    });
+  }
+  return out;
 }
 
 export interface IndexerRowActionsProps {

@@ -4,7 +4,7 @@ import * as React from "react";
 import dynamic from "next/dynamic";
 import { ChevronDown, ChevronRight, EllipsisVertical, Trash2 } from "lucide-react";
 
-import { DataListSection } from "@/components/data-list";
+import { DataListSection, MobilePrimaryAction } from "@/components/data-list";
 import type { ColumnDef } from "@/components/data-list/types";
 import { StatusPill } from "@/components/ui/status-pill";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
@@ -22,11 +22,12 @@ import { SeasonWatchedMenuItems } from "@/components/watchlists/watched-batch-me
 import { WatchedMenuItems } from "@/components/watchlists/watched-button";
 import { AddToWatchlist, AddToWatchlistMenuItem } from "@/components/watchlists/add-to-watchlist";
 import { useFeatures } from "@/components/providers/features-provider";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { formatFileSuffix, getTorrentQualityString } from "@/lib/utils";
 import { watchlistOverflowActionsEnabled } from "@/lib/watchlists";
 import { languageName } from "@/lib/languages";
 import { importedFileRowActions } from "@/lib/media-download";
-import type { DeleteTarget, Season, TreeRow } from "@/lib/show-detail";
+import type { DeleteTarget, EpisodeFile, Season, TreeRow } from "@/lib/show-detail";
 import type { ShowDetail } from "@/hooks/use-show-detail";
 
 const VideoPlayerDialog = dynamic(
@@ -48,11 +49,15 @@ export interface ShowTreeSectionProps {
   allSelectedTreeIds: Set<string>;
   onToggleTreeRowSelected: (id: string) => void;
   onToggleSelectAllTreeRows: (checked: boolean) => void;
+  /** Mobile only: show the checkbox column (select mode). Defaults to `isSuperuser`. */
+  mobileShowSelect?: boolean;
   toggleSeason: (seasonId: string) => void;
   toggleEpisode: (episodeId: string) => void;
   toggleSeasonSkipped: (seasonId: string, currentlySkipped: boolean) => void;
   toggleEpisodeSkipped: (episodeId: string, currentlySkipped: boolean) => void;
   subtitlesByEpisode: Record<string, string[]>;
+  /** Files already loaded for an episode (season batch); drives the mobile episode Play. */
+  getEpisodeFiles?: (seasonId: string, episodeId: string) => EpisodeFile[];
   seasonHasAllSubtitles: (season: Season) => boolean;
   loadSubtitles: () => void;
   openDeleteModal: (target: DeleteTarget) => void;
@@ -66,11 +71,13 @@ export function ShowTreeSection({
   allSelectedTreeIds,
   onToggleTreeRowSelected,
   onToggleSelectAllTreeRows,
+  mobileShowSelect,
   toggleSeason,
   toggleEpisode,
   toggleSeasonSkipped,
   toggleEpisodeSkipped,
   subtitlesByEpisode,
+  getEpisodeFiles,
   seasonHasAllSubtitles,
   loadSubtitles,
   openDeleteModal,
@@ -79,12 +86,86 @@ export function ShowTreeSection({
   const { watchlists, custom_lists, streaming, downloads } = useFeatures();
   const { markWatched } = watchlistOverflowActionsEnabled({ watchlists, custom_lists });
   const showOverflowMenu = markWatched || isSuperuser;
+  const isMobile = useIsMobile();
+  // Mobile card rows: the whole season / episode card toggles its children.
+  const onMobileRowOpen = React.useCallback(
+    (r: TreeRow) => {
+      if (r.kind === "season") toggleSeason(r.id);
+      else if (r.kind === "episode") toggleEpisode(r.id);
+    },
+    [toggleSeason, toggleEpisode],
+  );
+  const mobileRowClassName = React.useCallback((r: TreeRow) => {
+    if (r.kind === "season") return "bg-muted/40 min-h-14";
+    if (r.kind === "episode") return "pl-6";
+    return "pl-9 bg-muted/15 min-h-12 py-2";
+  }, []);
   const treeColumns = React.useMemo<ColumnDef<TreeRow>[]>(
     () => [
       {
         id: "title",
         header: "Title",
         width: "minmax(0,1fr)",
+        mobile: {
+          role: "title",
+          render: (r) => {
+            if (r.kind === "season") {
+              const done = r.data.episodes.filter((e) => e.downloaded).length;
+              return (
+                <div className="flex min-w-0 items-center gap-2">
+                  {r.expanded ? (
+                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="truncate text-base font-semibold">
+                    {r.data.number === 0 ? "Specials" : `Season ${r.data.number}`}
+                  </span>
+                  <span className="shrink-0 text-xs font-normal text-muted-foreground tabular-nums">
+                    {done}/{r.data.episodes.length} episodes
+                  </span>
+                </div>
+              );
+            }
+            if (r.kind === "episode") {
+              const air = (r.data as { air_date?: string | null }).air_date;
+              return (
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className="line-clamp-2">
+                    <span className="font-mono text-xs text-muted-foreground">
+                      E{String(r.data.number).padStart(2, "0")}
+                    </span>
+                    <span className="mx-1.5 text-muted-foreground/60">·</span>
+                    {r.data.title}
+                  </span>
+                  {air ? (
+                    <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                      {new Date(
+                        /^\d{4}-\d{2}-\d{2}$/.test(air) ? `${air}T00:00` : air,
+                      ).toLocaleDateString(undefined, {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </span>
+                  ) : null}
+                </div>
+              );
+            }
+            if (r.kind === "file") {
+              return (
+                <span className="line-clamp-2 text-xs font-normal break-all text-muted-foreground">
+                  {r.data.file_name ?? formatFileSuffix(r.data)}
+                </span>
+              );
+            }
+            return (
+              <span className="line-clamp-2 text-xs font-normal break-all text-muted-foreground">
+                {r.data.file_name}
+              </span>
+            );
+          },
+        },
         render: (r) => {
           const expandable = r.kind === "season" || r.kind === "episode";
           const isExpanded = (r.kind === "season" || r.kind === "episode") && r.expanded;
@@ -135,6 +216,11 @@ export function ShowTreeSection({
         id: "type",
         header: "Type",
         width: "96px",
+        mobile: {
+          role: "meta",
+          order: 2,
+          render: (r) => (r.kind === "file" ? "Video" : r.kind === "subtitle" ? "Subtitle" : null),
+        },
         render: (r) => {
           if (r.kind === "file") return <TypePill>Video</TypePill>;
           if (r.kind === "subtitle") return <TypePill>Subtitle</TypePill>;
@@ -145,6 +231,7 @@ export function ShowTreeSection({
         id: "se",
         header: "S/E",
         width: "130px",
+        mobile: { role: "hidden" },
         render: (r) => {
           if (r.kind === "season") {
             const done = r.data.episodes.filter((e) => e.downloaded).length;
@@ -170,6 +257,19 @@ export function ShowTreeSection({
         id: "language",
         header: "Language",
         width: "120px",
+        mobile: {
+          role: "meta",
+          order: 3,
+          render: (r) => {
+            const lang =
+              r.kind === "subtitle"
+                ? r.data.language
+                : r.kind === "file"
+                  ? (show?.original_language ?? null)
+                  : null;
+            return lang ? languageName(lang) : null;
+          },
+        },
         render: (r) => {
           const lang =
             r.kind === "subtitle"
@@ -184,6 +284,11 @@ export function ShowTreeSection({
         id: "quality",
         header: "Quality",
         width: "84px",
+        mobile: {
+          role: "meta",
+          order: 1,
+          render: (r) => (r.kind === "file" ? getTorrentQualityString(r.data.quality) : null),
+        },
         render: (r) =>
           r.kind === "file" ? (
             <MetaPill className="font-mono">{getTorrentQualityString(r.data.quality)}</MetaPill>
@@ -193,6 +298,7 @@ export function ShowTreeSection({
         id: "status",
         header: "Status",
         width: "112px",
+        mobile: { role: "status" },
         render: (r) => {
           if (r.kind === "season")
             return isSuperuser ? (
@@ -247,7 +353,19 @@ export function ShowTreeSection({
         selectedIds={allSelectedTreeIds}
         onToggleSelected={onToggleTreeRowSelected}
         onToggleAllSelected={onToggleSelectAllTreeRows}
+        mobileShowSelect={mobileShowSelect}
         columns={treeColumns}
+        onRowOpen={isMobile ? onMobileRowOpen : undefined}
+        mobileRowClassName={mobileRowClassName}
+        mobileActionsTitle={(r) =>
+          r.kind === "season"
+            ? r.data.number === 0
+              ? "Specials"
+              : `Season ${r.data.number}`
+            : r.kind === "episode"
+              ? `E${String(r.data.number).padStart(2, "0")} · ${r.data.title ?? ""}`
+              : (r.data.file_name ?? "File")
+        }
         rowActions={(r) => {
           if (r.kind === "season") {
             return (
@@ -299,8 +417,30 @@ export function ShowTreeSection({
             );
           }
           if (r.kind === "episode") {
+            // Mobile: surface Play on the episode card itself (first playable
+            // file) so users don't have to expand the episode to reach it.
+            // Desktop keeps Play on the nested file rows only.
+            const playable =
+              isMobile && streaming
+                ? (getEpisodeFiles?.(r.seasonId, r.id) ?? []).find(
+                    (f) => f.file_status === "imported" && f.id,
+                  )
+                : undefined;
             return (
               <>
+                {playable && (
+                  <MobilePrimaryAction>
+                    <VideoPlayerDialog
+                      mediaType="show"
+                      mediaId={r.id}
+                      fileId={playable.id!}
+                      title={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.data.number).padStart(2, "0")} ${r.data.title ?? ""}`}
+                      subtitleLanguages={subtitlesByEpisode[r.id] ?? []}
+                      buttonVariant="ghost"
+                      buttonSize="icon"
+                    />
+                  </MobilePrimaryAction>
+                )}
                 {isSuperuser && (
                   <SearchTorrentButton
                     show={show}
@@ -367,15 +507,17 @@ export function ShowTreeSection({
             return (
               <>
                 {showPlayer && (
-                  <VideoPlayerDialog
-                    mediaType="show"
-                    mediaId={r.episodeId}
-                    fileId={r.data.id!}
-                    title={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.episodeNumber).padStart(2, "0")} ${r.episodeTitle}`}
-                    subtitleLanguages={subtitlesByEpisode[r.episodeId] ?? []}
-                    buttonVariant="ghost"
-                    buttonSize="icon"
-                  />
+                  <MobilePrimaryAction>
+                    <VideoPlayerDialog
+                      mediaType="show"
+                      mediaId={r.episodeId}
+                      fileId={r.data.id!}
+                      title={`S${String(r.seasonNumber).padStart(2, "0")}E${String(r.episodeNumber).padStart(2, "0")} ${r.episodeTitle}`}
+                      subtitleLanguages={subtitlesByEpisode[r.episodeId] ?? []}
+                      buttonVariant="ghost"
+                      buttonSize="icon"
+                    />
+                  </MobilePrimaryAction>
                 )}
                 {showDownload && (
                   <DirectDownloadAction

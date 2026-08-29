@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ContinueWatchingRow } from "@/components/continue-watching-row";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { StatCards } from "@/components/stats/stat-cards";
-import { MediaGridSkeleton } from "@/components/media-grid-skeleton";
+import { MEDIA_ROW_COLUMNS_CLASS, MediaGridSkeleton } from "@/components/media-grid-skeleton";
 import { useUser } from "@/components/providers/user-provider";
 import apiClient from "@/lib/api/client";
 import { dashboardImportWarningCounts, dashboardSummaryViewState } from "@/lib/dashboard-summary";
@@ -22,7 +22,7 @@ const RecommendedMediaCarousel = dynamic(
         <div className="flex items-center">
           <div className="h-8 w-48 rounded bg-muted/40" />
         </div>
-        <MediaGridSkeleton count={5} />
+        <MediaGridSkeleton count={5} columnsClass={MEDIA_ROW_COLUMNS_CLASS} />
       </>
     ),
   },

@@ -5,13 +5,13 @@ import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { Plus, Upload, Link as LinkIcon, LoaderCircle } from "lucide-react";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  ResponsiveDialog,
+  ResponsiveDialogContent,
+  ResponsiveDialogDescription,
+  ResponsiveDialogHeader,
+  ResponsiveDialogTitle,
+  ResponsiveDialogTrigger,
+} from "@/components/ui/responsive-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -284,14 +284,14 @@ export function AddTorrentDialog() {
   }, [selectedCandidate]);
 
   return (
-    <Dialog
+    <ResponsiveDialog
       open={open}
       onOpenChange={(o) => {
         setOpen(o);
         if (!o) reset();
       }}
     >
-      <DialogTrigger
+      <ResponsiveDialogTrigger
         render={
           <Button
             variant="default"
@@ -303,16 +303,18 @@ export function AddTorrentDialog() {
       >
         <Plus className="h-4 w-4" />
         Add Torrent
-      </DialogTrigger>
-      <DialogContent className="max-h-[90vh] w-fit max-w-[80vw] min-w-[600px] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{step === "input" ? "Add Torrent" : "Review & Download"}</DialogTitle>
-          <DialogDescription>
+      </ResponsiveDialogTrigger>
+      <ResponsiveDialogContent className="max-h-[90vh] w-fit max-w-[95vw] overflow-y-auto sm:max-w-[80vw] sm:min-w-[600px]">
+        <ResponsiveDialogHeader>
+          <ResponsiveDialogTitle>
+            {step === "input" ? "Add Torrent" : "Review & Download"}
+          </ResponsiveDialogTitle>
+          <ResponsiveDialogDescription>
             {step === "input"
               ? "Paste a magnet link or upload a .torrent file to add a torrent manually."
               : "Review the parsed torrent and assign it to a media item."}
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveDialogDescription>
+        </ResponsiveDialogHeader>
 
         {step === "input" && (
           <div className="flex flex-col gap-4">
@@ -400,7 +402,36 @@ export function AddTorrentDialog() {
               <h3 className="mb-2 font-semibold">Assign to Media</h3>
               {parseResult.candidates.length > 0 ? (
                 <div className="max-h-[200px] overflow-y-auto rounded-md border">
-                  <Table>
+                  <ul className="divide-y sm:hidden">
+                    {parseResult.candidates.map((c) => {
+                      const selected = selectedCandidate?.media_id === c.media_id;
+                      return (
+                        <li key={c.media_id}>
+                          <button
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() => setSelectedCandidate(c)}
+                            className={`flex min-h-11 w-full flex-col gap-1 px-3 py-2 text-left ${
+                              selected ? "bg-muted" : ""
+                            }`}
+                          >
+                            <span className="flex items-center gap-2">
+                              <TypePill>{c.media_type === "show" ? "Show" : "Movie"}</TypePill>
+                              <span className="min-w-0 flex-1 truncate font-medium">
+                                {c.media_name}
+                              </span>
+                              <span className="text-muted-foreground">{c.media_year ?? "-"}</span>
+                            </span>
+                            <MatchConfidencePill
+                              confidence={c.confidence}
+                              breakdown={c.breakdown}
+                            />
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  <Table className="max-sm:hidden">
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-[40px]"></TableHead>
@@ -499,7 +530,7 @@ export function AddTorrentDialog() {
         {step === "add-new" && (
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <Select
                   value={newMediaType}
                   onValueChange={(v) => setNewMediaType(v as "show" | "movie")}
@@ -530,7 +561,7 @@ export function AddTorrentDialog() {
                   value={newMediaQuery}
                   onChange={(e) => setNewMediaQuery(e.target.value)}
                   placeholder="Search query"
-                  className="flex-1"
+                  className="min-w-40 flex-1"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") void searchNewMedia();
                   }}
@@ -547,7 +578,29 @@ export function AddTorrentDialog() {
 
             {newMediaResults.length > 0 ? (
               <div className="max-h-[300px] overflow-y-auto rounded-md border">
-                <Table>
+                <ul className="divide-y sm:hidden">
+                  {newMediaResults.map((r) => (
+                    <li key={r.external_id} className="flex items-center gap-2 px-3 py-2">
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">{r.name}</span>
+                        <span className="text-muted-foreground">{r.year ?? "—"}</span>
+                      </span>
+                      <Button
+                        size="sm"
+                        className="min-h-11 shrink-0"
+                        disabled={addingExternalId !== null}
+                        onClick={() => void addNewMedia(r)}
+                      >
+                        {addingExternalId === r.external_id ? (
+                          <LoaderCircle className="animate-spin" size={14} />
+                        ) : (
+                          "Add & select"
+                        )}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                <Table className="max-sm:hidden">
                   <TableHeader>
                     <TableRow>
                       <TableHead>Name</TableHead>
@@ -591,7 +644,7 @@ export function AddTorrentDialog() {
             </div>
           </div>
         )}
-      </DialogContent>
-    </Dialog>
+      </ResponsiveDialogContent>
+    </ResponsiveDialog>
   );
 }

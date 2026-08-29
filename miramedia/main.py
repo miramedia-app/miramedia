@@ -46,6 +46,7 @@ from miramedia.auth.router import (
 )
 from miramedia.auth.runtime import OAuthRuntimeMiddleware
 from miramedia.auth.schemas import UserCreate, UserRead, UserUpdate
+from miramedia.auth.token_scopes import BindRequestMiddleware
 from miramedia.auth.users import (
     bearer_auth_backend,
     cookie_auth_backend,
@@ -261,6 +262,7 @@ app.add_middleware(
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(CorrelationIdMiddleware, header_name="X-Correlation-ID")
+app.add_middleware(BindRequestMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 api_app = APIRouter(prefix="/api/v1")
 
@@ -476,9 +478,11 @@ if config.requests.enabled:
 from miramedia.observability.router import router as observability_router  # noqa: E402
 
 api_app.include_router(observability_router)
+from miramedia.diagnostics.router import router as diagnostics_router  # noqa: E402
 from miramedia.ops.router import router as ops_router  # noqa: E402
 
 api_app.include_router(ops_router)
+api_app.include_router(diagnostics_router)
 
 # Sonarr/Radarr compatibility shim for Bazarr — always mounted (like requests);
 # auth returns 401 until subtitles.bazarr.shim_api_key is configured.

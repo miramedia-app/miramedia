@@ -227,6 +227,12 @@ class EventBus:
     async def _run_postgres_bridge(self, dsn: str, channel: str) -> None:
         import asyncpg
 
+        # Retained across reconnects so a failed pg_notify can be retried.
+        # At-least-once within this process only — listeners must tolerate
+        # duplicate invalidation if we succeed at NOTIFY then crash before
+        # clearing pending_event.
+        pending_event: Event | None = None
+
         while True:
             conn = None
             try:
@@ -253,9 +259,11 @@ class EventBus:
                 await conn.add_listener(channel, _on_notify)
                 log.info("Postgres event bridge listening on %s", channel)
                 while True:
-                    event = await self._outbound.get()  # type: ignore[union-attr]
-                    payload = self._encode_notify_payload(event)
+                    if pending_event is None:
+                        pending_event = await self._outbound.get()  # type: ignore[union-attr]
+                    payload = self._encode_notify_payload(pending_event)
                     await conn.execute("SELECT pg_notify($1, $2)", channel, payload)
+                    pending_event = None
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -38,4 +38,21 @@ export const qk = {
     counts: () => ["imports", "counts"] as const,
     scan: () => ["imports", "scan"] as const,
   },
+  diagnostics: {
+    all: ["diagnostics"] as const,
+    database: () => ["diagnostics", "database"] as const,
+    scheduler: () => ["diagnostics", "scheduler"] as const,
+    storage: {
+      summary: () => ["diagnostics", "storage"] as const,
+      list: (params: {
+        offset: number;
+        limit: number;
+        state?: string;
+        mediaType?: string;
+        q?: string;
+      }) => ["diagnostics", "storage", "list", params] as const,
+      detail: (mediaType: string, fileId: string) =>
+        ["diagnostics", "storage", "detail", mediaType, fileId] as const,
+    },
+  },
 } as const;

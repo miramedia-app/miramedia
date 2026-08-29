@@ -51,6 +51,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { DataList } from "@/components/data-list";
+import type { MobileAction } from "@/components/data-list";
 import type {
   BulkAction,
   ColumnDef,
@@ -251,6 +252,7 @@ export default function UsersPage() {
         id: "email",
         header: "Email",
         width: "minmax(0,1fr)",
+        mobile: { role: "title" },
         render: (u) => (
           <>
             <span className="truncate text-sm font-medium">{u.email}</span>
@@ -262,6 +264,7 @@ export default function UsersPage() {
         id: "role",
         header: "Role",
         width: "80px",
+        mobile: { role: "meta", order: 0 },
         render: (u) => <TypePill>{u.is_superuser ? "Admin" : "User"}</TypePill>,
       },
       {
@@ -270,6 +273,14 @@ export default function UsersPage() {
         width: "180px",
         hideBelow: "md",
         mono: true,
+        mobile: {
+          role: "subtitle",
+          render: (u) => (
+            <span className="truncate">
+              {u.last_login_at ? `Last login ${formatDate(u.last_login_at)}` : "Never logged in"}
+            </span>
+          ),
+        },
         render: (u) => (
           <span className="truncate text-xs text-muted-foreground">
             {u.last_login_at ? formatDate(u.last_login_at) : "Never"}
@@ -281,6 +292,7 @@ export default function UsersPage() {
         header: "Verified",
         width: "96px",
         hideBelow: "sm",
+        mobile: { role: "meta", order: 2 },
         render: (u) => <StatusPill status={u.is_verified ? "verified" : "unverified"} />,
       },
       {
@@ -288,6 +300,7 @@ export default function UsersPage() {
         header: "Status",
         width: "112px",
         hideBelow: "sm",
+        mobile: { role: "status" },
         render: (u) => <StatusPill status={u.is_active ? "active" : "inactive"} />,
       },
     ],
@@ -399,6 +412,43 @@ export default function UsersPage() {
   const unselectableIds = React.useMemo(
     () => new Set(currentUser ? [currentUser.id] : []),
     [currentUser],
+  );
+
+  const mobileActions = React.useCallback(
+    (u: UserRead): MobileAction[] =>
+      u.id === currentUser?.id
+        ? []
+        : [
+            {
+              id: "reset",
+              label: "Send password reset",
+              icon: <KeyRound />,
+              onSelect: () => void sendPasswordReset(u),
+            },
+            {
+              id: "edit",
+              label: "Edit user",
+              icon: <Pencil />,
+              onSelect: () => {
+                setSelectedUser({ ...u });
+                setEditEmail("");
+                setEditPassword("");
+                setEditDialogOpen(true);
+              },
+            },
+            {
+              id: "delete",
+              label: "Delete",
+              icon: <Trash2 />,
+              destructive: true,
+              onSelect: () => {
+                setUserToDelete(u);
+                setDeleteDialogOpen(true);
+              },
+            },
+          ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [currentUser?.id],
   );
 
   const renderRowActions = React.useCallback(
@@ -546,6 +596,8 @@ export default function UsersPage() {
               </>
             }
             rowActions={renderRowActions}
+            mobileActions={mobileActions}
+            mobileActionsTitle={(u) => u.email}
           />
         )}
       </main>

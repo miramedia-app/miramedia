@@ -1,10 +1,8 @@
-import asyncio
 import json
 import logging
-import threading
 import uuid
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -20,6 +18,7 @@ from fastapi import (
 )
 from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 
+from miramedia.auth.token_scopes import SCOPE_DOWNLOADS_WRITE, token_scope
 from miramedia.auth.users import current_active_user, current_superuser
 from miramedia.exceptions import ConflictError, NotFoundError
 from miramedia.imports.matching import find_candidate_media_matches
@@ -33,10 +32,6 @@ from miramedia.indexers.schemas import (
 from miramedia.movies.dependencies import movie_repository_dep, movie_service_dep
 from miramedia.naming import episode_file_stem, movie_file_stem
 from miramedia.shows.dependencies import show_repository_dep, show_service_dep
-from miramedia.shows.service import (
-    filter_results_to_episode,
-    filter_results_to_season,
-)
 from miramedia.torrents.dependencies import (
     torrent_dep,
     torrent_repository_dep,
@@ -48,6 +43,15 @@ from miramedia.torrents.integrity import (
     INTEGRITY_MISMATCH_MAX_LIMIT,
 )
 from miramedia.torrents.quality_naming import NameParts
+from miramedia.torrents.route_orchestration import (
+    apply_library_override,
+    execute_manual_download,
+    resolve_variant_quality,
+    safe_bulk_item_error_message,
+)
+from miramedia.torrents.route_orchestration import (
+    map_torrent_files as orchestrate_map_torrent_files,
+)
 from miramedia.torrents.schemas import (
     BulkRetryImportFailure,
     BulkRetryImportRequest,
@@ -58,7 +62,6 @@ from miramedia.torrents.schemas import (
     ManualDownloadRequest,
     ManualMapRequest,
     ManualMapResult,
-    ManualMapTargetType,
     MediaType,
     PaginatedIntegrityMismatches,
     Quality,
@@ -69,37 +72,12 @@ from miramedia.torrents.schemas import (
     TorrentStatus,
     UnifiedDownloadRequest,
 )
-
-if TYPE_CHECKING:
-    from miramedia.movies.service import MovieService
-    from miramedia.shows.service import ShowService
-
-log = logging.getLogger(__name__)
-
-_OPERATOR_SAFE_BULK_VALUE_ERROR_DETAILS = frozenset(
-    {
-        "torrent not linked to any media",
-        "episode_id required for target_type=episode",
-        "movie_id required for target_type=movie",
-    }
+from miramedia.torrents.search_stream import (
+    TorrentSearchStreamOrchestrator,
+    filter_results_by_options,
 )
 
-
-def _safe_bulk_item_error_message(exc: Exception, *, fallback: str) -> str:
-    """Map per-item bulk failures to fixed categories; logs keep the real cause."""
-    if isinstance(exc, ValueError):
-        message = str(exc)
-        if message in _OPERATOR_SAFE_BULK_VALUE_ERROR_DETAILS:
-            return message
-        return fallback
-    if isinstance(exc, NotFoundError):
-        return "not found"
-    from miramedia.imports.files import DiskSpaceError
-
-    if isinstance(exc, DiskSpaceError):
-        return "insufficient disk space"
-    return fallback
-
+log = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/torrents",
@@ -152,183 +130,44 @@ async def search_torrents_stream(
     """
     media_obj = None
     if media_type == MediaType.show:
-        show = await show_service.show_repository.get_show_by_id(show_id=media_id)
-        media_obj = show
+        media_obj = await show_service.get_show_by_id(media_id)
         is_tv = True
     else:
-        movie = await movie_service.get_movie_by_id(media_id)
-        media_obj = movie
+        media_obj = await movie_service.get_movie_by_id(media_id)
         is_tv = False
 
-    from miramedia.indexers.utils import (
-        evaluate_indexer_query_results,
-        search_name_variants,
+    orchestrator = TorrentSearchStreamOrchestrator(
+        indexer_service=indexer_service,
+        media_obj=media_obj,
+        media_type=media_type,
+        is_tv=is_tv,
+        season_number=season_number,
+        episode_number=episode_number,
+        query_override=query_override,
+        quality=quality,
+        codec=codec,
     )
 
-    # Bounded queue with drop-oldest semantics. Caps backend memory if the
-    # client stalls without observable harm: search results are append-only
-    # so dropping the head only delays the slowest backends' final
-    # rendering, never erases earlier chunks the client already saw.
-    chunk_queue: asyncio.Queue = asyncio.Queue(maxsize=50)
-    DONE = object()  # noqa: N806 — module-style sentinel constant, local to closure
-    abort = threading.Event()
-    main_loop = asyncio.get_running_loop()
-
-    def _safe_put(item: object) -> None:
-        try:
-            chunk_queue.put_nowait(item)
-        except asyncio.QueueFull:
-            try:
-                chunk_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                chunk_queue.put_nowait(item)
-            except asyncio.QueueFull:
-                pass
-
-    # Variant queries (full title vs pre-colon main title) can surface the
-    # same torrent from more than one fan-out — dedupe across chunks.
-    seen_urls: set[str] = set()
-    seen_lock = threading.Lock()
-
-    def _on_partial(source_name: str, results: list[IndexerQueryResult]) -> None:
-        # Called from indexer backend threadpool workers — must hop back
-        # onto the event loop before touching the asyncio.Queue.
-        if abort.is_set():
-            return
-        try:
-            with seen_lock:
-                fresh = [r for r in results if r.download_url not in seen_urls]
-                seen_urls.update(r.download_url for r in fresh)
-            if not fresh:
-                return
-            # REST searches score against the title's saved preferences, then
-            # apply any request filters. Keep custom SSE searches in parity;
-            # regular typed SSE searches retain their existing request-filter
-            # semantics.
-            score_quality = media_obj.preferred_quality if query_override else quality
-            score_codec = media_obj.preferred_codec if query_override else codec
-            scored = evaluate_indexer_query_results(
-                query_results=fresh,
-                media=media_obj,
-                is_tv=is_tv,
-                quality_allowed=score_quality,
-                codec_allowed=score_codec,
-                query_override=query_override,
-            )
-            scored = _filter_results_by_options(scored, quality, codec)
-            if not query_override and media_type == MediaType.show:
-                if season_number is not None and episode_number is not None:
-                    scored = filter_results_to_episode(
-                        scored, season_number, episode_number
-                    )
-                elif season_number is not None:
-                    scored = filter_results_to_season(scored, season_number)
-            log.debug(
-                "SSE chunk: source=%s raw=%d scored=%d",
-                source_name,
-                len(results),
-                len(scored),
-            )
-            if not scored:
-                return
-            # Queue the raw scored objects; the consumer task persists them
-            # to the DB before serializing + yielding so the /download
-            # endpoint can resolve their ids the moment the client sees them.
-            main_loop.call_soon_threadsafe(_safe_put, (source_name, scored))
-        except Exception:
-            log.exception("Failed to serialize partial result chunk")
-
-    async def _run_search() -> None:
-        media = media_obj
-        try:
-            if query_override:
-                # Manual query wins for every media type / season / episode
-                # combination — previously the typed season/episode/movie
-                # searches ignored it and re-derived a query from the name.
-                await indexer_service.search(
-                    query=query_override, is_tv=is_tv, on_partial=_on_partial
-                )
-            elif media_type == MediaType.show and media is not None:
-                if episode_number is not None and season_number is not None:
-                    await indexer_service.search_episode(
-                        show=media,
-                        season_number=season_number,
-                        episode_number=episode_number,
-                        on_partial=_on_partial,
-                    )
-                elif season_number is not None:
-                    await indexer_service.search_season(
-                        show=media,
-                        season_number=season_number,
-                        on_partial=_on_partial,
-                    )
-                else:
-                    if media.year is not None:
-                        queries = [
-                            f"{name} {media.year}"
-                            for name in search_name_variants(media.name)
-                        ]
-                    else:
-                        queries = [media.name]
-                    await asyncio.gather(
-                        *(
-                            indexer_service.search(
-                                query=q, is_tv=True, on_partial=_on_partial
-                            )
-                            for q in queries
-                        )
-                    )
-            elif media_type == MediaType.movie and media is not None:
-                await indexer_service.search_movie(movie=media, on_partial=_on_partial)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("SSE indexer search failed")
-        finally:
-            _safe_put(DONE)
-
     async def event_publisher() -> AsyncGenerator[ServerSentEvent]:
-        from miramedia.database import background_session
-        from miramedia.indexers.repository import IndexerRepository
-
-        search_task = asyncio.create_task(_run_search())
         try:
-            while True:
-                item = await chunk_queue.get()
-                if item is DONE:
-                    log.debug("SSE stream finished, sending done event")
-                    yield ServerSentEvent(event="done", data="{}")
-                    return
-                source_name, scored = item
-                # Persist on a dedicated session so we don't contend with
-                # the request-scoped session the search task is using for
-                # its end-of-search save. ``save_result`` is idempotent so
-                # the redundant second write is a no-op.
-                try:
-                    async with background_session() as db:
-                        repo = IndexerRepository(db)
-                        await repo.save_results(scored)
-                except Exception:
-                    log.exception("Failed to persist streamed indexer results")
-                chunk = SearchStreamChunk(
-                    source=source_name, results=scored
-                ).model_dump(mode="json")
-                payload = json.dumps(chunk)
+            async for chunk in orchestrator.stream():
+                payload = json.dumps(
+                    SearchStreamChunk(
+                        source=chunk.source, results=chunk.results
+                    ).model_dump(mode="json")
+                )
                 log.debug(
                     "SSE chunk yielding: source=%s results=%d bytes=%d",
-                    source_name,
-                    len(scored),
+                    chunk.source,
+                    len(chunk.results),
                     len(payload),
                 )
                 yield ServerSentEvent(event="results", data=payload)
+            log.debug("SSE stream finished, sending done event")
+            yield ServerSentEvent(event="done", data="{}")
         finally:
-            abort.set()
-            search_task.cancel()
+            orchestrator.abort.set()
 
-    # ``Content-Encoding: identity`` opts out of GZipMiddleware so chunks
-    # reach the browser as the producer yields them.
     return EventSourceResponse(
         event_publisher(),
         headers={
@@ -386,46 +225,7 @@ async def search_torrents(
             status.HTTP_400_BAD_REQUEST, f"Unknown media_type: {media_type}"
         )
 
-    return _filter_results_by_options(results, quality, codec)
-
-
-def _filter_results_by_options(
-    results: list[IndexerQueryResult],
-    quality_names: list[str] | None,
-    codec_names: list[str] | None,
-) -> list[IndexerQueryResult]:
-    """Keep results whose title matches selected quality/codec option keywords."""
-    if not quality_names and not codec_names:
-        return results
-
-    import re
-
-    from miramedia.config import MiraMediaConfig
-
-    cfg = MiraMediaConfig().indexers
-
-    def keywords_for(options: list, selected: list[str] | None) -> list[str]:
-        sel = set(selected or [])
-        kws: list[str] = []
-        for opt in options:
-            if opt.name in sel:
-                kws.extend(opt.keywords)
-        return kws
-
-    quality_kws = keywords_for(cfg.quality_options, quality_names)
-    codec_kws = keywords_for(cfg.codec_options, codec_names)
-
-    def matches(title: str, kws: list[str]) -> bool:
-        if not kws:
-            return True
-        t = title.lower()
-        return any(re.search(r"\b" + re.escape(k.lower()) + r"\b", t) for k in kws)
-
-    return [
-        r
-        for r in results
-        if matches(r.title, quality_kws) and matches(r.title, codec_kws)
-    ]
+    return filter_results_by_options(results, quality, codec)
 
 
 @router.post(
@@ -433,6 +233,7 @@ def _filter_results_by_options(
     status_code=status.HTTP_200_OK,
     dependencies=[Depends(current_superuser)],
 )
+@token_scope(SCOPE_DOWNLOADS_WRITE)
 async def download_torrent_unified(
     body: UnifiedDownloadRequest,
     torrent_service: torrent_service_dep,
@@ -449,14 +250,17 @@ async def download_torrent_unified(
         result_id=IndexerQueryResultId(body.indexer_result_id)
     )
     if body.library is not None:
-        await _apply_library_override(
-            media_type=body.media_type,
-            media_id=body.media_id,
-            library=body.library,
-            show_service=show_service,
-            movie_service=movie_service,
-        )
-    variant, quality_override = _resolve_variant_quality(body)
+        try:
+            await apply_library_override(
+                media_type=body.media_type,
+                media_id=body.media_id,
+                library=body.library,
+                show_service=show_service,
+                movie_service=movie_service,
+            )
+        except ValueError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    variant, quality_override = resolve_variant_quality(body)
     torrent = await torrent_service.download_and_link(
         indexer_result=indexer_result,
         media_type=body.media_type,
@@ -485,54 +289,6 @@ async def download_torrent_unified(
 # -----------------------------------------------------------------------------
 # MANUAL ADD
 # -----------------------------------------------------------------------------
-
-
-def _resolve_variant_quality(body) -> tuple[str, Quality | None]:  # noqa: ANN001
-    """Extract ``(variant, quality_override)`` from a download/map body.
-
-    ``variant`` is the user-supplied free-text differentiator. ``codec``,
-    ``hdr`` and ``source`` are detected at import time, not here.
-    """
-    variant = getattr(body, "variant", "") or ""
-    quality_override = getattr(body, "quality_override", None)
-    return variant, quality_override
-
-
-async def _apply_library_override(
-    media_type: MediaType,
-    media_id: uuid.UUID,
-    library: str,
-    show_service: "ShowService",
-    movie_service: "MovieService",
-) -> None:
-    """Reassign the show/movie's library before linking so files land under it.
-
-    Validates the library name against the configured libraries to avoid silent
-    misroutes; default library passes through.
-    """
-    from miramedia.config import MiraMediaConfig
-
-    cfg = MiraMediaConfig().misc
-    if media_type == MediaType.show:
-        valid = {"Default", *(lib.name for lib in cfg.show_libraries)}
-        if library not in valid:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"Unknown show library '{library}'",
-            )
-        show = await show_service.get_show_by_id(media_id)
-        if show.library != library:
-            await show_service.set_show_library(show=show, library=library)
-    else:
-        valid = {"Default", *(lib.name for lib in cfg.movie_libraries)}
-        if library not in valid:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"Unknown movie library '{library}'",
-            )
-        movie = await movie_service.get_movie_by_id(media_id)
-        if movie.library != library:
-            await movie_service.set_movie_library(movie=movie, library=library)
 
 
 @router.post(
@@ -662,39 +418,20 @@ async def manual_download(
     """
     Download a previously-parsed manual torrent and link it to chosen media.
     """
-    payload = await torrent_service.torrent_repository.pop_manual_parse_token(
-        body.download_token
-    )
-    if payload is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            "Download token not found or already used. Please re-parse.",
-        )
-    synthetic_result = IndexerQueryResult.model_validate(payload)
-
-    if body.library is not None:
-        await _apply_library_override(
-            media_type=body.media_type,
-            media_id=body.media_id,
-            library=body.library,
+    try:
+        torrent, variant, _quality_override = await execute_manual_download(
+            body=body,
+            torrent_service=torrent_service,
+            indexer_service=indexer_service,
             show_service=show_service,
             movie_service=movie_service,
+            show_repository=show_repository,
+            movie_repository=movie_repository,
         )
-
-    # Save the synthetic result to the indexer repository so download_and_link
-    # can find it via the standard flow
-    await indexer_service.repository.save_result(result=synthetic_result)
-
-    variant, quality_override = _resolve_variant_quality(body)
-    torrent = await torrent_service.download_and_link(
-        indexer_result=synthetic_result,
-        media_type=body.media_type,
-        media_id=body.media_id,
-        variant=variant,
-        quality_override=quality_override,
-        show_repository=show_repository,
-        movie_repository=movie_repository,
-    )
+    except NotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     return RichTorrent(
         id=torrent.id,
@@ -893,7 +630,7 @@ async def bulk_retry_import(
             failed.append(
                 BulkRetryImportFailure(
                     torrent_id=str(tid),
-                    error=_safe_bulk_item_error_message(exc, fallback="import failed"),
+                    error=safe_bulk_item_error_message(exc, fallback="import failed"),
                 )
             )
     return BulkRetryImportResult(succeeded=succeeded, failed=failed)
@@ -1046,123 +783,18 @@ async def map_torrent_files(
     torrent: torrent_dep,
     show_service: show_service_dep,
     movie_service: movie_service_dep,
+    show_repository: show_repository_dep,
+    movie_repository: movie_repository_dep,
 ) -> ManualMapResult:
     """Apply a user-supplied mapping of source files → target media."""
-    from miramedia.file_status import ImportOutcome
-    from miramedia.torrents.paths import get_torrent_filepath, resolve_within
-
-    root = get_torrent_filepath(torrent)
-    result = ManualMapResult(mapped=0, skipped=0, failed=0, errors=[])
-
-    episode_ids = list(
-        dict.fromkeys(
-            item.episode_id
-            for item in body.items
-            if item.target_type == ManualMapTargetType.episode
-            and item.episode_id is not None
-        )
+    return await orchestrate_map_torrent_files(
+        torrent=torrent,
+        body=body,
+        show_service=show_service,
+        movie_service=movie_service,
+        show_repository=show_repository,
+        movie_repository=movie_repository,
     )
-    movie_ids = list(
-        dict.fromkeys(
-            item.movie_id
-            for item in body.items
-            if item.target_type == ManualMapTargetType.movie
-            and item.movie_id is not None
-        )
-    )
-    episode_lookup = (
-        await show_service.show_repository.get_episodes_with_seasons(episode_ids)
-        if episode_ids
-        else {}
-    )
-    show_ids = list(
-        dict.fromkeys(season.show_id for season, _ in episode_lookup.values())
-    )
-    shows_by_id = (
-        await show_service.show_repository.get_shows_by_ids(show_ids)
-        if show_ids
-        else {}
-    )
-    movies_by_id = (
-        await movie_service.movie_repository.get_movies_by_ids(movie_ids)
-        if movie_ids
-        else {}
-    )
-
-    for item in body.items:
-        if item.target_type == ManualMapTargetType.skip:
-            result.skipped += 1
-            continue
-
-        source = resolve_within(root, item.relative_path)
-        if source is None:
-            result.failed += 1
-            result.errors.append(f"path escapes torrent root: {item.relative_path}")
-            continue
-        if not source.exists() or not source.is_file():
-            result.failed += 1
-            result.errors.append(f"missing source: {item.relative_path}")
-            continue
-
-        item_variant, _ = _resolve_variant_quality(item)
-        outcome: ImportOutcome = ImportOutcome.failed_io
-        error: str | None = None
-        try:
-            if item.target_type == ManualMapTargetType.episode:
-                if item.episode_id is None:
-                    msg = "episode_id required for target_type=episode"
-                    raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                pair = episode_lookup.get(item.episode_id)
-                if pair is None:
-                    msg = f"Episode with id {item.episode_id} not found."
-                    raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                season, episode = pair
-                show = shows_by_id.get(season.show_id)
-                if show is None:
-                    msg = f"Show with id {season.show_id} not found."
-                    raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                outcome, error = await show_service.import_episode_from_file(
-                    show=show,
-                    season=season,
-                    episode=episode,
-                    source_file=source,
-                    torrent_id=torrent.id,
-                    variant=item_variant,
-                )
-            elif item.target_type == ManualMapTargetType.movie:
-                if item.movie_id is None:
-                    msg = "movie_id required for target_type=movie"
-                    raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                movie = movies_by_id.get(item.movie_id)
-                if movie is None:
-                    msg = f"Movie with id {item.movie_id} not found."
-                    raise NotFoundError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-                outcome, error = await movie_service.import_movie_from_file(
-                    movie=movie,
-                    source_file=source,
-                    torrent_id=torrent.id,
-                    variant=item_variant,
-                )
-            else:
-                msg = f"unknown target_type {item.target_type}"
-                raise ValueError(msg)  # noqa: TRY301 — local control flow, caught per-item below
-        except Exception as exc:
-            result.failed += 1
-            result.errors.append(
-                f"{item.relative_path}: "
-                f"{_safe_bulk_item_error_message(exc, fallback='import failed')}"
-            )
-            log.exception("Manual-map import failed for %s", item.relative_path)
-            continue
-
-        if outcome == ImportOutcome.imported:
-            result.mapped += 1
-        else:
-            result.failed += 1
-            if error:
-                result.errors.append(f"{item.relative_path}: {error}")
-
-    return result
 
 
 @router.post(

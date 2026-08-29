@@ -48,7 +48,11 @@ class StreamResolutionSpies:
 
 
 @contextmanager
-def stream_resolution_spies() -> Iterator[StreamResolutionSpies]:
+def stream_resolution_spies(
+    tmp_path: Path | None = None,
+) -> Iterator[StreamResolutionSpies]:
+    from miramedia.streams.router import _serve_file as real_serve_file
+
     with (
         patch(
             "miramedia.streams.router._resolve_episode_video_file",
@@ -69,6 +73,15 @@ def stream_resolution_spies() -> Iterator[StreamResolutionSpies]:
         patch("miramedia.streams.router._serve_file") as serve_file,
         patch("miramedia.streams.router.can_direct_play") as direct_play_probe,
     ):
+        if tmp_path is not None:
+            video_file = tmp_path / "media.mkv"
+            video_file.write_bytes(b"video")
+            subtitle_file = tmp_path / "sub.en.vtt"
+            subtitle_file.write_text("WEBVTT\n", encoding="utf-8")
+            episode_video.return_value = video_file
+            movie_video.return_value = video_file
+            subtitle.return_value = subtitle_file
+            serve_file.side_effect = real_serve_file
         yield StreamResolutionSpies(
             episode_video=episode_video,
             movie_video=movie_video,
@@ -549,6 +562,7 @@ def test_stream_access_gate_matrix_movie(
     downloads: bool,
     movie_binding: tuple[MovieId, MovieId, MovieFile],
     override_dependency: Callable[[Callable[..., object], object], None],
+    tmp_path: Path,
 ) -> None:
     _set_stream_flags(enabled=enabled, downloads=downloads)
     movie_id, other_movie_id, mov_file = movie_binding
@@ -565,14 +579,24 @@ def test_stream_access_gate_matrix_movie(
     for url, expects_503 in cases:
         with (
             gated_stream_client(override_dependency, movie_repo=movie_repo) as client,
-            stream_resolution_spies() as spies,
+            stream_resolution_spies(tmp_path) as spies,
         ):
             response = client.get(url)
         if expects_503:
             assert response.status_code == 503, url
             _assert_no_downstream_resolution(spies)
+        elif url == download_url:
+            assert response.status_code == 200, url
+            disposition = response.headers.get("content-disposition", "")
+            assert disposition.startswith('attachment; filename="')
+            assert disposition.endswith('media.mkv"')
+        elif url == subtitle_url:
+            assert response.status_code == 200, url
+            assert response.headers.get("content-type", "").startswith("text/")
         else:
-            assert response.status_code != 503, url
+            assert response.status_code == 200, url
+            disposition = response.headers.get("content-disposition", "")
+            assert not disposition.startswith("attachment; filename=")
 
 
 def test_media_stream_gate_requires_in_body_enabled_check(

@@ -150,7 +150,7 @@ export function DataListSearchFilter<T>({
           <div
             ref={containerRef}
             className={cn(
-              "flex h-8 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-sm shadow-xs transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50",
+              "flex min-h-8 min-w-0 flex-1 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-sm shadow-xs transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50 coarse:min-h-11",
               className,
             )}
             onMouseDown={handleContainerMouseDown}
@@ -228,7 +228,7 @@ export function DataListSearchFilter<T>({
           }}
           onKeyDown={handleKeyDown}
           placeholder={filters.length === 0 ? placeholder : ""}
-          className="min-w-[80px] flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          className="min-w-[80px] flex-1 bg-transparent text-[16px] outline-none placeholder:text-muted-foreground sm:text-sm"
         />
         {(search.length > 0 || filters.length > 0) && (
           <button
@@ -257,7 +257,7 @@ export function DataListSearchFilter<T>({
           <PopoverPrimitive.Popup
             initialFocus={false}
             finalFocus={false}
-            className="z-50 w-[var(--anchor-width)] min-w-[280px] origin-(--transform-origin) rounded-lg bg-popover p-0 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-hidden duration-100 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
+            className="z-50 w-[min(var(--anchor-width),calc(100vw-2rem))] min-w-[min(280px,calc(100vw-2rem))] origin-(--transform-origin) rounded-lg bg-popover p-0 text-popover-foreground shadow-md ring-1 ring-foreground/10 outline-hidden duration-100 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
           >
             <Command shouldFilter={!editingFacet}>
               {editingFacet ? (

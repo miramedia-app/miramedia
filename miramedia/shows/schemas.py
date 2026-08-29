@@ -196,6 +196,18 @@ class PublicShow(BaseModel):
 # List endpoints return the same shape with ``seasons=[]``; alias for OpenAPI clarity.
 PublicShowSummary = PublicShow
 
+SEASON_FILES_BATCH_MAX = 100
+
+
+class SeasonFilesBatchRequest(BaseModel):
+    season_ids: list[SeasonId] = Field(min_length=1, max_length=SEASON_FILES_BATCH_MAX)
+    show_id: ShowId | None = None
+
+
+class SeasonFilesBatchResponse(BaseModel):
+    results: dict[str, list[PublicEpisodeFile]] = Field(default_factory=dict)
+    errors: dict[str, str] = Field(default_factory=dict)
+
 
 # Resolve forward references after EpisodeFile is defined.
 Episode.model_rebuild()

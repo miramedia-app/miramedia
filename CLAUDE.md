@@ -27,10 +27,13 @@ CI uses `UV_PYTHON=3.13` for all backend steps (see `.github/workflows/ci.yml`).
 
 FastAPI backend in `miramedia/` — per-domain modules: `shows`, `movies`, `torrents`, `indexers`,
 `imports`, `streams`, `subtitles`, `playback`, `watchlists`, `events`, `metadata`, `auth`,
-`notifications`, `requests`, `ops`, `logs`, `settings`, `updates`, plus non-routed `core`,
-`upcoming`, `observability`, `scheduler_tasks/`, and `background_services.py`. Each routed module
-follows a router / service / repository split. API prefix: `/api/v1/{domain}/` (exceptions: `core`
-routes at `/api/v1/health`, `/api/v1/features`, etc.; `observability` at `/api/v1/analytics`).
+`notifications`, `requests`, `ops`, `logs`, `settings`, `updates`, `diagnostics`, plus non-routed
+`core`, `upcoming`, `observability`, `feeds`, `storage`, `viewing_sync`, `scheduler_tasks/`, and
+`background_services.py`. Each routed module follows a router / service / repository split. API
+prefix: `/api/v1/{domain}/` (exceptions: `core` routes at `/api/v1/health`, `/api/v1/features`,
+etc.; `observability` at `/api/v1/analytics`). `diagnostics` consumes `storage` health summaries
+and does not own storage rules. Scheduled tasks in `scheduler_tasks/` compose `feeds` and
+`viewing_sync`; they do not own those domain rules.
 
 Next.js 16 static-export SPA in `web/` — React 19, Tailwind v4, shadcn/ui.
 See `web/CLAUDE.md` (→ `web/AGENTS.md`): read `node_modules/next/dist/docs/` before writing
@@ -48,7 +51,7 @@ Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/con
 - New SQLAlchemy models must be imported in `alembic/env.py` for autogenerate to see them.
 - Run `make openapi` after any API change that affects request/response shapes.
 - Never edit `config.toml` (the live instance config); use `config.example.toml` for examples.
-- Commit style: short imperative subject line, no Co-Authored-By trailer.
+- Commit style: short imperative subject line, no Co-Authored-By or any AI co-author / "Generated with" trailer. Pass this rule to any spawned subagents.
 - Tests must remain DB-free (no live Postgres required to run the suite).
 
 ## Gotchas

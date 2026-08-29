@@ -369,7 +369,7 @@ export function VideoPlayerDialog({
           {triggerLabel && buttonSize !== "icon" ? <span>{triggerLabel}</span> : null}
         </DialogTrigger>
       )}
-      <DialogContent className="flex max-h-[90vh] w-[95vw] max-w-6xl flex-col sm:max-w-6xl">
+      <DialogContent className="flex max-h-[90vh] w-[95vw] max-w-6xl flex-col max-lg:top-0 max-lg:left-0 max-lg:h-dvh max-lg:max-h-none max-lg:w-screen max-lg:max-w-none max-lg:translate-x-0 max-lg:translate-y-0 max-lg:rounded-none max-lg:pb-safe-b sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
@@ -398,7 +398,7 @@ export function VideoPlayerDialog({
           {playerState === "playing" && (
             <video
               ref={videoRef}
-              className="max-h-[70vh] w-full rounded-md bg-black"
+              className="max-h-[70vh] w-full rounded-md bg-black max-lg:max-h-[calc(100dvh-8rem)]"
               controls
               autoPlay
               crossOrigin="use-credentials"
@@ -433,10 +433,15 @@ export function VideoPlayerDialog({
           {playerState === "playing" && showResumePrompt && resumePromptPositionMs != null && (
             <div className="absolute inset-x-0 bottom-14 z-10 flex justify-center px-4">
               <div className="flex flex-wrap items-center justify-center gap-2 rounded-md border bg-background/95 px-3 py-2 shadow-sm">
-                <Button size="sm" onClick={resumeFromPrompt}>
+                <Button size="sm" className="coarse:min-h-11" onClick={resumeFromPrompt}>
                   Resume from {formatResumeClock(resumePromptPositionMs)}
                 </Button>
-                <Button size="sm" variant="outline" onClick={startOverFromPrompt}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="coarse:min-h-11"
+                  onClick={startOverFromPrompt}
+                >
                   Start over
                 </Button>
               </div>

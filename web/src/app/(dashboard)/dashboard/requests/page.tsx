@@ -15,6 +15,7 @@ import { StatusPill } from "@/components/ui/status-pill";
 import { MetaPill, TypePill } from "@/components/ui/type-pill";
 import { Button } from "@/components/ui/button";
 import { DataList } from "@/components/data-list";
+import type { MobileAction } from "@/components/data-list";
 import type {
   BulkAction,
   ColumnDef,
@@ -155,12 +156,14 @@ export default function RequestsPage() {
         id: "title",
         header: "Title",
         width: "minmax(0,1fr)",
+        mobile: { role: "title" },
         render: (r) => <span className="truncate text-sm font-medium">{r.title}</span>,
       },
       {
         id: "type",
         header: "Type",
         width: "72px",
+        mobile: { role: "meta", order: 1 },
         render: (r) => <TypePill>{r.media_type === "show" ? "Show" : "Movie"}</TypePill>,
       },
       {
@@ -168,6 +171,7 @@ export default function RequestsPage() {
         header: "Quality",
         width: "88px",
         hideBelow: "sm",
+        mobile: { role: "meta", order: 2 },
         render: (r) => <MetaPill className="font-mono">{qualityLabel(r.wanted_quality)}</MetaPill>,
       },
       {
@@ -175,6 +179,15 @@ export default function RequestsPage() {
         header: "Requested by",
         width: "160px",
         hideBelow: "lg",
+        mobile: {
+          role: "subtitle",
+          render: (r) => (
+            <span className="truncate">
+              Requested by {r.requested_by_username ?? "—"}
+              {r.note ? ` · “${r.note}”` : ""}
+            </span>
+          ),
+        },
         render: (r) => (
           <span
             className="truncate text-xs text-muted-foreground"
@@ -190,6 +203,7 @@ export default function RequestsPage() {
         width: "100px",
         hideBelow: "md",
         mono: true,
+        mobile: { role: "meta", order: 3 },
         render: (r) => (
           <span className="text-xs text-muted-foreground">
             {r.created_at ? new Date(r.created_at).toLocaleDateString() : "—"}
@@ -201,6 +215,7 @@ export default function RequestsPage() {
         header: "Note",
         width: "200px",
         hideBelow: "lg",
+        mobile: { role: "hidden" },
         render: (r) =>
           r.note ? (
             <span className="block truncate pr-4 text-xs text-muted-foreground" title={r.note}>
@@ -212,6 +227,7 @@ export default function RequestsPage() {
         id: "status",
         header: "Status",
         width: "112px",
+        mobile: { role: "status" },
         render: (r) => <StatusPill status={r.status} />,
       },
     ],
@@ -347,6 +363,39 @@ export default function RequestsPage() {
     [user?.is_superuser, bulkRun],
   );
 
+  const mobileActions = React.useCallback(
+    (r: MediaRequest): MobileAction[] => {
+      if (!user?.is_superuser) return [];
+      const out: MobileAction[] = [];
+      if (r.status === "pending") {
+        out.push(
+          {
+            id: "approve",
+            label: "Approve",
+            icon: <Check />,
+            onSelect: () => void approveRequest(r.id ?? ""),
+          },
+          {
+            id: "reject",
+            label: "Reject",
+            icon: <X />,
+            onSelect: () => void rejectRequest(r.id ?? ""),
+          },
+        );
+      }
+      out.push({
+        id: "delete",
+        label: "Delete",
+        icon: <Trash2 />,
+        destructive: true,
+        onSelect: () => void deleteRequest(r.id ?? ""),
+      });
+      return out;
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user?.is_superuser],
+  );
+
   const renderRowActions = React.useCallback(
     (r: MediaRequest) =>
       user?.is_superuser ? (
@@ -421,6 +470,8 @@ export default function RequestsPage() {
           emptyTitle="No requests yet"
           emptyDescription="Requests will appear here when users submit them."
           rowActions={renderRowActions}
+          mobileActions={mobileActions}
+          mobileActionsTitle={(r) => r.title}
         />
       </main>
     </>

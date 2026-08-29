@@ -9,6 +9,12 @@ import { Button } from "@/components/ui/button";
 import { PageLoader } from "@/components/ui/page-loader";
 import { DashboardHeader } from "@/components/dashboard-header";
 import { SelectionBar } from "@/components/selection-bar";
+import {
+  DataListBulkBar,
+  DataListSectionSelectToggle,
+  useSectionSelectMode,
+} from "@/components/data-list";
+import type { BulkAction } from "@/components/data-list/types";
 import { ShowDetailHero } from "@/components/shows/show-detail-hero";
 import { ShowTreeSection } from "@/components/shows/show-tree-section";
 import { DeleteConfirmDialog } from "@/components/shows/delete-confirm-dialog";
@@ -40,6 +46,7 @@ export default function ShowDetailClientPage() {
     loadSubtitles,
     seasonHasAllSubtitles,
     treeRows,
+    getEpisodeFiles,
     seasonFilesErrorIds,
     invalidateSeasonFiles,
     toggleSeason,
@@ -83,6 +90,56 @@ export default function ShowDetailClientPage() {
     closeDeleteModal,
     confirmDelete,
   } = detail;
+
+  const treeSelect = useSectionSelectMode(deselectAll);
+  const treeBulkActions = React.useMemo<BulkAction<string>[]>(
+    () => [
+      {
+        id: "watched",
+        label: "Watched",
+        icon: <Eye className="h-4 w-4" />,
+        onRun: () => void bulkWatched(true),
+        disabled: bulkWorking || !hasEpisodeOrSeasonSelection,
+      },
+      {
+        id: "unwatched",
+        label: "Unwatched",
+        icon: <EyeOff className="h-4 w-4" />,
+        onRun: () => void bulkWatched(false),
+        disabled: bulkWorking || !hasEpisodeOrSeasonSelection,
+      },
+      {
+        id: "wanted",
+        label: "Wanted",
+        icon: <Check className="h-4 w-4" />,
+        onRun: () => bulkSkip(false),
+        disabled: bulkWorking || !hasEpisodeOrSeasonSelection,
+      },
+      {
+        id: "skipped",
+        label: "Skipped",
+        icon: <Ban className="h-4 w-4" />,
+        onRun: () => bulkSkip(true),
+        disabled: bulkWorking || !hasEpisodeOrSeasonSelection,
+      },
+      {
+        id: "delete",
+        label: "Delete",
+        icon: <Trash2 className="h-4 w-4" />,
+        variant: "destructive",
+        onRun: () => openDeleteModal({ type: "bulk-files" }),
+        disabled: bulkWorking || selectedFiles.size === 0,
+      },
+    ],
+    [
+      bulkWatched,
+      bulkSkip,
+      bulkWorking,
+      hasEpisodeOrSeasonSelection,
+      selectedFiles.size,
+      openDeleteModal,
+    ],
+  );
 
   // ── Render ──────────────────────────────────────────────────────────────
   if (!showId) {
@@ -143,14 +200,22 @@ export default function ShowDetailClientPage() {
           { label: show.name },
         ]}
       />
-      <main className="flex w-full flex-col gap-6 p-4">
+      <main className="flex w-full flex-col gap-4 p-4 sm:gap-6">
         <ShowDetailHero show={show} isSuperuser={isSuperuser} />
 
         {/* Downloads */}
         <div className="flex flex-col gap-3">
-          <h2 className="text-lg font-semibold">Downloads</h2>
-          {isSuperuser && show.seasons.length > 0 && (
-            <div className="col-span-full">
+          <div className="sticky top-0 z-10 -mx-4 flex items-center justify-between bg-background/90 px-4 py-2 backdrop-blur lg:static lg:mx-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
+            <h2 className="text-lg font-semibold">Downloads</h2>
+            {treeSelect.isMobile && isSuperuser && show.seasons.length > 0 && (
+              <DataListSectionSelectToggle
+                selectMode={treeSelect.mobileSelectMode}
+                onToggle={treeSelect.toggle}
+              />
+            )}
+          </div>
+          {!treeSelect.isMobile && isSuperuser && show.seasons.length > 0 && (
+            <div>
               <SelectionBar
                 allChecked={allSeasonsSelected}
                 indeterminate={someSeasonsSelected}
@@ -250,11 +315,13 @@ export default function ShowDetailClientPage() {
             allSelectedTreeIds={allSelectedTreeIds}
             onToggleTreeRowSelected={toggleTreeRowSelected}
             onToggleSelectAllTreeRows={toggleSelectAllTreeRows}
+            mobileShowSelect={treeSelect.selectMode}
             toggleSeason={toggleSeason}
             toggleEpisode={toggleEpisode}
             toggleSeasonSkipped={toggleSeasonSkipped}
             toggleEpisodeSkipped={toggleEpisodeSkipped}
             subtitlesByEpisode={subtitlesByEpisode}
+            getEpisodeFiles={getEpisodeFiles}
             seasonHasAllSubtitles={seasonHasAllSubtitles}
             loadSubtitles={loadSubtitles}
             openDeleteModal={openDeleteModal}
@@ -263,7 +330,9 @@ export default function ShowDetailClientPage() {
           {/* Torrents — lazy chunk so first paint skips torrent table code */}
           {isSuperuser && (
             <>
-              <h2 className="col-span-full mt-4 text-lg font-semibold">Torrents</h2>
+              <h2 className="sticky top-0 z-10 -mx-4 mt-4 bg-background/90 px-4 py-2 text-lg font-semibold backdrop-blur lg:static lg:mx-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
+                Torrents
+              </h2>
               <ShowDetailTorrentsList
                 torrents={torrents}
                 isSuperuser={isSuperuser}
@@ -294,6 +363,14 @@ export default function ShowDetailClientPage() {
           )}
         </div>
       </main>
+      {treeSelect.isMobile && isSuperuser && (
+        <DataListBulkBar<string>
+          count={allSelectedTreeIds.size}
+          selectedItems={[...allSelectedTreeIds]}
+          actions={treeBulkActions}
+          onClear={deselectAll}
+        />
+      )}
 
       <DeleteConfirmDialog
         target={deleteTarget}
