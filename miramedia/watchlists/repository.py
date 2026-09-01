@@ -37,6 +37,12 @@ class _FilePick:
 
 
 @dataclass(frozen=True, slots=True)
+class _WatchState:
+    watched: bool
+    watched_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class _ShowNextEpisodePick:
     show_id: UUID
     media_id: UUID
@@ -543,7 +549,8 @@ class WatchlistRepository:
                 media_id=movie_id,
                 title=movie.name,
                 poster_media_id=movie_id,
-                watched=watched_map[movie_id],
+                watched=watched_map[movie_id].watched,
+                watched_at=watched_map[movie_id].watched_at,
                 year=movie.year,
                 file_id=file_row.file_id if file_row else None,
                 position_ms=file_row.position_ms if file_row else None,
@@ -602,7 +609,8 @@ class WatchlistRepository:
                 media_id=episode_id,
                 title=title,
                 poster_media_id=show.id,
-                watched=watched_map[episode_id],
+                watched=watched_map[episode_id].watched,
+                watched_at=watched_map[episode_id].watched_at,
                 show_id=show.id,
                 season_number=season.number,
                 episode_number=episode.number,
@@ -782,21 +790,26 @@ class WatchlistRepository:
         *,
         user_id: UUID,
         movie_ids: list[UUID],
-    ) -> dict[UUID, bool]:
+    ) -> dict[UUID, _WatchState]:
         manual_stmt = select(
             MediaWatchStateRow.movie_id,
             MediaWatchStateRow.watched,
+            MediaWatchStateRow.watched_at,
         ).where(
             MediaWatchStateRow.user_id == user_id,
             MediaWatchStateRow.movie_id.in_(movie_ids),
             MediaWatchStateRow.source == WatchStateSource.manual,
         )
         manual = {
-            row.movie_id: row.watched
+            row.movie_id: (row.watched, row.watched_at)
             for row in (await self.db.execute(manual_stmt)).all()
         }
+        # Derived fallback: latest completed-playback timestamp per movie.
         completed_stmt = (
-            select(MovieFile.movie_id)
+            select(
+                MovieFile.movie_id,
+                func.max(PlaybackProgressRow.updated_at).label("watched_at"),
+            )
             .join(
                 PlaybackProgressRow,
                 PlaybackProgressRow.movie_file_id == MovieFile.id,
@@ -806,36 +819,50 @@ class WatchlistRepository:
                 MovieFile.movie_id.in_(movie_ids),
                 PlaybackProgressRow.completed.is_(True),
             )
-            .distinct()
+            .group_by(MovieFile.movie_id)
         )
-        completed = set((await self.db.execute(completed_stmt)).scalars().all())
-        return {
-            movie_id: (
-                manual[movie_id] if movie_id in manual else movie_id in completed
-            )
-            for movie_id in movie_ids
+        completed = {
+            row.movie_id: row.watched_at
+            for row in (await self.db.execute(completed_stmt)).all()
         }
+        result: dict[UUID, _WatchState] = {}
+        for movie_id in movie_ids:
+            if movie_id in manual:
+                watched, watched_at = manual[movie_id]
+                result[movie_id] = _WatchState(watched=watched, watched_at=watched_at)
+            elif movie_id in completed:
+                result[movie_id] = _WatchState(
+                    watched=True, watched_at=completed[movie_id]
+                )
+            else:
+                result[movie_id] = _WatchState(watched=False, watched_at=None)
+        return result
 
     async def _watched_episodes_batch(
         self,
         *,
         user_id: UUID,
         episode_ids: list[UUID],
-    ) -> dict[UUID, bool]:
+    ) -> dict[UUID, _WatchState]:
         manual_stmt = select(
             MediaWatchStateRow.episode_id,
             MediaWatchStateRow.watched,
+            MediaWatchStateRow.watched_at,
         ).where(
             MediaWatchStateRow.user_id == user_id,
             MediaWatchStateRow.episode_id.in_(episode_ids),
             MediaWatchStateRow.source == WatchStateSource.manual,
         )
         manual = {
-            row.episode_id: row.watched
+            row.episode_id: (row.watched, row.watched_at)
             for row in (await self.db.execute(manual_stmt)).all()
         }
+        # Derived fallback: latest completed-playback timestamp per episode.
         completed_stmt = (
-            select(EpisodeFile.episode_id)
+            select(
+                EpisodeFile.episode_id,
+                func.max(PlaybackProgressRow.updated_at).label("watched_at"),
+            )
             .join(
                 PlaybackProgressRow,
                 PlaybackProgressRow.episode_file_id == EpisodeFile.id,
@@ -845,15 +872,24 @@ class WatchlistRepository:
                 EpisodeFile.episode_id.in_(episode_ids),
                 PlaybackProgressRow.completed.is_(True),
             )
-            .distinct()
+            .group_by(EpisodeFile.episode_id)
         )
-        completed = set((await self.db.execute(completed_stmt)).scalars().all())
-        return {
-            episode_id: (
-                manual[episode_id] if episode_id in manual else episode_id in completed
-            )
-            for episode_id in episode_ids
+        completed = {
+            row.episode_id: row.watched_at
+            for row in (await self.db.execute(completed_stmt)).all()
         }
+        result: dict[UUID, _WatchState] = {}
+        for episode_id in episode_ids:
+            if episode_id in manual:
+                watched, watched_at = manual[episode_id]
+                result[episode_id] = _WatchState(watched=watched, watched_at=watched_at)
+            elif episode_id in completed:
+                result[episode_id] = _WatchState(
+                    watched=True, watched_at=completed[episode_id]
+                )
+            else:
+                result[episode_id] = _WatchState(watched=False, watched_at=None)
+        return result
 
     _SHOW_NEXT_EPISODES_BATCH_SQL = text("""
         WITH episode_watched AS (

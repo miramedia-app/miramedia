@@ -3,6 +3,9 @@
 import * as React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
+// Backend caps `limit` at 200 per request, so the full list must be walked.
+const IMPORTS_MAX_LIMIT = 200;
+
 import { useImportsQueueActions } from "@/hooks/use-imports-queue-actions";
 import {
   pruneQueuedScanIds,
@@ -31,6 +34,52 @@ export async function fetchImportsPage(
   });
   if (error) throw error;
   return { items: (data?.items ?? []) as ImportItem[], total: data?.total ?? 0 };
+}
+
+/**
+ * Full imports list (all pages) for the active tab. The list endpoint caps
+ * `limit` at 200, so walk offsets until we've collected `total` rows. Used only
+ * while a search is active so the DataList can match across every page instead
+ * of the loaded server page.
+ *
+ * NOTE: this 1B approach loads the whole (filtered) list client-side. If the
+ * import count grows large, switch to server-side `q` filtering (2B) — the
+ * backend would add a `q` query param to /api/v1/imports and return matching
+ * rows + total.
+ */
+export async function fetchAllImports(
+  apiTab: ImportTabApi,
+  signal?: AbortSignal,
+): Promise<ImportItem[]> {
+  const all: ImportItem[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await apiClient.GET("/api/v1/imports", {
+      params: { query: { tab: apiTab, offset, limit: IMPORTS_MAX_LIMIT } },
+      signal,
+    });
+    if (error) throw error;
+    const items = (data?.items ?? []) as ImportItem[];
+    all.push(...items);
+    const total = data?.total ?? all.length;
+    offset += items.length;
+    if (items.length === 0 || all.length >= total) break;
+  }
+  return all;
+}
+
+/**
+ * Full-list fetch gated on `enabled` (search active), scoped to the active tab
+ * so search stays within the tab. Kept separate from the paginated query so the
+ * two never contend on one cache key.
+ */
+export function useImportsSearchAll(apiTab: ImportTabApi, enabled: boolean) {
+  return useQuery({
+    queryKey: qk.imports.searchAll(apiTab),
+    queryFn: ({ signal }) => fetchAllImports(apiTab, signal),
+    enabled,
+    staleTime: 10_000,
+  });
 }
 
 /**
@@ -126,6 +175,7 @@ export function useImportsQueue(filterParam: string | null, page: number, pageSi
   });
 
   return {
+    apiTab,
     items,
     totalCount: listQuery.data?.total,
     isLoading,

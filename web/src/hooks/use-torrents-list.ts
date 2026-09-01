@@ -54,6 +54,34 @@ export async function fetchTorrentsPage(
 }
 
 /**
+ * Full torrents list (all pages) — DB-only (no live RPC) so it stays cheap.
+ * Used only while a search is active so the DataList can match across every
+ * page instead of the loaded server page. Live progress is not needed while
+ * searching; results still link to the live detail views.
+ */
+export async function fetchAllTorrents(signal?: AbortSignal): Promise<RichTorrent[]> {
+  const res = await apiClient.GET("/api/v1/torrents", {
+    signal,
+    params: { query: { live: false } },
+  });
+  if (res.error) throw res.error;
+  return (res.data ?? []) as RichTorrent[];
+}
+
+/**
+ * Full-list fetch gated on `enabled` (search active). Kept separate from the
+ * paginated query so the two never contend on one cache key.
+ */
+export function useTorrentsSearchAll(enabled: boolean) {
+  return useQuery({
+    queryKey: qk.torrents.searchAll(),
+    queryFn: ({ signal }) => fetchAllTorrents(signal),
+    enabled,
+    staleTime: 10_000,
+  });
+}
+
+/**
  * Server-paginated torrents dashboard query + SSE invalidation for the
  * current page. Search/sort/facets stay page-local in the DataList.
  */

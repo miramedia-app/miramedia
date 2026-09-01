@@ -168,6 +168,7 @@ function shellRoutes(): Record<string, ApiHandler> {
         upcoming_default_past_days: 0,
         upcoming_default_future_days: 30,
         continue_watching: true,
+        streaming: true,
       },
     }),
     // Dashboard home always mounts Continue Watching.

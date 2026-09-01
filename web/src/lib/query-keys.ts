@@ -17,6 +17,7 @@ export const qk = {
       page !== undefined
         ? (["torrents", "list", page, pageSize] as const)
         : (["torrents", "list"] as const),
+    searchAll: () => ["torrents", "search-all"] as const,
     detail: (id: string) => ["torrents", id] as const,
   },
   shows: {
@@ -35,6 +36,7 @@ export const qk = {
       tab !== undefined
         ? (["imports", "list", tab, page, pageSize] as const)
         : (["imports", "list"] as const),
+    searchAll: (tab: string) => ["imports", "search-all", tab] as const,
     counts: () => ["imports", "counts"] as const,
     scan: () => ["imports", "scan"] as const,
   },
@@ -51,6 +53,8 @@ export const qk = {
         mediaType?: string;
         q?: string;
       }) => ["diagnostics", "storage", "list", params] as const,
+      searchAll: (params: { state?: string; mediaType?: string }) =>
+        ["diagnostics", "storage", "search-all", params] as const,
       detail: (mediaType: string, fileId: string) =>
         ["diagnostics", "storage", "detail", mediaType, fileId] as const,
     },

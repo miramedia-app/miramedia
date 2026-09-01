@@ -57,6 +57,7 @@ class WatchlistItemView(BaseModel):
     title: str
     poster_media_id: UUID
     watched: bool
+    watched_at: datetime | None = None
     year: int | None = None
     file_id: UUID | None = None
     position_ms: int | None = None

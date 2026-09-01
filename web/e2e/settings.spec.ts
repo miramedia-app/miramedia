@@ -19,7 +19,7 @@ const EDITED_FRONTEND_URL = "https://edited.example.com";
 async function gotoSettingsReady(page: import("@playwright/test").Page) {
   await page.goto(SETTINGS_PATH);
   await expect(page.getByRole("tab", { name: "General" })).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Save Settings/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Save$/ })).toBeVisible();
 }
 
 function frontendUrlInput(page: import("@playwright/test").Page) {
@@ -54,7 +54,7 @@ test("settings: load, edit scalar + nested secret, save exact payload", async ({
   await tmdbApiKeyInput(page).fill(TMDB_API_KEY_FIXTURE);
   await expect(page.getByText(/2 unsaved sections/)).toBeVisible();
 
-  await page.getByRole("button", { name: /^Save Settings/ }).click();
+  await page.getByRole("button", { name: /^Save$/ }).click();
 
   await expect.poll(() => mock.find("PUT /api/v1/system/settings")).toBeTruthy();
   const put = mock.find("PUT /api/v1/system/settings");
@@ -68,19 +68,22 @@ test("settings: load, edit scalar + nested secret, save exact payload", async ({
   expect(body.metadata.tmdb.default_language).toBe("en");
   expect(body.metadata.desired_languages).toEqual(["en"]);
   expect(body.cloudflare).toMatchObject({ solver: "native" });
-  expect(body.auth).toBeTruthy();
-  expect(body.notifications).toBeTruthy();
-  expect(body.torrents).toBeTruthy();
-  expect(body.indexers).toBeTruthy();
-  expect(body.requests).toBeTruthy();
-  expect(body.subtitles).toBeTruthy();
-  expect(body.imports).toBeTruthy();
-  expect(body.updates).toBeTruthy();
+  // Only dirty sections are sent (see use-settings-editor buildPayload): this
+  // test edits General (misc + cloudflare) and Metadata, so no other section
+  // is present in the payload.
+  expect(body.auth).toBeUndefined();
+  expect(body.notifications).toBeUndefined();
+  expect(body.torrents).toBeUndefined();
+  expect(body.indexers).toBeUndefined();
+  expect(body.requests).toBeUndefined();
+  expect(body.subtitles).toBeUndefined();
+  expect(body.imports).toBeUndefined();
+  expect(body.updates).toBeUndefined();
   // Masked sentinel must not be what we asserted above for the edited key.
   expect(body.metadata.tmdb.api_key).not.toBe(SECRET_MASK);
 
   await expect(page.getByText(/unsaved section/)).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Save Settings", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
 
   // Refetch after save must not leave gaps.
   await expect
@@ -155,7 +158,7 @@ test("settings: rejected save retains dirty state", async ({ page }) => {
   await frontendUrlInput(page).fill(EDITED_FRONTEND_URL);
   await expect(page.getByText(/unsaved section/)).toBeVisible();
 
-  await page.getByRole("button", { name: /^Save Settings/ }).click();
+  await page.getByRole("button", { name: /^Save$/ }).click();
 
   await expect.poll(() => mock.find("PUT /api/v1/system/settings")).toBeTruthy();
   await expect(page.getByText("Failed to save settings")).toBeVisible();
@@ -163,7 +166,7 @@ test("settings: rejected save retains dirty state", async ({ page }) => {
   // Dirty retained — value and unsaved indicator stay; Save still enabled.
   await expect(frontendUrlInput(page)).toHaveValue(EDITED_FRONTEND_URL);
   await expect(page.getByText(/unsaved section/)).toBeVisible();
-  await expect(page.getByRole("button", { name: /^Save Settings/ })).toBeEnabled();
+  await expect(page.getByRole("button", { name: /^Save$/ })).toBeEnabled();
 
   expect(mock.unhandled).toEqual([]);
 });

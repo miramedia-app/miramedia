@@ -51,13 +51,13 @@ test.describe("watchlists browser coverage", () => {
     await login(page, USER_A_EMAIL);
 
     await page.goto("/dashboard/watchlists/");
-    await expect(page.getByPlaceholder("Search or filter lists…")).toBeVisible();
+    await expect(page.getByPlaceholder("Search or filter watchlists…")).toBeVisible();
     await expect(page.getByRole("button", { name: /Name A/ })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Create list" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add Watchlist" })).toBeVisible();
     await expect(page.getByRole("link", { name: /Watch Next/ })).toBeVisible();
     await expect(page.getByRole("link", { name: /Upcoming/ })).toBeVisible();
 
-    await page.getByRole("button", { name: "Create list" }).click();
+    await page.getByRole("button", { name: "Add Watchlist" }).click();
     await page.getByLabel("Name").fill("Weekend");
     await page.getByRole("button", { name: "Create", exact: true }).click();
     await expect(page).toHaveURL(/\/dashboard\/watchlists\/[0-9a-f-]+\/?$/i);

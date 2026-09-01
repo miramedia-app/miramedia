@@ -72,6 +72,13 @@ export interface DataListProps<T> {
   /** Free-text search predicate. */
   searchMatch?: (item: T, query: string) => boolean;
   searchPlaceholder?: string;
+  /**
+   * Fires (debounced via React.useDeferredValue) with the trimmed search text
+   * whenever it changes, "" when cleared. Server-paginated pages use this to
+   * switch to a full-list fetch while a search is active, so `searchMatch`
+   * filters across every page instead of only the loaded server page.
+   */
+  onSearchChange?: (query: string) => void;
 
   facets?: FacetDef<T>[];
   sortOptions?: SortOption<T>[];
@@ -161,6 +168,7 @@ export function DataList<T>({
   columns,
   searchMatch,
   searchPlaceholder,
+  onSearchChange,
   facets,
   sortOptions,
   defaultSort,
@@ -238,6 +246,12 @@ export function DataList<T>({
   // (use-list-filters.ts:160) so deferring them too would just make chip
   // changes visibly stale.
   const deferredSearch = React.useDeferredValue(search);
+
+  // Notify the page of the active search text so a server-paginated list can
+  // switch to a full-list fetch while searching (page-local search otherwise).
+  React.useEffect(() => {
+    onSearchChange?.(deferredSearch.trim());
+  }, [deferredSearch, onSearchChange]);
 
   // Precompute facet lookup map once per facets change so per-item filter
   // evaluation is O(1) instead of O(F) for each active filter.

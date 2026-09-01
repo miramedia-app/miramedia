@@ -55,6 +55,10 @@ const STATE_LABELS: Record<StorageHealthFile["state"], string> = {
   inaccessible: "Inaccessible",
 };
 
+const storageSearchMatch = (row: StorageHealthFile, q: string) =>
+  (row.media_title ?? "").toLowerCase().includes(q) ||
+  (row.episode ?? "").toLowerCase().includes(q);
+
 export function DiagnosticsStoragePanel() {
   const router = useRouter();
   const pathname = usePathname();
@@ -107,6 +111,45 @@ export function DiagnosticsStoragePanel() {
       });
       if (error) throw error;
       return data;
+    },
+  });
+
+  // While a search is active, fetch the FULL list (all pages) so the DataList's
+  // `searchMatch` filters across everything, not just the loaded server page.
+  // NOTE: this 1B approach page-walks the whole (facet-scoped) list client-side
+  // — the endpoint is capped at 100 rows/request. If the file count grows large,
+  // switch to server-side `q` filtering (2B): the backend already accepts a `q`
+  // query param on /api/v1/diagnostics/storage/files.
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const searching = searchQuery.length > 0;
+  const searchAllQuery = useQuery({
+    queryKey: qk.diagnostics.storage.searchAll({
+      state: parsed.state,
+      mediaType: parsed.mediaType,
+    }),
+    enabled: searching,
+    staleTime: 10_000,
+    queryFn: async ({ signal }) => {
+      const pageLimit = 100;
+      const all: StorageHealthFile[] = [];
+      for (let offset = 0; ; offset += pageLimit) {
+        const { data, error } = await apiClient.GET("/api/v1/diagnostics/storage/files", {
+          signal,
+          params: {
+            query: {
+              offset,
+              limit: pageLimit,
+              ...(parsed.state ? { state: parsed.state } : {}),
+              ...(parsed.mediaType ? { media_type: parsed.mediaType } : {}),
+            },
+          },
+        });
+        if (error) throw error;
+        const items = data?.items ?? [];
+        all.push(...items);
+        if (items.length < pageLimit || all.length >= (data?.total ?? 0)) break;
+      }
+      return all;
     },
   });
 
@@ -253,7 +296,8 @@ export function DiagnosticsStoragePanel() {
     isError: summaryQuery.isError,
     data: summaryQuery.data?.counts ?? null,
   });
-  const items = listQuery.data?.items ?? [];
+  const pageItems = listQuery.data?.items ?? [];
+  const items = searching ? (searchAllQuery.data ?? []) : pageItems;
   const unknownHint =
     summaryQuery.data != null
       ? storageHealthUnknownHint({
@@ -432,10 +476,12 @@ export function DiagnosticsStoragePanel() {
         disableSelection
         pageSize={50}
         pageSizeOptions={[20, 50, 100]}
-        totalCount={listQuery.data?.total}
-        onPaginationChange={onPaginationChange}
+        totalCount={searching ? undefined : listQuery.data?.total}
+        onPaginationChange={searching ? undefined : onPaginationChange}
         searchPlaceholder="Search titles…"
-        loading={listQuery.isLoading && items.length === 0}
+        searchMatch={storageSearchMatch}
+        onSearchChange={setSearchQuery}
+        loading={searching ? searchAllQuery.isLoading : listQuery.isLoading && items.length === 0}
         density="compact"
         emptyIcon={<HardDrive />}
         emptyTitle="No matching files"

@@ -7036,6 +7036,8 @@ export interface components {
             poster_media_id: string;
             /** Watched */
             watched: boolean;
+            /** Watched At */
+            watched_at?: string | null;
             /** Year */
             year?: number | null;
             /** File Id */

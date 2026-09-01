@@ -27,7 +27,7 @@ import {
 } from "@/components/imports/import-list-config";
 import { DataList, DataListEmpty } from "@/components/data-list";
 import type { BulkAction } from "@/components/data-list";
-import { useImportsQueue } from "@/hooks/use-imports-queue";
+import { useImportsQueue, useImportsSearchAll } from "@/hooks/use-imports-queue";
 import type { ImportItem, ScanImport } from "@/lib/imports";
 
 export default function ImportsPage() {
@@ -54,6 +54,7 @@ export default function ImportsPage() {
     setListPage((prev) => (prev.page === 1 ? prev : { ...prev, page: 1 }));
   }, [filterParam]);
   const {
+    apiTab,
     items,
     totalCount,
     isLoading,
@@ -75,6 +76,15 @@ export default function ImportsPage() {
     bulkRetry,
     bulkImport,
   } = useImportsQueue(filterParam, listPage.page, listPage.pageSize);
+
+  // While a search is active, fetch the full list (all pages) for the active
+  // tab so the DataList matches across every page, not just the loaded server
+  // page. 1B loads the whole filtered list client-side; the future 2B scale
+  // path is a server-side `q` param on /api/v1/imports (see fetchAllImports).
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const searching = searchQuery.length > 0;
+  const searchAllQuery = useImportsSearchAll(apiTab, searching);
+  const data = searching ? (searchAllQuery.data ?? []) : items;
 
   const [mapDialogTorrent, setMapDialogTorrent] = React.useState<{
     id: string;
@@ -197,15 +207,16 @@ export default function ImportsPage() {
           />
         ) : (
           <DataList<ImportItem>
-            data={items}
+            data={data}
             getId={(it) => it.id}
             columns={columns}
             pageSize={50}
-            totalCount={totalCount}
-            onPaginationChange={onPaginationChange}
+            totalCount={searching ? undefined : totalCount}
+            onPaginationChange={searching ? undefined : onPaginationChange}
             searchPlaceholder="Search or filter imports…"
             searchMatch={importSearchMatch}
-            loading={isLoading && items.length === 0}
+            onSearchChange={setSearchQuery}
+            loading={searching ? searchAllQuery.isLoading : isLoading && items.length === 0}
             density="rich"
             groupings={IMPORT_GROUPINGS}
             defaultGroupId="bucket"

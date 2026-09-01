@@ -204,6 +204,12 @@ export function VideoPlayerDialog({
       return;
     }
 
+    if (!mb.hasMediaSourceSupport()) {
+      setErrorMessage("This browser cannot play this file.");
+      setPlayerState("error");
+      return;
+    }
+
     const streamPlayer = new mb.StreamingPlayer(source, probe.duration);
     streamPlayerRef.current = streamPlayer;
     setVideoSrc(undefined);

@@ -96,6 +96,26 @@ export async function probeMedia(source: MediaStreamSource): Promise<ProbeResult
   return { needsConversion, audioCodec, videoCodec, duration };
 }
 
+type MediaSourceCtor = { new (): MediaSource };
+
+/**
+ * Resolve the Media Source Extensions constructor. iPhone Safari (iOS 17.1+)
+ * exposes only `ManagedMediaSource`, not `MediaSource`; using it directly is
+ * what triggers "Can't find variable: MediaSource" on iPhone.
+ */
+function getMediaSourceCtor(): MediaSourceCtor | null {
+  const g = globalThis as unknown as {
+    ManagedMediaSource?: MediaSourceCtor;
+    MediaSource?: MediaSourceCtor;
+  };
+  return g.ManagedMediaSource ?? g.MediaSource ?? null;
+}
+
+/** True when MSE playback is possible (standard or iOS ManagedMediaSource). */
+export function hasMediaSourceSupport(): boolean {
+  return getMediaSourceCtor() !== null;
+}
+
 /** Remux/transcode into fragmented MP4 for MSE (files, byte streams, and HLS). */
 export class StreamingPlayer {
   private source: MediaStreamSource;
@@ -123,7 +143,11 @@ export class StreamingPlayer {
   constructor(source: MediaStreamSource, durationHint?: number) {
     this.source = source;
     this.durationHint = durationHint;
-    this.mediaSource = new MediaSource();
+    const Ctor = getMediaSourceCtor();
+    if (!Ctor) {
+      throw new Error("MediaSource is not supported in this browser");
+    }
+    this.mediaSource = new Ctor();
     this.url = "";
   }
 
@@ -132,6 +156,13 @@ export class StreamingPlayer {
     this.videoElement = videoElement;
     this.playbackStarted = false;
     this.input = createInput(this.source);
+
+    // iOS ManagedMediaSource requires remote playback disabled before the
+    // object URL is set, and only accepts appends while it is "streaming".
+    if ("ManagedMediaSource" in globalThis) {
+      videoElement.disableRemotePlayback = true;
+      this.mediaSource.addEventListener("startstreaming", () => this.flushQueue());
+    }
 
     this.url = URL.createObjectURL(this.mediaSource);
     videoElement.src = this.url;

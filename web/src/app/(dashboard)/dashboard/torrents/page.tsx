@@ -49,7 +49,7 @@ import type {
 } from "@/components/data-list";
 import { useUser } from "@/components/providers/user-provider";
 import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
-import { useTorrentsList, type RichTorrent } from "@/hooks/use-torrents-list";
+import { useTorrentsList, useTorrentsSearchAll, type RichTorrent } from "@/hooks/use-torrents-list";
 import { qk } from "@/lib/query-keys";
 import {
   getTorrentQualityString,
@@ -106,14 +106,24 @@ export default function TorrentsPage() {
   }, []);
   const torrentsQuery = useTorrentsList(listPage.page, listPage.pageSize);
 
-  const torrents = React.useMemo(() => torrentsQuery.data?.items ?? [], [torrentsQuery.data]);
+  // While a search is active, fetch the full list (all pages) so the DataList
+  // matches across every page, not just the loaded server page. NOTE: this
+  // 1B approach loads the whole list client-side; if the torrent count grows
+  // large, switch to server-side `q` filtering (2B) — the backend would add a
+  // `q` query param to /api/v1/torrents and return matching rows + total.
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const searching = searchQuery.length > 0;
+  const searchAllQuery = useTorrentsSearchAll(searching);
+
+  const pageTorrents = React.useMemo(() => torrentsQuery.data?.items ?? [], [torrentsQuery.data]);
+  const torrents = searching ? (searchAllQuery.data ?? []) : pageTorrents;
   const totalCount = torrentsQuery.data?.total ?? undefined;
   const loadError = torrentsQuery.isError ? "Failed to load torrents" : null;
-  // Facets/sort/grouping are client predicates over the loaded page only.
-  // With more than one server page they mislead (facet counts, cross-page
-  // sort), so offer them only when the whole dataset fits one page.
-  // Server-side q/sort/status params are a deferred follow-up.
-  const singlePage = totalCount !== undefined && totalCount <= listPage.pageSize;
+  // Facets/sort/grouping are client predicates over the loaded set. They are
+  // safe when the whole dataset is loaded: either it fits one server page, or a
+  // search is active (full list fetched). Otherwise they see one page only and
+  // mislead (facet counts, cross-page sort), so gate them.
+  const singlePage = searching || (totalCount !== undefined && totalCount <= listPage.pageSize);
 
   const [deleteDialogTorrent, setDeleteDialogTorrent] = React.useState<RichTorrent | null>(null);
   const [blockHash, setBlockHash] = React.useState(false);
@@ -578,10 +588,11 @@ export default function TorrentsPage() {
             getId={getTorrentId}
             columns={columns}
             pageSize={50}
-            totalCount={totalCount}
-            onPaginationChange={onPaginationChange}
+            totalCount={searching ? undefined : totalCount}
+            onPaginationChange={searching ? undefined : onPaginationChange}
             searchPlaceholder="Search or filter torrents…"
             searchMatch={torrentSearchMatch}
+            onSearchChange={setSearchQuery}
             facets={singlePage ? facets : undefined}
             sortOptions={singlePage ? sortOptions : undefined}
             defaultSort={singlePage ? "title-asc" : undefined}
@@ -589,7 +600,7 @@ export default function TorrentsPage() {
             defaultGroupId={singlePage ? "status" : undefined}
             collapseStorageKey="torrents"
             bulkActions={bulkActions}
-            loading={torrentsQuery.isLoading}
+            loading={searching ? searchAllQuery.isLoading : torrentsQuery.isLoading}
             density="rich"
             emptyIcon={<DownloadIcon />}
             emptyTitle="No torrents yet"

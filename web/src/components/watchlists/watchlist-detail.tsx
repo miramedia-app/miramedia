@@ -47,6 +47,19 @@ const VideoPlayerDialog = dynamic(
   { ssr: false },
 );
 
+const watchedDateFormatter = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
+function formatWatchedAt(watchedAt: string | null | undefined): string | null {
+  if (!watchedAt) return null;
+  const parsed = new Date(watchedAt);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return `Watched ${watchedDateFormatter.format(parsed)}`;
+}
+
 export function getWatchlistDetailViewState(opts: {
   isPending: boolean;
   isError: boolean;
@@ -180,6 +193,7 @@ function WatchlistItemRow({
   const moveDown = getMoveControlState(index, total, "down");
 
   const copy = watchlistItemCopy(item);
+  const watchedCopy = item.watched ? formatWatchedAt(item.watched_at) : null;
   const { showPlayer, showDownload } = importedFileRowActions({
     streaming,
     downloads,
@@ -196,6 +210,7 @@ function WatchlistItemRow({
           <p className="truncate text-xs text-muted-foreground">{copy.subtitle}</p>
         ) : null}
         {statusCopy ? <p className="text-xs text-muted-foreground">{statusCopy}</p> : null}
+        {watchedCopy ? <p className="text-xs text-muted-foreground">{watchedCopy}</p> : null}
       </div>
     </>
   );
