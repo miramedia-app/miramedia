@@ -1,0 +1,16 @@
+# pnpm 11 reads project settings here, not package.json#pnpm.
+# Lockfile pins exact versions; the v11 default (1-day minimumReleaseAge) would
+# reject every upgrade for 24h and break CI on the same day as a bump.
+minimumReleaseAge: 0
+# Non-interactive installs (agents, some CI) must not prompt to wipe node_modules.
+confirmModulesPurge: false
+allowBuilds:
+  esbuild: true
+  sharp: true
+  unrs-resolver: true
+  vue-demi: false
+overrides:
+  "@redocly/openapi-core>js-yaml": ">=4.3.1 <5"
+  "openapi-typescript>typescript": "5.9.3"
+  postcss: ">=8.5.18"
+  sharp: ">=0.35.0"

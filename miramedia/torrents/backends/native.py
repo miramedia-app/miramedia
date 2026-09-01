@@ -613,7 +613,7 @@ class NativeDownloadClient(AbstractDownloadClient):
         if ti is None:
             return None
         try:
-            storage = ti.files()
+            storage = ti.layout()
             return [
                 TorrentFile(
                     path=Path(storage.file_path(i)),

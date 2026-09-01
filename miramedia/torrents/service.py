@@ -349,7 +349,7 @@ class TorrentService:
             return
         exc = task.exception()
         if exc is not None:
-            log.exception("Post-add metadata verifier crashed", exc_info=exc)
+            log.error("Post-add metadata verifier crashed", exc_info=exc)
 
     async def _verify_torrent_has_video_files(
         self,

@@ -156,7 +156,7 @@ def test_scan_directory_retains_one_candidate_per_prefix_with_variant_noise(
     matches = scan_directory_for_stem_prefixes(season_dir, frozenset({prefix}))
 
     assert len(matches) == 1
-    assert matches[prefix].name == sorted(variants)[0]
+    assert matches[prefix].name == min(variants)
 
 
 def test_scan_directory_overlapping_prefixes_each_get_lexicographic_best(

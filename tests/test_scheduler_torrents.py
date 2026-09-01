@@ -137,6 +137,55 @@ def test_detect_finished_downloads_uses_active_query_only(monkeypatch) -> None:
     release.assert_awaited_once()
 
 
+def test_detect_finished_downloads_persists_finished_transition(monkeypatch) -> None:
+    """Live 'finished' must be written to DB so the import sweep can see it."""
+    active = TorrentSchema(
+        id=uuid.uuid4(),
+        status=TorrentStatus.downloading,
+        title="Almost",
+        quality=Quality.hd,
+        hash="e" * 40,
+        usenet=False,
+    )
+    repo = FakeTorrentRepository()
+    repo.torrents[active.id] = active
+    repo.save_torrent = AsyncMock(wraps=repo.save_torrent)  # type: ignore[method-assign]
+    repo.db = MagicMock()
+
+    class _Svc:
+        torrent_repository = repo
+
+        async def _fetch_live_torrent_statuses(self, torrents: list[TorrentSchema]):
+            # The download client now reports the torrent as finished.
+            for t in torrents:
+                t.status = TorrentStatus.finished
+            return torrents
+
+    @asynccontextmanager
+    async def _bg_torrent_service():
+        yield _Svc()
+
+    monkeypatch.setattr(
+        "miramedia.background_services.bg_torrent_service", _bg_torrent_service
+    )
+    monkeypatch.setattr(
+        "miramedia.database.release_session_before_external_io", AsyncMock()
+    )
+    movie_kiq = AsyncMock()
+    show_kiq = AsyncMock()
+    monkeypatch.setattr(scheduler.import_all_movie_torrents_task, "kiq", movie_kiq)
+    monkeypatch.setattr(scheduler.import_all_show_torrents_task, "kiq", show_kiq)
+
+    _run(scheduler.detect_finished_downloads_task())
+
+    repo.save_torrent.assert_awaited_once()
+    assert repo.save_torrent.await_args.kwargs["torrent"].id == active.id
+    assert repo.torrents[active.id].status == TorrentStatus.finished
+    # Finished detection enqueues the import sweep.
+    movie_kiq.assert_awaited_once()
+    show_kiq.assert_awaited_once()
+
+
 def test_repository_get_active_torrents_delegates_to_status_predicate() -> None:
     db = MagicMock()
     repo = TorrentRepository(db)

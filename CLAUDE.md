@@ -57,7 +57,7 @@ Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/con
 ## Gotchas
 
 - **libtorrent wheel**: cp313 only — CI pins `UV_PYTHON=3.13`; newer interpreters break the install.
-- **Fresh-clone frontend**: `pnpm install --frozen-lockfile` alone is not enough — pnpm 10 blocks
+- **Fresh-clone frontend**: `pnpm install --frozen-lockfile` alone is not enough — pnpm 11 blocks
   postinstall scripts, so `web/.source` (Fumadocs collections) and Next's type declarations are
   absent. Do NOT rely on `next build` to generate them implicitly: `createMDX` kicks off `init()`
   **without awaiting it**, so on a clean tree the write races the compile and fails with

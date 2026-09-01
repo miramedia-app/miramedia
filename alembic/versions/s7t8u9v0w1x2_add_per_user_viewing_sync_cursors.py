@@ -12,6 +12,7 @@ user_map keys. Downgrade collapses per-user rows back to MAX(min_last_played_dat
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "s7t8u9v0w1x2"
@@ -140,6 +141,10 @@ def downgrade() -> None:
         ),
         {"connector": _CONNECTOR},
     )
+    # Drop the NOT NULL per-user column before re-inserting the collapsed
+    # singleton row; inserting first would violate the connector_user_id
+    # not-null constraint that is still in force at this point.
+    op.drop_column("viewing_sync_cursor", "connector_user_id")
     conn.execute(
         sa.text(
             """
@@ -153,7 +158,6 @@ def downgrade() -> None:
         ),
         {"connector": _CONNECTOR, "min_date": max_min_last_played},
     )
-    op.drop_column("viewing_sync_cursor", "connector_user_id")
     op.create_primary_key(
         "viewing_sync_cursor_pkey", "viewing_sync_cursor", ["connector"]
     )

@@ -294,7 +294,7 @@ def get_dynamic_oauth_router(
 
                 provider_name = generation.account_provider_name
                 try:
-                    user = await user_manager.oauth_callback(  # ty: ignore[invalid-argument-type]
+                    user = await user_manager.oauth_callback(
                         str(provider_name),
                         token["access_token"],
                         account_id,

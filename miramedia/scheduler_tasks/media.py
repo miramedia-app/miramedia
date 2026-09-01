@@ -60,7 +60,13 @@ async def detect_finished_downloads() -> None:
                 return
             await release_session_before_external_io(svc.torrent_repository.db)
             live = await svc._fetch_live_torrent_statuses(torrents)
-            newly_finished = any(t.status == TorrentStatus.finished for t in live)
+            finished = [t for t in live if t.status == TorrentStatus.finished]
+            # Persist the finished transition. The import sweep
+            # (import_all_torrents) reads DB rows via get_finished_torrents();
+            # if we don't write the finished status here nothing ever imports.
+            for t in finished:
+                await svc.torrent_repository.save_torrent(torrent=t)
+            newly_finished = bool(finished)
 
         if newly_finished:
             enqueue = dispatch_tasks.enqueue_import_all

@@ -102,7 +102,7 @@ def _provable_legacy_accounts_for(
 
 
 def _pick_canonical_legacy_account(accounts: list[Any]) -> Any:  # noqa: ANN401
-    return sorted(accounts, key=lambda account: str(account.id))[0]
+    return min(accounts, key=lambda account: str(account.id))
 
 
 async def reconcile_legacy_oauth_account(

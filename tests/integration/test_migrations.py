@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -374,7 +375,10 @@ def test_upgrade_and_downgrade_traverse_new_watchlist_revision(
 
 
 _VIEWING_SYNC_CURSOR_REVISION = "s7t8u9v0w1x2"
-_LEGACY_CURSOR_TS = "2026-01-15 12:00:00+00:00"
+
+# The seeded legacy cursor row (see the INSERT below). The column is
+# timestamptz, so the driver returns a tz-aware datetime, not the literal.
+_LEGACY_CURSOR_TS = datetime(2026, 1, 15, 12, 0, 0, tzinfo=UTC)
 _USER_B_MAX_TS = "2026-03-01 08:00:00+00:00"
 
 

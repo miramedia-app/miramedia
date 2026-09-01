@@ -16,6 +16,7 @@ from miramedia.auth.api_tokens import UserApiToken  # noqa: F401
 from miramedia.auth.db import OAuthAccount, User  # noqa: F401
 from miramedia.auth.startup_migrations import AuthStartupMigration  # noqa: F401
 from miramedia.database import Base
+from miramedia.feeds.models import FeedItem, FeedSource  # noqa: F401
 from miramedia.imports.models import (  # noqa: F401
     IgnoredImportPath,
     ImportBatch,
@@ -39,13 +40,18 @@ from miramedia.torrents.models import (  # noqa: F401
     TorrentBlock,
     TorrentHistory,
 )
+from miramedia.viewing_sync.models import (  # noqa: F401
+    ViewingSyncCursor,
+    ViewingSyncProposal,
+    ViewingSyncQuarantine,
+    ViewingSyncRun,
+)
 from miramedia.watchlists.models import Watchlist, WatchlistItem  # noqa: F401
 from tests.integration._db_url import alembic_sync_url
 
 pytestmark = pytest.mark.integration
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_METADATA_TABLE_NAMES = frozenset(Base.metadata.tables.keys())
 
 
 def _alembic_config(sync_url: str) -> Config:
@@ -61,7 +67,11 @@ def _include_name(
     _parent_names: dict[str, str | None],
 ) -> bool:
     if type_ == "table":
-        return name in _METADATA_TABLE_NAMES
+        # Read metadata live, not a frozen snapshot: models registered on
+        # Base after this module imported (transitively, via other imports)
+        # would otherwise be filtered out of the reflected side only,
+        # producing phantom "add_table" drift.
+        return name in Base.metadata.tables
     return True
 
 

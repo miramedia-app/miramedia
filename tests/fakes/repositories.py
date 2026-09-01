@@ -581,6 +581,10 @@ class FakeTorrentRepository:
     async def get_torrent_by_id(self, *, torrent_id: TorrentId) -> Torrent | None:
         return self.torrents.get(torrent_id)
 
+    async def save_torrent(self, *, torrent: Torrent) -> Torrent:
+        self.torrents[torrent.id] = torrent
+        return torrent
+
     async def get_torrents_by_ids(
         self, torrent_ids: list[TorrentId]
     ) -> dict[TorrentId, Torrent]:
@@ -1384,7 +1388,7 @@ class FakeWatchlistRepository:
         user_id: UUID,
         watchlist_id: UUID,
         name: str | None,
-        description: str | None | object = ...,
+        description: str | object | None = ...,
     ):
         row = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
         if row is None:

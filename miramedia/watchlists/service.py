@@ -120,7 +120,7 @@ class WatchlistService:
         data: WatchlistUpdate,
     ) -> WatchlistDetail | None:
         name: str | None = None
-        description: str | None | object = ...
+        description: str | object | None = ...
         if data.name is not None:
             name = self._normalize_name(data.name)
             await self._ensure_unique_name(

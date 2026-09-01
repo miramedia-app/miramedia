@@ -41,7 +41,7 @@ def _parse_torrent_bytes(
     info_hash_hex = str(ih.v1).lower()
     name = ti.name()
 
-    fs = ti.files()
+    fs = ti.layout()
     files: list[tuple[str, int]] = []
     prefix = name + "/"
     for i in range(fs.num_files()):

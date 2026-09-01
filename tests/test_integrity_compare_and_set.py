@@ -202,8 +202,8 @@ class _CompareAndSetSession:
             return _RowcountResult(0)
 
         file_id = None
-        expected_sha1: str | None | object = object()
-        expected_import_error: str | None | object = object()
+        expected_sha1: str | object | None = object()
+        expected_import_error: str | object | None = object()
         values = {key.key: value.value for key, value in stmt._values.items()}
         for criterion in _iter_where_parts(stmt):
             compiled = _compile_sql(criterion)

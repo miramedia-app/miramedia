@@ -226,7 +226,7 @@ async def execute_settings_mutation(
     if mutation_error is not None and not needs_reconcile:
         # Commit landed but post-commit bookkeeping/publish failed: other
         # workers won't hear the revision change until periodic reconcile.
-        log.exception(
+        log.error(
             "Settings mutation committed revision but post-commit publish failed",
             exc_info=mutation_error,
         )

@@ -279,7 +279,7 @@ class WatchlistRepository:
         user_id: UUID,
         watchlist_id: UUID,
         name: str | None,
-        description: str | None | object = ...,
+        description: str | object | None = ...,
     ) -> Watchlist | None:
         watchlist = await self.get_owned(user_id=user_id, watchlist_id=watchlist_id)
         if watchlist is None:
