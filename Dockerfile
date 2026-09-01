@@ -39,7 +39,7 @@ function walk(dir) {
 walk(root);
 NODE
 
-FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:6e00f3cc376554e74b6d39ce21aafd0b5b86e02eaaf4d0ff0fec1cc1032d2d25 AS base
+FROM ghcr.io/astral-sh/uv:python3.13-trixie-slim@sha256:6fe190f0b1d2b6f0f77c99387651eb278f37082a98a5470ed3d2ff04bd2700b9 AS base
 
 # BuildKit cache mounts keep apt's download cache + package list across rebuilds
 # without bloating the image layer. ``rm -f /etc/apt/apt.conf.d/docker-clean``
