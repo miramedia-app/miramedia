@@ -883,7 +883,7 @@ export interface paths {
         /**
          * Delete Episode File
          * @description Delete a specific episode file (by surrogate id) and optionally remove
-         *     it from disk.
+         *     it from disk. Missing files return 204 (idempotent).
          */
         delete: operations["delete_episode_file_api_v1_episodes_files__file_id__delete"];
         options?: never;
@@ -1794,6 +1794,7 @@ export interface paths {
         /**
          * Delete Movie File
          * @description Delete a specific file for a movie, addressed by its surrogate id.
+         *     Missing files return 204 (idempotent).
          */
         delete: operations["delete_movie_file_api_v1_movies__movie_id__files__file_id__delete"];
         options?: never;
@@ -3814,6 +3815,8 @@ export interface components {
             quality: components["schemas"]["Quality"];
             /** Torrent Id */
             torrent_id: string | null;
+            /** Source Info Hash */
+            source_info_hash?: string | null;
             /**
              * Codec
              * @default
@@ -5271,6 +5274,8 @@ export interface components {
             quality: components["schemas"]["Quality"];
             /** Torrent Id */
             torrent_id: string | null;
+            /** Source Info Hash */
+            source_info_hash?: string | null;
             /**
              * Codec
              * @default
@@ -5437,6 +5442,8 @@ export interface components {
             extra: string;
             /** Torrent Id */
             torrent_id?: string | null;
+            /** Source Info Hash */
+            source_info_hash?: string | null;
             /** @default pending */
             import_status: components["schemas"]["ImportOutcome"];
             /** Import Error */
@@ -8836,6 +8843,7 @@ export interface operations {
         parameters: {
             query?: {
                 delete_from_disk?: boolean;
+                block_source?: boolean;
             };
             header?: never;
             path: {
@@ -10331,6 +10339,7 @@ export interface operations {
         parameters: {
             query?: {
                 delete_from_disk?: boolean;
+                block_source?: boolean;
             };
             header?: never;
             path: {
