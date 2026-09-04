@@ -133,6 +133,7 @@ export class StreamingPlayer {
 
   private appendQueue: Uint8Array[] = [];
   private appending = false;
+  private managedStreaming = true;
 
   private suppressSeekHandler = false;
   private seekDebounce: ReturnType<typeof setTimeout> | null = null;
@@ -160,8 +161,15 @@ export class StreamingPlayer {
     // iOS ManagedMediaSource requires remote playback disabled before the
     // object URL is set, and only accepts appends while it is "streaming".
     if ("ManagedMediaSource" in globalThis) {
+      this.managedStreaming = false;
       videoElement.disableRemotePlayback = true;
-      this.mediaSource.addEventListener("startstreaming", () => this.flushQueue());
+      this.mediaSource.addEventListener("startstreaming", () => {
+        this.managedStreaming = true;
+        this.flushQueue();
+      });
+      this.mediaSource.addEventListener("endstreaming", () => {
+        this.managedStreaming = false;
+      });
     }
 
     this.url = URL.createObjectURL(this.mediaSource);
@@ -262,7 +270,13 @@ export class StreamingPlayer {
   }
 
   private flushQueue() {
-    if (this.appending || !this.sourceBuffer || this.sourceBuffer.updating) return;
+    if (
+      !this.managedStreaming ||
+      this.appending ||
+      !this.sourceBuffer ||
+      this.sourceBuffer.updating
+    )
+      return;
     if (this.appendQueue.length === 0) return;
     this.appending = true;
     const chunk = this.appendQueue.shift()!;
@@ -275,6 +289,9 @@ export class StreamingPlayer {
         this.appendQueue.unshift(chunk);
         this.evictOldData();
       } else {
+        // Never discard an fMP4 init/media chunk. Losing one corrupts every
+        // later append, which is especially easy during iOS MMS transitions.
+        this.appendQueue.unshift(chunk);
         console.error("appendBuffer error:", err);
       }
     }
@@ -365,17 +382,17 @@ export class StreamingPlayer {
         const audioDone = (async () => {
           if (!audioSampleSink || !audioSource) return;
           for await (const sample of audioSampleSink.samples(startTime)) {
-            if (gen !== this.generation) {
-              sample.close();
-              break;
-            }
+            // Always close the sample, on every exit path, so WebCodecs never
+            // GCs an unclosed AudioSample (the "garbage collected without close"
+            // warning).
             try {
+              if (gen !== this.generation) break;
               await audioSource.add(sample);
             } catch {
-              sample.close();
               break;
+            } finally {
+              sample.close();
             }
-            sample.close();
           }
         })();
 

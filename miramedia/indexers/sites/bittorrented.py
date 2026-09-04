@@ -57,7 +57,9 @@ class BitTorrentedSite(BaseSite):
             "sortOrder": "desc",
         }
         try:
-            payload = self._fetch_json(f"{self.url}{_API_PATH}", params=params)
+            payload = self._fetch_over_mirrors(
+                _API_PATH, params=params, fetch=self._fetch_json
+            )
         except Exception:
             log.exception("BitTorrented search failed")
             return []

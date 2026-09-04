@@ -32,6 +32,7 @@ import { Button } from "@/components/ui/button";
 import { PageLoader } from "@/components/ui/page-loader";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   AlertDialog,
   AlertDialogContent,
@@ -59,7 +60,7 @@ import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import { useSetWatched } from "@/hooks/use-watched-state";
 import apiClient from "@/lib/api/client";
 import { qk } from "@/lib/query-keys";
-import { bulkMutate } from "@/lib/bulk-mutate";
+import { bulkMutate, isAlreadyGone } from "@/lib/bulk-mutate";
 import {
   formatFileSuffix,
   getFullyQualifiedMediaName,
@@ -85,7 +86,7 @@ type FileRow =
   | { kind: "subtitle"; id: string; data: SubtitleFile };
 
 type DeleteTarget =
-  | { type: "file"; fileId: string }
+  | { type: "file"; fileId: string; sourceInfoHash?: string | null }
   | { type: "subtitle"; fileName: string }
   | { type: "torrent"; torrentId: string; torrentName: string }
   | { type: "bulk-files" }
@@ -252,14 +253,14 @@ export default function MovieDetailClientPage() {
   // ── Bulk torrent actions ────────────────────────────────────────────────
   const [otherBulkWorking, setOtherBulkWorking] = React.useState(false);
 
-  async function invalidateAll() {
+  const invalidateAll = React.useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["movie", movieId] }),
       queryClient.invalidateQueries({ queryKey: qk.torrents.list() }),
       queryClient.invalidateQueries({ queryKey: qk.movies.all }),
       queryClient.invalidateQueries({ queryKey: ["dashboard", "summary"] }),
     ]);
-  }
+  }, [queryClient, movieId]);
 
   const {
     bulkWorking: torrentBulkWorking,
@@ -272,6 +273,44 @@ export default function MovieDetailClientPage() {
   } = useBulkTorrentActions(invalidateAll);
   const bulkWorking = torrentBulkWorking || otherBulkWorking;
   const setWatched = useSetWatched();
+  const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = React.useState("");
+  const [deleting, setDeleting] = React.useState(false);
+  const [blockSource, setBlockSource] = React.useState(false);
+  const deleteConfirmed = deleteConfirmText.toLowerCase() === "delete";
+
+  const openDeleteModal = React.useCallback((target: DeleteTarget) => {
+    setDeleteTarget(target);
+    setDeleteConfirmText("");
+    setBlockSource(false);
+  }, []);
+
+  const closeDeleteModal = React.useCallback(() => {
+    setDeleteTarget(null);
+    setDeleteConfirmText("");
+  }, []);
+
+  const setMovieSkipped = React.useCallback(
+    async (skipped: boolean) => {
+      if (!movie?.id) return;
+      setOtherBulkWorking(true);
+      try {
+        const { error } = await apiClient.POST("/api/v1/movies/{movie_id}/skip", {
+          params: { path: { movie_id: movie.id }, query: { skipped } },
+        });
+        if (error) {
+          toast.error("Failed to update skip status");
+          return;
+        }
+        toast.success(skipped ? "Movie marked as skipped" : "Movie marked as wanted");
+        await invalidateAll();
+      } finally {
+        setOtherBulkWorking(false);
+      }
+    },
+    [movie?.id, invalidateAll],
+  );
+
   const fileBulkActions = React.useMemo<BulkAction<string>[]>(
     () => [
       {
@@ -355,24 +394,6 @@ export default function MovieDetailClientPage() {
     ],
   );
 
-  async function setMovieSkipped(skipped: boolean) {
-    if (!movie?.id) return;
-    setOtherBulkWorking(true);
-    try {
-      const { error } = await apiClient.POST("/api/v1/movies/{movie_id}/skip", {
-        params: { path: { movie_id: movie.id }, query: { skipped } },
-      });
-      if (error) {
-        toast.error("Failed to update skip status");
-        return;
-      }
-      toast.success(skipped ? "Movie marked as skipped" : "Movie marked as wanted");
-      await invalidateAll();
-    } finally {
-      setOtherBulkWorking(false);
-    }
-  }
-
   async function bulkDeleteTorrents() {
     const ids = torrentIds.filter((id) => selectedTorrents.has(id));
     if (!ids.length) return;
@@ -396,12 +417,14 @@ export default function MovieDetailClientPage() {
           });
         } else {
           const fileId = key.slice(5);
-          return apiClient.DELETE("/api/v1/movies/{movie_id}/files/{file_id}", {
-            params: {
-              path: { movie_id: movie.id!, file_id: fileId },
-              query: { delete_from_disk: true },
-            },
-          });
+          return apiClient
+            .DELETE("/api/v1/movies/{movie_id}/files/{file_id}", {
+              params: {
+                path: { movie_id: movie.id!, file_id: fileId },
+                query: { delete_from_disk: true },
+              },
+            })
+            .then((result) => (isAlreadyGone(result.response) ? {} : result));
         }
       });
       if (failed === 0) {
@@ -419,20 +442,6 @@ export default function MovieDetailClientPage() {
   }
 
   // ── Delete modal ────────────────────────────────────────────────────────
-  const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget | null>(null);
-  const [deleteConfirmText, setDeleteConfirmText] = React.useState("");
-  const [deleting, setDeleting] = React.useState(false);
-  const deleteConfirmed = deleteConfirmText.toLowerCase() === "delete";
-
-  function openDeleteModal(target: DeleteTarget) {
-    setDeleteTarget(target);
-    setDeleteConfirmText("");
-  }
-  function closeDeleteModal() {
-    setDeleteTarget(null);
-    setDeleteConfirmText("");
-  }
-
   async function confirmDelete() {
     if (!deleteConfirmed || !deleteTarget || !movie) return;
     setDeleting(true);
@@ -442,10 +451,10 @@ export default function MovieDetailClientPage() {
         const { response } = await apiClient.DELETE("/api/v1/movies/{movie_id}/files/{file_id}", {
           params: {
             path: { movie_id: movie.id!, file_id: t.fileId },
-            query: { delete_from_disk: true },
+            query: { delete_from_disk: true, block_source: blockSource },
           },
         });
-        if (!response.ok) {
+        if (!isAlreadyGone(response)) {
           toast.error("Failed to delete file");
           return;
         }
@@ -604,6 +613,7 @@ export default function MovieDetailClientPage() {
                         openDeleteModal({
                           type: "file",
                           fileId: r.data.id!,
+                          sourceInfoHash: r.data.source_info_hash,
                         })
                       }
                     >
@@ -638,7 +648,7 @@ export default function MovieDetailClientPage() {
         </DropdownMenu>
       ) : null;
     },
-    [movie, subtitleLanguages, isSuperuser, markWatched, streaming, downloads],
+    [movie, subtitleLanguages, isSuperuser, markWatched, streaming, downloads, openDeleteModal],
   );
 
   const torrentColumns = React.useMemo<ColumnDef<RichTorrent>[]>(
@@ -1049,6 +1059,16 @@ export default function MovieDetailClientPage() {
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="flex flex-col gap-2 py-2">
+            {deleteTarget?.type === "file" && deleteTarget.sourceInfoHash && (
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="block-source-movie"
+                  checked={blockSource}
+                  onCheckedChange={(checked) => setBlockSource(checked === true)}
+                />
+                <Label htmlFor="block-source-movie">Add source torrent to deny list</Label>
+              </div>
+            )}
             <Label htmlFor="delete-confirm-movie">
               Type <strong>delete</strong> to confirm
             </Label>

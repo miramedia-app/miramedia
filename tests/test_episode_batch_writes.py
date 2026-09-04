@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.shows.schemas import (
     Episode,
@@ -135,6 +137,93 @@ class TestLinkShowBatchWrites:
         pending = add_files.await_args.args[0]
         assert len(pending) == 2
         assert rows_created == 2
+
+    def test_single_episode_already_present_raises_conflict(self) -> None:
+        from miramedia.exceptions import ConflictError
+        from miramedia.torrents.service import TorrentService
+
+        show, season = _three_episode_season()
+        repo = FakeShowRepository()
+        repo.add_show(show)
+        existing_episode = season.episodes[0]
+        run_async(
+            repo.add_episode_file(
+                episode_file=EpisodeFile(
+                    episode_id=existing_episode.id,
+                    quality=Quality.fullhd,
+                    torrent_id=TorrentId(uuid.uuid4()),
+                    variant="",
+                )
+            )
+        )
+
+        torrent = make_torrent(title="Batch.Show.S01E01.1080p")
+        svc = TorrentService.__new__(TorrentService)
+        indexer_result = IndexerQueryResult(
+            title=torrent.title,
+            download_url="magnet:?xt=urn:btih:" + "c" * 40,
+            flags=[],
+            size=1,
+            usenet=False,
+            age=1,
+            indexer="test",
+        )
+
+        with pytest.raises(ConflictError, match="quality \\+ variant"):
+            run_async(
+                svc._link_show(
+                    torrent=torrent,
+                    indexer_result=indexer_result,
+                    show_id=show.id,
+                    variant="",
+                    show_repository=repo,  # type: ignore[arg-type]
+                    seasons_by_number={season.number: season},
+                )
+            )
+
+
+class TestLinkMovieExistingFile:
+    def test_existing_quality_variant_raises_conflict(self) -> None:
+        from miramedia.exceptions import ConflictError
+        from miramedia.movies.schemas import MovieFile
+        from miramedia.torrents.service import TorrentService
+        from tests.fakes.repositories import FakeMovieRepository, make_movie
+
+        movie = make_movie()
+        repo = FakeMovieRepository()
+        repo.add_movie(movie)
+        run_async(
+            repo.add_movie_file(
+                MovieFile(
+                    movie_id=movie.id,
+                    quality=Quality.fullhd,
+                    torrent_id=TorrentId(uuid.uuid4()),
+                    variant="",
+                )
+            )
+        )
+        torrent = make_torrent(title="Test.Movie.1080p")
+        svc = TorrentService.__new__(TorrentService)
+        indexer_result = IndexerQueryResult(
+            title=torrent.title,
+            download_url="magnet:?xt=urn:btih:" + "d" * 40,
+            flags=[],
+            size=1,
+            usenet=False,
+            age=1,
+            indexer="test",
+        )
+
+        with pytest.raises(ConflictError, match="quality \\+ variant"):
+            run_async(
+                svc._link_movie(
+                    torrent=torrent,
+                    indexer_result=indexer_result,
+                    movie_id=movie.id,
+                    variant="",
+                    movie_repository=repo,  # type: ignore[arg-type]
+                )
+            )
 
 
 class TestAddEpisodesToSeasonFake:

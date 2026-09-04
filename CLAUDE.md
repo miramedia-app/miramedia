@@ -51,7 +51,20 @@ Config: TOML-based (`config.toml`), loaded via pydantic-settings (`miramedia/con
 - New SQLAlchemy models must be imported in `alembic/env.py` for autogenerate to see them.
 - Run `make openapi` after any API change that affects request/response shapes.
 - Never edit `config.toml` (the live instance config); use `config.example.toml` for examples.
+- Keep machine-specific dev CORS origins in the ignored `.env` as `MIRAMEDIA_CORS_URLS`; do not
+  add personal LAN/Tailscale URLs directly to `docker-compose.dev.yaml`.
 - Commit style: short imperative subject line, no Co-Authored-By or any AI co-author / "Generated with" trailer. Pass this rule to any spawned subagents.
+- Release commits follow a fixed shape (see `81cb7c5`, `32b2bbb`, `83f779a`, `8ab845e`):
+  - Subject: `Release X.Y.Z: <short summary of the headline changes>`.
+  - Body: grouped bullet sections with title-case headers picked to fit the release
+    (e.g. `Features`, `Reliability`, `Reliability / hardening`, `Refactor / architecture`,
+    `Migrations / CI`, `Tooling / CI`, `Tests`). Only include sections that apply.
+  - Final body line, always present:
+    `Bump manifests to X.Y.Z (pyproject, uv.lock, web/package.json, openapi.json).`
+  - Bump the version string to `X.Y.Z` in all four manifests as part of the release commit:
+    `pyproject.toml` (`[project] version`), `uv.lock` (the `name = "miramedia"` entry's
+    `version`), `web/package.json` (`version`), and `web/public/openapi.json` (`info.version`).
+    Verify none still read the old version: `grep -R '<old>' pyproject.toml uv.lock web/package.json web/public/openapi.json`.
 - Tests must remain DB-free (no live Postgres required to run the suite).
 
 ## Gotchas

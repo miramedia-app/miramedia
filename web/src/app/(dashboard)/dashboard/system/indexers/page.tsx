@@ -50,12 +50,17 @@ export default function IndexersPage() {
     setUrlOpen,
     urlLoading,
     urlSite,
+    urlMirrors,
+    urlActive,
     newUrl,
     setNewUrl,
     openUrls,
-    switchActiveUrl,
+    setActiveUrl,
+    toggleMirror,
+    moveMirror,
     addUrl,
     removeUrl,
+    saveUrls,
   } = sitesApi;
 
   const { testingId, testSite } = useIndexerSiteTest(invalidateSites);
@@ -186,12 +191,17 @@ export default function IndexersPage() {
         open={urlOpen}
         onOpenChange={setUrlOpen}
         urlSite={urlSite}
+        mirrors={urlMirrors}
+        activeUrl={urlActive}
         newUrl={newUrl}
         setNewUrl={setNewUrl}
         loading={urlLoading}
-        onSwitchActive={switchActiveUrl}
+        onSetActive={setActiveUrl}
+        onToggle={toggleMirror}
+        onMove={moveMirror}
         onAddUrl={addUrl}
         onRemoveUrl={removeUrl}
+        onSave={saveUrls}
       />
     </>
   );

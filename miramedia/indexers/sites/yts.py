@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 
 from miramedia.indexers.http_retry import indexer_fanout_deadline, indexer_get
-from miramedia.indexers.mirrors import MirrorPreference, is_allowed_mirror_origin
+from miramedia.indexers.mirrors import is_allowed_mirror_origin
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.sites.base import BaseSite, _get_http_client, build_magnet
 from miramedia.movies.schemas import Movie
@@ -30,33 +30,23 @@ class _YtsApiAttempt:
 
 class YtsSite(BaseSite):
     name = "yts"
-    url = "https://yts.bz"
+    url = "https://yts.gg"
+    # First-party YTS domains that serve the JSON API. ``.gg`` is the current
+    # primary; ``.mx`` is active; ``.bz`` / ``.am`` redirect to ``.gg`` (all
+    # allow-listed so the redirect passes the origin guard). Third-party proxies
+    # are excluded — they rewrite HTML and don't serve /api/v2. Mirror plumbing
+    # (_mirror_list / _get_mirror_pref) is inherited from BaseSite.
     available_urls: ClassVar[list[str]] = [
+        "https://yts.gg",
+        "https://yts.mx",
         "https://yts.bz",
         "https://yts.am",
-        "https://yts.gg",
     ]
     supports_tv = False
     supports_movies = True
     cloudflare_protected = False
     # Probe the JSON API, not the (CF-frontable) website root.
     test_path = "/api/v2/list_movies.json?limit=1"
-    _mirror_pref: MirrorPreference | None = None
-
-    def _mirror_list(self) -> tuple[str, ...]:
-        seen: set[str] = set()
-        mirrors: list[str] = []
-        for candidate in (self.url, *self.available_urls):
-            normalized = candidate.rstrip("/")
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                mirrors.append(normalized)
-        return tuple(mirrors)
-
-    def _get_mirror_pref(self) -> MirrorPreference:
-        if self._mirror_pref is None:
-            self._mirror_pref = MirrorPreference(self._mirror_list())
-        return self._mirror_pref
 
     @staticmethod
     def _origin_from_response(response: httpx.Response, fallback: str) -> str:

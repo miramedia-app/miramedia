@@ -7,21 +7,24 @@ import type { ReactNode } from "react";
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
+  delete: vi.fn(),
+  toastSuccess: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock("@/lib/api/client", () => ({
   default: {
     GET: mocks.get,
     POST: mocks.post,
-    DELETE: vi.fn(),
+    DELETE: mocks.delete,
     PUT: vi.fn(),
   },
 }));
 
 vi.mock("sonner", () => ({
   toast: {
-    success: vi.fn(),
-    error: vi.fn(),
+    success: (...args: unknown[]) => mocks.toastSuccess(...args),
+    error: (...args: unknown[]) => mocks.toastError(...args),
   },
 }));
 
@@ -169,5 +172,49 @@ describe("useShowDetail season files", () => {
       expect(qc.getQueryData(["season-files", "season-a"])).toBeDefined();
       expect(qc.getQueryData(["season-files", "season-b"])).toBeDefined();
     });
+  });
+});
+
+describe("useShowDetail confirmDelete", () => {
+  beforeEach(() => {
+    mocks.get.mockResolvedValue({ data: [], error: undefined });
+    mocks.post.mockResolvedValue({ data: { results: {}, errors: {} }, error: undefined });
+    mocks.delete.mockResolvedValue({
+      response: { ok: false, status: 404 },
+      error: { detail: "Episode file not found." },
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("treats a 404 on file delete as already-gone success", async () => {
+    const qc = createClient();
+    const { result } = renderHook(() => useShowDetail("show-1"), {
+      wrapper: wrapperFor(qc),
+    });
+
+    await waitFor(() => expect(result.current.show).toBeDefined());
+
+    act(() => {
+      result.current.openDeleteModal({ type: "file", fileId: "file-a" });
+      result.current.setDeleteConfirmText("delete");
+    });
+
+    await act(async () => {
+      await result.current.confirmDelete();
+    });
+
+    expect(mocks.delete).toHaveBeenCalledWith("/api/v1/episodes/files/{file_id}", {
+      params: {
+        path: { file_id: "file-a" },
+        query: { delete_from_disk: true, block_source: false },
+      },
+    });
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("File deleted");
+    expect(mocks.toastError).not.toHaveBeenCalled();
+    expect(result.current.deleteTarget).toBeNull();
   });
 });

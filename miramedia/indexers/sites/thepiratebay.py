@@ -44,7 +44,9 @@ class ThePirateBaySite(BaseSite):
         # browser-facing /search.php?q=... endpoint.
         params = {"q": query}
         try:
-            data = self._fetch_json(f"{self.url}/q.php", params=params)
+            data = self._fetch_over_mirrors(
+                "/q.php", params=params, fetch=self._fetch_json
+            )
         except Exception:
             log.exception("TPB search failed")
             return []

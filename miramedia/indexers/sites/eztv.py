@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import ClassVar
 
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.sites.base import BaseSite, build_magnet
@@ -15,6 +16,15 @@ log = logging.getLogger(__name__)
 class EztvSite(BaseSite):
     name = "eztv"
     url = "https://eztvx.to"
+    # First-party EZTV mirrors. The JSON API is served same-origin on each, so
+    # failover just retries the same path.
+    available_urls: ClassVar[list[str]] = [
+        "https://eztvx.to",
+        "https://eztv.wf",
+        "https://eztv.tf",
+        "https://eztv.yt",
+        "https://eztv1.xyz",
+    ]
     supports_tv = True
     supports_movies = False
     cloudflare_protected = False
@@ -68,7 +78,9 @@ class EztvSite(BaseSite):
 
     def _fetch_eztv_api(self, params: dict[str, str | int]) -> list[IndexerQueryResult]:
         try:
-            data = self._fetch_json(f"{self.url}/api/get-torrents", params=params)
+            data = self._fetch_over_mirrors(
+                "/api/get-torrents", params=params, fetch=self._fetch_json
+            )
         except Exception:
             log.exception("EZTV search failed")
             return []

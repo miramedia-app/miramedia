@@ -1,8 +1,17 @@
+export type MirrorSource = "seeded" | "user";
+
+export type MirrorEntry = {
+  url: string;
+  enabled: boolean;
+  source: MirrorSource;
+};
+
 export type Site = {
   id: string;
   name: string;
   url: string;
   available_urls?: string[];
+  mirrors?: MirrorEntry[];
   api_key?: string | null;
   supports_tv: boolean;
   supports_movies: boolean;
@@ -47,4 +56,18 @@ export function siteHealthGroup(s: Site): HealthGroup {
 /** Effective priority (default 100 when unset). Lower is searched first. */
 export function sitePriority(s: Site): number {
   return s.priority ?? 100;
+}
+
+/**
+ * A site's structured mirror list. Backfills from the legacy flat
+ * `available_urls` for any row/response that predates the `mirrors` field, so
+ * the UI always has something to render (treated as deletable user mirrors).
+ */
+export function siteMirrors(s: Site): MirrorEntry[] {
+  if (s.mirrors && s.mirrors.length > 0) return s.mirrors;
+  return (s.available_urls ?? []).map((url) => ({
+    url,
+    enabled: true,
+    source: "user" as const,
+  }));
 }

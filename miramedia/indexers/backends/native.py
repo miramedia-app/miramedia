@@ -95,6 +95,13 @@ class NativeIndexer(GenericIndexer):
                     instance = site_cls(bypass=bypass, timeout=timeout_seconds)
                     # Override the class-level URL with the DB's active URL
                     instance.url = site_record.url
+                    # Drive live mirror failover from the DB list the UI edits,
+                    # not the hardcoded class default. The class ``available_urls``
+                    # only seeds the initial row; once seeded, add/remove in the
+                    # UI must change what the scraper actually tries. Fall back to
+                    # the class list for any pre-seed row with an empty column.
+                    if site_record.available_urls:
+                        instance.mirror_urls = list(site_record.available_urls)
                     # Attach the DB id so search hooks can stamp last_success_at
                     instance.site_id = site_record.id  # type: ignore[attr-defined]
                     self.sites.append(instance)

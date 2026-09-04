@@ -380,15 +380,23 @@ class MovieService(MediaService[Movie, MovieId]):
         movie: Movie,
         file_id: UUID,
         delete_from_disk: bool = True,
+        block_source: bool = False,
     ) -> None:
-        """Delete a specific movie file record (by id) and optionally its file."""
+        """Delete a specific movie file record (by id) and optionally its file.
+
+        Idempotent: a missing row is a no-op so a repeat DELETE after a
+        successful delete (or a stale UI retry) is not a 404.
+        """
         row = await self.movie_repository.get_movie_file_by_id(file_id)
         if row is None:
-            msg = f"Movie file {file_id} not found."
-            raise NotFoundError(msg)
+            return
         # Capture the linked torrent before we drop the file row so we can
         # reap a now-orphaned, still-downloading torrent afterwards.
         torrent_id = row.torrent_id
+        if block_source and row.source_info_hash:
+            await self.torrent_service.torrent_repository.add_blocked_hash(
+                row.source_info_hash, reason="user_blocked"
+            )
         if delete_from_disk:
             movie_root = self.get_movie_root_path(movie=movie)
             stems = movie_file_stem_candidates(
@@ -997,6 +1005,7 @@ class MovieService(MediaService[Movie, MovieId]):
         source_file: Path,
         subtitle_files: list[Path] = (),
         torrent_id: TorrentId | None,
+        source_info_hash: str | None = None,
         variant: str = "",
         quality: Quality | None = None,
         existing_file_id: UUID | None = None,
@@ -1190,6 +1199,7 @@ class MovieService(MediaService[Movie, MovieId]):
                     variant=variant,
                     extra=extra,
                     torrent_id=torrent_id,
+                    source_info_hash=source_info_hash,
                     import_status=ImportOutcome.imported,
                     imported_at=now,
                     last_attempt_at=now,
@@ -1385,6 +1395,7 @@ class MovieService(MediaService[Movie, MovieId]):
                 source_file=primary,
                 subtitle_files=subtitle_files,
                 torrent_id=torrent.id,
+                source_info_hash=torrent.hash,
                 variant=movie_file.variant,
                 # quality omitted on purpose: detect it from the actual file
                 # (mediainfo) so torrent imports name files identically to scan

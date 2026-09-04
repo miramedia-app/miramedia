@@ -17,7 +17,7 @@ from miramedia.indexers.http_retry import (
     indexer_fanout_deadline_seconds,
     indexer_get,
 )
-from miramedia.indexers.mirrors import MirrorPreference, is_allowed_mirror_origin
+from miramedia.indexers.mirrors import is_allowed_mirror_origin
 from miramedia.indexers.schemas import IndexerQueryResult
 from miramedia.indexers.sites.base import BaseSite, _get_http_client
 from miramedia.indexers.utils import sanitize_search_query
@@ -96,35 +96,24 @@ def parse_upload_age_days(
 class X1337Site(BaseSite):
     name = "1337x"
     url = "https://1337x.to"
+    # First-party 1337x mirrors. Mirror failover plumbing (_mirror_list /
+    # _get_mirror_pref) is inherited from BaseSite; the bespoke fetch loop below
+    # drives it with CF-aware retries.
     available_urls: ClassVar[list[str]] = [
         "https://1337x.to",
         "https://1337x.st",
         "https://x1337x.ws",
+        "https://x1337x.eu",
+        "https://x1337x.cc",
         "https://1337xx.to",
     ]
     supports_tv = True
     supports_movies = True
     cloudflare_protected = True
     default_enabled = True
-    _mirror_pref: MirrorPreference | None = None
 
     def _solver_deadline_seconds(self) -> float:
         return indexer_fanout_deadline_seconds()
-
-    def _mirror_list(self) -> tuple[str, ...]:
-        seen: set[str] = set()
-        mirrors: list[str] = []
-        for candidate in (self.url, *self.available_urls):
-            normalized = candidate.rstrip("/")
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                mirrors.append(normalized)
-        return tuple(mirrors)
-
-    def _get_mirror_pref(self) -> MirrorPreference:
-        if self._mirror_pref is None:
-            self._mirror_pref = MirrorPreference(self._mirror_list())
-        return self._mirror_pref
 
     def _bypass_available(self) -> bool:
         return self.bypass is not None and self.bypass.config.enabled
@@ -439,11 +428,19 @@ class X1337Site(BaseSite):
         query: str,
         movie: Movie,
     ) -> list[IndexerQueryResult]:
-        clean_name = sanitize_search_query(movie.name)
-        short_query = f"{clean_name} {movie.year}" if movie.year else clean_name
-        results, hard_error = self._search(short_query, "Movies")
+        # Search with the orchestrator-supplied, year-less query so we match the
+        # same releases every other indexer sees. Appending the year to the
+        # tracker query (e.g. "Supergirl 2026") drops releases whose title omits
+        # it. App-side filtering still gates on year afterwards.
+        primary = sanitize_search_query(query) or sanitize_search_query(movie.name)
+        results, hard_error = self._search(primary, "Movies")
+        if not results and movie.year:
+            # Retry with the year appended only when the plain query found nothing.
+            year_query = f"{primary} {movie.year}"
+            results, year_error = self._search(year_query, "Movies")
+            hard_error = hard_error or year_error
         if not results and hard_error:
-            results = self._search_trending("Movies", short_query)
+            results = self._search_trending("Movies", primary)
         return results
 
     def _search(

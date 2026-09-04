@@ -110,6 +110,7 @@ class EpisodeFile(BaseModel):
     episode_id: EpisodeId
     quality: Quality
     torrent_id: TorrentId | None
+    source_info_hash: str | None = None
     codec: str = ""
     hdr: bool = False
     source: str = ""

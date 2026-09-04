@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.1.4"
+    "version": "1.1.5"
   },
   "paths": {
     "/api/v1/health": {
@@ -2810,7 +2810,7 @@
           "episodes"
         ],
         "summary": "Delete Episode File",
-        "description": "Delete a specific episode file (by surrogate id) and optionally remove\nit from disk.",
+        "description": "Delete a specific episode file (by surrogate id) and optionally remove\nit from disk. Missing files return 204 (idempotent).",
         "operationId": "delete_episode_file_api_v1_episodes_files__file_id__delete",
         "security": [
           {
@@ -2839,6 +2839,16 @@
               "type": "boolean",
               "default": true,
               "title": "Delete From Disk"
+            }
+          },
+          {
+            "name": "block_source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Block Source"
             }
           }
         ],
@@ -5846,7 +5856,7 @@
           "movies"
         ],
         "summary": "Delete Movie File",
-        "description": "Delete a specific file for a movie, addressed by its surrogate id.",
+        "description": "Delete a specific file for a movie, addressed by its surrogate id.\nMissing files return 204 (idempotent).",
         "operationId": "delete_movie_file_api_v1_movies__movie_id__files__file_id__delete",
         "security": [
           {
@@ -5887,6 +5897,16 @@
               "type": "boolean",
               "default": true,
               "title": "Delete From Disk"
+            }
+          },
+          {
+            "name": "block_source",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Block Source"
             }
           }
         ],
@@ -12282,6 +12302,17 @@
             ],
             "title": "Torrent Id"
           },
+          "source_info_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Info Hash"
+          },
           "codec": {
             "type": "string",
             "title": "Codec",
@@ -13339,6 +13370,14 @@
             "title": "Available Urls",
             "default": []
           },
+          "mirrors": {
+            "items": {
+              "$ref": "#/components/schemas/MirrorEntry"
+            },
+            "type": "array",
+            "title": "Mirrors",
+            "default": []
+          },
           "api_key": {
             "type": "string",
             "title": "Api Key",
@@ -13478,6 +13517,20 @@
               }
             ],
             "title": "Available Urls"
+          },
+          "mirrors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MirrorEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mirrors"
           },
           "api_key": {
             "anyOf": [
@@ -14804,6 +14857,34 @@
         "additionalProperties": false,
         "type": "object",
         "title": "MetadataSettingsSchema"
+      },
+      "MirrorEntry": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "seeded",
+              "user"
+            ],
+            "title": "Source",
+            "default": "user"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "MirrorEntry",
+        "description": "One failover mirror for a native indexer site.\n\n``source`` distinguishes code-shipped mirrors (``seeded`` \u2014 reorderable and\ntoggleable but never deletable) from ones the user added (``user`` \u2014\nfully deletable). ``enabled`` mirrors, in list order, drive the live search."
       },
       "MiscSettingsSchema": {
         "properties": {
@@ -16651,6 +16732,17 @@
             ],
             "title": "Torrent Id"
           },
+          "source_info_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Info Hash"
+          },
           "codec": {
             "type": "string",
             "title": "Codec",
@@ -17093,6 +17185,17 @@
               }
             ],
             "title": "Torrent Id"
+          },
+          "source_info_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Info Hash"
           },
           "import_status": {
             "$ref": "#/components/schemas/ImportOutcome",

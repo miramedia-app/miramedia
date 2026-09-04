@@ -13,6 +13,7 @@ from sse_starlette.sse import EventSourceResponse, ServerSentEvent
 from miramedia.auth.users import current_superuser
 from miramedia.database import DbSessionDependency, release_session_before_external_io
 from miramedia.indexers.dependencies import indexer_repository_dep
+from miramedia.indexers.mirror_state import MirrorRuleError
 from miramedia.indexers.repository import IndexerRepository
 from miramedia.indexers.schemas import (
     IndexerSiteCreate,
@@ -90,6 +91,10 @@ async def update_indexer_site(
         return mask_indexer_site_read(
             await repo.update_site(site_id, strip_indexer_api_key_sentinel(data))
         )
+    except MirrorRuleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from None
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Site not found"
@@ -288,14 +293,21 @@ async def _run_site_test(
         get_preloaded_sites().get(site.name) if site.site_type != "torznab" else None
     )
 
-    # Preloaded native sites carry mirror lists (e.g. 1337x has .to/.st/.ws
-    # fallbacks). The primary may be Cloudflare-walled while a mirror serves
-    # plain HTTP, so probe every mirror before concluding the site is
-    # unreachable — matches the real search's mirror failover.
+    # Native sites carry mirror lists (e.g. 1337x has .to/.st/.ws fallbacks).
+    # The primary may be Cloudflare-walled while a mirror serves plain HTTP, so
+    # probe every mirror before concluding the site is unreachable — matches the
+    # real search's mirror failover. Use the DB list the UI manages (falling
+    # back to the class default for any pre-seed row), so a connectivity test
+    # reflects exactly the mirrors the live search will try.
     probe_urls: list[str] = [site.url]
     if site.site_type != "torznab" and site_cls is not None:
+        mirrors = (
+            getattr(site, "available_urls", None)
+            or getattr(site_cls, "available_urls", None)
+            or []
+        )
         seen = {site.url.rstrip("/")}
-        for mirror in getattr(site_cls, "available_urls", None) or []:
+        for mirror in mirrors:
             normalized = mirror.rstrip("/")
             if normalized and normalized not in seen:
                 seen.add(normalized)

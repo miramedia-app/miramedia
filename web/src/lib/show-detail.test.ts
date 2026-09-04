@@ -7,6 +7,7 @@ import {
   seasonHasAllSubtitles,
   subKey,
   subtitleLanguagesByEpisode,
+  withoutFileInSeasonResults,
 } from "@/lib/show-detail";
 import type { EpisodeFile, Season, SubtitleFile } from "@/lib/show-detail";
 
@@ -175,5 +176,16 @@ describe("buildTreeRows", () => {
     expect(rows.map((r) => r.kind)).toEqual(["season", "episode", "file", "subtitle", "episode"]);
     expect(rows[2]).toMatchObject({ kind: "file", id: "file:f1", depth: 2, episodeNumber: 1 });
     expect(rows[3]).toMatchObject({ kind: "subtitle", id: "ep1:sub:a.srt", depth: 2 });
+  });
+});
+
+describe("withoutFileInSeasonResults", () => {
+  it("drops the matching file from every season list", () => {
+    const gone = file({ id: "f-gone", episode_id: "ep1" });
+    const kept = file({ id: "f-kept", episode_id: "ep2" });
+    expect(withoutFileInSeasonResults({ "s-1": [gone, kept], "s-2": [gone] }, "f-gone")).toEqual({
+      "s-1": [kept],
+      "s-2": [],
+    });
   });
 });

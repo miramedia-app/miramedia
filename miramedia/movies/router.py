@@ -457,10 +457,13 @@ async def delete_movie_file(
     movie_service: movie_service_dep,
     file_id: UUID,
     delete_from_disk: Annotated[bool, Query()] = True,
+    block_source: Annotated[bool, Query()] = False,
 ) -> None:
-    """Delete a specific file for a movie, addressed by its surrogate id."""
+    """Delete a specific file for a movie, addressed by its surrogate id.
+    Missing files return 204 (idempotent)."""
     await movie_service.delete_movie_file(
         movie=movie,
         file_id=file_id,
         delete_from_disk=delete_from_disk,
+        block_source=block_source,
     )

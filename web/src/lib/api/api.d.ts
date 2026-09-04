@@ -883,7 +883,7 @@ export interface paths {
         /**
          * Delete Episode File
          * @description Delete a specific episode file (by surrogate id) and optionally remove
-         *     it from disk.
+         *     it from disk. Missing files return 204 (idempotent).
          */
         delete: operations["delete_episode_file_api_v1_episodes_files__file_id__delete"];
         options?: never;
@@ -1794,6 +1794,7 @@ export interface paths {
         /**
          * Delete Movie File
          * @description Delete a specific file for a movie, addressed by its surrogate id.
+         *     Missing files return 204 (idempotent).
          */
         delete: operations["delete_movie_file_api_v1_movies__movie_id__files__file_id__delete"];
         options?: never;
@@ -3814,6 +3815,8 @@ export interface components {
             quality: components["schemas"]["Quality"];
             /** Torrent Id */
             torrent_id: string | null;
+            /** Source Info Hash */
+            source_info_hash?: string | null;
             /**
              * Codec
              * @default
@@ -4253,6 +4256,11 @@ export interface components {
              */
             available_urls: string[];
             /**
+             * Mirrors
+             * @default []
+             */
+            mirrors: components["schemas"]["MirrorEntry"][];
+            /**
              * Api Key
              * @default
              */
@@ -4301,6 +4309,8 @@ export interface components {
             url?: string | null;
             /** Available Urls */
             available_urls?: string[] | null;
+            /** Mirrors */
+            mirrors?: components["schemas"]["MirrorEntry"][] | null;
             /** Api Key */
             api_key?: string | null;
             /** Supports Tv */
@@ -4780,6 +4790,29 @@ export interface components {
             tmdb?: components["schemas"]["TmdbSettingsSchema"] | null;
             tvdb?: components["schemas"]["TvdbSettingsSchema"] | null;
         };
+        /**
+         * MirrorEntry
+         * @description One failover mirror for a native indexer site.
+         *
+         *     ``source`` distinguishes code-shipped mirrors (``seeded`` — reorderable and
+         *     toggleable but never deletable) from ones the user added (``user`` —
+         *     fully deletable). ``enabled`` mirrors, in list order, drive the live search.
+         */
+        MirrorEntry: {
+            /** Url */
+            url: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Source
+             * @default user
+             * @enum {string}
+             */
+            source: "seeded" | "user";
+        };
         /** MiscSettingsSchema */
         MiscSettingsSchema: {
             /** Image Directory */
@@ -5241,6 +5274,8 @@ export interface components {
             quality: components["schemas"]["Quality"];
             /** Torrent Id */
             torrent_id: string | null;
+            /** Source Info Hash */
+            source_info_hash?: string | null;
             /**
              * Codec
              * @default
@@ -5407,6 +5442,8 @@ export interface components {
             extra: string;
             /** Torrent Id */
             torrent_id?: string | null;
+            /** Source Info Hash */
+            source_info_hash?: string | null;
             /** @default pending */
             import_status: components["schemas"]["ImportOutcome"];
             /** Import Error */
@@ -8806,6 +8843,7 @@ export interface operations {
         parameters: {
             query?: {
                 delete_from_disk?: boolean;
+                block_source?: boolean;
             };
             header?: never;
             path: {
@@ -10301,6 +10339,7 @@ export interface operations {
         parameters: {
             query?: {
                 delete_from_disk?: boolean;
+                block_source?: boolean;
             };
             header?: never;
             path: {

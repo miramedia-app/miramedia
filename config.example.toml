@@ -291,7 +291,7 @@ indexers = ["1337x", "torrentleech"]  # List of indexer names to use
 
 # Native indexer — replaces Prowlarr/Jackett with direct site queries
 # Ships with preloaded popular sites: YTS, EZTV, The Pirate Bay, 1337x,
-# TorrentGalaxy, LimeTorrents, Nyaa
+# LimeTorrents, Nyaa, TorrentDownloads
 [indexers.native]
 enabled = true
 max_concurrent_searches = 5

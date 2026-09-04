@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 _DIRECT_PLAY_EXTENSIONS = {".mp4", ".m4v", ".webm", ".mov"}
 _HLS_SEGMENT_SECONDS = 4
+_HLS_CACHE_VERSION = "event-v2"
 _HLS_POLL_INTERVAL_S = 0.25
 _HLS_START_TIMEOUT_S = 120.0
 _TMP_DIR_PREFIX = ".tmp-"
@@ -66,7 +67,9 @@ class HlsTranscodeError(RuntimeError):
 
 def cache_key_for(path: Path) -> str:
     stat = path.stat()
-    raw = f"{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()
+    raw = (
+        f"{_HLS_CACHE_VERSION}:{path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    ).encode()
     return hashlib.sha256(raw).hexdigest()[:32]
 
 

@@ -227,6 +227,7 @@ async def map_torrent_files(
                     episode=episode,
                     source_file=source,
                     torrent_id=torrent.id,
+                    source_info_hash=torrent.hash,
                     variant=item_variant,
                 )
             elif item.target_type == ManualMapTargetType.movie:
@@ -241,6 +242,7 @@ async def map_torrent_files(
                     movie=movie,
                     source_file=source,
                     torrent_id=torrent.id,
+                    source_info_hash=torrent.hash,
                     variant=item_variant,
                 )
             else:

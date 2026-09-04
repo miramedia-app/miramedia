@@ -74,4 +74,9 @@ Row actions are conditional:
   and offers an **Add to deny-list** checkbox to block the release's info-hash
   from being re-queued.
 
+Every imported media file also records the info-hash of the torrent it came
+from. This source hash is kept on the file even after the torrent record is
+deleted, so deleting the library file (with the block option) still denies its
+original source and stops it being re-grabbed on the next search.
+
 Bulk: **Pause / Resume / Delete**.

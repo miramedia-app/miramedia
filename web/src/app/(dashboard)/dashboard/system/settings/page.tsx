@@ -30,13 +30,13 @@ import { INDEXER_SCORING_KEYS, useSettingsEditor } from "./use-settings-editor";
 function SettingsPageSkeleton() {
   return (
     <>
-      <div className="flex flex-wrap items-center gap-2">
-        <Skeleton className="h-8 min-w-[260px] flex-1" />
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <Skeleton className="h-8 min-w-0 flex-1 basis-full sm:min-w-[260px] sm:basis-auto" />
         <Skeleton className="h-8 w-24" />
         <Skeleton className="h-8 w-24" />
         <Skeleton className="h-8 w-32" />
       </div>
-      <div className="grid gap-6 md:grid-cols-[220px_minmax(0,1fr)]">
+      <div className="grid min-w-0 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
         <div className="flex flex-col gap-1">
           {Array.from({ length: 12 }, (_, i) => (
             <Skeleton key={`tab-${i}`} className="h-9 w-full" />
@@ -251,7 +251,7 @@ export default function SystemSettingsPage() {
           { label: "Settings" },
         ]}
       />
-      <main className="flex w-full flex-col gap-4 p-4 pt-0">
+      <main className="flex w-full min-w-0 flex-col gap-4 p-4 pt-0">
         {readView === "pending" ? (
           <SettingsPageSkeleton />
         ) : readView === "error" ? (
@@ -278,8 +278,8 @@ export default function SystemSettingsPage() {
           />
         ) : (
           <>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="relative flex h-8 min-w-[260px] flex-1 items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-sm shadow-xs transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <div className="relative flex h-8 min-w-0 flex-1 basis-full items-center gap-1.5 rounded-md border border-input bg-background px-2.5 text-sm shadow-xs transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/50 sm:min-w-[260px] sm:basis-auto">
                 <SearchIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <input
                   type="search"
@@ -367,7 +367,7 @@ export default function SystemSettingsPage() {
                 Reset All
               </Button>
               <span className="hidden h-6 w-px bg-border sm:block" />
-              <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 flex items-center justify-end gap-3 border-t bg-background/95 px-4 py-2 backdrop-blur md:static md:bottom-auto md:z-auto md:border-0 md:bg-transparent md:p-0 md:backdrop-blur-none">
+              <div className="fixed inset-x-0 bottom-[calc(3.5rem+env(safe-area-inset-bottom))] z-30 flex items-center justify-end gap-3 border-t bg-background/95 px-4 py-2 backdrop-blur lg:static lg:bottom-auto lg:z-auto lg:border-0 lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
                 {editor.isDirty && (
                   <span className="text-xs text-muted-foreground">
                     {editor.dirtyTabs.size} unsaved{" "}
@@ -378,7 +378,7 @@ export default function SystemSettingsPage() {
                   onClick={() => void editor.saveAllSettings()}
                   disabled={editor.saving || !editor.isDirty}
                   size="default"
-                  className="gap-1 text-xs max-md:min-w-28"
+                  className="gap-1 text-xs max-lg:min-w-28"
                 >
                   {editor.saving ? (
                     <LoaderCircle className="h-4 w-4 animate-spin" />
@@ -390,14 +390,18 @@ export default function SystemSettingsPage() {
               </div>
             </div>
 
-            <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full pb-16 md:pb-0">
-              <div className="grid gap-6 md:grid-cols-[220px_minmax(0,1fr)]">
-                <TabsList className="sticky top-4 flex h-auto flex-col items-stretch justify-start self-start bg-transparent p-0 max-md:static max-md:-mx-4 max-md:snap-x max-md:snap-mandatory max-md:[scrollbar-width:none] max-md:flex-row max-md:gap-1 max-md:overflow-x-auto max-md:px-4 max-md:py-1 max-md:[&::-webkit-scrollbar]:hidden">
+            <Tabs
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="w-full min-w-0 pb-16 lg:pb-0"
+            >
+              <div className="grid min-w-0 gap-6 lg:grid-cols-[220px_minmax(0,1fr)]">
+                <TabsList className="flex h-auto w-full min-w-0 flex-col items-stretch justify-start self-start bg-transparent p-0 max-lg:static max-lg:h-auto! max-lg:w-full max-lg:max-w-full max-lg:snap-x max-lg:[scrollbar-width:none] max-lg:flex-row max-lg:items-center max-lg:gap-1 max-lg:overflow-x-auto max-lg:overscroll-x-contain max-lg:rounded-none max-lg:px-1 max-lg:py-2 lg:sticky lg:top-4 max-lg:[&::-webkit-scrollbar]:hidden">
                   {TAB_DEFS.map(({ value, label }) => (
                     <TabsTrigger
                       key={value}
                       value={value}
-                      className="relative justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[active]:border-border data-[active]:bg-muted data-[active]:shadow-none! max-md:min-h-11 max-md:shrink-0 max-md:snap-start"
+                      className="relative justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[active]:border-border data-[active]:bg-muted data-[active]:shadow-none! max-lg:min-h-11 max-lg:flex-none max-lg:snap-start max-lg:whitespace-nowrap max-lg:after:hidden"
                     >
                       {label}
                       {editor.dirtyTabs.has(value) && (

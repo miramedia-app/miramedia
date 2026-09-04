@@ -124,7 +124,7 @@ export async function runPlaybackLoad(env: PlaybackLoadEnv): Promise<void> {
     });
     if (probeRes.ok) {
       const probe = (await probeRes.json()) as ProbeResponse;
-      if (!probe.direct_play && probe.hls_playlist_url) {
+      if (probe.hls_playlist_url && (env.canPlayHlsNatively() || !probe.direct_play)) {
         const hlsUrl = `${env.apiUrl}${probe.hls_playlist_url}`;
         if (env.canPlayHlsNatively()) {
           env.onNativeHls(hlsUrl);

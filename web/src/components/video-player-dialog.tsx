@@ -60,6 +60,7 @@ export function VideoPlayerDialog({
   const [playerState, setPlayerState] = React.useState<PlayerState>("idle");
   const [errorMessage, setErrorMessage] = React.useState("");
   const [videoSrc, setVideoSrc] = React.useState<string | undefined>(undefined);
+  const [videoReady, setVideoReady] = React.useState(false);
   const [subtitleSrcs, setSubtitleSrcs] = React.useState<{ lang: string; url: string }[]>([]);
   const [showResumePrompt, setShowResumePrompt] = React.useState(false);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
@@ -148,6 +149,7 @@ export function VideoPlayerDialog({
       return [];
     });
     setShowResumePrompt(false);
+    setVideoReady(false);
     setPlayerState("idle");
     setErrorMessage("");
   }, []);
@@ -221,9 +223,8 @@ export function VideoPlayerDialog({
   }
 
   function canPlayHlsNatively(): boolean {
-    if (typeof navigator === "undefined") return false;
-    const ua = navigator.userAgent;
-    return /Safari/i.test(ua) && !/Chrome|Chromium|Android/i.test(ua);
+    if (typeof document === "undefined") return false;
+    return document.createElement("video").canPlayType("application/vnd.apple.mpegurl") !== "";
   }
 
   async function loadAndPlay() {
@@ -233,6 +234,7 @@ export function VideoPlayerDialog({
     const { signal } = controller;
 
     setPlayerState("loading");
+    setVideoReady(false);
 
     const qIndex = streamUrl.indexOf("?");
     const streamBase = qIndex >= 0 ? streamUrl.slice(0, qIndex) : streamUrl;
@@ -375,15 +377,65 @@ export function VideoPlayerDialog({
           {triggerLabel && buttonSize !== "icon" ? <span>{triggerLabel}</span> : null}
         </DialogTrigger>
       )}
-      <DialogContent className="flex max-h-[90vh] w-[95vw] max-w-6xl flex-col max-lg:top-0 max-lg:left-0 max-lg:h-dvh max-lg:max-h-none max-lg:w-screen max-lg:max-w-none max-lg:translate-x-0 max-lg:translate-y-0 max-lg:rounded-none max-lg:pb-safe-b sm:max-w-6xl">
+      <DialogContent className="flex max-h-[90vh] w-[95vw] max-w-6xl flex-col max-lg:top-0 max-lg:left-0 max-lg:h-dvh max-lg:max-h-none max-lg:w-screen max-lg:max-w-none max-lg:translate-x-0 max-lg:translate-y-0 max-lg:transform-none max-lg:rounded-none max-lg:pb-safe-b max-lg:data-[state=closed]:animate-none max-lg:data-[state=open]:animate-none sm:max-w-6xl">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <div className="relative min-h-0 flex-1">
-          {playerState === "loading" && (
-            <div className="flex flex-col items-center justify-center gap-3 py-16">
-              <LoaderCircle className="h-8 w-8 animate-spin text-muted-foreground" />
-              <p className="text-sm text-muted-foreground">Loading media...</p>
+          {(playerState === "loading" || playerState === "playing") && (
+            <div className="relative aspect-video max-h-[70vh] w-full overflow-hidden rounded-md bg-black max-lg:max-h-[calc(100dvh-8rem)]">
+              {playerState === "loading" && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <LoaderCircle className="h-8 w-8 animate-spin text-muted-foreground" />
+                  <p className="text-sm text-white/80">Loading media...</p>
+                </div>
+              )}
+              {playerState === "playing" && (
+                <video
+                  ref={videoRef}
+                  className={cn(
+                    "absolute inset-0 h-full w-full bg-black object-contain",
+                    !videoReady && "invisible",
+                  )}
+                  controls
+                  autoPlay
+                  playsInline
+                  crossOrigin="use-credentials"
+                  src={videoSrc}
+                  onLoadedMetadata={handleLoadedMetadata}
+                  onCanPlay={() => setVideoReady(true)}
+                  onTimeUpdate={handleTimeUpdate}
+                  onPause={handlePause}
+                  onSeeked={handleSeeked}
+                  onEnded={handleEnded}
+                  onError={() => {
+                    // Browser refused the native stream — likely MKV / AC3 / HEVC
+                    // without hardware support, or a failed HLS playlist load (Safari
+                    // warm-cache path). Fall back to mediabunny re-encode for both; if
+                    // that fails too, fallbackToMediabunny surfaces the error UI.
+                    if (videoSrc === streamUrl || usingHlsRef.current) {
+                      void fallbackToMediabunny();
+                    }
+                  }}
+                >
+                  <track kind="captions" />
+                  {subtitleSrcs.map((sub) => (
+                    <track
+                      key={sub.lang}
+                      kind="subtitles"
+                      src={sub.url}
+                      srcLang={sub.lang}
+                      label={sub.lang.toUpperCase()}
+                    />
+                  ))}
+                </video>
+              )}
+              {playerState === "playing" && !videoReady && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
+                  <LoaderCircle className="h-8 w-8 animate-spin text-muted-foreground" />
+                  <p className="text-sm text-white/80">Loading media...</p>
+                </div>
+              )}
             </div>
           )}
           {playerState === "error" && (
@@ -400,41 +452,6 @@ export function VideoPlayerDialog({
                 />
               )}
             </div>
-          )}
-          {playerState === "playing" && (
-            <video
-              ref={videoRef}
-              className="max-h-[70vh] w-full rounded-md bg-black max-lg:max-h-[calc(100dvh-8rem)]"
-              controls
-              autoPlay
-              crossOrigin="use-credentials"
-              src={videoSrc}
-              onLoadedMetadata={handleLoadedMetadata}
-              onTimeUpdate={handleTimeUpdate}
-              onPause={handlePause}
-              onSeeked={handleSeeked}
-              onEnded={handleEnded}
-              onError={() => {
-                // Browser refused the native stream — likely MKV / AC3 / HEVC
-                // without hardware support, or a failed HLS playlist load (Safari
-                // warm-cache path). Fall back to mediabunny re-encode for both; if
-                // that fails too, fallbackToMediabunny surfaces the error UI.
-                if (videoSrc === streamUrl || usingHlsRef.current) {
-                  void fallbackToMediabunny();
-                }
-              }}
-            >
-              <track kind="captions" />
-              {subtitleSrcs.map((sub) => (
-                <track
-                  key={sub.lang}
-                  kind="subtitles"
-                  src={sub.url}
-                  srcLang={sub.lang}
-                  label={sub.lang.toUpperCase()}
-                />
-              ))}
-            </video>
           )}
           {playerState === "playing" && showResumePrompt && resumePromptPositionMs != null && (
             <div className="absolute inset-x-0 bottom-14 z-10 flex justify-center px-4">

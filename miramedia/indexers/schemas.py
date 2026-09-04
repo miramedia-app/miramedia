@@ -1,6 +1,7 @@
 import re
 import typing
 from datetime import datetime
+from typing import Literal
 from uuid import UUID, uuid4
 
 import pydantic
@@ -173,6 +174,19 @@ class IndexerQueryResult(BaseModel):
         return self.size > other.size
 
 
+class MirrorEntry(BaseModel):
+    """One failover mirror for a native indexer site.
+
+    ``source`` distinguishes code-shipped mirrors (``seeded`` — reorderable and
+    toggleable but never deletable) from ones the user added (``user`` —
+    fully deletable). ``enabled`` mirrors, in list order, drive the live search.
+    """
+
+    url: str
+    enabled: bool = True
+    source: Literal["seeded", "user"] = "user"
+
+
 class IndexerSiteCreate(BaseModel):
     name: str
     site_type: str = "torznab"
@@ -192,6 +206,11 @@ class IndexerSiteUpdate(BaseModel):
     name: str | None = None
     url: str | None = None
     available_urls: list[str] | None = None
+    # Authoritative mirror list (order + enabled + source). When present, the
+    # backend reconciles it against the stored mirrors, enforcing that seeded
+    # mirrors cannot be deleted or reclassified. ``available_urls`` is kept only
+    # for backward compatibility and is ignored when ``mirrors`` is supplied.
+    mirrors: list[MirrorEntry] | None = None
     api_key: str | None = None
     supports_tv: bool | None = None
     supports_movies: bool | None = None
@@ -210,6 +229,7 @@ class IndexerSiteRead(BaseModel):
     site_type: str
     url: str
     available_urls: list[str] = []
+    mirrors: list[MirrorEntry] = []
     api_key: str = ""
     supports_tv: bool
     supports_movies: bool

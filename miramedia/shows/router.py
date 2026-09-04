@@ -375,12 +375,14 @@ async def delete_episode_file(
     file_id: UUID,
     show_service: show_service_dep,
     delete_from_disk: Annotated[bool, Query()] = True,
+    block_source: Annotated[bool, Query()] = False,
 ) -> None:
     """Delete a specific episode file (by surrogate id) and optionally remove
-    it from disk."""
+    it from disk. Missing files return 204 (idempotent)."""
     await show_service.delete_episode_file(
         file_id=file_id,
         delete_from_disk=delete_from_disk,
+        block_source=block_source,
     )
 
 

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installApiMock } from "./fixtures";
+import { createSettingsMockState, settingsApiRoutes } from "./settings-fixtures";
 import { SHOW_ID, createWatchlistMockState, watchlistApiRoutes } from "./watchlist-fixtures";
 
 // Mobile layout guard: every dashboard route must fit the phone viewport with
@@ -91,20 +92,34 @@ for (const route of ROUTES) {
     // form); flip it so `/users/me` answers 200 and the dashboard shell renders
     // instead of redirecting every route to `/login/`.
     state.session.loggedOut = false;
-    await installApiMock(page, { ...watchlistApiRoutes(state), ...listRoutes });
+    // Settings must load the real editor (tabs + form). The watchlist stub
+    // only answers GET /settings with a partial body and leaves schema as 501,
+    // which renders the error empty state and misses the overflow.
+    const routes = { ...watchlistApiRoutes(state), ...listRoutes };
+    if (route === "/dashboard/system/settings/") {
+      Object.assign(routes, settingsApiRoutes(createSettingsMockState()));
+    }
+    await installApiMock(page, routes);
 
     await page.goto(route);
     await expect(page).not.toHaveURL(/\/login\/?$/);
     await expect(page.locator("[data-slot=sidebar-inset]").first()).toBeVisible();
     // Let data queries settle so late-rendering content is measured too.
     await page.waitForLoadState("networkidle");
+    if (route === "/dashboard/system/settings/") {
+      await expect(page.getByRole("tab", { name: "General" })).toBeVisible();
+      await expect(page.getByRole("tab", { name: "Authentication" })).toBeVisible();
+    }
 
     const overflow = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
-      innerWidth: window.innerWidth,
+      clientWidth: document.documentElement.clientWidth,
     }));
+    // Compare against clientWidth, not innerWidth: overflowing content expands
+    // the layout viewport, so innerWidth grows to match scrollWidth and hides
+    // the bug (settings tab strip was ~1200px on a 430px phone).
     expect(overflow.scrollWidth, `document wider than viewport on ${route}`).toBeLessThanOrEqual(
-      overflow.innerWidth,
+      overflow.clientWidth,
     );
   });
 }

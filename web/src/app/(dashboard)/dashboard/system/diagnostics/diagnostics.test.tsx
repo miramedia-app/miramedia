@@ -203,6 +203,17 @@ afterEach(() => {
 });
 
 describe("DiagnosticsPage", () => {
+  it("has tabs without a page title or subtitle", () => {
+    renderPage();
+    expect(screen.queryByRole("heading", { name: "Diagnostics" })).toBeNull();
+    expect(
+      screen.queryByText("Read-only storage, database, and scheduler snapshot for operators."),
+    ).toBeNull();
+    expect(tab("Storage")).toBeTruthy();
+    expect(tab("Database")).toBeTruthy();
+    expect(tab("Scheduled Tasks")).toBeTruthy();
+  });
+
   it("denies non-superusers without a tab list", () => {
     userState.is_superuser = false;
     renderPage();
@@ -230,10 +241,10 @@ describe("DiagnosticsPage", () => {
     expect(await screen.findByText(identityLabel())).toBeTruthy();
   });
 
-  it("opens Scheduled tasks from ?tab=scheduler", async () => {
+  it("opens Scheduled Tasks from ?tab=scheduler", async () => {
     nav.search = "tab=scheduler";
     renderPage();
-    expect(tab("Scheduled tasks").getAttribute("aria-selected")).toBe("true");
+    expect(tab("Scheduled Tasks").getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText(/Cron-scheduled background work/)).toBeTruthy();
   });
 

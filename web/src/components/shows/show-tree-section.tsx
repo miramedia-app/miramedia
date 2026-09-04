@@ -548,6 +548,7 @@ export function ShowTreeSection({
                           openDeleteModal({
                             type: "file",
                             fileId: r.data.id!,
+                            sourceInfoHash: r.data.source_info_hash,
                           })
                         }
                       >

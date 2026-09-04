@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import ClassVar
 
 from selectolax.parser import HTMLParser, Node
 
@@ -16,6 +17,15 @@ log = logging.getLogger(__name__)
 class NyaaSite(BaseSite):
     name = "nyaa"
     url = "https://nyaa.si"
+    # First-party Nyaa mirrors — same HTML layout, so the scraper works
+    # unchanged on each.
+    available_urls: ClassVar[list[str]] = [
+        "https://nyaa.si",
+        "https://nyaa.iss.ink",
+        "https://nyaa.land",
+        "https://nyaa.mom",
+        "https://nyaa.media",
+    ]
     supports_tv = True
     supports_movies = True
     cloudflare_protected = False
@@ -42,7 +52,7 @@ class NyaaSite(BaseSite):
         # f=0 (no filter), c=0_0 (all categories), s=seeders, o=desc
         params = {"f": "0", "c": "0_0", "q": query, "s": "seeders", "o": "desc"}
         try:
-            html = self._fetch(f"{self.url}/", params=params)
+            html = self._fetch_over_mirrors("/", params=params)
         except Exception:
             log.exception("Nyaa search failed")
             return []

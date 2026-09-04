@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { DeleteTarget } from "@/lib/show-detail";
 
 export interface DeleteConfirmDialogProps {
@@ -22,6 +23,8 @@ export interface DeleteConfirmDialogProps {
   onConfirmTextChange: (value: string) => void;
   confirmed: boolean;
   deleting: boolean;
+  blockSource: boolean;
+  onBlockSourceChange: (checked: boolean) => void;
   selectedFilesCount: number;
   selectedTorrentsCount: number;
   onClose: () => void;
@@ -38,6 +41,8 @@ export function DeleteConfirmDialog({
   onConfirmTextChange,
   confirmed,
   deleting,
+  blockSource,
+  onBlockSourceChange,
   selectedFilesCount,
   selectedTorrentsCount,
   onClose,
@@ -86,6 +91,16 @@ export function DeleteConfirmDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="flex flex-col gap-2 py-2">
+          {target?.type === "file" && target.sourceInfoHash && (
+            <div className="flex items-center gap-2">
+              <Checkbox
+                id="block-source-episode"
+                checked={blockSource}
+                onCheckedChange={(checked) => onBlockSourceChange(checked === true)}
+              />
+              <Label htmlFor="block-source-episode">Add source torrent to deny list</Label>
+            </div>
+          )}
           <Label htmlFor="delete-confirm">
             Type <strong>delete</strong> to confirm
           </Label>

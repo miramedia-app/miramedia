@@ -189,7 +189,9 @@ def test_post_failure_rerequest_keeps_published_dir(
     _run(_run_scenario())
 
 
-def test_ffmpeg_cmd_uses_event_playlist_type(tmp_path: Path) -> None:
+def test_ffmpeg_cmd_uses_event_playlist_for_progressive_playback(
+    tmp_path: Path,
+) -> None:
     source = _make_source(tmp_path)
     out_dir = tmp_path / "out"
     playlist = out_dir / "index.m3u8"

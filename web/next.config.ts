@@ -7,6 +7,8 @@ const basePath = process.env.BASE_PATH || "";
 // legacy PUBLIC_* names baked at build time by the Dockerfile.
 const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.PUBLIC_API_URL || "";
 const version = process.env.NEXT_PUBLIC_VERSION || process.env.PUBLIC_VERSION || "dev";
+const corsUrls: string[] = JSON.parse(process.env.MIRAMEDIA_CORS_URLS || "[]");
+const allowedDevOrigins = corsUrls.map((origin) => new URL(origin).hostname);
 
 // Only enable static export for production builds. Dev mode keeps the regular
 // dev server so dynamic params resolve without needing FastAPI's catch-all.
@@ -16,6 +18,7 @@ const UUID = ":uuid([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-
 
 const nextConfig: NextConfig = {
   ...(isProd ? { output: "export" as const } : {}),
+  allowedDevOrigins,
   basePath,
   trailingSlash: true,
   // Disable the Next dev server's gzip. It otherwise re-compresses the

@@ -149,6 +149,15 @@ def test_cache_key_is_deterministic_for_same_file(tmp_path: Path) -> None:
     assert cache_key_for(source) == cache_key_for(source)
 
 
+def test_cache_key_changes_with_hls_format_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _make_source(tmp_path)
+    first = cache_key_for(source)
+    monkeypatch.setattr(transcode, "_HLS_CACHE_VERSION", "test-next")
+    assert cache_key_for(source) != first
+
+
 def test_cache_key_changes_when_file_changes(tmp_path: Path) -> None:
     source = _make_source(tmp_path)
     first = cache_key_for(source)

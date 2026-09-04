@@ -40,7 +40,7 @@ export type TreeRow =
 
 /** Discriminated target for the delete-confirmation modal. */
 export type DeleteTarget =
-  | { type: "file"; fileId: string }
+  | { type: "file"; fileId: string; sourceInfoHash?: string | null }
   | { type: "subtitle"; episodeId: string; fileName: string }
   | { type: "episode"; episodeId: string; seasonId: string }
   | { type: "season"; seasonId: string }
@@ -105,6 +105,19 @@ export function classifyWatchedSelection(
 
 export function fileKey(fileId: string) {
   return `file:${fileId}`;
+}
+
+/** Drop one episode file from a season-id → files map (optimistic cache). */
+export function withoutFileInSeasonResults(
+  results: Record<string, EpisodeFile[]>,
+  fileId: string,
+): Record<string, EpisodeFile[]> {
+  return Object.fromEntries(
+    Object.entries(results).map(([seasonId, files]) => [
+      seasonId,
+      files.filter((f) => f.id !== fileId),
+    ]),
+  );
 }
 
 export function subKey(episodeId: string, fileName: string) {

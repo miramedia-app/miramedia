@@ -229,89 +229,105 @@ export function ScoresTab({
                   {options.map((opt, i) => {
                     const isLastEnabled = opt.enabled !== false && enabledCount === 1;
                     return (
-                      <div key={opt._key} className="flex flex-wrap items-center gap-2">
-                        <div className="flex flex-col gap-0.5">
+                      <div
+                        key={opt._key}
+                        className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 lg:flex-row lg:items-center lg:gap-2 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
+                      >
+                        <div className="flex items-center gap-1 lg:contents">
+                          <div className="flex items-center gap-1 lg:flex-col lg:gap-0.5">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={i === 0}
+                              onClick={() => move(i, i - 1)}
+                              title="Move up"
+                              className="h-8 w-8 lg:h-5 lg:w-5"
+                            >
+                              ▲
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={i === options.length - 1}
+                              onClick={() => move(i, i + 1)}
+                              title="Move down"
+                              className="h-8 w-8 lg:h-5 lg:w-5"
+                            >
+                              ▼
+                            </Button>
+                          </div>
+                          <span className="text-sm font-medium lg:hidden">Option {i + 1}</span>
                           <Button
                             variant="ghost"
                             size="icon"
-                            disabled={i === 0}
-                            onClick={() => move(i, i - 1)}
-                            title="Move up"
-                            className="h-5 w-5"
+                            onClick={() =>
+                              setIndexersPath(
+                                [key],
+                                options.filter((_, j) => j !== i),
+                              )
+                            }
+                            title="Delete"
+                            className="ml-auto lg:order-last lg:ml-0"
                           >
-                            ▲
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            disabled={i === options.length - 1}
-                            onClick={() => move(i, i + 1)}
-                            title="Move down"
-                            className="h-5 w-5"
-                          >
-                            ▼
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
                           </Button>
                         </div>
-                        <Input
-                          value={opt.name ?? ""}
-                          onChange={(e) => {
-                            const next = [...options];
-                            next[i] = { ...next[i], name: e.target.value };
-                            setIndexersPath([key], next);
-                          }}
-                          placeholder="Option name"
-                          className="max-w-[180px]"
-                        />
-                        <Input
-                          value={Array.isArray(opt.keywords) ? opt.keywords.join(", ") : ""}
-                          onChange={(e) => {
-                            const next = [...options];
-                            next[i] = { ...next[i], keywords: csvToArray(e.target.value) };
-                            setIndexersPath([key], next);
-                          }}
-                          placeholder={placeholder}
-                          className="min-w-[200px] flex-1"
-                        />
-                        <Input
-                          type="number"
-                          value={Number(opt.score_modifier ?? 0)}
-                          onChange={(e) => {
-                            const next = [...options];
-                            next[i] = {
-                              ...next[i],
-                              score_modifier: Number(e.target.value) || 0,
-                            };
-                            setIndexersPath([key], next);
-                          }}
-                          placeholder="Score"
-                          title="Score added to a matched result. Higher = preferred."
-                          className="max-w-[100px]"
-                        />
-                        <div className="flex items-center gap-1">
-                          <Switch
-                            checked={opt.enabled !== false}
-                            disabled={isLastEnabled}
-                            onCheckedChange={(v) => {
+                        <div className="flex flex-col gap-1 lg:max-w-[180px] lg:flex-none">
+                          <span className="text-xs text-muted-foreground lg:hidden">Name</span>
+                          <Input
+                            value={opt.name ?? ""}
+                            onChange={(e) => {
                               const next = [...options];
-                              next[i] = { ...next[i], enabled: v };
+                              next[i] = { ...next[i], name: e.target.value };
                               setIndexersPath([key], next);
                             }}
+                            placeholder="Option name"
                           />
-                          <Label className="text-xs">Enabled</Label>
                         </div>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() =>
-                            setIndexersPath(
-                              [key],
-                              options.filter((_, j) => j !== i),
-                            )
-                          }
-                          title="Delete"
-                        >
-                          <Trash2 className="h-4 w-4 text-muted-foreground" />
-                        </Button>
+                        <div className="flex flex-col gap-1 lg:flex-1">
+                          <span className="text-xs text-muted-foreground lg:hidden">Keywords</span>
+                          <Input
+                            value={Array.isArray(opt.keywords) ? opt.keywords.join(", ") : ""}
+                            onChange={(e) => {
+                              const next = [...options];
+                              next[i] = { ...next[i], keywords: csvToArray(e.target.value) };
+                              setIndexersPath([key], next);
+                            }}
+                            placeholder={placeholder}
+                          />
+                        </div>
+                        <div className="flex items-end gap-4 lg:contents">
+                          <div className="flex flex-col gap-1 lg:max-w-[100px] lg:flex-none">
+                            <span className="text-xs text-muted-foreground lg:hidden">Score</span>
+                            <Input
+                              type="number"
+                              value={Number(opt.score_modifier ?? 0)}
+                              onChange={(e) => {
+                                const next = [...options];
+                                next[i] = {
+                                  ...next[i],
+                                  score_modifier: Number(e.target.value) || 0,
+                                };
+                                setIndexersPath([key], next);
+                              }}
+                              placeholder="Score"
+                              title="Score added to a matched result. Higher = preferred."
+                              className="w-24 lg:w-auto"
+                            />
+                          </div>
+                          <div className="flex h-9 items-center gap-1.5">
+                            <Switch
+                              checked={opt.enabled !== false}
+                              disabled={isLastEnabled}
+                              onCheckedChange={(v) => {
+                                const next = [...options];
+                                next[i] = { ...next[i], enabled: v };
+                                setIndexersPath([key], next);
+                              }}
+                            />
+                            <Label className="text-xs">Enabled</Label>
+                          </div>
+                        </div>
                       </div>
                     );
                   })}
@@ -353,71 +369,88 @@ export function ScoresTab({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {rules.map((rule, i) => (
-                    <div key={rule._key} className="flex flex-wrap items-center gap-2">
-                      <Input
-                        value={rule.name ?? ""}
-                        onChange={(e) => {
-                          const next = [...rules];
-                          next[i] = { ...next[i], name: e.target.value };
-                          setIndexersPath([key], next);
-                        }}
-                        placeholder="Rule name"
-                        className="max-w-[150px]"
-                      />
-                      <Input
-                        value={
-                          Array.isArray((rule as AnyObj)[keywordsField])
-                            ? ((rule as AnyObj)[keywordsField] as string[]).join(", ")
-                            : ""
-                        }
-                        onChange={(e) => {
-                          const next = [...rules];
-                          next[i] = {
-                            ...next[i],
-                            [keywordsField]: csvToArray(e.target.value),
-                          };
-                          setIndexersPath([key], next);
-                        }}
-                        placeholder={placeholder}
-                        className="min-w-[200px] flex-1"
-                      />
-                      <Input
-                        type="number"
-                        value={Number(rule.score_modifier ?? 0)}
-                        onChange={(e) => {
-                          const next = [...rules];
-                          next[i] = {
-                            ...next[i],
-                            score_modifier: Number(e.target.value) || 0,
-                          };
-                          setIndexersPath([key], next);
-                        }}
-                        className="max-w-[100px]"
-                        placeholder="Score"
-                      />
-                      <div className="flex items-center gap-1">
-                        <Switch
-                          checked={rule.enabled !== false}
-                          onCheckedChange={(v) => {
+                    <div
+                      key={rule._key}
+                      className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 lg:flex-row lg:items-center lg:gap-2 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
+                    >
+                      <div className="flex items-center gap-1 lg:contents">
+                        <span className="text-sm font-medium lg:hidden">Rule {i + 1}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() =>
+                            setIndexersPath(
+                              [key],
+                              rules.filter((_, j) => j !== i),
+                            )
+                          }
+                          title="Delete"
+                          className="ml-auto lg:order-last lg:ml-0"
+                        >
+                          <Trash2 className="h-4 w-4 text-muted-foreground" />
+                        </Button>
+                      </div>
+                      <div className="flex flex-col gap-1 lg:max-w-[150px] lg:flex-none">
+                        <span className="text-xs text-muted-foreground lg:hidden">Name</span>
+                        <Input
+                          value={rule.name ?? ""}
+                          onChange={(e) => {
                             const next = [...rules];
-                            next[i] = { ...next[i], enabled: v };
+                            next[i] = { ...next[i], name: e.target.value };
                             setIndexersPath([key], next);
                           }}
+                          placeholder="Rule name"
                         />
-                        <Label className="text-xs">Enabled</Label>
                       </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() =>
-                          setIndexersPath(
-                            [key],
-                            rules.filter((_, j) => j !== i),
-                          )
-                        }
-                      >
-                        <Trash2 className="h-4 w-4 text-muted-foreground" />
-                      </Button>
+                      <div className="flex flex-col gap-1 lg:flex-1">
+                        <span className="text-xs text-muted-foreground lg:hidden">Keywords</span>
+                        <Input
+                          value={
+                            Array.isArray((rule as AnyObj)[keywordsField])
+                              ? ((rule as AnyObj)[keywordsField] as string[]).join(", ")
+                              : ""
+                          }
+                          onChange={(e) => {
+                            const next = [...rules];
+                            next[i] = {
+                              ...next[i],
+                              [keywordsField]: csvToArray(e.target.value),
+                            };
+                            setIndexersPath([key], next);
+                          }}
+                          placeholder={placeholder}
+                        />
+                      </div>
+                      <div className="flex items-end gap-4 lg:contents">
+                        <div className="flex flex-col gap-1 lg:max-w-[100px] lg:flex-none">
+                          <span className="text-xs text-muted-foreground lg:hidden">Score</span>
+                          <Input
+                            type="number"
+                            value={Number(rule.score_modifier ?? 0)}
+                            onChange={(e) => {
+                              const next = [...rules];
+                              next[i] = {
+                                ...next[i],
+                                score_modifier: Number(e.target.value) || 0,
+                              };
+                              setIndexersPath([key], next);
+                            }}
+                            className="w-24 lg:w-auto"
+                            placeholder="Score"
+                          />
+                        </div>
+                        <div className="flex h-9 items-center gap-1.5">
+                          <Switch
+                            checked={rule.enabled !== false}
+                            onCheckedChange={(v) => {
+                              const next = [...rules];
+                              next[i] = { ...next[i], enabled: v };
+                              setIndexersPath([key], next);
+                            }}
+                          />
+                          <Label className="text-xs">Enabled</Label>
+                        </div>
+                      </div>
                     </div>
                   ))}
                   <Button
