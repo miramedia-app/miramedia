@@ -5,7 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
 import apiClient from "@/lib/api/client";
-import type { Site } from "@/lib/indexers";
+import { type MirrorEntry, type Site, siteMirrors } from "@/lib/indexers";
 
 const SITES_KEY = ["indexers", "sites"];
 
@@ -149,60 +149,97 @@ export function useIndexerSites() {
     }
   }, [editSite, qc]);
 
-  // ── URL management dialog ─────────────────────────────────────────────────
+  // ── Mirror management dialog ──────────────────────────────────────────────
+  // Edits are staged locally (reorder / enable / add / delete) and committed as
+  // one PUT of the full mirror list. The backend enforces the rules: seeded
+  // mirrors can be reordered/disabled but not deleted; the active URL must stay
+  // present and enabled.
   const [urlOpen, setUrlOpen] = React.useState(false);
   const [urlLoading, setUrlLoading] = React.useState(false);
   const [urlSite, setUrlSite] = React.useState<Site | null>(null);
+  const [urlMirrors, setUrlMirrors] = React.useState<MirrorEntry[]>([]);
+  const [urlActive, setUrlActive] = React.useState("");
   const [newUrl, setNewUrl] = React.useState("");
 
   const openUrls = React.useCallback((site: Site) => {
-    setUrlSite({ ...site, available_urls: [...(site.available_urls ?? [])] });
+    setUrlSite(site);
+    setUrlMirrors(siteMirrors(site).map((m) => ({ ...m })));
+    setUrlActive(site.url);
     setNewUrl("");
     setUrlOpen(true);
   }, []);
 
-  const switchActiveUrl = React.useCallback(
-    async (url: string) => {
-      if (!urlSite) return;
-      setUrlLoading(true);
-      await updateSite(urlSite.id, { url });
-      setUrlSite({ ...urlSite, url });
-      setUrlLoading(false);
-      toast.success("Active URL changed");
+  // Selecting an active mirror also enables it — the active URL cannot be off.
+  const setActiveUrl = React.useCallback((url: string) => {
+    setUrlActive(url);
+    setUrlMirrors((prev) => prev.map((m) => (m.url === url ? { ...m, enabled: true } : m)));
+  }, []);
+
+  const toggleMirror = React.useCallback(
+    (url: string) => {
+      if (url === urlActive) {
+        toast.error("Can't disable the active mirror — switch active first");
+        return;
+      }
+      setUrlMirrors((prev) => prev.map((m) => (m.url === url ? { ...m, enabled: !m.enabled } : m)));
     },
-    [urlSite, updateSite],
+    [urlActive],
   );
 
-  const addUrl = React.useCallback(async () => {
-    if (!urlSite || !newUrl.trim()) return;
+  const moveMirror = React.useCallback((index: number, dir: -1 | 1) => {
+    setUrlMirrors((prev) => {
+      const next = index + dir;
+      if (next < 0 || next >= prev.length) return prev;
+      const copy = [...prev];
+      [copy[index], copy[next]] = [copy[next], copy[index]];
+      return copy;
+    });
+  }, []);
+
+  const addUrl = React.useCallback(() => {
     const trimmed = newUrl.trim();
-    if ((urlSite.available_urls ?? []).includes(trimmed)) {
+    if (!trimmed) return;
+    if (urlMirrors.some((m) => m.url === trimmed)) {
       toast.error("URL already exists");
       return;
     }
-    setUrlLoading(true);
-    const updatedUrls = [...(urlSite.available_urls ?? []), trimmed];
-    await updateSite(urlSite.id, { available_urls: updatedUrls });
-    setUrlSite({ ...urlSite, available_urls: updatedUrls });
+    setUrlMirrors((prev) => [...prev, { url: trimmed, enabled: true, source: "user" }]);
     setNewUrl("");
-    setUrlLoading(false);
-  }, [urlSite, newUrl, updateSite]);
+  }, [newUrl, urlMirrors]);
 
   const removeUrl = React.useCallback(
-    async (url: string) => {
-      if (!urlSite) return;
-      if (url === urlSite.url) {
-        toast.error("Can't remove the active URL");
+    (url: string) => {
+      if (url === urlActive) {
+        toast.error("Can't remove the active mirror");
         return;
       }
-      setUrlLoading(true);
-      const updatedUrls = (urlSite.available_urls ?? []).filter((u) => u !== url);
-      await updateSite(urlSite.id, { available_urls: updatedUrls });
-      setUrlSite({ ...urlSite, available_urls: updatedUrls });
-      setUrlLoading(false);
+      const entry = urlMirrors.find((m) => m.url === url);
+      if (entry?.source === "seeded") {
+        toast.error("Built-in mirrors can't be deleted — disable it instead");
+        return;
+      }
+      setUrlMirrors((prev) => prev.filter((m) => m.url !== url));
     },
-    [urlSite, updateSite],
+    [urlActive, urlMirrors],
   );
+
+  const saveUrls = React.useCallback(async () => {
+    if (!urlSite) return;
+    setUrlLoading(true);
+    const { error } = await apiClient.PUT("/api/v1/indexers/sites/{site_id}", {
+      params: { path: { site_id: urlSite.id } },
+      body: { url: urlActive, mirrors: urlMirrors } as never,
+    });
+    setUrlLoading(false);
+    if (!error) {
+      toast.success("Mirrors updated");
+      setUrlOpen(false);
+      await qc.invalidateQueries({ queryKey: SITES_KEY });
+    } else {
+      const detail = (error as { detail?: string })?.detail;
+      toast.error(detail ?? "Failed to update mirrors");
+    }
+  }, [urlSite, urlActive, urlMirrors, qc]);
 
   const invalidateSites = React.useCallback(() => {
     void qc.invalidateQueries({ queryKey: SITES_KEY });
@@ -230,16 +267,21 @@ export function useIndexerSites() {
     setEditSite,
     openEdit,
     saveEdit,
-    // urls
+    // mirrors
     urlOpen,
     setUrlOpen,
     urlLoading,
     urlSite,
+    urlMirrors,
+    urlActive,
     newUrl,
     setNewUrl,
     openUrls,
-    switchActiveUrl,
+    setActiveUrl,
+    toggleMirror,
+    moveMirror,
     addUrl,
     removeUrl,
+    saveUrls,
   };
 }

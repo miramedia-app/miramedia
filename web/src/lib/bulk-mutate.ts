@@ -12,6 +12,11 @@ export interface BulkMutateResult<T> {
   failedItems: T[];
 }
 
+/** DELETE of a missing row is success — the file is already gone. */
+export function isAlreadyGone(response: { ok: boolean; status: number }) {
+  return response.ok || response.status === 404;
+}
+
 export async function bulkMutate<T>(
   items: T[],
   op: (item: T, index: number) => Promise<{ error?: unknown }>,

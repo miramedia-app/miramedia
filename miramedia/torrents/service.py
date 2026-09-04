@@ -53,6 +53,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+EXISTING_QUALITY_VARIANT_MSG = (
+    "A file already exists at that quality + variant. "
+    "Pick a different variant tag to keep both, or delete the existing file first."
+)
+
 
 def _torrent_rpc_concurrency_limit() -> int:
     """Read the live-status fan-out cap from env, default 10.
@@ -1379,15 +1384,15 @@ class TorrentService:
                     episode_target=episode_target,
                 )
                 if linked_rows == 0:
-                    # Every targeted episode is skipped or already linked.
+                    # Every targeted episode is skipped (already-present
+                    # quality+variant raises ConflictError from _link_show).
                     # Tear the torrent back down so we don't leave it spinning
                     # in the client with nothing to import (the import poller
                     # also can't reach it — is_due_for_retry skips torrents
                     # with zero linked files).
                     log.info(
                         "No episodes linked for torrent %s (all targeted "
-                        "episodes skipped or already present); cancelling "
-                        "download.",
+                        "episodes skipped); cancelling download.",
                         torrent.title,
                     )
                     await self.cancel_download(torrent=torrent, delete_files=True)
@@ -1420,6 +1425,11 @@ class TorrentService:
                     "Media file already exists for torrent %s; removing the duplicate torrent",
                     torrent.title,
                 )
+            elif isinstance(exc, ConflictError):
+                log.info(
+                    "Duplicate quality+variant for torrent %s; removing the unused download",
+                    torrent.title,
+                )
             else:
                 log.exception(
                     "Linking failed for torrent %s; removing the orphaned torrent",
@@ -1447,6 +1457,8 @@ class TorrentService:
                     torrent.hash,
                     exc_info=True,
                 )
+            if isinstance(exc, IntegrityError):
+                raise ConflictError(EXISTING_QUALITY_VARIANT_MSG) from exc
             raise
         else:
             log.info(
@@ -1603,8 +1615,8 @@ class TorrentService:
 
         Returns the number of newly created EpisodeFile rows (existing rows
         are skipped). A return value of 0 means every targeted episode is
-        either skipped or already linked, and the caller may want to abort
-        the download.
+        skipped. If every targeted episode already has this quality+variant,
+        raises ``ConflictError`` instead.
 
         *seasons_by_number* is an optional pre-built ``{season.number: season}``
         dict (from the show already loaded by ``_is_destination_wanted``).  When
@@ -1614,7 +1626,7 @@ class TorrentService:
         """
         from miramedia.exceptions import NotFoundError
 
-        rows_created = 0
+        skipped_existing = False
         quality = (
             quality_override if quality_override is not None else indexer_result.quality
         )
@@ -1657,12 +1669,13 @@ class TorrentService:
                 )
             }
             if (ep.id, quality, variant) in existing:
-                return 0
+                raise ConflictError(EXISTING_QUALITY_VARIANT_MSG)
             await show_repository.add_episode_file(
                 episode_file=EpisodeFile(
                     episode_id=ep.id,
                     quality=quality,
                     torrent_id=torrent.id,
+                    source_info_hash=torrent.hash,
                     variant=variant,
                 )
             )
@@ -1747,6 +1760,7 @@ class TorrentService:
 
             for episode_id in episode_ids:
                 if (episode_id, quality, variant) in existing_files:
+                    skipped_existing = True
                     log.debug(
                         "Episode file already exists for episode %s, skipping",
                         episode_id,
@@ -1757,15 +1771,17 @@ class TorrentService:
                         episode_id=episode_id,
                         quality=quality,
                         torrent_id=torrent.id,
+                        source_info_hash=torrent.hash,
                         variant=variant,
                     )
                 )
 
         if pending:
             await show_repository.add_episode_files(pending)
-            rows_created += len(pending)
-
-        return rows_created
+            return len(pending)
+        if skipped_existing:
+            raise ConflictError(EXISTING_QUALITY_VARIANT_MSG)
+        return 0
 
     async def _link_movie(
         self,
@@ -1789,13 +1805,13 @@ class TorrentService:
             )
         }
         if (quality, variant) in existing:
-            log.debug("Movie file already exists for movie %s, skipping", movie_id)
-            return
+            raise ConflictError(EXISTING_QUALITY_VARIANT_MSG)
 
         movie_file = MovieFileSchema(
             movie_id=movie_id,
             quality=quality,
             torrent_id=torrent.id,
+            source_info_hash=torrent.hash,
             variant=variant,
         )
         await movie_repository.add_movie_file(movie_file=movie_file)

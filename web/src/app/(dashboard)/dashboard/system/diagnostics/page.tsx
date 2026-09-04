@@ -15,7 +15,7 @@ import { DiagnosticsStoragePanel } from "./storage-panel";
 const TAB_DEFS: ReadonlyArray<{ value: DiagnosticsTab; label: string }> = [
   { value: "storage", label: "Storage" },
   { value: "database", label: "Database" },
-  { value: "scheduler", label: "Scheduled tasks" },
+  { value: "scheduler", label: "Scheduled Tasks" },
 ];
 
 export default function DiagnosticsPage() {
@@ -55,36 +55,26 @@ export default function DiagnosticsPage() {
   return (
     <>
       <DashboardHeader crumbs={crumbs} />
-      <main className="flex w-full flex-col gap-4 p-4 pt-0">
-        <div>
-          <h1 className="text-lg font-medium">Diagnostics</h1>
-          <p className="text-sm text-muted-foreground">
-            Read-only storage, database, and scheduler snapshot for operators.
-          </p>
-        </div>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList
-            variant="line"
-            className="h-auto w-full [scrollbar-width:none] justify-start gap-1 overflow-x-auto [&::-webkit-scrollbar]:hidden"
-          >
+      <main className="flex w-full min-w-0 flex-col gap-4 p-4 pt-0">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full min-w-0">
+          <TabsList className="flex h-auto w-full min-w-0 flex-row items-stretch justify-start gap-1 bg-transparent p-0 max-lg:-mx-4 max-lg:w-[calc(100%+2rem)] max-lg:max-w-[calc(100%+2rem)] max-lg:snap-x max-lg:snap-mandatory max-lg:[scrollbar-width:none] max-lg:overflow-x-auto max-lg:overscroll-x-contain max-lg:px-4 max-lg:py-1 max-lg:[&::-webkit-scrollbar]:hidden">
             {TAB_DEFS.map(({ value, label }) => (
               <TabsTrigger
                 key={value}
                 value={value}
-                className="shrink-0 coarse:min-h-11 coarse:px-3"
+                className="relative flex-none shrink-0 justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[active]:border-border data-[active]:bg-muted data-[active]:shadow-none! max-lg:min-h-11 max-lg:snap-start coarse:min-h-11"
               >
                 {label}
               </TabsTrigger>
             ))}
           </TabsList>
-          <TabsContent value="storage" className="flex flex-col gap-4 pt-4">
+          <TabsContent value="storage" className="flex flex-col gap-4">
             <DiagnosticsStoragePanel />
           </TabsContent>
-          <TabsContent value="database" className="flex flex-col gap-4 pt-4">
+          <TabsContent value="database" className="flex flex-col gap-4">
             <DiagnosticsDatabasePanel enabled={activeTab === "database"} />
           </TabsContent>
-          <TabsContent value="scheduler" className="flex flex-col gap-4 pt-4">
+          <TabsContent value="scheduler" className="flex flex-col gap-4">
             <DiagnosticsSchedulerPanel enabled={activeTab === "scheduler"} />
           </TabsContent>
         </Tabs>

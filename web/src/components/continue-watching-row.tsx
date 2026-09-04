@@ -1,18 +1,28 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Play } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Eye, EyeOff, EllipsisVertical, Play } from "lucide-react";
+import { toast } from "sonner";
 
 import { MediaPicture } from "@/components/media-picture";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { VideoPlayerDialog } from "@/components/video-player-dialog";
 import { useFeatures } from "@/components/providers/features-provider";
+import { getWatchedButtonA11y } from "@/components/watchlists/watched-button";
+import { invalidateWatchedItem, setWatchedState } from "@/hooks/use-watched-state";
 import apiClient from "@/lib/api/client";
 import type { components } from "@/lib/api/api";
 import {
   continueWatchingCopy,
   continueWatchingQueryEnabled,
   formatProgressPercent,
+  watchlistOverflowActionsEnabled,
 } from "@/lib/watchlists";
 
 type ContinueWatchingItem = components["schemas"]["ContinueWatchingItem"];
@@ -70,7 +80,7 @@ function ContinueWatchingCard({ item }: { item: ContinueWatchingItem }) {
   const playTitle = copy.subtitle ? `${copy.title} · ${copy.subtitle}` : copy.title;
 
   return (
-    <div className="min-w-0">
+    <div className="min-w-0 space-y-2">
       <VideoPlayerDialog
         mediaType={item.media_kind === "movie" ? "movie" : "show"}
         mediaId={item.media_id}
@@ -80,7 +90,7 @@ function ContinueWatchingCard({ item }: { item: ContinueWatchingItem }) {
         trigger={
           <button
             type="button"
-            className="group w-full min-w-0 space-y-2 overflow-hidden rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="group w-full min-w-0 space-y-2 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label={`Play ${playTitle}`}
           >
             <span className="relative block aspect-[2/3] w-full overflow-hidden rounded-lg">
@@ -94,26 +104,99 @@ function ContinueWatchingCard({ item }: { item: ContinueWatchingItem }) {
               </span>
             </span>
             {progressPct != null ? (
-              <span className="block h-1 rounded bg-muted">
+              <span className="block h-1 overflow-hidden rounded-full bg-muted">
                 <span
-                  className="block h-1 rounded bg-foreground"
+                  className="block h-1 rounded-full bg-foreground"
                   style={{ width: `${progressPct}%` }}
                 />
               </span>
             ) : null}
-            <span className="block min-w-0 space-y-0.5">
-              <span className="block truncate text-xs whitespace-nowrap sm:text-sm">
-                {copy.title}
-              </span>
-              {copy.subtitle ? (
-                <span className="block truncate text-xs text-muted-foreground">
-                  {copy.subtitle}
-                </span>
-              ) : null}
-            </span>
           </button>
         }
       />
+      <div className="flex min-w-0 items-start gap-1">
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <p className="truncate text-xs whitespace-nowrap sm:text-sm">{copy.title}</p>
+          {copy.subtitle ? (
+            <p className="truncate text-xs text-muted-foreground">{copy.subtitle}</p>
+          ) : null}
+        </div>
+        <WatchedMenu item={item} />
+      </div>
     </div>
+  );
+}
+
+const CONTINUE_KEY = ["playback", "continue"] as const;
+
+function WatchedMenu({ item }: { item: ContinueWatchingItem }) {
+  const { watchlists, custom_lists } = useFeatures();
+  const { markWatched } = watchlistOverflowActionsEnabled({ watchlists, custom_lists });
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    // Clear the resume point first so the item leaves Continue Watching and a later
+    // replay starts fresh, then sync the manual watched flag for watchlists.
+    mutationFn: async (watched: boolean) => {
+      const { error } = await apiClient.DELETE("/api/v1/playback/progress", {
+        params: { query: { file_id: item.file_id } },
+      });
+      if (error) throw error;
+      await setWatchedState({
+        media_kind: item.media_kind,
+        media_id: item.media_id,
+        watched,
+      });
+    },
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: CONTINUE_KEY });
+      const previous = queryClient.getQueryData<ContinueWatchingItem[]>(CONTINUE_KEY);
+      queryClient.setQueryData<ContinueWatchingItem[]>(CONTINUE_KEY, (prev) =>
+        prev ? prev.filter((entry) => entry.file_id !== item.file_id) : prev,
+      );
+      return { previous };
+    },
+    onError: (_error, _watched, context) => {
+      if (context) queryClient.setQueryData(CONTINUE_KEY, context.previous);
+      toast.error("Failed to update watched status");
+    },
+    onSuccess: (_data, watched) => {
+      toast.success(watched ? "Marked as watched" : "Marked as unwatched");
+    },
+    onSettled: async () => {
+      await invalidateWatchedItem(queryClient, item.media_kind, item.media_id);
+      await queryClient.invalidateQueries({ queryKey: ["playback", "progress"] });
+    },
+  });
+
+  if (!markWatched) return null;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0 text-muted-foreground"
+            aria-label="More actions"
+            disabled={mutation.isPending}
+          >
+            <EllipsisVertical className="size-4" />
+          </Button>
+        }
+      />
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem disabled={mutation.isPending} onClick={() => mutation.mutate(true)}>
+          <Eye className="size-4" />
+          {getWatchedButtonA11y(false).label}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={mutation.isPending} onClick={() => mutation.mutate(false)}>
+          <EyeOff className="size-4" />
+          {getWatchedButtonA11y(true).label}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

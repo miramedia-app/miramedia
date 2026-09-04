@@ -4253,6 +4253,11 @@ export interface components {
              */
             available_urls: string[];
             /**
+             * Mirrors
+             * @default []
+             */
+            mirrors: components["schemas"]["MirrorEntry"][];
+            /**
              * Api Key
              * @default
              */
@@ -4301,6 +4306,8 @@ export interface components {
             url?: string | null;
             /** Available Urls */
             available_urls?: string[] | null;
+            /** Mirrors */
+            mirrors?: components["schemas"]["MirrorEntry"][] | null;
             /** Api Key */
             api_key?: string | null;
             /** Supports Tv */
@@ -4779,6 +4786,29 @@ export interface components {
             native?: components["schemas"]["NativeMetadataSettingsSchema"] | null;
             tmdb?: components["schemas"]["TmdbSettingsSchema"] | null;
             tvdb?: components["schemas"]["TvdbSettingsSchema"] | null;
+        };
+        /**
+         * MirrorEntry
+         * @description One failover mirror for a native indexer site.
+         *
+         *     ``source`` distinguishes code-shipped mirrors (``seeded`` — reorderable and
+         *     toggleable but never deletable) from ones the user added (``user`` —
+         *     fully deletable). ``enabled`` mirrors, in list order, drive the live search.
+         */
+        MirrorEntry: {
+            /** Url */
+            url: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Source
+             * @default user
+             * @enum {string}
+             */
+            source: "seeded" | "user";
         };
         /** MiscSettingsSchema */
         MiscSettingsSchema: {

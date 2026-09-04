@@ -331,8 +331,8 @@ export function GeneralTab({
 
       <Card>
         <CardHeader>
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1.5">
+          <div className="flex min-w-0 items-start justify-between gap-4">
+            <div className="min-w-0 space-y-1.5">
               <CardTitle>Cloudflare Bypass</CardTitle>
               <CardDescription>
                 Shared by indexers, subtitle providers, and any future module. When enabled, it
@@ -733,11 +733,17 @@ export function GeneralTab({
                     {kind === "show" ? "Show Libraries" : "Movie Libraries"}
                     <OverrideMarker path={["misc", libKey]} />
                   </Label>
-                  <div className="flex items-center gap-2">
-                    <div className="h-8 w-5 shrink-0" />
-                    <Input value="Default" disabled className="max-w-[200px]" />
-                    <Input value={String(m[dirKey] ?? "")} disabled />
-                    <div className="h-8 w-8 shrink-0" />
+                  <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 lg:flex-row lg:items-center lg:gap-2 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0">
+                    <div className="hidden w-5 shrink-0 lg:block" />
+                    <div className="flex flex-col gap-1 lg:max-w-[200px] lg:flex-none">
+                      <span className="text-xs text-muted-foreground lg:hidden">Name</span>
+                      <Input value="Default" disabled />
+                    </div>
+                    <div className="flex flex-col gap-1 lg:flex-1">
+                      <span className="text-xs text-muted-foreground lg:hidden">Path</span>
+                      <Input value={String(m[dirKey] ?? "")} disabled />
+                    </div>
+                    <div className="hidden h-8 w-8 shrink-0 lg:block" />
                   </div>
                   {libs.map((library, i) => {
                     const moveLib = (from: number, to: number) => {
@@ -748,61 +754,73 @@ export function GeneralTab({
                       setMiscPath([libKey], next);
                     };
                     return (
-                      <div key={library._key} className="flex items-center gap-2">
-                        <div className="flex w-5 shrink-0 flex-col gap-0.5">
+                      <div
+                        key={library._key}
+                        className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 lg:flex-row lg:items-center lg:gap-2 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
+                      >
+                        <div className="flex items-center gap-1 lg:contents">
+                          <div className="flex items-center gap-1 lg:flex-col lg:gap-0.5">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={i === 0}
+                              onClick={() => moveLib(i, i - 1)}
+                              title="Move up"
+                              className="h-8 w-8 lg:h-5 lg:w-5"
+                            >
+                              ▲
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              disabled={i === libs.length - 1}
+                              onClick={() => moveLib(i, i + 1)}
+                              title="Move down"
+                              className="h-8 w-8 lg:h-5 lg:w-5"
+                            >
+                              ▼
+                            </Button>
+                          </div>
+                          <span className="text-sm font-medium lg:hidden">Library {i + 1}</span>
                           <Button
                             variant="ghost"
                             size="icon"
-                            disabled={i === 0}
-                            onClick={() => moveLib(i, i - 1)}
-                            title="Move up"
-                            className="h-5 w-5"
+                            onClick={() =>
+                              setMiscPath(
+                                [libKey],
+                                libs.filter((_, j) => j !== i),
+                              )
+                            }
+                            title="Delete"
+                            className="ml-auto lg:order-last lg:ml-0"
                           >
-                            ▲
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            disabled={i === libs.length - 1}
-                            onClick={() => moveLib(i, i + 1)}
-                            title="Move down"
-                            className="h-5 w-5"
-                          >
-                            ▼
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
                           </Button>
                         </div>
-                        <Input
-                          value={library.name}
-                          onChange={(e) => {
-                            const next = [...libs];
-                            next[i] = { ...next[i]!, name: e.target.value };
-                            setMiscPath([libKey], next);
-                          }}
-                          placeholder="Name"
-                          className="max-w-[200px]"
-                        />
-                        <Input
-                          value={library.path}
-                          onChange={(e) => {
-                            const next = [...libs];
-                            next[i] = { ...next[i]!, path: e.target.value };
-                            setMiscPath([libKey], next);
-                          }}
-                          placeholder="Path"
-                        />
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() =>
-                            setMiscPath(
-                              [libKey],
-                              libs.filter((_, j) => j !== i),
-                            )
-                          }
-                          title="Delete"
-                        >
-                          <Trash2 className="h-4 w-4 text-muted-foreground" />
-                        </Button>
+                        <div className="flex flex-col gap-1 lg:max-w-[200px] lg:flex-none">
+                          <span className="text-xs text-muted-foreground lg:hidden">Name</span>
+                          <Input
+                            value={library.name}
+                            onChange={(e) => {
+                              const next = [...libs];
+                              next[i] = { ...next[i]!, name: e.target.value };
+                              setMiscPath([libKey], next);
+                            }}
+                            placeholder="Name"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1 lg:flex-1">
+                          <span className="text-xs text-muted-foreground lg:hidden">Path</span>
+                          <Input
+                            value={library.path}
+                            onChange={(e) => {
+                              const next = [...libs];
+                              next[i] = { ...next[i]!, path: e.target.value };
+                              setMiscPath([libKey], next);
+                            }}
+                            placeholder="Path"
+                          />
+                        </div>
                       </div>
                     );
                   })}

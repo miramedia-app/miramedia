@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     UniqueConstraint,
     text,
 )
@@ -141,6 +142,9 @@ class MovieFile(Base):
     torrent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey(column="torrent.id", ondelete="SET NULL"),
         index=True,
+    )
+    source_info_hash: Mapped[str | None] = mapped_column(
+        String(40), default=None, nullable=True, index=True
     )
     import_status: Mapped[ImportOutcome] = mapped_column(
         default=ImportOutcome.pending, index=True

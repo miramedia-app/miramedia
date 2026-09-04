@@ -22,11 +22,15 @@ export const loggingMiddleware: Middleware = {
   },
   async onResponse({ request, response }) {
     if (!response.ok) {
-      // Request URLs can carry ids and search terms — keep them out of
-      // production consoles; the status alone is enough to notice a problem.
+      // 409 is a handled conflict (duplicate quality/variant, revision CAS).
+      // console.error would open the Next overlay for a case the UI already
+      // surfaces as a toast. Log it; don't treat it as an unexpected failure.
+      const isHandledConflict = response.status === 409;
       if (process.env.NODE_ENV !== "production") {
-        console.error(`Request to ${request.url} failed with status ${response.status}`);
-      } else {
+        const line = `Request to ${request.url} ${isHandledConflict ? "returned" : "failed with status"} ${response.status}`;
+        if (isHandledConflict) console.log(line);
+        else console.error(line);
+      } else if (!isHandledConflict) {
         console.error("API request failed", response.status);
       }
     } else if (process.env.NODE_ENV !== "production") {

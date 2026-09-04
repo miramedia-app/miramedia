@@ -58,6 +58,7 @@ class MovieFile(BaseModel):
     variant: str = ""  # user-entered
     extra: str = ""  # collision discriminator
     torrent_id: TorrentId | None = None
+    source_info_hash: str | None = None
     import_status: ImportOutcome = ImportOutcome.pending
     import_error: str | None = None
     imported_at: datetime | None = None

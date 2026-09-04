@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   indexerSearchMatch,
   siteHealthGroup,
+  siteMirrors,
   sitePriority,
   siteTestFacetValue,
   siteTypeLabel,
@@ -68,5 +69,23 @@ describe("sitePriority", () => {
     expect(sitePriority(site())).toBe(100);
     expect(sitePriority(site({ priority: 5 }))).toBe(5);
     expect(sitePriority(site({ priority: null }))).toBe(100);
+  });
+});
+
+describe("siteMirrors", () => {
+  it("returns the structured mirror list when present", () => {
+    const mirrors = [
+      { url: "https://a", enabled: true, source: "seeded" as const },
+      { url: "https://b", enabled: false, source: "user" as const },
+    ];
+    expect(siteMirrors(site({ mirrors }))).toEqual(mirrors);
+  });
+
+  it("backfills from available_urls as deletable user mirrors", () => {
+    const result = siteMirrors(site({ mirrors: [], available_urls: ["https://a", "https://b"] }));
+    expect(result).toEqual([
+      { url: "https://a", enabled: true, source: "user" },
+      { url: "https://b", enabled: true, source: "user" },
+    ]);
   });
 });

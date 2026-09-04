@@ -8,6 +8,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    String,
     Time,
     UniqueConstraint,
     text,
@@ -177,6 +178,9 @@ class EpisodeFile(Base):
     torrent_id: Mapped[UUID | None] = mapped_column(
         ForeignKey(column="torrent.id", ondelete="SET NULL"),
         index=True,
+    )
+    source_info_hash: Mapped[str | None] = mapped_column(
+        String(40), default=None, nullable=True, index=True
     )
     quality: Mapped[Quality]
     # Distinguishing components (see miramedia/torrents/quality_naming.py).

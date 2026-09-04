@@ -8,7 +8,7 @@ import { showDetailBundleQueryOptions } from "@/lib/api/media-queries";
 import { qk } from "@/lib/query-keys";
 import { useBulkTorrentActions } from "@/hooks/use-bulk-torrent-actions";
 import apiClient from "@/lib/api/client";
-import { bulkMutate } from "@/lib/bulk-mutate";
+import { bulkMutate, isAlreadyGone } from "@/lib/bulk-mutate";
 import { getTorrentStatusString } from "@/lib/utils";
 import {
   invalidateWatchedCaches,
@@ -22,6 +22,7 @@ import {
   seasonHasAllSubtitles as seasonHasAllSubtitlesPure,
   subKey,
   subtitleLanguagesByEpisode,
+  withoutFileInSeasonResults,
 } from "@/lib/show-detail";
 import type {
   DeleteTarget,
@@ -187,6 +188,28 @@ export function useShowDetail(showId: string | null | undefined) {
       void queryClient.invalidateQueries({ queryKey: ["season-files-batch", showId] });
     },
     [queryClient, showId],
+  );
+
+  const dropEpisodeFile = React.useCallback(
+    (fileId: string) => {
+      for (const seasonId of expandedSeasonIds) {
+        queryClient.setQueryData<EpisodeFile[]>(["season-files", seasonId], (files) =>
+          files?.filter((f) => f.id !== fileId),
+        );
+      }
+      queryClient.setQueryData(
+        ["season-files-batch", showId, expandedSeasonIds],
+        (
+          batch:
+            | { results?: Record<string, EpisodeFile[]>; errors?: Record<string, string> }
+            | undefined,
+        ) => {
+          if (!batch?.results) return batch;
+          return { ...batch, results: withoutFileInSeasonResults(batch.results, fileId) };
+        },
+      );
+    },
+    [queryClient, showId, expandedSeasonIds],
   );
 
   const toggleSeason = React.useCallback((seasonId: string) => {
@@ -465,12 +488,14 @@ export function useShowDetail(showId: string | null | undefined) {
       const { ok, failed, failedItems } = await bulkMutate([...selectedFiles], (key) => {
         if (key.startsWith("file:")) {
           const fileId = key.slice(5);
-          return apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
-            params: {
-              path: { file_id: fileId },
-              query: { delete_from_disk: true },
-            },
-          });
+          return apiClient
+            .DELETE("/api/v1/episodes/files/{file_id}", {
+              params: {
+                path: { file_id: fileId },
+                query: { delete_from_disk: true },
+              },
+            })
+            .then((result) => (isAlreadyGone(result.response) ? {} : result));
         }
         // subtitle key: `<episodeId>:sub:<fileName>`
         const colonIdx = key.indexOf(":");
@@ -501,11 +526,13 @@ export function useShowDetail(showId: string | null | undefined) {
   const [deleteTarget, setDeleteTarget] = React.useState<DeleteTarget | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = React.useState("");
   const [deleting, setDeleting] = React.useState(false);
+  const [blockSource, setBlockSource] = React.useState(false);
   const deleteConfirmed = deleteConfirmText.toLowerCase() === "delete";
 
   const openDeleteModal = React.useCallback((target: DeleteTarget) => {
     setDeleteTarget(target);
     setDeleteConfirmText("");
+    setBlockSource(false);
   }, []);
   const closeDeleteModal = React.useCallback(() => {
     setDeleteTarget(null);
@@ -521,10 +548,10 @@ export function useShowDetail(showId: string | null | undefined) {
         const { response } = await apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
           params: {
             path: { file_id: t.fileId },
-            query: { delete_from_disk: true },
+            query: { delete_from_disk: true, block_source: blockSource },
           },
         });
-        if (!response.ok) {
+        if (!isAlreadyGone(response)) {
           toast.error("Failed to delete file");
           return;
         }
@@ -534,7 +561,8 @@ export function useShowDetail(showId: string | null | undefined) {
           next.delete(fileKey(t.fileId));
           return next;
         });
-        await Promise.all([invalidateSeasonFiles(), invalidateAll()]);
+        dropEpisodeFile(t.fileId);
+        void Promise.all([invalidateSeasonFiles(), invalidateAll()]);
       } else if (t.type === "subtitle") {
         const { response } = await apiClient.DELETE(
           "/api/v1/subtitles/episodes/{episode_id}/files",
@@ -569,12 +597,14 @@ export function useShowDetail(showId: string | null | undefined) {
         }
         const files = getEpisodeFiles(t.seasonId, t.episodeId);
         const { failed } = await bulkMutate(files, (f) =>
-          apiClient.DELETE("/api/v1/episodes/files/{file_id}", {
-            params: {
-              path: { file_id: f.id! },
-              query: { delete_from_disk: true },
-            },
-          }),
+          apiClient
+            .DELETE("/api/v1/episodes/files/{file_id}", {
+              params: {
+                path: { file_id: f.id! },
+                query: { delete_from_disk: true },
+              },
+            })
+            .then((result) => (isAlreadyGone(result.response) ? {} : result)),
         );
         if (failed > 0) {
           toast.error(`${failed} episode file${failed === 1 ? "" : "s"} could not be deleted`);
@@ -614,7 +644,9 @@ export function useShowDetail(showId: string | null | undefined) {
   }, [
     deleteConfirmed,
     deleteTarget,
+    blockSource,
     invalidateSeasonFiles,
+    dropEpisodeFile,
     invalidateAll,
     loadSubtitles,
     getEpisodeFiles,
@@ -705,6 +737,8 @@ export function useShowDetail(showId: string | null | undefined) {
     toggleSeasonSkipped,
     // delete modal
     deleteTarget,
+    blockSource,
+    setBlockSource,
     deleteConfirmText,
     setDeleteConfirmText,
     deleting,

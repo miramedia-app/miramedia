@@ -29,28 +29,32 @@ Torznab recent-search feeds without grabbing — see
 ## Native indexer (`[indexers.native]`)
 
 Queries torrent sites directly — no Prowlarr/Jackett required. Enabled in the
-shipped `config.example.toml`. Ships with seven preloaded sites:
+shipped `config.example.toml`. Ships with nine preloaded sites:
 
 | Site | Type | Default URL | Media | Cloudflare | Enabled by default |
 | --- | --- | --- | --- | --- | --- |
-| YTS | JSON API | `yts.bz` (mirror `yts.am`) | Movies | No | Yes |
+| YTS | JSON API | `yts.gg` (mirrors `yts.mx`, `yts.bz`, `yts.am`) | Movies | No | Yes |
 | EZTV | JSON API | `eztvx.to` | TV only | No | Yes |
+| EXT | HTML scraper | `ext.to` (mirrors `ext2.to`, `t.extto.com`, `extto.com`) | TV + Movies | Yes | Yes |
 | The Pirate Bay | JSON API (ApiBay) | `apibay.org` | TV + Movies | No | Yes |
 | 1337x | HTML scraper | `1337x.to` | TV + Movies | Yes | **No** |
-| TorrentGalaxy | HTML scraper | `torrentgalaxy.one` | TV + Movies | No | Yes |
-| LimeTorrents | HTML scraper | `www.limetorrents.lol` | TV + Movies | No | Yes |
+| BitTorrented | HTML scraper | `bittorrented.com` | TV + Movies | No | Yes |
+| LimeTorrents | HTML scraper | `www.limetorrents.fun` | TV + Movies | No | Yes |
 | Nyaa | HTML scraper | `nyaa.si` | TV + Movies | No | Yes |
+| TorrentDownloads | HTML scraper | `www.torrentdownloads.pro` | TV + Movies | No | Yes |
 
-1337x is the only Cloudflare-protected preloaded site, and it ships **disabled
-by default** because the bypass needs a browser (see
-[Cloudflare Bypass](cloudflare)). Enable it from **System → Indexers** once
-your Cloudflare solver is configured.
+1337x and EXT are Cloudflare-protected. 1337x ships **disabled by default**
+because the bypass needs a browser (see [Cloudflare Bypass](cloudflare)) —
+enable it from **System → Indexers** once your Cloudflare solver is
+configured. EXT ships enabled because its mirror failover reaches a domain that
+currently serves search HTML without a Cloudflare interstitial.
 
 - `enabled`
 - `max_concurrent_searches` — parallel site queries. Default `5`.
 - `disabled_sites` — list of preloaded site keys to turn off, e.g.
-  `["nyaa", "limetorrents"]`. The keys are `yts`, `eztv`, `thepiratebay`,
-  `1337x`, `torrentgalaxy`, `limetorrents`, `nyaa`.
+  `["nyaa", "limetorrents"]`. The keys are `yts`, `eztv`, `ext`,
+  `thepiratebay`, `1337x`, `bittorrented`, `limetorrents`, `nyaa`,
+  `torrentdownloads`.
 - `custom_torznab_sites` — additional Torznab endpoints (see below).
 
 Preloaded sites live in the database and are also manageable from the UI at
@@ -58,6 +62,26 @@ Preloaded sites live in the database and are also manageable from the UI at
 priority, and run a live connectivity test that streams progress in real time.
 Preloaded sites can't be deleted, only disabled — custom sites you add can be
 deleted freely.
+
+### Mirror failover
+
+HTML-scraper sites that move between domains (EXT, LimeTorrents, and others)
+carry an **ordered mirror list** instead of a single URL. A search tries each
+**enabled** mirror in order and moves on when one is down, blocked, or
+redirects to an unconfigured domain — so a dead primary domain never breaks the
+site. The same ordered list drives the connectivity probe.
+
+Each mirror is tagged by source:
+
+- **Seeded** — shipped in the code. You can reorder or disable them and the
+  choice survives upgrades, but they can't be deleted. Upgrades merge new
+  code-shipped mirrors into your list without discarding your ordering.
+- **User** — mirrors you add yourself. Fully deletable.
+
+Manage the list per site at **System → Indexers**: reorder, enable/disable, add
+your own mirror, or delete a user mirror. Two rules are enforced (a violation
+returns a `400`): a seeded mirror can't be deleted, and the site's active URL
+must stay present and enabled.
 
 ### Custom Torznab sites
 

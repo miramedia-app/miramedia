@@ -2,6 +2,7 @@
 
 import logging
 import re
+from typing import ClassVar
 
 from selectolax.parser import HTMLParser, Node
 
@@ -15,7 +16,14 @@ log = logging.getLogger(__name__)
 
 class LimeTorrentsSite(BaseSite):
     name = "limetorrents"
-    url = "https://www.limetorrents.lol"
+    url = "https://www.limetorrents.fun"
+    # First-party LimeTorrents domains. ``.fun`` is the current primary;
+    # ``.lol`` is the previous domain, kept as a fallback. Third-party unblock
+    # proxies are deliberately excluded.
+    available_urls: ClassVar[list[str]] = [
+        "https://www.limetorrents.fun",
+        "https://www.limetorrents.lol",
+    ]
     supports_tv = True
     supports_movies = True
     cloudflare_protected = False
@@ -40,9 +48,8 @@ class LimeTorrentsSite(BaseSite):
 
     def _search(self, query: str) -> list[IndexerQueryResult]:
         search_query = query.replace(" ", "-")
-        search_url = f"{self.url}/search/all/{search_query}/"
         try:
-            html = self._fetch(search_url)
+            html = self._fetch_over_mirrors(f"/search/all/{search_query}/")
         except Exception:
             log.exception("LimeTorrents search failed")
             return []

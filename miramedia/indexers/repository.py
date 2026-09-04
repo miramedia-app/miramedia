@@ -5,6 +5,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from miramedia.indexers.backends.native import invalidate_native_indexer
+from miramedia.indexers.mirror_state import (
+    apply_user_update,
+    derive_available_urls,
+    load_entries,
+    mirrors_from_urls,
+)
 from miramedia.indexers.models import IndexerQueryResult, IndexerSite
 from miramedia.indexers.schemas import (
     IndexerQueryResult as IndexerQueryResultSchema,
@@ -15,6 +21,7 @@ from miramedia.indexers.schemas import (
     IndexerSiteId,
     IndexerSiteRead,
     IndexerSiteUpdate,
+    MirrorEntry,
 )
 
 log = logging.getLogger(__name__)
@@ -125,11 +132,15 @@ class IndexerRepository:
 
     async def create_site(self, data: IndexerSiteCreate) -> IndexerSiteRead:
         dump = data.model_dump()
-        # Ensure the active URL is always in available_urls
-        if not dump.get("available_urls"):
-            dump["available_urls"] = [dump["url"]] if dump.get("url") else []
-        elif dump["url"] not in dump["available_urls"]:
-            dump["available_urls"].insert(0, dump["url"])
+        # A user-created site's mirrors are all deletable (source="user"), with
+        # the active URL first. ``available_urls`` is derived from them.
+        mirrors = mirrors_from_urls(
+            list(dump.get("available_urls") or []),
+            dump["url"],
+            source="user",
+        )
+        dump["available_urls"] = derive_available_urls(mirrors)
+        dump["mirrors"] = [m.model_dump() for m in mirrors]
         site = IndexerSite(
             id=uuid4(),
             **dump,
@@ -148,9 +159,50 @@ class IndexerRepository:
             msg = f"Indexer site {site_id} not found"
             raise ValueError(msg)
 
+        # Snapshot the stored mirror list before applying scalar changes so the
+        # seeded/user classification is read from storage, not the client.
+        existing_mirrors = load_entries(site.mirrors, site.available_urls, site.url)
+
         update_data = data.model_dump(exclude_none=True)
+        # Mirror fields are reconciled separately (see below), not blindly set.
+        update_data.pop("mirrors", None)
+        update_data.pop("available_urls", None)
         for key, value in update_data.items():
             setattr(site, key, value)
+
+        new_url = data.url if data.url is not None else site.url
+        incoming: list[MirrorEntry] | None = None
+        if data.mirrors is not None:
+            incoming = data.mirrors
+        elif data.available_urls is not None:
+            # Legacy flat list: full replace, all enabled, order as given. The
+            # reconcile still enforces that seeded mirrors cannot be dropped.
+            incoming = [
+                MirrorEntry(url=u, enabled=True, source="user")
+                for u in data.available_urls
+            ]
+
+        reconciled: list[MirrorEntry] | None = None
+        if incoming is not None:
+            reconciled = apply_user_update(existing_mirrors, incoming, new_url)
+        elif data.url is not None and new_url not in derive_available_urls(
+            existing_mirrors
+        ):
+            # Active URL changed to an endpoint that isn't an enabled mirror
+            # (e.g. a Torznab URL edit): make it the active user mirror while
+            # keeping any existing mirrors.
+            reconciled = apply_user_update(
+                existing_mirrors,
+                [
+                    MirrorEntry(url=new_url, enabled=True, source="user"),
+                    *existing_mirrors,
+                ],
+                new_url,
+            )
+
+        if reconciled is not None:
+            site.mirrors = [m.model_dump() for m in reconciled]
+            site.available_urls = derive_available_urls(reconciled)
 
         await self.db.commit()
         await self.db.refresh(site)

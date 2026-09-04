@@ -431,19 +431,26 @@ class ShowService(MediaService[Show, ShowId]):
         self,
         file_id: UUID,
         delete_from_disk: bool = True,
+        block_source: bool = False,
     ) -> None:
         """
         Delete an episode file record (by surrogate id) and optionally its
         files from disk.
+
+        Idempotent: a missing row is a no-op so a repeat DELETE after a
+        successful delete (or a stale UI retry) is not a 404.
         """
         row = await self.show_repository.get_episode_file_by_id(file_id=file_id)
         if row is None:
-            msg = f"Episode file {file_id} not found."
-            raise NotFoundError(msg)
+            return
 
         # Capture the linked torrent before we drop the file row so we can
         # reap a now-orphaned, still-downloading torrent afterwards.
         torrent_id = row.torrent_id
+        if block_source and row.source_info_hash:
+            await self.torrent_service.torrent_repository.add_blocked_hash(
+                row.source_info_hash, reason="user_blocked"
+            )
         episode = await self.show_repository.get_episode(episode_id=row.episode_id)
         season = await self.show_repository.get_season_by_episode(
             episode_id=row.episode_id
@@ -1564,6 +1571,7 @@ class ShowService(MediaService[Show, ShowId]):
         source_file: Path,
         subtitle_files: list[Path] = (),
         torrent_id: TorrentId | None,
+        source_info_hash: str | None = None,
         variant: str = "",
         quality: Quality | None = None,
         existing_file_id: UUID | None = None,
@@ -1779,6 +1787,7 @@ class ShowService(MediaService[Show, ShowId]):
                     variant=variant,
                     extra=extra,
                     torrent_id=torrent_id,
+                    source_info_hash=source_info_hash,
                     import_status=ImportOutcome.imported,
                     imported_at=now,
                     last_attempt_at=now,
@@ -1995,6 +2004,7 @@ class ShowService(MediaService[Show, ShowId]):
                 source_file=matched_video,
                 subtitle_files=subtitle_files,
                 torrent_id=torrent.id,
+                source_info_hash=torrent.hash,
                 variant=episode_file.variant,
                 # quality omitted on purpose: detect it from the actual file
                 # (mediainfo) so torrent imports name files identically to scan

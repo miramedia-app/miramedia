@@ -257,7 +257,26 @@ describe("runPlaybackLoad", () => {
       fetch: vi.fn(() =>
         Promise.resolve({
           ok: true,
-          json: async () => ({ direct_play: false, hls_playlist_url: "/hls/x.m3u8" }),
+          json: async () => ({
+            direct_play: false,
+            hls_playlist_url: "/hls/x.m3u8",
+          }),
+        } as unknown as Response),
+      ) as unknown as typeof fetch,
+    });
+
+    await runPlaybackLoad(env);
+    expect(env.onNativeHls).toHaveBeenCalledWith("http://api/hls/x.m3u8");
+    expect(env.onDirect).not.toHaveBeenCalled();
+  });
+
+  it("prefers compatibility HLS natively even when direct play was advertised", async () => {
+    const env = baseEnv({
+      canPlayHlsNatively: () => true,
+      fetch: vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          json: async () => ({ direct_play: true, hls_playlist_url: "/hls/x.m3u8" }),
         } as unknown as Response),
       ) as unknown as typeof fetch,
     });
@@ -274,7 +293,10 @@ describe("runPlaybackLoad", () => {
       fetch: vi.fn(() =>
         Promise.resolve({
           ok: true,
-          json: async () => ({ direct_play: false, hls_playlist_url: "/hls/x.m3u8" }),
+          json: async () => ({
+            direct_play: false,
+            hls_playlist_url: "/hls/x.m3u8",
+          }),
         } as unknown as Response),
       ) as unknown as typeof fetch,
     });

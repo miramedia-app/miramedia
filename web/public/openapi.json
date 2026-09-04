@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "MiraMedia",
-    "version": "1.1.4"
+    "version": "1.1.5"
   },
   "paths": {
     "/api/v1/health": {
@@ -13339,6 +13339,14 @@
             "title": "Available Urls",
             "default": []
           },
+          "mirrors": {
+            "items": {
+              "$ref": "#/components/schemas/MirrorEntry"
+            },
+            "type": "array",
+            "title": "Mirrors",
+            "default": []
+          },
           "api_key": {
             "type": "string",
             "title": "Api Key",
@@ -13478,6 +13486,20 @@
               }
             ],
             "title": "Available Urls"
+          },
+          "mirrors": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MirrorEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mirrors"
           },
           "api_key": {
             "anyOf": [
@@ -14804,6 +14826,34 @@
         "additionalProperties": false,
         "type": "object",
         "title": "MetadataSettingsSchema"
+      },
+      "MirrorEntry": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "seeded",
+              "user"
+            ],
+            "title": "Source",
+            "default": "user"
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "MirrorEntry",
+        "description": "One failover mirror for a native indexer site.\n\n``source`` distinguishes code-shipped mirrors (``seeded`` \u2014 reorderable and\ntoggleable but never deletable) from ones the user added (``user`` \u2014\nfully deletable). ``enabled`` mirrors, in list order, drive the live search."
       },
       "MiscSettingsSchema": {
         "properties": {

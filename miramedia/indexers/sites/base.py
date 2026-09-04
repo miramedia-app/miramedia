@@ -3,14 +3,18 @@ from __future__ import annotations
 import logging
 import re
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 import httpx
 
 from miramedia.indexers.http_retry import indexer_fanout_deadline, indexer_get
+from miramedia.indexers.mirrors import MirrorPreference
 from miramedia.indexers.schemas import IndexerQueryResult
+
+_T = TypeVar("_T")
 
 if TYPE_CHECKING:
     from miramedia.cloudflare import CloudflareBypass
@@ -128,6 +132,64 @@ class BaseSite(ABC):
     # 403s behind Cloudflare while its data endpoint serves fine, so probing
     # the root would falsely flag the site as Cloudflare-walled.
     test_path: str = ""
+    # Seed-only fallback mirror origins. This class list SEEDS the DB row on
+    # first load; the live mirror list is ``self.mirror_urls`` (set from the DB
+    # column the UI manages — see ``__init__`` / the native backend). Populate
+    # per-site from the tracker's OWN first-party domains only — never
+    # third-party unblock proxies (proxyninja / mrunblock / etc.), which inject
+    # ads and don't serve the JSON/HTML endpoints these scrapers hit.
+    available_urls: ClassVar[list[str]] = []
+    # Lazily-built, instance-local last-known-good ordering. Shadowed per
+    # instance on first use; the class-level None is only the default.
+    _mirror_pref: MirrorPreference | None = None
+
+    def _mirror_list(self) -> tuple[str, ...]:
+        """De-duplicated mirror origins, ``url`` first, trailing slash stripped."""
+        seen: set[str] = set()
+        mirrors: list[str] = []
+        for candidate in (self.url, *self.mirror_urls):
+            normalized = candidate.rstrip("/")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                mirrors.append(normalized)
+        return tuple(mirrors)
+
+    def _get_mirror_pref(self) -> MirrorPreference:
+        if self._mirror_pref is None:
+            self._mirror_pref = MirrorPreference(self._mirror_list())
+        return self._mirror_pref
+
+    def _fetch_over_mirrors(
+        self,
+        path: str,
+        *,
+        params: dict | None = None,
+        fetch: Callable[..., _T] | None = None,
+    ) -> _T:
+        """Fetch ``path`` from each mirror in preference order until one works.
+
+        ``path`` is appended to each mirror origin. The first mirror that
+        returns without raising wins and is promoted for future searches, so a
+        single dead primary no longer takes the indexer offline. The last
+        error is re-raised only when every mirror fails; callers keep their
+        existing try/except to turn that into an empty result list.
+        """
+        fetcher = fetch if fetch is not None else cast("Callable[..., _T]", self._fetch)
+        pref = self._get_mirror_pref()
+        last_exc: Exception | None = None
+        for origin in pref.ordered():
+            try:
+                payload = fetcher(f"{origin}{path}", params=params)
+            except Exception as exc:  # record error and try the next mirror
+                last_exc = exc
+                log.debug("%s: mirror %s failed: %s", self.name, origin, exc)
+                continue
+            pref.mark_success(origin)
+            return payload
+        if last_exc is not None:
+            raise last_exc
+        msg = f"{self.name}: no mirrors configured"
+        raise RuntimeError(msg)
 
     def __init__(
         self,
@@ -141,6 +203,21 @@ class BaseSite(ABC):
         # them and lets ``solve`` read its budget from config.
         self.bypass = bypass
         self.timeout = timeout if timeout is not None else 120
+        # Per-instance override of the live failover mirror list. The native
+        # backend sets this from the DB column the UI edits; when unset the
+        # list falls back to the class seed ``available_urls``.
+        self._mirror_urls_override: list[str] | None = None
+
+    @property
+    def mirror_urls(self) -> list[str]:
+        """Live failover mirror list — DB override if set, else the class seed."""
+        if self._mirror_urls_override is not None:
+            return self._mirror_urls_override
+        return list(self.available_urls)
+
+    @mirror_urls.setter
+    def mirror_urls(self, value: list[str]) -> None:
+        self._mirror_urls_override = list(value)
 
     def _fetch(self, url: str, params: dict | None = None) -> str:
         """

@@ -90,7 +90,9 @@ services:
       - MIRAMEDIA_LOG_LEVEL=DEBUG
       - MIRAMEDIA_MISC__DEVELOPMENT=TRUE
       - MIRAMEDIA_ALLOW_INSECURE_TOKEN_SECRET=1
-      - MIRAMEDIA_MISC__CORS_URLS=["http://localhost:5555","http://10.1.3.176:5555"]
+      # Keep machine-specific browser origins in the ignored .env file. The
+      # committed default is sufficient for local-only access.
+      - MIRAMEDIA_MISC__CORS_URLS=${MIRAMEDIA_CORS_URLS:-["http://localhost:5555"]}
     volumes:
       - ./res/config:/app/config
       # Poster / metadata image cache — alongside config, not the media tree.
@@ -136,10 +138,11 @@ services:
       # Empty -> apiClient uses RELATIVE /api/* URLs, which the Next dev rewrite
       # in next.config.ts proxies to api:8000 internally. Relative is required so
       # the browser hits whatever host it loaded the page from (localhost OR LAN
-      # IP like 10.1.3.176:5555). An absolute http://localhost:8001 breaks LAN
+      # An absolute http://localhost:8001 breaks remote access
       # access: a remote browser resolves "localhost" to its own machine.
       - NEXT_PUBLIC_API_URL=
       - PUBLIC_VERSION=dev
+      - MIRAMEDIA_CORS_URLS=${MIRAMEDIA_CORS_URLS:-["http://localhost:5555"]}
     volumes:
       - ./web:/app
       - /app/node_modules

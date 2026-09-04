@@ -49,3 +49,33 @@ describe("loggingMiddleware.onError", () => {
     expect(spy).toHaveBeenCalledOnce();
   });
 });
+
+type OnResponseArgs = Parameters<NonNullable<typeof loggingMiddleware.onResponse>>[0];
+
+function callOnResponse(status: number) {
+  const options = {
+    request: { url: "https://example.test/api/v1/torrents/download" },
+    response: { ok: status >= 200 && status < 300, status },
+  } as unknown as OnResponseArgs;
+  return loggingMiddleware.onResponse!(options);
+}
+
+describe("loggingMiddleware.onResponse", () => {
+  it("does not console.error a 409 conflict the UI is expected to handle", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await callOnResponse(409);
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalled();
+  });
+
+  it("console.errors unexpected 5xx failures", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await callOnResponse(500);
+
+    expect(errorSpy).toHaveBeenCalledOnce();
+  });
+});

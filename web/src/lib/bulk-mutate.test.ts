@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bulkMutate } from "@/lib/bulk-mutate";
+import { bulkMutate, isAlreadyGone } from "@/lib/bulk-mutate";
 
 describe("bulkMutate", () => {
   it("reports every item as ok when none return an error", async () => {
@@ -47,5 +47,14 @@ describe("bulkMutate", () => {
   it("returns empty counts for an empty item list", async () => {
     const res = await bulkMutate([], async () => ({ data: true, error: undefined }));
     expect(res).toEqual({ ok: 0, failed: 0, okItems: [], failedItems: [] });
+  });
+});
+
+describe("isAlreadyGone", () => {
+  it("treats 2xx and 404 as success so a repeat DELETE is not a failure", () => {
+    expect(isAlreadyGone({ ok: true, status: 204 })).toBe(true);
+    expect(isAlreadyGone({ ok: false, status: 404 })).toBe(true);
+    expect(isAlreadyGone({ ok: false, status: 500 })).toBe(false);
+    expect(isAlreadyGone({ ok: false, status: 403 })).toBe(false);
   });
 });

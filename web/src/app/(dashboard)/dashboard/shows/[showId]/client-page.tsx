@@ -85,6 +85,8 @@ export default function ShowDetailClientPage() {
     deleteConfirmText,
     setDeleteConfirmText,
     deleting,
+    blockSource,
+    setBlockSource,
     deleteConfirmed,
     openDeleteModal,
     closeDeleteModal,
@@ -378,6 +380,8 @@ export default function ShowDetailClientPage() {
         onConfirmTextChange={setDeleteConfirmText}
         confirmed={deleteConfirmed}
         deleting={deleting}
+        blockSource={blockSource}
+        onBlockSourceChange={setBlockSource}
         selectedFilesCount={selectedFiles.size}
         selectedTorrentsCount={selectedTorrents.size}
         onClose={closeDeleteModal}

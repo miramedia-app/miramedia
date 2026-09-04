@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import logging
 import mimetypes
+import re
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
@@ -208,6 +209,25 @@ def _hls_playlist_url(media_kind: str, media_id: str, file_id: UUID) -> str:
     return f"/api/v1/streams/{media_kind}/{media_id}/hls/index.m3u8?file_id={file_id}"
 
 
+def _render_hls_playlist(playlist: Path, file_id: UUID) -> str:
+    """Attach the file binding to relative media URIs in an HLS playlist."""
+
+    def bind(uri: str) -> str:
+        separator = "&" if "?" in uri else "?"
+        return f"{uri}{separator}file_id={file_id}"
+
+    rendered: list[str] = []
+    for line in playlist.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#"):
+            line = re.sub(
+                r'URI="([^"]+)"', lambda match: f'URI="{bind(match[1])}"', line
+            )
+        elif line:
+            line = bind(line)
+        rendered.append(line)
+    return "\n".join(rendered) + "\n"
+
+
 def _probe_hls_playlist_url(
     *,
     direct_play: bool,
@@ -216,13 +236,13 @@ def _probe_hls_playlist_url(
     file_id: UUID,
     source_file: Path,
 ) -> str | None:
-    """Only advertise HLS when the cache is warm — never block playback on encode."""
+    """Advertise only completed HLS, avoiding live-style partial playlists."""
     if direct_play or not hls_transcode_available():
         return None
-    if hls_playlist_ready(source_file):
-        return _hls_playlist_url(media_kind, media_id, file_id)
-    schedule_hls_warm(source_file)
-    return None
+    if not hls_playlist_ready(source_file):
+        schedule_hls_warm(source_file)
+        return None
+    return _hls_playlist_url(media_kind, media_id, file_id)
 
 
 @router.get(
@@ -430,7 +450,7 @@ async def episode_hls_playlist(
     show_service: show_service_dep,
     db: DbSessionDependency,
     file_id: FileIdQuery,
-) -> FileResponse:
+) -> Response:
     episode_file = await _load_episode_file(
         show_service=show_service, episode_id=episode_id, file_id=file_id
     )
@@ -450,8 +470,8 @@ async def episode_hls_playlist(
     playlist = _resolve_hls_playlist_file(video_file, playlist)
     if playlist is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "HLS playlist not found")
-    return FileResponse(
-        playlist,
+    return Response(
+        _render_hls_playlist(playlist, file_id),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": _hls_playlist_cache_control(playlist)},
     )
@@ -498,7 +518,7 @@ async def movie_hls_playlist(
     movie_service: movie_service_dep,
     db: DbSessionDependency,
     file_id: FileIdQuery,
-) -> FileResponse:
+) -> Response:
     movie_file = await _load_movie_file(
         movie_service=movie_service, movie_id=movie.id, file_id=file_id
     )
@@ -519,8 +539,8 @@ async def movie_hls_playlist(
     playlist = _resolve_hls_playlist_file(video_file, playlist)
     if playlist is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "HLS playlist not found")
-    return FileResponse(
-        playlist,
+    return Response(
+        _render_hls_playlist(playlist, file_id),
         media_type="application/vnd.apple.mpegurl",
         headers={"Cache-Control": _hls_playlist_cache_control(playlist)},
     )

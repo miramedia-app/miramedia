@@ -1,8 +1,9 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import DateTime, Index, Integer, String, func
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.sqltypes import BigInteger
 
@@ -46,7 +47,16 @@ class IndexerSite(Base):
     name: Mapped[str]
     site_type: Mapped[str] = mapped_column(String(20), default="torznab")
     url: Mapped[str]
+    # Derived, backward-compat view: the enabled mirror URLs in order. Kept in
+    # sync from ``mirrors`` on every write; consumed by the live search, the
+    # connectivity probe, and older clients.
     available_urls: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
+    # Source of truth for the mirror list: an ordered list of
+    # ``{"url", "enabled", "source"}`` dicts. ``source`` is "seeded" (code-
+    # shipped, undeletable) or "user" (deletable). See indexers/mirror_state.py.
+    mirrors: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default="[]"
+    )
     api_key: Mapped[str] = mapped_column(default="")
     supports_tv: Mapped[bool] = mapped_column(default=True)
     supports_movies: Mapped[bool] = mapped_column(default=True)

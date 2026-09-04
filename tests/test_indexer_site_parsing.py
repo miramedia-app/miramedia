@@ -23,7 +23,6 @@ from miramedia.indexers.sites.eztv import EztvSite
 from miramedia.indexers.sites.limetorrents import LimeTorrentsSite
 from miramedia.indexers.sites.nyaa import NyaaSite
 from miramedia.indexers.sites.thepiratebay import ThePirateBaySite
-from miramedia.indexers.sites.torrentgalaxy import TorrentGalaxySite
 from miramedia.indexers.sites.x1337 import (
     UNKNOWN_AGE_DAYS,
     X1337Site,
@@ -641,61 +640,6 @@ class TestBitTorrentedParsing:
         }
 
 
-class TestTorrentGalaxyParsing:
-    @pytest.fixture
-    def site(self) -> TorrentGalaxySite:
-        return TorrentGalaxySite()
-
-    def test_parse_row_metadata(self, site: TorrentGalaxySite) -> None:
-        html = _load_fixture("torrentgalaxy.html")
-        rows = HTMLParser(html).css("div.tgxtablerow")
-        assert len(rows) == 3
-
-        meta0 = site._parse_row_metadata(rows[0])
-        assert meta0 is not None
-        assert meta0["title"] == "Breaking Bad S01E01 1080p"
-        assert meta0["detail_path"] == "/torrent/12345-breaking-bad-s01e01"
-        assert meta0["seeders"] == 25
-        assert meta0["size"] == int(1.2 * 1024**3)
-
-        meta1 = site._parse_row_metadata(rows[1])
-        assert meta1 is not None
-        assert meta1["title"] == "Breaking Bad S01E02 720p"
-        assert meta1["seeders"] == 10
-        assert meta1["size"] == 943718400
-
-        meta2 = site._parse_row_metadata(rows[2])
-        assert meta2 is not None
-        assert meta2["title"] == "Documentary 2024"
-        assert meta2["seeders"] == 5
-        assert meta2["size"] == int(4.0 * 1024**3)
-
-    def test_search_with_mocked_fetch(self, site: TorrentGalaxySite) -> None:
-        html = _load_fixture("torrentgalaxy.html")
-        magnets = {
-            "/torrent/12345-breaking-bad-s01e01": "magnet:?xt=urn:btih:tg111",
-            "/torrent/12346-breaking-bad-s01e02": "magnet:?xt=urn:btih:tg222",
-            "/torrent/99999-doc": "magnet:?xt=urn:btih:tg333",
-        }
-
-        with (
-            patch.object(site, "_fetch", return_value=html),
-            patch.object(site, "_fetch_magnet", side_effect=lambda path: magnets[path]),
-        ):
-            results = site._search("breaking bad")
-
-        assert len(results) == 3
-        assert results[0].title == "Breaking Bad S01E01 1080p"
-        assert results[0].seeders == 25
-        assert results[0].download_url == "magnet:?xt=urn:btih:tg111"
-        assert results[0].indexer == "torrentgalaxy"
-
-    def test_empty_results(self) -> None:
-        html = _load_fixture("torrentgalaxy_empty.html")
-        rows = HTMLParser(html).css("div.tgxtablerow")
-        assert rows == []
-
-
 # ---------------------------------------------------------------------------
 # Nyaa
 # ---------------------------------------------------------------------------
@@ -1231,7 +1175,6 @@ class TestYtsMirrorFailover:
     ("fixture_name", "row_selector"),
     [
         ("x1337_empty.html", "table.table-list tbody tr"),
-        ("torrentgalaxy_empty.html", "div.tgxtablerow"),
         ("nyaa_empty.html", "table.torrent-list tbody tr"),
         ("limetorrents_empty.html", "table.table2 tr"),
     ],

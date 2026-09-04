@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
 import apiClient from "@/lib/api/client";
+import { apiErrorDetail } from "@/lib/api/error-detail";
 import { createManagedEventSource, type ManagedEventSource } from "@/lib/managed-event-source";
 import { createRunGenerationGuard } from "@/lib/run-generation";
 import { getTorrentQualityString } from "@/lib/utils";
@@ -119,6 +120,7 @@ export function DownloadMediaDialog({
   const [isLoading, setIsLoading] = React.useState(false);
   const [results, setResults] = React.useState<SearchHit[] | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [variant, setVariant] = React.useState("");
 
   // Search filters (narrow what the indexer returns). Quality of the saved
   // file is auto-detected on download — not chosen here.
@@ -389,18 +391,21 @@ export function DownloadMediaDialog({
     streamControllersRef.current = [];
     setIsLoading(false);
     setError(null);
-    const { response } = await apiClient.POST("/api/v1/torrents/download", {
+    const { response, error: apiError } = await apiClient.POST("/api/v1/torrents/download", {
       body: {
         indexer_result_id: resultId,
         media_type: mediaType,
         media_id: media.id!,
-        variant: "",
+        variant,
         quality_override: null,
         library: null,
       },
     });
     if (response.status === 409) {
-      const msg = "A file already exists at that quality + variant. Pick a different variant tag.";
+      const msg = apiErrorDetail(
+        apiError,
+        "A file already exists at that quality + variant. Pick a different variant tag to keep both, or delete the existing file first.",
+      );
       setError(msg);
       toast.info(msg);
     } else if (!response.ok) {
@@ -539,6 +544,21 @@ export function DownloadMediaDialog({
                 )}
               </div>
             )}
+
+            <div className="grid max-w-md items-center gap-1.5">
+              <Label htmlFor="download-variant">
+                Variant <span className="text-muted-foreground">(optional)</span>
+              </Label>
+              <Input
+                id="download-variant"
+                value={variant}
+                onChange={(e) => setVariant(e.target.value)}
+                placeholder="e.g. remux, director-cut"
+              />
+              <p className="text-xs text-muted-foreground">
+                Needed only to keep a second copy at the same quality as a file you already have.
+              </p>
+            </div>
 
             {/* Actions */}
             <div className="flex flex-wrap items-center gap-3">
