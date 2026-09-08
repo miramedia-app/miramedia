@@ -20,7 +20,10 @@ def completed(tmp_path, monkeypatch):
         paths,
         "MiraMediaConfig",
         lambda: SimpleNamespace(
-            misc=SimpleNamespace(effective_completed_path=tmp_path)
+            misc=SimpleNamespace(
+                effective_completed_path=tmp_path,
+                incomplete_torrent_path="",
+            )
         ),
     )
     return tmp_path
@@ -70,3 +73,71 @@ def test_matching_season_still_resolves_when_named_differently(completed):
     torrent = _torrent("Greys.Anatomy.S06.1080p.WEBRip.x265-RARBG")
 
     assert get_torrent_filepath(torrent) == on_disk
+
+
+@pytest.fixture
+def split_roots(tmp_path, monkeypatch):
+    """Completed + incomplete roots, as configured in a split-path setup."""
+    completed = tmp_path / "completed"
+    incomplete = tmp_path / "incomplete"
+    completed.mkdir()
+    incomplete.mkdir()
+    monkeypatch.setattr(
+        paths,
+        "MiraMediaConfig",
+        lambda: SimpleNamespace(
+            misc=SimpleNamespace(
+                effective_completed_path=completed,
+                incomplete_torrent_path=str(incomplete),
+            )
+        ),
+    )
+    return completed, incomplete
+
+
+def _populate(directory, name: str = "movie.mkv"):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / name).write_bytes(b"x")
+    return directory
+
+
+def test_payload_in_incomplete_is_never_imported(split_roots):
+    """Only completed downloads are importable; incomplete is off limits."""
+    completed, incomplete = split_roots
+    title = "Turbo A Power Rangers Movie 1997 1080p BluRay HEVC x265 5 1 BONE"
+    _populate(incomplete / title)
+
+    # Deterministic completed path, even though it does not exist yet.
+    assert get_torrent_filepath(_torrent(title)) == completed / title
+
+
+def test_empty_leftover_dir_does_not_shadow_real_payload(split_roots):
+    """A stale empty dir from a previous download must not win the fuzzy match."""
+    completed, _incomplete = split_roots
+    stale = completed / (
+        "Turbo A Power Rangers Movie 1997 1080p BluRay HEVC x265 5.1 BONE"
+    )
+    stale.mkdir()
+    title = "Turbo A Power Rangers Movie 1997 1080p BluRay HEVC x265 5 1 BONE"
+    payload = _populate(completed / "Turbo.A.Power.Rangers.Movie.1997.1080p.BONE")
+
+    assert get_torrent_filepath(_torrent(title)) == payload
+
+
+def test_populated_dir_wins_over_empty_sibling(split_roots):
+    completed, _incomplete = split_roots
+    title = "Some Movie 2020 1080p BluRay x265"
+    (completed / "Some.Movie.2020.1080p.WEB").mkdir()
+    done = _populate(completed / title)
+
+    assert get_torrent_filepath(_torrent(title)) == done
+
+
+def test_empty_dir_still_resolved_when_nothing_populated(split_roots):
+    """Fallback pass keeps the old behaviour for a genuinely empty download."""
+    completed, _incomplete = split_roots
+    title = "Some Movie 2020 1080p BluRay x265"
+    empty = completed / title
+    empty.mkdir()
+
+    assert get_torrent_filepath(_torrent(title)) == empty

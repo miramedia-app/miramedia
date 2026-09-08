@@ -99,7 +99,22 @@ def test_decoy_only_payload_triggers_removal() -> None:
     assert kwargs == {"reason": "no_meaningful_video"}
 
 
+def test_default_metadata_window_outlives_magnet_resolution() -> None:
+    """Pin the window well clear of DHT metadata latency.
+
+    The original 60s default expired before metadata arrived on every magnet
+    seen in production, so this gate never once reached a verdict.
+    """
+    import inspect
+
+    defaults = inspect.signature(
+        TorrentService._verify_torrent_has_video_files
+    ).parameters
+    assert defaults["timeout_seconds"].default >= 600.0
+
+
 def test_metadata_timeout_fails_open() -> None:
+    """Fail-open is deliberate — reject_decoy_downloads re-checks at finish."""
     svc = _make_service(_AlwaysNoneDownloadManager())
     block_mock = AsyncMock()
     with patch.object(TorrentService, "_block_and_remove", block_mock):

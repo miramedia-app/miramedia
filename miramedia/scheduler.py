@@ -214,6 +214,14 @@ _STARTUP_SCHEDULES[cleanup_hls_cache_task.task_name] = [{"cron": "30 3 * * *"}]
 
 
 @background_broker.task(labels={"priority": "background"})
+async def prune_empty_torrent_dirs_task() -> None:
+    await maintenance_tasks.prune_empty_torrent_dirs()
+
+
+_STARTUP_SCHEDULES[prune_empty_torrent_dirs_task.task_name] = [{"cron": "45 3 * * *"}]
+
+
+@background_broker.task(labels={"priority": "background"})
 async def purge_old_indexer_query_results_task() -> None:
     await maintenance_tasks.purge_old_indexer_query_results()
 

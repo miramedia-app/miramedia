@@ -474,5 +474,45 @@ def is_video_file(path: Path) -> bool:
     return path.suffix.lower() in _VIDEO_EXTS
 
 
+# Extension tokens that a release name should never carry. A legit release
+# names its container in the *files*, not the title; a dropper advertises its
+# payload right in the name ("Lioness S03E06 1080p WEBRip H264-KRAFT exe")
+# because the payload really is one renamed binary. Deliberately conservative
+# — "com" (site tags: "[rarbg.com]"), "scr" (screener), "bat" ("The Bat 1959")
+# and "jar" all have legitimate uses in release names and are excluded, since a
+# false positive here silently blocks a real download.
+_EXECUTABLE_TITLE_TOKENS = (
+    "exe",
+    "msi",
+    "lnk",
+    "pif",
+    "vbs",
+    "vbe",
+    "jse",
+    "wsf",
+    "wsh",
+    "ps1",
+    "cmd",
+    "apk",
+)
+
+_MALWARE_TITLE_RE = re.compile(
+    r"(?:^|[\s._()\[\]-])(?:"
+    + "|".join(_EXECUTABLE_TITLE_TOKENS)
+    + r")(?:$|[\s._()\[\]-])",
+    re.IGNORECASE,
+)
+
+
+def is_malware_release_title(title: str) -> bool:
+    """True when a release name advertises an executable payload.
+
+    Cheap, local, first-line screen — runs before we spend an HTTP fetch or
+    join a swarm. Content inspection stays authoritative; this only catches
+    the droppers that announce themselves in the title.
+    """
+    return bool(_MALWARE_TITLE_RE.search(title))
+
+
 def is_subtitle_file(path: Path) -> bool:
     return path.suffix.lower() in _SUBTITLE_EXTS

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -152,6 +153,59 @@ async def cleanup_hls_cache() -> None:
         summary["freed_bytes"],
         summary["remaining_bytes"],
     )
+
+
+EMPTY_TORRENT_DIR_MIN_AGE = timedelta(hours=24)
+
+
+def _prune_empty_torrent_dirs_sync() -> int:
+    from miramedia.torrents.paths import (
+        _application_control_dir_paths,
+        _configured_torrent_roots,
+        _is_safe_deletion_target,
+        rmdir_empty_tree,
+    )
+
+    cfg = MiraMediaConfig().misc
+    roots = _configured_torrent_roots(cfg)
+    forbidden = _application_control_dir_paths(cfg)
+    cutoff = time.time() - EMPTY_TORRENT_DIR_MIN_AGE.total_seconds()
+
+    removed = 0
+    for root in roots:
+        try:
+            children = list(root.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            if child.is_symlink() or not child.is_dir():
+                continue
+            if not _is_safe_deletion_target(child, roots, forbidden=forbidden):
+                continue
+            try:
+                if child.stat().st_mtime > cutoff:
+                    # Young enough to belong to an in-flight download that has
+                    # not written its first piece yet.
+                    continue
+                if rmdir_empty_tree(child):
+                    removed += 1
+                    log.info("Pruned empty torrent dir %s", child)
+            except OSError:
+                log.debug("Could not prune torrent dir %s", child, exc_info=True)
+    return removed
+
+
+async def prune_empty_torrent_dirs() -> None:
+    """Reap fileless leftover directories under the torrent roots.
+
+    A deleted download, or libtorrent's asynchronous ``move_storage``, leaves
+    the old save directory behind. Those empty leftovers accumulate and — worse
+    — a re-download of the same title can resolve onto one of them and fail the
+    import with "source files missing".
+    """
+    removed = await asyncio.to_thread(_prune_empty_torrent_dirs_sync)
+    if removed:
+        log.info("Pruned %d empty torrent director(ies)", removed)
 
 
 async def purge_old_indexer_query_results() -> None:

@@ -1,5 +1,6 @@
 import logging
 import ntpath
+import os
 import re
 import typing
 import unicodedata
@@ -74,9 +75,16 @@ def _has_invalid_leaf_trailing_chars(leaf: str) -> bool:
 
 
 class _TorrentRootsCfg(typing.Protocol):
-    effective_completed_path: Path | str
-    incomplete_torrent_path: str
-    torrent_directory: Path | str
+    # Read-only members: the real config exposes ``effective_completed_path``
+    # as a property, which a mutable protocol attribute would reject.
+    @property
+    def effective_completed_path(self) -> Path | str: ...
+
+    @property
+    def incomplete_torrent_path(self) -> str: ...
+
+    @property
+    def torrent_directory(self) -> Path | str: ...
 
 
 def _configured_torrent_roots(cfg: _TorrentRootsCfg) -> list[Path]:
@@ -285,8 +293,87 @@ def _deterministic_lookup_fallback(root: Path, title: str) -> Path:
     return candidate
 
 
+def _dir_contains_file(path: Path) -> bool:
+    """True when *path* holds at least one regular file at any depth.
+
+    Leftover empty directories are the norm after a delete or after
+    libtorrent's asynchronous ``move_storage``; they must never win a
+    title-to-directory lookup over the directory that actually holds the
+    payload.
+    """
+    try:
+        for _dirpath, _dirnames, filenames in os.walk(path):
+            if filenames:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _resolve_dir_in_root(
+    root: Path, torrent: Torrent, *, require_files: bool
+) -> Path | None:
+    """Resolve *torrent* to a directory under *root*, exact → sanitized → fuzzy."""
+
+    def accept(candidate: Path | None) -> Path | None:
+        if candidate is None:
+            return None
+        if require_files and not _dir_contains_file(candidate):
+            return None
+        return candidate
+
+    leaf = torrent_title_path_component(torrent.title)
+    primary = accept(_lookup_dir_if_present(root, leaf))
+    if primary is not None:
+        return primary
+
+    sanitized = sanitize_filename(torrent.title)
+    if sanitized and sanitized != torrent.title:
+        sanitized_match = accept(_lookup_dir_if_present(root, sanitized))
+        if sanitized_match is not None:
+            return sanitized_match
+
+    title_words = _torrent_dir_words(torrent.title)
+    title_disc = _dir_discriminators(torrent.title)
+    if not title_words or not root.exists():
+        return None
+
+    best: tuple[float, Path] | None = None
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        children = []
+    for child in children:
+        if not child.is_dir():
+            continue
+        child_disc = _dir_discriminators(child.name)
+        if title_disc and child_disc and title_disc.isdisjoint(child_disc):
+            continue
+        child_words = _torrent_dir_words(child.name)
+        if not child_words:
+            continue
+        overlap = title_words & child_words
+        if not overlap:
+            continue
+        accepted = accept(_lookup_dir_if_present(root, child.name))
+        if accepted is None:
+            continue
+        score = len(overlap) / len(title_words)
+        if best is None or score > best[0]:
+            best = (score, accepted)
+    if best is not None and best[0] >= 0.6:
+        log.debug(
+            "Resolved torrent %r to on-disk dir %s (overlap %.0f%%)",
+            torrent.title,
+            best[1],
+            best[0] * 100,
+        )
+        return best[1]
+    return None
+
+
 def get_torrent_filepath(torrent: Torrent) -> Path:
-    """Resolve the on-disk directory holding a torrent's files.
+    """Resolve the on-disk directory holding a torrent's *completed* files.
 
     libtorrent / qBittorrent / Transmission save files under the .torrent's
     ``info.name``, which often differs from the indexer-reported
@@ -299,56 +386,21 @@ def get_torrent_filepath(torrent: Torrent) -> Path:
     2. ``<completed>/<sanitized title>`` (typical filesystem-safe variant).
     3. A fuzzy scan of ``<completed>`` for the directory whose normalized
        name shares the largest word overlap with the torrent title.
-    Falls back to ``<completed>/<title>`` (which may not exist) so callers
-    still get a deterministic path they can mkdir-on / report on.
+
+    Only the completed root is searched: a download still living in the
+    incomplete root is not importable, and the download client is responsible
+    for moving it. A first pass accepts only directories that actually
+    contain files, so a stale empty leftover from an earlier download of the
+    same release can never shadow the real payload directory. Falls back to
+    ``<completed>/<title>`` (which may not exist) so callers still get a
+    deterministic path they can mkdir-on / report on.
     """
-    completed = MiraMediaConfig().misc.effective_completed_path
-    leaf = torrent_title_path_component(torrent.title)
+    completed = Path(MiraMediaConfig().misc.effective_completed_path)
 
-    primary = _lookup_dir_if_present(completed, leaf)
-    if primary is not None:
-        return primary
-
-    sanitized = sanitize_filename(torrent.title)
-    if sanitized and sanitized != torrent.title:
-        sanitized_match = _lookup_dir_if_present(completed, sanitized)
-        if sanitized_match is not None:
-            return sanitized_match
-
-    title_words = _torrent_dir_words(torrent.title)
-    title_disc = _dir_discriminators(torrent.title)
-    if title_words and completed.exists():
-        best: tuple[float, Path] | None = None
-        try:
-            children = list(completed.iterdir())
-        except OSError:
-            children = []
-        for child in children:
-            if not child.is_dir():
-                continue
-            child_disc = _dir_discriminators(child.name)
-            if title_disc and child_disc and title_disc.isdisjoint(child_disc):
-                continue
-            child_words = _torrent_dir_words(child.name)
-            if not child_words:
-                continue
-            overlap = title_words & child_words
-            if not overlap:
-                continue
-            accepted = _lookup_dir_if_present(completed, child.name)
-            if accepted is None:
-                continue
-            score = len(overlap) / len(title_words)
-            if best is None or score > best[0]:
-                best = (score, accepted)
-        if best is not None and best[0] >= 0.6:
-            log.debug(
-                "Resolved torrent %r to on-disk dir %s (overlap %.0f%%)",
-                torrent.title,
-                best[1],
-                best[0] * 100,
-            )
-            return best[1]
+    for require_files in (True, False):
+        match = _resolve_dir_in_root(completed, torrent, require_files=require_files)
+        if match is not None:
+            return match
 
     return _deterministic_lookup_fallback(completed, torrent.title)
 
@@ -420,3 +472,26 @@ def _dir_discriminators(name: str) -> set[str]:
         if year:
             out.add(year)
     return out
+
+
+def rmdir_empty_tree(path: Path) -> bool:
+    """``rmdir`` *path* and its subdirectories when the tree holds no files.
+
+    Only ``rmdir`` is ever called: a tree containing any file, or any symlink,
+    is left completely untouched. Callers must have already checked *path*
+    with :func:`_is_safe_deletion_target`.
+    """
+    try:
+        entries = list(path.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_dir():
+            return False
+        if not rmdir_empty_tree(entry):
+            return False
+    try:
+        path.rmdir()
+    except OSError:
+        return False
+    return True

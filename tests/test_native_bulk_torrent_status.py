@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import libtorrent
@@ -53,16 +54,34 @@ def _make_handle(
 
 
 @pytest.fixture
-def native_client(tmp_path: Path) -> NativeDownloadClient:
+def native_client(tmp_path: Path, monkeypatch) -> NativeDownloadClient:
     native_backend.NativeDownloadClient._instance = None
     resume_dir = tmp_path / ".resume_data"
     resume_dir.mkdir()
+    completed = tmp_path / "completed"
+    completed.mkdir()
+
+    # Single-root install: downloads land in the completed dir directly, so
+    # status mapping is never gated on an incomplete → completed move.
+    monkeypatch.setattr(
+        native_backend,
+        "MiraMediaConfig",
+        lambda: SimpleNamespace(
+            misc=SimpleNamespace(
+                effective_completed_path=completed,
+                incomplete_torrent_path="",
+                torrent_directory=str(completed),
+            )
+        ),
+    )
 
     client = object.__new__(NativeDownloadClient)
     client._initialized = True
     client._resume_data_dir = resume_dir
     client._session = MagicMock()
     client._moved_hashes = set()
+    client._pending_move_cleanup = {}
+    client._move_attempts = {}
 
     yield client
 

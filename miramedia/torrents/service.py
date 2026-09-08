@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from miramedia.movies.service import MovieService
     from miramedia.shows.repository import ShowRepository
     from miramedia.shows.service import ShowService
+    from miramedia.torrents.inspection import TorrentFile
     from miramedia.torrents.schemas import TorrentSourceFile
 
 log = logging.getLogger(__name__)
@@ -229,15 +230,45 @@ class TorrentService:
     async def filter_deny_listed(
         self, results: list[IndexerQueryResult]
     ) -> list[IndexerQueryResult]:
-        """Drop results whose magnet info-hash is on the deny-list.
+        """Drop unsafe candidate results before they reach the scorer.
 
-        Only magnet URLs are checked — extracting the hash is a cheap local
-        parse, no network. ``.torrent`` URL results are left untouched (the
-        pre-add inspection in :meth:`download` will reject them if blocked,
-        at the cost of one HTTP fetch per attempt).
+        Two screens run here:
+
+        * release names that advertise an executable payload — local, and
+          applied to every result regardless of URL scheme;
+        * magnet info-hashes on the deny-list — extracting the hash is a cheap
+          local parse, no network. ``.torrent`` URL results are left untouched
+          by this second screen (the pre-add inspection in :meth:`download`
+          rejects them if blocked, at the cost of one HTTP fetch per attempt).
+
+        Filtering poisoned candidates here, rather than only at
+        :meth:`download`, lets the scorer fall through to the next legitimate
+        release in the same run instead of leaving the episode unfetched.
         """
         if not results:
             return results
+        from miramedia.torrents.parsing import is_malware_release_title
+
+        screened: list[IndexerQueryResult] = []
+        for r in results:
+            if is_malware_release_title(r.title):
+                log.warning(
+                    "Release-name filter: dropping %r — name advertises an "
+                    "executable payload",
+                    r.title,
+                )
+                continue
+            screened.append(r)
+        if len(screened) != len(results):
+            log.info(
+                "Release-name filter: dropped %d/%d result(s)",
+                len(results) - len(screened),
+                len(results),
+            )
+        results = screened
+        if not results:
+            return results
+
         import libtorrent
 
         hashes: dict[int, str] = {}
@@ -282,6 +313,16 @@ class TorrentService:
             )
         return kept
 
+    @staticmethod
+    def _format_file_preview(files: "list[TorrentFile]", limit: int = 5) -> str:
+        """Human-readable ``name (size)`` preview of the first *limit* files."""
+        return (
+            ", ".join(
+                f"{f.path.name} ({f.size / 1024 / 1024:.1f}MB)" for f in files[:limit]
+            )
+            or "<empty>"
+        )
+
     async def _preflight_reject(self, indexer_result: IndexerQueryResult) -> str | None:
         """Run the deny-list + file inspection gates pre-add.
 
@@ -291,6 +332,20 @@ class TorrentService:
         """
         from miramedia.database import release_session_before_external_io
         from miramedia.torrents.inspection import has_meaningful_video, inspect_torrent
+        from miramedia.torrents.parsing import is_malware_release_title
+
+        # Cheapest gate first: a release name that advertises an executable
+        # payload never earns an HTTP fetch or a swarm join.
+        if is_malware_release_title(indexer_result.title):
+            log.warning(
+                "Refusing torrent %r — release name advertises an executable payload",
+                indexer_result.title,
+            )
+            msg = (
+                f"Torrent {indexer_result.title!r} release name advertises "
+                "an executable payload"
+            )
+            raise NoVideoFilesError(msg)
 
         # inspect_torrent may HTTP-fetch a .torrent payload + parse it.
         # Release the session through that fetch.
@@ -309,13 +364,7 @@ class TorrentService:
             raise NoVideoFilesError(msg)
 
         if inspection.files is not None and not has_meaningful_video(inspection.files):
-            preview = (
-                ", ".join(
-                    f"{f.path.name} ({f.size / 1024 / 1024:.1f}MB)"
-                    for f in inspection.files[:5]
-                )
-                or "<empty>"
-            )
+            preview = self._format_file_preview(inspection.files)
             log.warning(
                 "Refusing torrent %r — no meaningful video in payload (%d files: %s)",
                 indexer_result.title,
@@ -360,12 +409,22 @@ class TorrentService:
         self,
         torrent: Torrent,
         *,
-        timeout_seconds: float = 60.0,
-        poll_interval_seconds: float = 2.0,
+        timeout_seconds: float = 900.0,
+        poll_interval_seconds: float = 5.0,
     ) -> None:
         """Poll the download client until metadata arrives, then enforce video.
 
+        This is the *early* decoy gate: catching a bad payload here aborts the
+        transfer before the bandwidth is spent. For a magnet the file list only
+        exists once swarm metadata resolves, which routinely takes longer than
+        a minute — hence the 15-minute window. (The original 60s budget expired
+        before metadata arrived on every observed magnet, so this gate never
+        once reached a verdict in practice.)
+
         Fail-open on timeout — leaves the torrent running and logs at WARN.
+        That is safe because :meth:`reject_decoy_downloads` re-runs the same
+        content check at completion, where the file list is always known.
+
         When the file list does arrive and contains no meaningful video
         (i.e. only sample/decoy clips alongside other payloads), the torrent
         is removed (data deleted), linked episode/movie file rows are
@@ -393,13 +452,7 @@ class TorrentService:
                 files = None
 
             if files is not None:
-                preview = (
-                    ", ".join(
-                        f"{f.path.name} ({f.size / 1024 / 1024:.1f}MB)"
-                        for f in files[:5]
-                    )
-                    or "<empty>"
-                )
+                preview = self._format_file_preview(files)
                 if has_meaningful_video(files):
                     log.info(
                         "Post-add verifier: %s OK (%d files: %s)",
@@ -425,6 +478,59 @@ class TorrentService:
                 )
                 return
             await asyncio.sleep(poll_interval_seconds)
+
+    async def reject_decoy_downloads(self, torrents: list[Torrent]) -> list[Torrent]:
+        """Return the torrents that still look like real video releases.
+
+        Completion-time backstop for :meth:`_verify_torrent_has_video_files`.
+        Once a download reports finished the client necessarily knows the full
+        file list, so unlike the post-add verifier this gate cannot be defeated
+        by slow magnet metadata. Rejected torrents are deny-listed, unlinked
+        and deleted (data included) via :meth:`_block_and_remove`.
+
+        Callers run this *before* persisting the finished status, so a rejected
+        torrent never reaches the import sweep.
+        """
+        from miramedia.torrents.inspection import has_meaningful_video
+
+        kept: list[Torrent] = []
+        for torrent in torrents:
+            try:
+                files = await asyncio.to_thread(
+                    self.download_manager.get_torrent_files, torrent
+                )
+            except Exception:
+                log.exception(
+                    "Completion gate: file lookup failed for %s — allowing",
+                    torrent.title,
+                )
+                kept.append(torrent)
+                continue
+
+            if files is None:
+                # No file list despite a finished transfer (client restarted,
+                # torrent dropped from the session). Nothing to judge on, and
+                # the import scan rejects non-video payloads anyway.
+                log.warning(
+                    "Completion gate: no file list for finished torrent %s — allowing",
+                    torrent.title,
+                )
+                kept.append(torrent)
+                continue
+
+            if has_meaningful_video(files):
+                kept.append(torrent)
+                continue
+
+            log.warning(
+                "Completion gate: removing %s — no meaningful video (%d files: %s)",
+                torrent.title,
+                len(files),
+                self._format_file_preview(files),
+            )
+            await self._block_and_remove(torrent, reason="no_meaningful_video")
+
+        return kept
 
     async def _block_and_remove(self, torrent: Torrent, *, reason: str) -> None:
         """Deny-list the hash, drop linked rows, then remove the torrent.

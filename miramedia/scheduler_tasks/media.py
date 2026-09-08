@@ -61,6 +61,14 @@ async def detect_finished_downloads() -> None:
             await release_session_before_external_io(svc.torrent_repository.db)
             live = await svc._fetch_live_torrent_statuses(torrents)
             finished = [t for t in live if t.status == TorrentStatus.finished]
+            if finished:
+                # Final decoy gate. A finished transfer always has a known
+                # file list, so this catches payloads the post-add verifier
+                # missed because magnet metadata resolved after its window.
+                # Runs before the status write so a rejected torrent never
+                # reaches the import sweep.
+                await release_session_before_external_io(svc.torrent_repository.db)
+                finished = await svc.reject_decoy_downloads(finished)
             # Persist the finished transition. The import sweep
             # (import_all_torrents) reads DB rows via get_finished_torrents();
             # if we don't write the finished status here nothing ever imports.

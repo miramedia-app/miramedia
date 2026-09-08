@@ -25,6 +25,7 @@ def fake_config(
         show_directory=show_directory,
         movie_directory=movie_directory or show_directory.parent / "movies",
         torrent_directory=completed,
+        incomplete_torrent_path="",
         show_libraries=[],
         movie_libraries=[],
         continuous_download=True,

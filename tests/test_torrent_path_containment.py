@@ -318,7 +318,10 @@ def test_get_torrent_filepath_rejects_symlink_primary_sanitized_and_fuzzy(
         paths,
         "MiraMediaConfig",
         lambda: SimpleNamespace(
-            misc=SimpleNamespace(effective_completed_path=completed)
+            misc=SimpleNamespace(
+                effective_completed_path=completed,
+                incomplete_torrent_path="",
+            )
         ),
     )
     title = "Greys.Anatomy.S06.1080p.WEBRip.x265-RARBG"

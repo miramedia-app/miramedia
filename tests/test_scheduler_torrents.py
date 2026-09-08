@@ -108,6 +108,9 @@ def test_detect_finished_downloads_uses_active_query_only(monkeypatch) -> None:
             fetched.extend(torrents)
             return torrents
 
+        async def reject_decoy_downloads(self, torrents: list[TorrentSchema]):
+            return torrents
+
     @asynccontextmanager
     async def _bg_torrent_service():
         yield _Svc()
@@ -152,6 +155,8 @@ def test_detect_finished_downloads_persists_finished_transition(monkeypatch) -> 
     repo.save_torrent = AsyncMock(wraps=repo.save_torrent)  # type: ignore[method-assign]
     repo.db = MagicMock()
 
+    gated: list[TorrentSchema] = []
+
     class _Svc:
         torrent_repository = repo
 
@@ -159,6 +164,10 @@ def test_detect_finished_downloads_persists_finished_transition(monkeypatch) -> 
             # The download client now reports the torrent as finished.
             for t in torrents:
                 t.status = TorrentStatus.finished
+            return torrents
+
+        async def reject_decoy_downloads(self, torrents: list[TorrentSchema]):
+            gated.extend(torrents)
             return torrents
 
     @asynccontextmanager
@@ -181,9 +190,64 @@ def test_detect_finished_downloads_persists_finished_transition(monkeypatch) -> 
     repo.save_torrent.assert_awaited_once()
     assert repo.save_torrent.await_args.kwargs["torrent"].id == active.id
     assert repo.torrents[active.id].status == TorrentStatus.finished
+    # The decoy gate must see every newly-finished torrent.
+    assert [t.id for t in gated] == [active.id]
     # Finished detection enqueues the import sweep.
     movie_kiq.assert_awaited_once()
     show_kiq.assert_awaited_once()
+
+
+def test_detect_finished_downloads_skips_gate_rejected_torrent(monkeypatch) -> None:
+    """A decoy rejected at completion must never be persisted or imported.
+
+    Regression guard for the malware payload that reached the import sweep
+    because the only content gate (the post-add verifier) had timed out.
+    """
+    active = TorrentSchema(
+        id=uuid.uuid4(),
+        status=TorrentStatus.downloading,
+        title="Dropper S01E01 1080p WEBRip H264-KRAFT exe",
+        quality=Quality.hd,
+        hash="f" * 40,
+        usenet=False,
+    )
+    repo = FakeTorrentRepository()
+    repo.torrents[active.id] = active
+    repo.save_torrent = AsyncMock(wraps=repo.save_torrent)  # type: ignore[method-assign]
+    repo.db = MagicMock()
+
+    class _Svc:
+        torrent_repository = repo
+
+        async def _fetch_live_torrent_statuses(self, torrents: list[TorrentSchema]):
+            for t in torrents:
+                t.status = TorrentStatus.finished
+            return torrents
+
+        async def reject_decoy_downloads(self, torrents: list[TorrentSchema]):
+            del torrents
+            return []  # gate rejected everything
+
+    @asynccontextmanager
+    async def _bg_torrent_service():
+        yield _Svc()
+
+    monkeypatch.setattr(
+        "miramedia.background_services.bg_torrent_service", _bg_torrent_service
+    )
+    monkeypatch.setattr(
+        "miramedia.database.release_session_before_external_io", AsyncMock()
+    )
+    movie_kiq = AsyncMock()
+    show_kiq = AsyncMock()
+    monkeypatch.setattr(scheduler.import_all_movie_torrents_task, "kiq", movie_kiq)
+    monkeypatch.setattr(scheduler.import_all_show_torrents_task, "kiq", show_kiq)
+
+    _run(scheduler.detect_finished_downloads_task())
+
+    repo.save_torrent.assert_not_awaited()
+    movie_kiq.assert_not_awaited()
+    show_kiq.assert_not_awaited()
 
 
 def test_repository_get_active_torrents_delegates_to_status_predicate() -> None:

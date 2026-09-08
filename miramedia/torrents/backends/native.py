@@ -21,6 +21,8 @@ from miramedia.torrents.paths import (
     _configured_torrent_roots,
     _is_safe_deletion_target,
     exact_save_dirs_for_title,
+    get_torrent_filepath,
+    rmdir_empty_tree,
     torrent_dir_under_root,
     torrent_sidecar_under_root,
 )
@@ -34,6 +36,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 _RESUME_RECONCILE_IN_CHUNK = 500
+_MOVE_RETRY_SECONDS = 60.0
+_DELETE_SETTLE_SECONDS = 10.0
+_DELETE_POLL_SECONDS = 0.25
 
 
 def _chunked[T](items: list[T], size: int) -> list[list[T]]:
@@ -88,6 +93,12 @@ class NativeDownloadClient(AbstractDownloadClient):
         self._session = libtorrent.session()
         # Hashes already moved from incomplete → completed, to avoid re-triggering move_storage
         self._moved_hashes: set[str] = set()
+        # Incomplete dirs whose move was requested but whose (now empty)
+        # source dir has not been reaped yet — move_storage is asynchronous.
+        self._pending_move_cleanup: dict[str, Path] = {}
+        # Last move_storage attempt per hash, so a move that never lands is
+        # retried instead of wedging the torrent at 100%.
+        self._move_attempts: dict[str, float] = {}
 
         settings = {
             "listen_interfaces": f"0.0.0.0:{self.config.listen_port_start}",
@@ -442,6 +453,15 @@ class NativeDownloadClient(AbstractDownloadClient):
             resume_file = self._resume_data_dir / f"{torrent.hash}.fastresume"
             if resume_file.exists():
                 resume_file.unlink()
+            if delete_data:
+                # No handle means libtorrent skipped payload deletion, but the
+                # title-derived save dirs may still be sitting there empty from
+                # an earlier run. Reaping them keeps a later re-download of the
+                # same title from resolving onto the stale directory.
+                self._try_rmdir_empty_save_dirs(torrent)
+                self._remove_sidecar_file(torrent)
+            self._pending_move_cleanup.pop(torrent.hash, None)
+            self._move_attempts.pop(torrent.hash, None)
             return
 
         if delete_data:
@@ -454,40 +474,128 @@ class NativeDownloadClient(AbstractDownloadClient):
 
         if delete_data:
             self._try_rmdir_empty_save_dirs(torrent)
+            self._remove_sidecar_file(torrent)
+
+        self._moved_hashes.discard(torrent.hash)
+        self._pending_move_cleanup.pop(torrent.hash, None)
+        self._move_attempts.pop(torrent.hash, None)
 
         log.info("Removed torrent from native client: %s", torrent.title)
 
-    def _try_rmdir_empty_save_dirs(self, torrent: Torrent) -> None:
-        """Remove only empty exact save dirs after libtorrent deleted payload files.
+    def _prune_moved_source_dir(self, torrent_hash: str) -> None:
+        """Reap the emptied incomplete dir once libtorrent finished the move.
+
+        ``move_storage`` is asynchronous and leaves the source directory
+        behind. Without this the incomplete root grows one stale empty dir per
+        completed torrent, and those leftovers later shadow the real payload
+        when a title is resolved back to a directory. Only ``rmdir`` is used,
+        so a directory that still holds files is never touched.
+        """
+        source = self._pending_move_cleanup.get(torrent_hash)
+        if source is None:
+            return
+
+        cfg = MiraMediaConfig().misc
+        roots = _configured_torrent_roots(cfg)
+        forbidden = _application_control_dir_paths(cfg)
+        if not _is_safe_deletion_target(source, roots, forbidden=forbidden):
+            self._pending_move_cleanup.pop(torrent_hash, None)
+            return
+
+        if not source.is_dir():
+            self._pending_move_cleanup.pop(torrent_hash, None)
+            return
+        if not rmdir_empty_tree(source):
+            # Still holds files — either the move is mid-flight or the dir is
+            # not ours to remove. Left for the next poll / the daily sweep.
+            return
+
+        self._pending_move_cleanup.pop(torrent_hash, None)
+        log.info("Removed emptied incomplete dir %s", source)
+
+    def _remove_sidecar_file(self, torrent: Torrent) -> None:
+        """Delete the ``<completed>/<title>.torrent`` sidecar written at add time.
+
+        Left behind it accumulates one stray file per download in the completed
+        root, and a later re-download of the same title would be added from the
+        stale copy instead of the freshly fetched one.
+        """
+        cfg = MiraMediaConfig().misc
+        try:
+            sidecar = torrent_sidecar_under_root(
+                Path(cfg.effective_completed_path), torrent.title
+            )
+        except Exception:
+            return
+        roots = _configured_torrent_roots(cfg)
+        forbidden = _application_control_dir_paths(cfg)
+        if not _is_safe_deletion_target(sidecar, roots, forbidden=forbidden):
+            return
+        try:
+            if sidecar.is_file():
+                sidecar.unlink()
+                log.info("Removed torrent sidecar %s", sidecar)
+        except OSError:
+            log.debug("Could not remove torrent sidecar %s", sidecar, exc_info=True)
+
+    def _cleanup_candidate_dirs(self, torrent: Torrent) -> list[Path]:
+        """Title-derived save dirs plus the directory the payload resolved to.
+
+        libtorrent saves under the .torrent's ``info.name``, which regularly
+        differs from the indexer title, so the exact joins alone would leave
+        the real directory behind after an import.
+        """
+        candidates: list[Path] = list(exact_save_dirs_for_title(torrent.title))
+        try:
+            resolved = get_torrent_filepath(torrent)
+        except Exception:
+            return candidates
+        if resolved not in candidates:
+            candidates.append(resolved)
+        return candidates
+
+    def _try_rmdir_empty_save_dirs(
+        self, torrent: Torrent, *, wait_seconds: float = _DELETE_SETTLE_SECONDS
+    ) -> None:
+        """Reap save dirs left empty after libtorrent deleted the payload.
 
         Title/hash alone does not prove payload ownership — never ``rmtree()``
-        torrent data directories. Without a live handle libtorrent already
-        skipped payload deletion, so this is a no-op on orphaned rows.
+        torrent data directories; only ``rmdir`` an already-empty tree.
+        ``delete_files`` is asynchronous, so poll up to *wait_seconds* for the
+        payload to disappear before giving up (the daily sweep is the backstop
+        when the delete takes longer than that).
         """
         cfg = MiraMediaConfig().misc
         roots = _configured_torrent_roots(cfg)
         forbidden = _application_control_dir_paths(cfg)
-        for path in exact_save_dirs_for_title(torrent.title):
+
+        pending: list[Path] = []
+        for path in self._cleanup_candidate_dirs(torrent):
             if not _is_safe_deletion_target(path, roots, forbidden=forbidden):
                 log.warning(
                     "Refusing to remove torrent save dir outside configured roots: %s",
                     path,
                 )
                 continue
-            try:
+            pending.append(path)
+
+        deadline = time.monotonic() + max(wait_seconds, 0.0)
+        while pending:
+            still_pending: list[Path] = []
+            for path in pending:
                 if not path.is_dir():
                     continue
-                if any(path.iterdir()):
-                    log.debug("Skipping non-empty torrent save dir %s", path)
+                if rmdir_empty_tree(path):
+                    log.info("Removed empty torrent save dir %s", path)
                     continue
-                path.rmdir()
-                log.info("Removed empty torrent save dir %s", path)
-            except OSError:
-                log.debug(
-                    "Could not remove torrent save dir %s",
-                    path,
-                    exc_info=True,
-                )
+                still_pending.append(path)
+            pending = still_pending
+            if not pending or time.monotonic() >= deadline:
+                break
+            time.sleep(_DELETE_POLL_SECONDS)
+
+        for path in pending:
+            log.debug("Torrent save dir %s still holds files; left in place", path)
 
     def _status_not_found(self) -> tuple[TorrentStatus, float, int, int, int]:
         return TorrentStatus.unknown, 0.0, 0, 0, 0
@@ -506,7 +614,12 @@ class NativeDownloadClient(AbstractDownloadClient):
             libtorrent.torrent_status.states.seeding,
             libtorrent.torrent_status.states.finished,
         ):
-            self._maybe_move_to_completed(handle, torrent)
+            if not self._ensure_moved_to_completed(handle, torrent, status):
+                # Payload is still in the incomplete root. Reporting
+                # ``finished`` here would hand a half-moved (or not-yet-moved)
+                # directory to the import sweep, so hold the transfer at
+                # "downloading, 100%" until the move lands.
+                return TorrentStatus.downloading, 100.0, num_peers, num_seeds, 0
             return TorrentStatus.finished, 100.0, num_peers, num_seeds, 0
 
         if state in (
@@ -548,35 +661,85 @@ class NativeDownloadClient(AbstractDownloadClient):
             for torrent in torrents
         }
 
-    def _maybe_move_to_completed(
-        self, handle: libtorrent.torrent_handle, torrent: Torrent
-    ) -> None:
-        """Once-per-torrent move from incomplete dir to torrent_directory.
+    def _ensure_moved_to_completed(
+        self,
+        handle: libtorrent.torrent_handle,
+        torrent: Torrent,
+        status: libtorrent.torrent_status,
+    ) -> bool:
+        """Drive the incomplete → completed move; True once it has landed.
 
-        Idempotent: tracks already-moved hashes so repeated polls don't re-trigger
-        move_storage. No-op when no incomplete path is configured (initial path
-        already equals completed path).
+        A finished torrent is only importable from the completed root, so the
+        caller keeps it out of the ``finished`` state until this returns True.
+        The move itself is asynchronous, so each poll either issues it,
+        re-issues it after ``_MOVE_RETRY_SECONDS`` of no progress, or observes
+        that libtorrent has switched ``save_path`` over and reaps the emptied
+        source directory. No-op (immediately True) when no incomplete path is
+        configured — the initial save path is already the completed path.
         """
-        if torrent.hash in self._moved_hashes:
-            return
-        initial_path, completed_path = self._resolve_paths(torrent.title)
-        if initial_path == completed_path:
-            self._moved_hashes.add(torrent.hash)
-            return
         try:
-            completed_path.mkdir(parents=True, exist_ok=True)
+            initial_path, completed_path = self._resolve_paths(torrent.title)
+        except Exception:
+            log.exception(
+                "Cannot resolve save paths for torrent '%s'; treating as moved",
+                torrent.title,
+            )
+            return True
+
+        if initial_path == completed_path:
+            return True
+
+        if self._move_landed(status, completed_path):
+            if torrent.hash in self._pending_move_cleanup:
+                self._prune_moved_source_dir(torrent.hash)
+            self._moved_hashes.add(torrent.hash)
+            return True
+
+        if getattr(status, "moving_storage", False):
+            return False
+
+        last_attempt = self._move_attempts.get(torrent.hash)
+        if last_attempt is not None and (
+            time.monotonic() - last_attempt < _MOVE_RETRY_SECONDS
+        ):
+            return False
+
+        try:
             handle.move_storage(
                 str(completed_path), libtorrent.move_flags_t.always_replace_files
             )
-            self._moved_hashes.add(torrent.hash)
-            log.info(
-                "Native client: moving '%s' from '%s' to '%s'",
-                torrent.title,
-                initial_path,
-                completed_path,
-            )
         except Exception:
             log.exception("Failed to move torrent '%s' to completed dir", torrent.title)
+            self._move_attempts[torrent.hash] = time.monotonic()
+            return False
+
+        self._move_attempts[torrent.hash] = time.monotonic()
+        self._pending_move_cleanup[torrent.hash] = initial_path
+        # A retry means the previous move never landed — worth a warning, since
+        # the transfer stays out of ``finished`` (and out of the import sweep)
+        # until it does.
+        emit = log.warning if last_attempt is not None else log.info
+        emit(
+            "Native client: moving '%s' from '%s' to '%s'%s",
+            torrent.title,
+            initial_path,
+            completed_path,
+            " (retry)" if last_attempt is not None else "",
+        )
+        return False
+
+    @staticmethod
+    def _move_landed(status: libtorrent.torrent_status, completed_path: Path) -> bool:
+        """True when libtorrent reports the payload living in *completed_path*."""
+        if getattr(status, "moving_storage", False):
+            return False
+        save_path = getattr(status, "save_path", "") or ""
+        if not save_path:
+            return False
+        try:
+            return Path(save_path).resolve() == completed_path.resolve()
+        except OSError:
+            return False
 
     def pause_torrent(self, torrent: Torrent) -> None:
         handle = self._get_handle_by_hash(torrent.hash)
