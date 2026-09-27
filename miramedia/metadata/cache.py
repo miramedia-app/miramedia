@@ -12,7 +12,7 @@ through ``_lock``. Eviction is LRU + TTL via cachetools.
 
 from __future__ import annotations
 
-import asyncio
+import inspect
 import os
 import threading
 from collections.abc import Callable
@@ -102,7 +102,7 @@ def cached(
     stats = _get_stats(name)
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        is_coro = asyncio.iscoroutinefunction(fn)
+        is_coro = inspect.iscoroutinefunction(fn)
 
         if is_coro:
 

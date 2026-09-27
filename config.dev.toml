@@ -303,6 +303,12 @@ keywords = ["cam", "camrip", "bdscr", "ddc", "dvdscreener","dvdscr", "hdcam", "h
 score_modifier = -10000
 enabled = true
 
+[[indexers.title_scoring_rules]]
+name = "avoid_exe"
+keywords = ["exe", "msi", "lnk", "pif", "vbs", "vbe", "jse", "wsf", "wsh", "ps1", "cmd", "apk"]
+score_modifier = -10000
+enabled = true
+
 # Indexer flag-based scoring rules
 [[indexers.indexer_flag_scoring_rules]]
 name = "prefer_freeleech"
@@ -320,7 +326,7 @@ enabled = true
 [[indexers.scoring_rule_sets]]
 name = "default"
 libraries = ["ALL_TV", "ALL_MOVIES"]
-rule_names = ["avoid_cam", "reject_nuked", "prefer_freeleech"]
+rule_names = ["avoid_cam", "avoid_exe", "reject_nuked", "prefer_freeleech"]
 
 # Subtitles — automatic subtitle downloading.
 # Subtitles are enabled if any backend below is enabled (native OR bazarr).

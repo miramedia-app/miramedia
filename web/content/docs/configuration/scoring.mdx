@@ -19,7 +19,8 @@ For each candidate, in order:
 3. **Title relevance** — every word of the media title must appear in the
    release title, or it's dropped.
 4. **Scoring rule sets** — apply title/flag rules from each rule set whose
-   libraries match this media. If a matching rule set drives the score to
+   libraries match this media. Only rules a matching rule set lists in
+   `rule_names` run at all. If a matching rule set drives the score to
    ≤ 0, the candidate is dropped.
 5. **Quality + codec** — the title must match an enabled quality option **and**
    an enabled codec option, or it's dropped. The matched option's
@@ -56,10 +57,22 @@ AV1 +100. At least one must be enabled.
 
 ## Title rules (`[[indexers.title_scoring_rules]]`)
 
-Adjust score by keywords in the release title. MiraMedia ships with a default
-`avoid_cam` rule that rejects pre-retail sources (cam, screener, telesync,
-telecine, workprint, etc.) — see `config.example.toml` for the full keyword
-list. Disable or customize it from **System → Settings → Scoring**.
+Adjust score by keywords in the release title. Two rules ship by default, both
+at `-10000` (an effective reject) and both applied by the default rule set:
+
+| Rule | Rejects |
+| ---- | ------- |
+| `avoid_cam` | Pre-retail sources — cam, camrip, screener, telesync, telecine, workprint, … |
+| `avoid_exe` | Droppers that advertise an executable payload in the title — `exe`, `msi`, `lnk`, `pif`, `vbs`, `vbe`, `jse`, `wsf`, `wsh`, `ps1`, `cmd`, `apk` |
+
+`avoid_exe` mirrors the release-name screen described in
+[Search & Scoring](../features/search-and-scoring). Both lists are
+deliberately conservative: bare `cam` and `ts` (the film *Cam*, `.ts`
+containers) and `com` / `scr` / `bat` / `jar` (site tags like `[rarbg.com]`,
+screeners, *The Bat 1959*) are left out, because a false positive here
+silently blocks a real download. See `config.example.toml` for the exact
+keyword lists. Disable or customize either from
+**System → Settings → Scoring**.
 
 ```toml
 [[indexers.title_scoring_rules]]
@@ -67,7 +80,22 @@ name = "avoid_cam"
 keywords = ["cam", "camrip", "hdcam", "telesync", "ts", "screener", "scr"]
 score_modifier = -10000
 enabled = true
+
+[[indexers.title_scoring_rules]]
+name = "avoid_exe"
+keywords = ["exe", "msi", "lnk", "pif", "vbs", "vbe", "jse", "wsf", "wsh", "ps1", "cmd", "apk"]
+score_modifier = -10000
+enabled = true
 ```
+
+<Callout type="warn">
+
+A title or flag rule only runs when a **rule set** lists its name (below).
+Adding a rule on its own changes nothing — the Scoring settings page flags
+such a rule with *"Not in any ruleset — this rule has no effect on
+searches"*, and the scoring preview reports it as `not in any ruleset`.
+
+</Callout>
 
 ## Indexer flag rules (`[[indexers.indexer_flag_scoring_rules]]`)
 
@@ -97,7 +125,7 @@ A rule set binds named title/flag rules to one or more libraries.
 [[indexers.scoring_rule_sets]]
 name = "default"
 libraries = ["ALL_TV", "ALL_MOVIES"]
-rule_names = ["avoid_cam", "reject_nuked", "prefer_freeleech"]
+rule_names = ["avoid_cam", "avoid_exe", "reject_nuked", "prefer_freeleech"]
 
 [[indexers.scoring_rule_sets]]
 name = "strict_movies"
@@ -107,6 +135,11 @@ rule_names = ["avoid_cam", "prefer_freeleech"]
 
 `libraries` accepts custom library names (see [Libraries](libraries)) plus the
 sentinels `ALL_TV` (every TV library) and `ALL_MOVIES` (every movie library).
+
+`rule_names` is the switch that makes a rule live. In
+**System → Settings → Scoring** each rule set shows every defined title/flag
+rule as a chip — selected chips are the rule set's `rule_names`. A chip for a
+rule you have since deleted stays selectable so you can clear it.
 
 ## Per-media overrides
 
@@ -134,3 +167,7 @@ Set under `[indexers]`:
 title through every rule and shows the per-rule breakdown (matched / delta /
 reason) and final total — so you can tune rules without waiting for live
 searches.
+
+The preview follows the same rule-set gating as a real search: a rule no rule
+set references is listed as unmatched with the reason `not in any ruleset`,
+and a rule turned off is listed as `disabled`.

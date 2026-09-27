@@ -12,7 +12,13 @@ search), it runs this flow:
    skipped; it never aborts the search. See
    [Indexers](/docs/configuration/indexers).
 2. **Filter.** Seeder gates, size gates, and title relevance remove obvious
-   non-matches before any scoring.
+   non-matches before any scoring. On the automatic paths (the
+   continuous-download sweep and [release feeds](/docs/configuration/release-feeds))
+   a **release-name screen** and the info-hash deny-list also run here: a
+   dropper names its payload in the title (`… H264-KRAFT exe`) because the
+   payload is one renamed binary. Site tags and legitimate tokens
+   (`[rarbg.com]`, screeners, *The Bat 1959*) are deliberately excluded from
+   that screen.
 3. **Score.** Library-scoped [rule sets](/docs/configuration/scoring) apply
    title and flag rules; the matched quality and codec options add their
    modifiers; language and recency adjust the total. Negative-scoring and
@@ -24,6 +30,27 @@ search), it runs this flow:
 The full ordering, every rule type, per-media overrides, and the in-app
 **scoring preview** for tuning are documented in
 [Scoring](/docs/configuration/scoring).
+
+## Decoy protection
+
+Three gates cover releases that ship malware instead of video:
+
+- **Scoring** — the default `avoid_exe`
+  [title rule](/docs/configuration/scoring) scores any title advertising an
+  executable payload at `-10000`, below the score floor. This is the gate that
+  also keeps them out of the **manual search dialog**, so it holds only while
+  that rule is enabled and listed in a rule set covering the library.
+- **Pre-add release-name screen** — runs for every torrent download, manual or
+  automatic, before any HTTP fetch or swarm join. (Usenet grabs skip the
+  pre-add torrent gates.)
+- **File-list inspection** — once the file list is known (from the `.torrent`
+  payload, or from metadata after a magnet resolves), the download is
+  rejected unless it holds a real video file: at least 50 MB after
+  samples/extras are ignored. Releases that pad a tiny dummy `.mkv` next to
+  the real executable fail this check.
+
+A rejected candidate is logged and skipped, so an automatic run falls through
+to the next legitimate release instead of leaving the episode unfetched.
 
 ## Cloudflare-protected sites
 

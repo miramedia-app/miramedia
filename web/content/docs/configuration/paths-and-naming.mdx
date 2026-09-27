@@ -49,6 +49,11 @@ imports fall back to copying and may fail on disk space.
 
 - `cleanup_after_import` — remove a torrent from the client (with its data)
   after every file in it has imported. Default `true`.
+- Empty leftover directories under the torrent roots (from a completed
+  incomplete → completed move, or a deleted download) are reaped as they
+  happen, plus a daily 03:45 sweep for fileless directories older than 24
+  hours. Nothing is configurable; see [download directory
+  housekeeping](../features/downloads-and-imports).
 - `continuous_download` — global default for automatically downloading missing
   episodes/movies. Default `true`. Each show/movie can override this
   individually (`null` = follow the global default).

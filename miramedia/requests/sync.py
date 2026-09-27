@@ -127,8 +127,8 @@ class SeerrSyncService:
         existing = await self.repository.get_by_seerr_request_id(sr.request_id)
 
         imdb_id = sr.imdb_id
-        title = None
-        if (not imdb_id or not title) and sr.tmdb_id is not None:
+        title: str | None = None
+        if sr.tmdb_id is not None:
             # Release the session before the async Seerr HTTP call so
             # the conn isn't held through provider latency.
             await release_session_before_external_io(self.repository.db)

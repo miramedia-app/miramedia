@@ -65,6 +65,26 @@ directories on the same volume — see
 - Check **System → Logs** for read-timeout or provider errors.
 - See [Indexers](configuration/indexers).
 
+## A scoring rule I added does nothing
+
+A title or flag rule only runs when a **scoring rule set** lists its name.
+Open **System → Settings → Scoring** — an unreferenced rule is flagged with
+*"Not in any ruleset — this rule has no effect on searches"*. Select it in the
+rule set that covers the library (the default set targets `ALL_TV` +
+`ALL_MOVIES`) and save. The scoring preview reports the same state as
+`not in any ruleset`. See [Scoring](configuration/scoring).
+
+## A finished torrent sits at "downloading, 100%"
+
+Expected for a short while with the native client and a split
+`incomplete_torrent_path`: the transfer is only reported finished once the
+incomplete → completed move lands, so the import sweep never reads a
+half-moved directory. A move that has not landed is re-issued after 60
+seconds and logs a `WARNING` — if it repeats, check permissions and free
+space on the completed path. See
+[Downloads & Imports](features/downloads-and-imports) and
+[Paths & Naming](configuration/paths-and-naming).
+
 ## Imports failing or stuck
 
 - Open [Imports](user-guide/importing-media) — items needing a
@@ -76,6 +96,20 @@ directories on the same volume — see
   shows `Skipping unsupported archive`. Only `zip`/`tar`/`gz`/`bz2` are
   extracted; grab a different release. See
   [Archives inside downloads](features/downloads-and-imports#archives-inside-downloads).
+- "Source files missing" after a re-download usually means an empty leftover
+  directory shadowed the payload. The daily prune task clears those; see
+  [download directory housekeeping](features/downloads-and-imports).
+
+## A release I expected never shows in search results
+
+Releases that advertise an executable payload in the title (`… x265-GRP exe`,
+`.msi`, `.apk`, …) are rejected: the default `avoid_exe` title rule scores
+them below the floor, and a release-name screen blocks them pre-add even if
+you pick one by hand. That is a dropper, not a release — grab a different
+one. Both the rule and the screen skip tokens with legitimate uses
+(`[rarbg.com]`, screeners, *The Bat 1959*). See
+[Search & Scoring](features/search-and-scoring) and
+[Scoring](configuration/scoring).
 
 ## Season 0 specials never download
 

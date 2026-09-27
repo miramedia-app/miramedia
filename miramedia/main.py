@@ -536,6 +536,96 @@ _UUID_RE = re.compile(
     r"^/dashboard/(shows|movies|watchlists)/[0-9a-fA-F-]{8,}(?:/[0-9a-fA-F-]{8,})?/?$"
 )
 
+# Asset-shaped requests must 404 instead of receiving the SPA shell. Handing a
+# 200 text/html body to a request for a hashed JS chunk makes the browser fail
+# to parse it as a script; Next's chunk-load recovery then reloads the document,
+# gets the same (cached) HTML naming the same missing chunk, and the page
+# reload-loops forever. A real 404 lets the router fall back to a clean
+# navigation instead.
+_STATIC_ASSET_SUFFIXES = (
+    ".avif",
+    ".css",
+    ".gif",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".json",
+    ".map",
+    ".mjs",
+    ".otf",
+    ".png",
+    ".svg",
+    ".ttf",
+    ".txt",
+    ".wasm",
+    ".webmanifest",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".xml",
+)
+
+
+# HTML shells and the App Router's RSC payloads name the hashed chunks of one
+# specific build. Cached past a deploy they point at chunks that no longer
+# exist. Always revalidate them; only the hashed assets themselves are
+# immutable.
+_SPA_DOCUMENT_CACHE_CONTROL = "no-cache"
+_SPA_DOCUMENT_HEADERS = {"Cache-Control": _SPA_DOCUMENT_CACHE_CONTROL}
+
+
+def _is_spa_document(path: str, media_type: str | None) -> bool:
+    """True for the HTML shells and RSC payloads that name build-specific chunks."""
+    if not path or path.endswith((".html", ".txt", "/")):
+        return True
+    return bool(media_type) and media_type.startswith("text/html")
+
+
+# Client-side navigations into a dynamic route fetch that route's RSC payload
+# (``__next._tree.txt``, ``__next.!….__PAGE__.txt``, ``index.txt``) next to the
+# UUID path. Those files only exist under the ``_shell`` directory the static
+# export emitted, so without this rewrite the request fell through to the HTML
+# shell: the router got markup where it expected an RSC stream, gave up on the
+# client-side navigation and reloaded the document — which prefetched the same
+# payload again, reload-looping the tab.
+_DYNAMIC_PAYLOAD_RE = re.compile(
+    r"^/dashboard/(?P<media_type>shows|movies|watchlists)/[0-9a-fA-F-]{8,}"
+    r"(?P<nested>/[0-9a-fA-F-]{8,})?/(?P<filename>[^/]+\.[A-Za-z0-9]+)$"
+)
+
+
+def _dynamic_shell_payload(path: str) -> Path | None:
+    """Map a dynamic-route payload request onto the exported ``_shell`` file."""
+    match = _DYNAMIC_PAYLOAD_RE.match(path)
+    if match is None:
+        return None
+    filename = match.group("filename")
+    if "\\" in filename or filename.startswith("."):
+        return None
+
+    shell_dir = Path(FRONTEND_FILES_DIR) / "dashboard" / match.group("media_type")
+    shell_dir = shell_dir / "_shell"
+    if match.group("nested"):
+        shell_dir = shell_dir / "_shell"
+
+    candidate = shell_dir / filename
+    try:
+        root = Path(FRONTEND_FILES_DIR).resolve()
+        resolved = candidate.resolve()
+    except OSError:
+        return None
+    if not resolved.is_relative_to(root) or not resolved.is_file():
+        return None
+    return resolved
+
+
+def _is_static_asset_request(path: str) -> bool:
+    """True when *path* asks for a file, not an SPA route."""
+    if path.startswith("/_next/"):
+        return True
+    return path.rsplit("/", 1)[-1].lower().endswith(_STATIC_ASSET_SUFFIXES)
+
 
 @app.exception_handler(404)
 async def not_found_handler(request: Request, _exc: Exception) -> Response:
@@ -545,6 +635,11 @@ async def not_found_handler(request: Request, _exc: Exception) -> Response:
         return JSONResponse({"detail": "Not Found"}, status_code=404)
     if DISABLE_FRONTEND_MOUNT:
         return Response(content="Not Found", status_code=404)
+    # Serve the dynamic route's exported RSC payload before anything else —
+    # answering these with HTML is what reload-loops the browser.
+    payload = _dynamic_shell_payload(path)
+    if payload is not None:
+        return FileResponse(payload, headers=_SPA_DOCUMENT_HEADERS)
     # Rewrite UUID detail paths to the dynamic-route shell index.html
     match = _UUID_RE.match(path)
     if match:
@@ -558,15 +653,17 @@ async def not_found_handler(request: Request, _exc: Exception) -> Response:
         else:
             shell = f"{FRONTEND_FILES_DIR}/dashboard/{media_type}/_shell/index.html"
         if Path(shell).is_file():  # noqa: ASYNC240 — cheap stat, intentional
-            return FileResponse(shell)
+            return FileResponse(shell, headers=_SPA_DOCUMENT_HEADERS)
     # Generic SPA fallback for anything that isn't an API route. The arr shims
     # count as API surface: an arr client parses every response as JSON, so
     # handing Bazarr the SPA shell for an unimplemented endpoint reads as a
     # successful, malformed reply instead of an honest 404.
-    if not path.startswith(("/api/", *SHIM_PATH_PREFIXES)):
+    if not path.startswith(("/api/", *SHIM_PATH_PREFIXES)) and not (
+        _is_static_asset_request(path)
+    ):
         fallback = f"{FRONTEND_FILES_DIR}/index.html"
         if Path(fallback).is_file():  # noqa: ASYNC240 — cheap stat, intentional
-            return FileResponse(fallback)
+            return FileResponse(fallback, headers=_SPA_DOCUMENT_HEADERS)
     return Response(content="Not Found", status_code=404)
 
 
@@ -622,6 +719,8 @@ class CachedStaticFiles(StaticFiles):
                     resp.headers["Cache-Control"] = (
                         "public, max-age=31536000, immutable"
                     )
+                elif _is_spa_document(path, media_type):
+                    resp.headers["Cache-Control"] = _SPA_DOCUMENT_CACHE_CONTROL
                 # Preserve StaticFiles' conditional-request behavior (304) that the
                 # custom precompressed branch would otherwise bypass.
                 if self.is_not_modified(resp.headers, headers):
@@ -633,6 +732,8 @@ class CachedStaticFiles(StaticFiles):
             resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         elif path.endswith((".woff2", ".woff", ".ico", ".svg")):
             resp.headers["Cache-Control"] = "public, max-age=604800"
+        elif _is_spa_document(path, resp.headers.get("content-type")):
+            resp.headers["Cache-Control"] = _SPA_DOCUMENT_CACHE_CONTROL
         return resp
 
 

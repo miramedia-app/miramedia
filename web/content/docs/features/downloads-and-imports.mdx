@@ -16,6 +16,17 @@ import { Callout } from "fumadocs-ui/components/callout";
    (every `misc.import_sweep_interval_minutes`, default 5). You can also import
    on demand from the UI.
 
+<Callout type="info">
+
+With the native client and a split `incomplete_torrent_path`, a finished
+torrent stays reported as **downloading at 100%** until the incomplete →
+completed move actually lands on disk. That keeps the import sweep from
+reading a half-moved directory. A move that never lands is re-issued after
+60 seconds and logs a `WARNING`, so a torrent parked at 100% for minutes is a
+signal to check **System → Logs**.
+
+</Callout>
+
 ## Import pipeline
 
 - Filenames are parsed with `guessit` (plus anime-aware fallbacks): season /
@@ -33,6 +44,26 @@ import { Callout } from "fumadocs-ui/components/callout";
   of the same episode or movie can coexist.
 - If `misc.cleanup_after_import` is on (default), a fully-imported torrent is
   removed from the client with its data.
+
+## Download directory housekeeping
+
+`move_storage` is asynchronous and leaves the old save directory behind, and a
+deleted download can leave an emptied one. Those leftovers are not just
+clutter — a later download of the same title can resolve onto an empty
+leftover and fail its import with "source files missing". MiraMedia therefore:
+
+- reaps the emptied incomplete directory once the move completes, and waits
+  for libtorrent's asynchronous file delete before removing an empty save
+  directory (only `rmdir` is used, so a directory holding files is never
+  touched);
+- removes the `<completed>/<title>.torrent` sidecar when a torrent is deleted,
+  so a re-download is never re-added from the stale copy;
+- resolves a torrent's directory exact → sanitized → fuzzy and requires a real
+  file at some depth, so empty leftovers cannot shadow the real payload;
+- runs a daily **prune empty torrent dirs** task (03:45) that removes fileless
+  directories older than 24 hours under the configured torrent roots. Younger
+  directories are left alone — they may belong to an in-flight download that
+  has not written its first piece yet.
 
 ## Archives inside downloads
 

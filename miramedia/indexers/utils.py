@@ -204,9 +204,25 @@ def preview_score(
             }
         )
 
+    # A rule only fires in the real pipeline when some ruleset lists it (see
+    # evaluate_indexer_query_results). Preview has no media, so "referenced by
+    # any ruleset" is the closest honest approximation — without this an
+    # orphaned rule looks live here but silently does nothing on a real search.
+    referenced_rule_names = {
+        name for rs in cfg.scoring_rule_sets for name in rs.rule_names
+    }
+
     for rule in cfg.title_scoring_rules:
         if not rule.enabled:
             _record(f"title:{rule.name}", False, rule.score_modifier, "disabled")
+            continue
+        if rule.name not in referenced_rule_names:
+            _record(
+                f"title:{rule.name}",
+                False,
+                rule.score_modifier,
+                "not in any ruleset",
+            )
             continue
         matched = any(
             re.search(rf"\b{re.escape(kw)}\b", title, re.IGNORECASE)
@@ -222,6 +238,14 @@ def preview_score(
     for rule in cfg.indexer_flag_scoring_rules:
         if not rule.enabled:
             _record(f"flag:{rule.name}", False, rule.score_modifier, "disabled")
+            continue
+        if rule.name not in referenced_rule_names:
+            _record(
+                f"flag:{rule.name}",
+                False,
+                rule.score_modifier,
+                "not in any ruleset",
+            )
             continue
         matched = any(flag in flags for flag in rule.flags)
         _record(

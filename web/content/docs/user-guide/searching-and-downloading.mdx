@@ -25,6 +25,12 @@ Movie", "Download Selected Episodes", etc.
   [scoring rules](/docs/configuration/scoring).
 - Empty: initial state shows "Set any filters above, then run a search.";
   after a search returns nothing, "No torrents found."
+- Releases whose title advertises an executable payload (`… x265-GRP exe`,
+  `.msi`, `.apk`, …) are scored below the floor by the default `avoid_exe`
+  rule, so they drop out of the list. If you see them, that rule is disabled
+  or missing from the rule set covering this library — see
+  [Scoring](/docs/configuration/scoring). Downloading one is still blocked
+  pre-add by the release-name screen.
 
 <Callout type="warn">
 

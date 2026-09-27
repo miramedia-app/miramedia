@@ -315,12 +315,17 @@ disabled_sites = []  # e.g. ["nyaa", "limetorrents"] to disable specific preload
 # min_size_mb = 0
 # max_size_mb = 0
 
-# Pre-retail junk (cam / telesync / telecine / screener / workprint) is dropped
-# by a default Title Rule "Reject cam/workprint" (-10000) applied via a default
-# Rule Set "Reject low-quality sources" (ALL_TV + ALL_MOVIES). Edit or remove it
-# on the Scores settings page, or override [[indexers.title_scoring_rules]] /
-# [[indexers.scoring_rule_sets]] here. Bare "cam"/"ts" are intentionally
-# omitted (the film *Cam*, ".ts" containers).
+# Two default Title Rules (-10000 each) are applied via the default Rule Set
+# "Reject low-quality sources" (ALL_TV + ALL_MOVIES):
+#   "Reject cam/workprint"     — pre-retail junk (cam / telesync / telecine /
+#                                screener / workprint). Bare "cam"/"ts" are
+#                                intentionally omitted (the film *Cam*, ".ts"
+#                                containers).
+#   "Reject executable payloads" — droppers that name the payload in the title
+#                                ("... H264-KRAFT exe").
+# Edit or remove them on the Scores settings page, or override
+# [[indexers.title_scoring_rules]] / [[indexers.scoring_rule_sets]] here.
+# A Title Rule only applies when a Rule Set lists its name in rule_names.
 
 [[indexers.quality_options]]
 name = "4K (UHD)"
@@ -372,6 +377,15 @@ keywords = ["cam", "camrip", "bdscr", "ddc", "dvdscreener","dvdscr", "hdcam", "h
 score_modifier = -10000
 enabled = true
 
+# Droppers name their payload in the release title ("... H264-KRAFT exe").
+# "com" / "scr" / "bat" / "jar" are left out on purpose — they appear in
+# legitimate release names ("[rarbg.com]", screener, "The Bat 1959").
+[[indexers.title_scoring_rules]]
+name = "avoid_exe"
+keywords = ["exe", "msi", "lnk", "pif", "vbs", "vbe", "jse", "wsf", "wsh", "ps1", "cmd", "apk"]
+score_modifier = -10000
+enabled = true
+
 # Indexer flag-based scoring rules
 [[indexers.indexer_flag_scoring_rules]]
 name = "prefer_freeleech"
@@ -389,7 +403,7 @@ enabled = true
 [[indexers.scoring_rule_sets]]
 name = "default"
 libraries = ["ALL_TV", "ALL_MOVIES"]
-rule_names = ["avoid_cam", "reject_nuked", "prefer_freeleech"]
+rule_names = ["avoid_cam", "avoid_exe", "reject_nuked", "prefer_freeleech"]
 
 # Subtitles — automatic subtitle downloading.
 # Subtitles are enabled if any backend below is enabled (native OR bazarr).

@@ -60,8 +60,8 @@ async def _resolve_backend_strategy(
 
 
 def get_dynamic_oauth_router(
-    backend: AuthenticationBackend[models.UP, models.ID],
-    get_user_manager: UserManagerDependency[models.UP, models.ID],
+    backend: AuthenticationBackend[models.UOAP, models.ID],
+    get_user_manager: UserManagerDependency[models.UOAP, models.ID],
     state_secret: SecretType,
     redirect_url: str | None = None,
     associate_by_email: bool = False,
@@ -171,7 +171,9 @@ def get_dynamic_oauth_router(
         code: str | None = None,
         state: str | None = None,
         error: str | None = None,
-        user_manager: BaseUserManager[models.UP, models.ID] = Depends(get_user_manager),
+        user_manager: BaseUserManager[models.UOAP, models.ID] = Depends(
+            get_user_manager
+        ),
     ) -> Response:
         async def _run_callback() -> Response:
             if code is None or error is not None:

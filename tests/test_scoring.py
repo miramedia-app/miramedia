@@ -374,3 +374,103 @@ def test_title_relevance_hoisted_path(title, media_name, media_year, expected) -
 def test_title_relevance_empty_variants_rejects() -> None:
     assert _normalized_name_variants("[only punctuation]") == []
     assert _is_title_relevant("Some Movie 2024 1080p WEB-DL", []) is False
+
+
+def test_preview_reports_rule_missing_from_every_ruleset(monkeypatch) -> None:
+    """A Title Rule no ruleset references never fires on a real search, so the
+    preview must not credit it either."""
+    from miramedia.config import MiraMediaConfig
+    from miramedia.indexers.config import ScoringRuleSet, TitleScoringRule
+    from miramedia.indexers.utils import preview_score
+
+    config = MiraMediaConfig()
+    monkeypatch.setattr(
+        config.indexers,
+        "title_scoring_rules",
+        [
+            TitleScoringRule(name="linked", keywords=["exe"], score_modifier=-10000),
+            TitleScoringRule(name="orphan", keywords=["exe"], score_modifier=-10000),
+        ],
+    )
+    monkeypatch.setattr(
+        config.indexers,
+        "scoring_rule_sets",
+        [
+            ScoringRuleSet(
+                name="default", libraries=["ALL_MOVIES"], rule_names=["linked"]
+            )
+        ],
+    )
+    monkeypatch.setattr("miramedia.indexers.utils.MiraMediaConfig", lambda: config)
+
+    result = preview_score("Some Movie 2024 1080p WEB-DL x265-GRP exe")
+    entries = {e["rule"]: e for e in result["breakdown"]}
+
+    assert entries["title:linked"]["matched"] is True
+    assert entries["title:linked"]["delta"] == -10000
+    assert entries["title:orphan"]["matched"] is False
+    assert entries["title:orphan"]["delta"] == 0
+    assert entries["title:orphan"]["reason"] == "not in any ruleset"
+
+
+def _with_shipped_defaults(monkeypatch):
+    """Point the scorer at the shipped IndexerConfig defaults, ignoring whatever
+    the local config.toml overrides."""
+    from miramedia.config import MiraMediaConfig
+    from miramedia.indexers.config import IndexerConfig
+
+    config = MiraMediaConfig()
+    defaults = IndexerConfig()
+    monkeypatch.setattr(
+        config.indexers, "title_scoring_rules", defaults.title_scoring_rules
+    )
+    monkeypatch.setattr(
+        config.indexers, "scoring_rule_sets", defaults.scoring_rule_sets
+    )
+    monkeypatch.setattr("miramedia.indexers.utils.MiraMediaConfig", lambda: config)
+
+
+EXECUTABLE_PAYLOAD = [
+    "Some Movie 2024 1080p WEB-DL x265-GRP exe",
+    "Some Movie 2024 1080p WEB-DL x265-GRP.msi",
+    "Some Movie 2024 1080p WEB-DL x265-GRP [apk]",
+]
+
+
+@pytest.mark.parametrize("dropper", EXECUTABLE_PAYLOAD)
+def test_default_rule_drops_executable_payload_titles(dropper, monkeypatch) -> None:
+    _with_shipped_defaults(monkeypatch)
+    kept = evaluate_indexer_query_results(
+        [_result(dropper), _result(LEGIT[0])], _movie(), is_tv=False
+    )
+    titles = [r.title for r in kept]
+    assert dropper not in titles
+    assert LEGIT[0] in titles
+
+
+@pytest.mark.parametrize(
+    "legit",
+    [
+        # Tokens deliberately outside the rule: site tags and real titles.
+        "Some Movie 2024 1080p BluRay x264-GRP [rarbg.com]",
+        "Some Movie 2024 1080p BluRay x264-SCR-GRP",
+    ],
+)
+def test_default_executable_rule_keeps_legit_titles(legit, monkeypatch) -> None:
+    _with_shipped_defaults(monkeypatch)
+    kept = evaluate_indexer_query_results([_result(legit)], _movie(), is_tv=False)
+    assert [r.title for r in kept] == [legit]
+
+
+def test_default_executable_rule_tracks_the_release_name_screen() -> None:
+    """The Title Rule and is_malware_release_title screen the same tokens —
+    keep them in sync so a title cannot pass one gate and fail the other."""
+    from miramedia.indexers.config import _REJECT_EXECUTABLE_RULE, IndexerConfig
+    from miramedia.torrents.parsing import _EXECUTABLE_TITLE_TOKENS
+
+    rule = next(
+        r
+        for r in IndexerConfig().title_scoring_rules
+        if r.name == _REJECT_EXECUTABLE_RULE
+    )
+    assert tuple(rule.keywords) == _EXECUTABLE_TITLE_TOKENS

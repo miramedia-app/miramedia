@@ -8,9 +8,10 @@ from miramedia.settings.normalize import migrate_indexer_scoring_rules
 
 log = logging.getLogger(__name__)
 
-# Name shared by the default junk-rejecting Title Rule and the Rule Set that
-# applies it — referenced in both default lists below.
+# Names shared by the default rejecting Title Rules and the Rule Set that
+# applies them — referenced in both default lists below.
 _REJECT_JUNK_RULE = "Reject cam/workprint"
+_REJECT_EXECUTABLE_RULE = "Reject executable payloads"
 
 
 class ProwlarrConfig(BaseSettings):
@@ -130,6 +131,11 @@ class IndexerConfig(BaseSettings):
     # result below the `score >= 0` floor in evaluate_indexer_query_results.
     # Bare "cam"/"ts" are omitted (the film *Cam*, ".ts" containers); word-
     # boundary matched, so "camrip"/"hdcam" are safe.
+    # The executable rule mirrors the release-name screen in
+    # miramedia.torrents.parsing.is_malware_release_title: a release that names
+    # its payload in the title ("... H264-KRAFT exe") is a dropper. Same
+    # deliberately conservative token list — "com"/"scr"/"bat"/"jar" are
+    # omitted because they have legitimate uses in release names.
     title_scoring_rules: list[TitleScoringRule] = [
         TitleScoringRule(
             name=_REJECT_JUNK_RULE,
@@ -147,13 +153,31 @@ class IndexerConfig(BaseSettings):
             ],
             score_modifier=-10000,
         ),
+        TitleScoringRule(
+            name=_REJECT_EXECUTABLE_RULE,
+            keywords=[
+                "exe",
+                "msi",
+                "lnk",
+                "pif",
+                "vbs",
+                "vbe",
+                "jse",
+                "wsf",
+                "wsh",
+                "ps1",
+                "cmd",
+                "apk",
+            ],
+            score_modifier=-10000,
+        ),
     ]
     indexer_flag_scoring_rules: list[IndexerFlagScoringRule] = []
     scoring_rule_sets: list[ScoringRuleSet] = [
         ScoringRuleSet(
             name="Reject low-quality sources",
             libraries=["ALL_TV", "ALL_MOVIES"],
-            rule_names=[_REJECT_JUNK_RULE],
+            rule_names=[_REJECT_JUNK_RULE, _REJECT_EXECUTABLE_RULE],
         ),
     ]
     minimum_seeders: int = 0

@@ -75,6 +75,21 @@ export function ScoresTab({
   setIndexersPath: SetPath;
 }) {
   const ind = indexers;
+  const rulesets = (ind.scoring_rule_sets as Ruleset[]) ?? [];
+  // A rule only fires when a ruleset lists it by name — an unreferenced rule
+  // saves fine but never touches a real search.
+  const referencedRuleNames = new Set(rulesets.flatMap((rs) => rs.rule_names ?? []));
+  const definedRuleNames = [
+    ...((ind.title_scoring_rules as Keyed<Rule>[]) ?? []),
+    ...((ind.indexer_flag_scoring_rules as Keyed<Rule>[]) ?? []),
+  ]
+    .map((r) => r.name ?? "")
+    .filter(Boolean);
+  // Stale references (rule deleted, ruleset still lists it) stay selectable so
+  // they remain visible and removable instead of disappearing silently.
+  const selectableRuleNames = (rs: Ruleset) => [
+    ...new Set([...definedRuleNames, ...(rs.rule_names ?? [])]),
+  ];
   return (
     <div className="space-y-8">
       <section className="space-y-4">
@@ -369,88 +384,93 @@ export function ScoresTab({
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {rules.map((rule, i) => (
-                    <div
-                      key={rule._key}
-                      className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 lg:flex-row lg:items-center lg:gap-2 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0"
-                    >
-                      <div className="flex items-center gap-1 lg:contents">
-                        <span className="text-sm font-medium lg:hidden">Rule {i + 1}</span>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() =>
-                            setIndexersPath(
-                              [key],
-                              rules.filter((_, j) => j !== i),
-                            )
-                          }
-                          title="Delete"
-                          className="ml-auto lg:order-last lg:ml-0"
-                        >
-                          <Trash2 className="h-4 w-4 text-muted-foreground" />
-                        </Button>
-                      </div>
-                      <div className="flex flex-col gap-1 lg:max-w-[150px] lg:flex-none">
-                        <span className="text-xs text-muted-foreground lg:hidden">Name</span>
-                        <Input
-                          value={rule.name ?? ""}
-                          onChange={(e) => {
-                            const next = [...rules];
-                            next[i] = { ...next[i], name: e.target.value };
-                            setIndexersPath([key], next);
-                          }}
-                          placeholder="Rule name"
-                        />
-                      </div>
-                      <div className="flex flex-col gap-1 lg:flex-1">
-                        <span className="text-xs text-muted-foreground lg:hidden">Keywords</span>
-                        <Input
-                          value={
-                            Array.isArray((rule as AnyObj)[keywordsField])
-                              ? ((rule as AnyObj)[keywordsField] as string[]).join(", ")
-                              : ""
-                          }
-                          onChange={(e) => {
-                            const next = [...rules];
-                            next[i] = {
-                              ...next[i],
-                              [keywordsField]: csvToArray(e.target.value),
-                            };
-                            setIndexersPath([key], next);
-                          }}
-                          placeholder={placeholder}
-                        />
-                      </div>
-                      <div className="flex items-end gap-4 lg:contents">
-                        <div className="flex flex-col gap-1 lg:max-w-[100px] lg:flex-none">
-                          <span className="text-xs text-muted-foreground lg:hidden">Score</span>
+                    <div key={rule._key} className="space-y-1">
+                      <div className="flex flex-col gap-3 rounded-lg border bg-muted/20 p-3 lg:flex-row lg:items-center lg:gap-2 lg:rounded-none lg:border-0 lg:bg-transparent lg:p-0">
+                        <div className="flex items-center gap-1 lg:contents">
+                          <span className="text-sm font-medium lg:hidden">Rule {i + 1}</span>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() =>
+                              setIndexersPath(
+                                [key],
+                                rules.filter((_, j) => j !== i),
+                              )
+                            }
+                            title="Delete"
+                            className="ml-auto lg:order-last lg:ml-0"
+                          >
+                            <Trash2 className="h-4 w-4 text-muted-foreground" />
+                          </Button>
+                        </div>
+                        <div className="flex flex-col gap-1 lg:max-w-[150px] lg:flex-none">
+                          <span className="text-xs text-muted-foreground lg:hidden">Name</span>
                           <Input
-                            type="number"
-                            value={Number(rule.score_modifier ?? 0)}
+                            value={rule.name ?? ""}
+                            onChange={(e) => {
+                              const next = [...rules];
+                              next[i] = { ...next[i], name: e.target.value };
+                              setIndexersPath([key], next);
+                            }}
+                            placeholder="Rule name"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1 lg:flex-1">
+                          <span className="text-xs text-muted-foreground lg:hidden">Keywords</span>
+                          <Input
+                            value={
+                              Array.isArray((rule as AnyObj)[keywordsField])
+                                ? ((rule as AnyObj)[keywordsField] as string[]).join(", ")
+                                : ""
+                            }
                             onChange={(e) => {
                               const next = [...rules];
                               next[i] = {
                                 ...next[i],
-                                score_modifier: Number(e.target.value) || 0,
+                                [keywordsField]: csvToArray(e.target.value),
                               };
                               setIndexersPath([key], next);
                             }}
-                            className="w-24 lg:w-auto"
-                            placeholder="Score"
+                            placeholder={placeholder}
                           />
                         </div>
-                        <div className="flex h-9 items-center gap-1.5">
-                          <Switch
-                            checked={rule.enabled !== false}
-                            onCheckedChange={(v) => {
-                              const next = [...rules];
-                              next[i] = { ...next[i], enabled: v };
-                              setIndexersPath([key], next);
-                            }}
-                          />
-                          <Label className="text-xs">Enabled</Label>
+                        <div className="flex items-end gap-4 lg:contents">
+                          <div className="flex flex-col gap-1 lg:max-w-[100px] lg:flex-none">
+                            <span className="text-xs text-muted-foreground lg:hidden">Score</span>
+                            <Input
+                              type="number"
+                              value={Number(rule.score_modifier ?? 0)}
+                              onChange={(e) => {
+                                const next = [...rules];
+                                next[i] = {
+                                  ...next[i],
+                                  score_modifier: Number(e.target.value) || 0,
+                                };
+                                setIndexersPath([key], next);
+                              }}
+                              className="w-24 lg:w-auto"
+                              placeholder="Score"
+                            />
+                          </div>
+                          <div className="flex h-9 items-center gap-1.5">
+                            <Switch
+                              checked={rule.enabled !== false}
+                              onCheckedChange={(v) => {
+                                const next = [...rules];
+                                next[i] = { ...next[i], enabled: v };
+                                setIndexersPath([key], next);
+                              }}
+                            />
+                            <Label className="text-xs">Enabled</Label>
+                          </div>
                         </div>
                       </div>
+                      {rule.name && !referencedRuleNames.has(rule.name) ? (
+                        <p className="text-xs text-amber-500">
+                          Not in any ruleset — this rule has no effect on searches. Add it under
+                          Score Rulesets below.
+                        </p>
+                      ) : null}
                     </div>
                   ))}
                   <Button
@@ -490,7 +510,7 @@ export function ScoresTab({
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              {((ind.scoring_rule_sets as Ruleset[]) ?? []).map((rs, i, all) => (
+              {rulesets.map((rs, i, all) => (
                 <div key={i} className="space-y-2 rounded-md border p-3">
                   <div className="flex items-center gap-2">
                     <Input
@@ -535,20 +555,38 @@ export function ScoresTab({
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">
-                      Rule Names (comma-separated, references rules defined above)
+                      Rules (only selected rules are applied to searches)
                     </Label>
-                    <Input
-                      value={Array.isArray(rs.rule_names) ? rs.rule_names.join(", ") : ""}
-                      onChange={(e) => {
-                        const next = [...all];
-                        next[i] = {
-                          ...next[i],
-                          rule_names: csvToArray(e.target.value),
-                        };
-                        setIndexersPath(["scoring_rule_sets"], next);
-                      }}
-                      placeholder="prefer_h265, avoid_cam, reject_nuked"
-                    />
+                    <div className="flex flex-wrap gap-1.5">
+                      {selectableRuleNames(rs).map((name) => {
+                        const selected = (rs.rule_names ?? []).includes(name);
+                        return (
+                          <Button
+                            key={name}
+                            type="button"
+                            size="sm"
+                            variant={selected ? "default" : "outline"}
+                            className="h-7 px-2 text-xs"
+                            onClick={() => {
+                              const current = rs.rule_names ?? [];
+                              const next = [...all];
+                              next[i] = {
+                                ...next[i],
+                                rule_names: selected
+                                  ? current.filter((n) => n !== name)
+                                  : [...current, name],
+                              };
+                              setIndexersPath(["scoring_rule_sets"], next);
+                            }}
+                          >
+                            {name}
+                          </Button>
+                        );
+                      })}
+                      {selectableRuleNames(rs).length === 0 ? (
+                        <p className="text-xs text-muted-foreground">No named rules defined yet.</p>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               ))}
